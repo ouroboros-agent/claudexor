@@ -13,7 +13,11 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 5
+    # Raised from 5 with the group change: the two group PRs (dev + prod) used
+    # to leave four free slots, but now every pending major wants a slot of its
+    # own. At 5 a week with four concurrent majors would silently defer the
+    # overflow until an earlier PR closes, which is the opposite of the intent.
+    open-pull-requests-limit: 10
     groups:
       dev-dependencies:
         dependency-type: "development"
