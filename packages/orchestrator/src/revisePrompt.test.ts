@@ -23,6 +23,21 @@ describe("revise prompt contract (a blocked attempt must not just re-emit)", () 
     expect(prompt).toContain("Re-emitting the same work with none of those three changes nothing");
   });
 
+  it("does not promise an arbiter for rebuttals the system does not have", () => {
+    // Naming three moves is what stops a do-nothing resubmit, but only "fix"
+    // changes loop state: rebuttal text and unreachability declarations are not
+    // persisted as a channel and nothing adjudicates them. The prompt says so.
+    expect(prompt).toContain("Only a fix changes what the next review sees");
+    expect(prompt).toContain(
+      "There is no rebuttal channel and nothing adjudicates a rebuttal or an unreachability declaration today",
+    );
+    expect(prompt).toContain("preserved in the run artifacts for a human who reads them");
+    expect(prompt).toContain(
+      "expect the next review to look at the changed work rather than at your argument about the last round",
+    );
+    expect(prompt).toContain("goes no further on its own");
+  });
+
   it("requires checking a finding's own justification before complying with it", () => {
     expect(prompt).toContain("hypothesis with an argument attached");
     expect(prompt).toContain("does not survive checking must be rebutted, not complied with");
