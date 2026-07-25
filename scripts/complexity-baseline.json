@@ -20,7 +20,7 @@
   "packages/daemon/src/project-partitions.ts": 636,
   "packages/daemon/src/server.ts": 653,
   "packages/daemon/src/threads.ts": 601,
-  "packages/harness-claude/src/index.ts": 974,
+  "packages/harness-claude/src/index.ts": 975,
   "packages/harness-codex/src/index.ts": 874,
   "packages/harness-cursor/src/index.ts": 803,
   "packages/journal/src/index.ts": 544,
