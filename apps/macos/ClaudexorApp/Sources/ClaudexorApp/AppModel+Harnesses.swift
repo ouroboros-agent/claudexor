@@ -43,11 +43,26 @@ extension AppModel {
             let acceptsBrowser =
                 status.manifest?["capabilities"]?["browser_tool"]?.boolValue ?? false
             let effortLevels: [String] = {
+                // Schema truth: HarnessCapabilities.effort_levels lives under
+                // manifest.capabilities.
                 guard
                     case .array(let values) =
                         status.manifest?["capabilities"]?["effort_levels"]
                 else { return [] }
                 return values.compactMap(\.stringValue)
+            }()
+            let modelEffortLevels: [String: [String]] = {
+                guard
+                    case .object(let entries) =
+                        status.manifest?["capabilities"]?["model_effort_levels"]
+                else { return [:] }
+                return entries.compactMapValues { entry in
+                    guard case .array(let values) = entry["levels"] else {
+                        return nil
+                    }
+                    let levels = values.compactMap(\.stringValue)
+                    return levels.isEmpty ? nil : levels
+                }
             }()
             return HarnessInfo(
                 family: family, health: health, version: version, auth: auth,
@@ -56,7 +71,9 @@ extension AppModel {
                 routableIntents: status.routableIntents,
                 reasons: status.reasons ?? [], readiness: status.readiness,
                 acceptsImages: acceptsImages, acceptsBrowser: acceptsBrowser,
-                effortLevels: effortLevels)
+                delegation: status.delegation,
+                effortLevels: effortLevels,
+                modelEffortLevels: modelEffortLevels)
         }
     }
 

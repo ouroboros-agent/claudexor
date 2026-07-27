@@ -179,9 +179,26 @@ export async function handleRunCreate(
         "planRunId is not accepted on POST /runs; use POST /threads/:id/turns (the turn pipeline implements the plan)",
     });
   }
+  if (params.planRef) {
+    // The frozen-plan reference is the tamper fence's INPUT: the orchestrator
+    // trusts its sha256 by construction (INV-081), so a client-supplied
+    // planRef would let a loopback caller point the plan brief at an
+    // arbitrary file with a self-consistent hash. Only the daemon-internal
+    // turn pipeline may mint one.
+    return ctx.json(res, 400, {
+      error:
+        "planRef is not accepted on POST /runs; the frozen-plan reference is server-owned and minted by POST /threads/:id/turns at implement time",
+    });
+  }
   if (params.retryOf) {
     return ctx.json(res, 400, {
       error: "retryOf is server-owned; use POST /runs/:id/retry for Exact Retry",
+    });
+  }
+  if (params.parentRunId || params.delegatedFromRunId) {
+    return ctx.json(res, 400, {
+      error:
+        "parentRunId and delegatedFromRunId are server-owned lineage; Delegate children are created only by the scoped belt",
     });
   }
   let job: { id: string };

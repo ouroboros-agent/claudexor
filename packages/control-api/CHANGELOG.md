@@ -1,5 +1,31 @@
 # @claudexor/control-api
 
+## 3.1.2
+
+### Patch Changes
+
+- Restore Delegate in packaged installs through the exact daemon self-entry; enforce required MCP startup, bounded shared parent/child budget and cancellation authority, typed lineage and degradation receipts, and durable CLI/macOS projections across reload and reconnect.
+- Updated dependencies
+  - @claudexor/event-log@3.1.2
+  - @claudexor/schema@3.1.2
+  - @claudexor/delivery@3.1.2
+  - @claudexor/secrets@3.1.2
+  - @claudexor/util@3.1.2
+
+## 3.1.1
+
+### Patch Changes
+
+- Exact retry on a pre-start terminal run answers with its typed refusal (a 403,
+  not a 202 handle), and the CLI retry and run-again paths read the refusal's
+  actual problem message instead of an `error` field the daemon never serves.
+- Updated dependencies
+  - @claudexor/schema@3.1.1
+  - @claudexor/delivery@3.1.1
+  - @claudexor/event-log@3.1.1
+  - @claudexor/secrets@3.1.1
+  - @claudexor/util@3.1.1
+
 ## 3.1.0
 
 ### Minor Changes

@@ -17,17 +17,18 @@ import { composeBaseEnv, summarizeDiffPaths } from "@claudexor/core";
 import { projectRuntimeDir } from "@claudexor/util";
 import {
   applyPatchProtected,
+  diffWorkingTreeTransient,
   ensureGitRepository,
   git,
   isGitRepo,
   revParse,
-  revertWorkingTreePatch,
-  revertWorkingTreeTo,
   snapshotTree,
 } from "./git.js";
+import { revertWorkingTreePatch, revertWorkingTreeTo } from "./revert.js";
 import { createRevertAnchor, readRevertAnchor } from "./anchor-store.js";
 import { CLAUDE_BRIDGE_CONTENT, CLAUDE_BRIDGE_MARKER } from "./claude-bridge.js";
 import { WorkspaceManager } from "./manager.js";
+import { relativizePlainDiffHeaders } from "./plain-diff.js";
 import { advanceThreadWorktree, ensureThreadWorktree, purgeThreadWorktree } from "./thread-tree.js";
 import { rmSync as __rmSyncReap } from "node:fs";
 import { afterAll as __afterAllReap } from "vitest";
@@ -85,6 +86,68 @@ describe("revertWorkingTreeTo", () => {
     expect(r2.reasonCode).toBe("postimage_diverged");
     // The refused revert touched nothing.
     expect(readFileSync(join(repo, "keep.ts"), "utf8")).toBe("edited again after the turn\n");
+  });
+});
+
+describe("transient in-place diff", () => {
+  it("keeps candidate blobs out of the user repository and refuses a diverged rollback", async () => {
+    const repo = await initRepo();
+    const base = await revParse(repo, "HEAD");
+    const secret = `sk-${"a".repeat(24)}`;
+    writeFileSync(join(repo, "unsafe.txt"), `${secret}\n`);
+
+    const patch = await diffWorkingTreeTransient(repo, base);
+    expect(patch).toContain(secret);
+    const objects = execFileSync(
+      "git",
+      ["-C", repo, "cat-file", "--batch-all-objects", "--batch-check=%(objectname) %(objecttype)"],
+      { encoding: "utf8" },
+    );
+    for (const line of objects.trim().split("\n")) {
+      const [sha, type] = line.split(" ");
+      if (type !== "blob" || !sha) continue;
+      expect(execFileSync("git", ["-C", repo, "cat-file", "blob", sha]).includes(secret)).toBe(
+        false,
+      );
+    }
+
+    const reverted = await revertWorkingTreePatch(repo, patch, { isolateObjectWrites: true });
+    expect(reverted).toMatchObject({ reverted: true });
+    expect(existsSync(join(repo, "unsafe.txt"))).toBe(false);
+
+    // Simulate a concurrent write after a fresh capture. The checked reverse
+    // refuses and preserves the later bytes instead of claiming a safe rollback.
+    writeFileSync(join(repo, "unsafe.txt"), `${secret}\n`);
+    const divergentPatch = await diffWorkingTreeTransient(repo, base);
+    writeFileSync(join(repo, "unsafe.txt"), "later user bytes\n");
+    const refused = await revertWorkingTreePatch(repo, divergentPatch, {
+      isolateObjectWrites: true,
+    });
+    expect(refused).toMatchObject({ reverted: false, reasonCode: "postimage_diverged" });
+    expect(readFileSync(join(repo, "unsafe.txt"), "utf8")).toBe("later user bytes\n");
+    const objectsAfter = execFileSync(
+      "git",
+      ["-C", repo, "cat-file", "--batch-all-objects", "--batch-check=%(objectname) %(objecttype)"],
+      { encoding: "utf8" },
+    );
+    for (const line of objectsAfter.trim().split("\n")) {
+      const [sha, type] = line.split(" ");
+      if (type !== "blob" || !sha) continue;
+      expect(execFileSync("git", ["-C", repo, "cat-file", "blob", sha]).includes(secret)).toBe(
+        false,
+      );
+    }
+  });
+
+  it("handles a macOS repository path containing the path-list separator", async () => {
+    const repo = reapMk(join(tmpdir(), "claudexor:colon-"));
+    await git(repo, ["init", "-b", "main"]);
+    writeFileSync(join(repo, "README.md"), "# test\n");
+    await git(repo, ["add", "-A"]);
+    await git(repo, ["-c", "user.email=t@t.dev", "-c", "user.name=Test", "commit", "-m", "init"]);
+    const base = await revParse(repo, "HEAD");
+    writeFileSync(join(repo, "changed.txt"), "changed\n");
+    expect(await diffWorkingTreeTransient(repo, base)).toContain("changed.txt");
   });
 });
 
@@ -499,6 +562,56 @@ describe("WorkspaceManager", () => {
     expect(existsSync(join(projectRuntimeDir(dir), "workspaces", "t-ip", "converge"))).toBe(false);
   });
 
+  it("flags a secret-bearing binary postimage in a non-git in-place directory", async () => {
+    const dir = reapMk(join(tmpdir(), "claudexor-inplace-binary-"));
+    writeFileSync(join(dir, "README.md"), "plain folder\n");
+    const mgr = new WorkspaceManager(dir);
+    const env = await mgr.create({ taskId: "t-bin", attemptId: "a01", inPlace: true });
+    writeFileSync(
+      join(dir, "LEAK.bin"),
+      Buffer.concat([Buffer.from([0]), Buffer.from(`sk-${"z".repeat(24)}`)]),
+    );
+
+    const captured = await mgr.captureDiff(env);
+
+    expect(captured.diff).toContain("Binary files");
+    expect(captured.binarySecretLike).toBe(true);
+    await mgr.dispose(env);
+  });
+
+  it("scans the full non-git text diff for secrets before projecting it to 200k", async () => {
+    const dir = reapMk(join(tmpdir(), "claudexor-inplace-long-secret-"));
+    writeFileSync(join(dir, "README.md"), "plain folder\n");
+    const mgr = new WorkspaceManager(dir);
+    const env = await mgr.create({ taskId: "t-long", attemptId: "a01", inPlace: true });
+    const secret = `sk-${"v".repeat(24)}`;
+    writeFileSync(join(dir, "LONG.txt"), `${"safe line\n".repeat(25_000)}${secret}\n`);
+
+    const captured = await mgr.captureDiff(env);
+
+    expect(captured.diff).toContain("[diff truncated]");
+    expect(captured.diff).not.toContain(secret);
+    expect(captured.binarySecretLike).toBe(true);
+    await mgr.dispose(env);
+  });
+
+  it("fails closed when non-git diff cannot read a binary postimage", async () => {
+    const dir = reapMk(join(tmpdir(), "claudexor-inplace-unreadable-"));
+    writeFileSync(join(dir, "README.md"), "plain folder\n");
+    const mgr = new WorkspaceManager(dir);
+    const env = await mgr.create({ taskId: "t-unreadable", attemptId: "a01", inPlace: true });
+    const leak = join(dir, "LEAK.bin");
+    writeFileSync(leak, Buffer.concat([Buffer.from([0]), Buffer.from(`sk-${"u".repeat(24)}`)]));
+    chmodSync(leak, 0o000);
+    try {
+      const captured = await mgr.captureDiff(env);
+      expect(captured).toEqual({ diff: "", binarySecretLike: true });
+    } finally {
+      chmodSync(leak, 0o600);
+      await mgr.dispose(env);
+    }
+  });
+
   it("in-place non-git: header relativization never rewrites hunk CONTENT that looks like a header (INV-041)", async () => {
     const dir = reapMk(join(tmpdir(), "claudexor-inplace-fidelity-"));
     // Content lines that RENDER as `--- `/`+++ ` in a unified diff: a removed
@@ -526,8 +639,13 @@ describe("WorkspaceManager", () => {
     // header lines; the relativizer must apply the SAME bar. Here hunk content
     // forges the loose triple: a removed `-- <path>` line, an added
     // `++ <path>` line, then the NEXT hunk's real `@@` header.
-    const base = "/tmp/claudexor-forge/baseline";
-    const live = "/tmp/claudexor-forge/live";
+    const root = reapMk(join(tmpdir(), "claudexor-forge-"));
+    const base = join(root, "baseline");
+    const live = join(root, "live");
+    mkdirSync(base);
+    mkdirSync(live);
+    writeFileSync(join(base, "notes.txt"), "old\n");
+    writeFileSync(join(live, "notes.txt"), "new\n");
     const doc = [
       `diff -ruN ${base}/notes.txt ${live}/notes.txt`,
       `--- ${base}/notes.txt\t2026-01-01 00:00:00`,
@@ -542,11 +660,7 @@ describe("WorkspaceManager", () => {
       `+new ${live}/inline`,
       "",
     ].join("\n");
-    type Relativize = (text: string, baselineRoot: string, liveRoot: string) => string;
-    const relativize = (WorkspaceManager as unknown as Record<string, Relativize>)[
-      "relativizePlainDiffHeadersFor"
-    ] as Relativize;
-    const out = relativize(doc, base, live);
+    const out = relativizePlainDiffHeaders(doc, base, live);
     // Real header (witnessed by timestamps) relativized.
     expect(out).toContain("--- a/notes.txt\t2026-01-01 00:00:00");
     expect(out).toContain("+++ b/notes.txt\t2026-01-01 00:00:01");
@@ -727,14 +841,15 @@ describe("WorkspaceManager", () => {
     await mgr.dispose(env);
   });
 
-  it("deletes the per-attempt branch on dispose so a same-id re-attempt does not collide", async () => {
+  it("keeps the candidate branch clone-local and permits a same-id re-attempt", async () => {
     const repo = await initRepo();
     const mgr = new WorkspaceManager(repo);
     const env1 = await mgr.create({ taskId: "task-gc", attemptId: "a01", baseRef: "HEAD" });
     const branch = env1.branch_name;
-    expect((await git(repo, ["rev-parse", "--verify", branch])).code).toBe(0);
+    expect((await git(env1.worktree_path, ["rev-parse", "--verify", branch])).code).toBe(0);
+    expect((await git(repo, ["rev-parse", "--verify", branch])).code).not.toBe(0);
     await mgr.dispose(env1);
-    // Branch is gone (no permanent claudexor/* leak)...
+    // No branch was ever published into the source repository...
     expect((await git(repo, ["rev-parse", "--verify", branch])).code).not.toBe(0);
     // ...the empty per-task dir was pruned...
     expect(existsSync(join(projectRuntimeDir(repo), "workspaces", "task-gc"))).toBe(false);

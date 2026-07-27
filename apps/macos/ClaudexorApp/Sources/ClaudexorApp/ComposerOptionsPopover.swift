@@ -8,6 +8,17 @@ import ClaudexorKit
 // small, single-owner unit. Pure move — zero behavior change.
 
 extension ThreadsScreen {
+    /// Delegate readiness is one engine projection for the selected primary
+    /// route plus the draft's typed access profile. The control stays visible
+    /// when unavailable so the user sees the concrete repair/update path.
+    var delegateControlState: DelegationPresentation.ControlState {
+        let families = primaryFamily.map { [$0] } ?? effectiveIncludedFamilies
+        return DelegationPresentation.control(
+            capabilities: families.map { model.harnessInfo(for: $0)?.delegation },
+            hasFullAccess: access.satisfiesFullAccessRequirement
+        )
+    }
+
     /// The effective per-turn credential route for MODEL enumeration (W20):
     /// the thread's sticky auth preference (falling back to the global
     /// default) mapped onto the ?route= vocabulary. Auto = nil = unfiltered —
@@ -22,16 +33,39 @@ extension ThreadsScreen {
         return modelsRouteParam(forAuthPreference: preference)
     }
 
-    /// Union of the RESOLVED pool's declared effort ladders in schema order
-    /// (weakest → strongest); a sticky primary narrows to its own ladder. One
-    /// scalar effort rides the run — adapters clamp it individually.
+    /// The RESOLVED pool's advertised effort ladders merged weakest → strongest;
+    /// a sticky primary narrows to its own ladder. One scalar effort rides the
+    /// run — adapters resolve it individually against the routed model. Each
+    /// manifest ladder is already in the VENDOR's own order, so the picker
+    /// ordering is a positional merge (`EffortLadder`), never a rank table —
+    /// a level added upstream sorts at its vendor position with no app change.
+    ///
+    /// Per-turn model selections narrow each family's ladder the same way the
+    /// Settings row and the engine do (`effortLevelsForModel`): the chosen
+    /// model's own recorded ladder when the manifest has one, else the
+    /// harness-wide merged ladder — so picking a model that stops at `xhigh`
+    /// no longer offers a sibling-only `ultra` for this turn.
+    ///
+    /// With NO per-turn selection the turn still runs on a concrete model: the
+    /// persisted per-harness `defaultModel` (settings snapshot) when one is
+    /// pinned. Its ladder narrows the menu the same way — otherwise the picker
+    /// offered (and the run requested) sibling-only levels out of the
+    /// harness-wide union that the pinned default model rejects.
     var composerEffortLevels: [String] {
         let families = primaryFamily.map { [$0] }
             ?? (resolvedPoolFamilies.isEmpty ? poolFamilies : resolvedPoolFamilies)
-        let declared = Set(families.flatMap { model.harnessInfo(for: $0)?.effortLevels ?? [] })
-        let canonical = ["low", "medium", "high", "xhigh", "max"].filter { declared.contains($0) }
-        // Unknown future levels degrade honestly to the tail, never dropped.
-        return canonical + declared.subtracting(canonical).sorted()
+        return EffortLadder.merge(families.map { family in
+            guard let info = model.harnessInfo(for: family) else { return [] }
+            let chosen = (composerModels[family.rawValue] ?? "")
+                .trimmingCharacters(in: .whitespaces)
+            let persisted = (model.settingsSnapshot?.harnesses?[family.rawValue]?.defaultModel ?? "")
+                .trimmingCharacters(in: .whitespaces)
+            let effective = chosen.isEmpty ? persisted : chosen
+            if !effective.isEmpty, let perModel = info.modelEffortLevels[effective], !perModel.isEmpty {
+                return perModel
+            }
+            return info.effortLevels
+        })
     }
 
     /// The advanced options popover ("⋯"): clean SOLID sections on the popover's
@@ -129,7 +163,7 @@ extension ThreadsScreen {
                     }
                     .labelsHidden()
                     .fixedSize()
-                    .help("Requested reasoning effort for THIS turn. Each harness clamps it onto its own declared ladder (e.g. codex xhigh, claude max).")
+                    .help("Requested reasoning effort for THIS turn. Each harness resolves it against the ladder its routed model actually advertises.")
                 }
             }
             // Per-turn auth route REQUEST (W18/R20) over the thread preference.
@@ -234,9 +268,32 @@ extension ThreadsScreen {
                                       : "Hard cap on repair attempts")
                         }
                     }
+                    let delegateState = delegateControlState
                     Toggle("Delegate — let the agent spawn bounded sub-runs", isOn: $delegate)
                         .toggleStyle(.switch).tint(Theme.accent)
-                        .help("Inject the Claudexor delegation belt (ask / plan / isolated sub-run / best-of / status / result). The harness decides when to delegate; sub-runs are isolated, depth-1, budget- and count-capped. Refused server-side on harnesses without MCP injection.")
+                        .disabled(!delegateState.available)
+                        .help(delegateState.explanation)
+                        .accessibilityHint(delegateState.explanation)
+                        .onChange(of: delegateState.available) { _, _ in
+                            delegate = DelegationPresentation.visibleToggleValue(
+                                isOn: delegate,
+                                control: delegateState
+                            )
+                        }
+                        .onAppear {
+                            delegate = DelegationPresentation.visibleToggleValue(
+                                isOn: delegate,
+                                control: delegateState
+                            )
+                        }
+                    if !delegateState.available {
+                        Label(delegateState.explanation, systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption2)
+                            .foregroundStyle(Theme.status(.caution))
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityLabel("Delegate unavailable")
+                            .accessibilityValue(delegateState.explanation)
+                    }
                     // QA-010: Create scaffolds a brand-new project, so its test
                     // script does not exist until the run writes it — yet the
                     // operator already knows the command they expect (`npm test`).

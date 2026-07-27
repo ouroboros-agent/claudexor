@@ -7,10 +7,12 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import { CLAUDEXOR_VERSION, noProjectRepoRoot, readTextSafe, userConfigDir } from "@claudexor/util";
 import { releaseCommand } from "./release-command.js";
-import { serveAcpBridge, serveBeltBridge, serveMcpBridge } from "./bridge-serve.js";
+import { serveBeltBridge, serveMcpBridge } from "./bridge-serve.js";
+import { dispatchAcpCommand } from "./acp-auth-command.js";
 import { initProjectConfig } from "@claudexor/config";
 import {
   DecisionRecord,
+  EFFORT_HINT_HELP,
   EffortHint,
   ExternalContextPolicy,
   type ProtectedPathApproval,
@@ -69,14 +71,18 @@ import {
   exitCodeForState,
   fetchApplyEligibility,
   fetchCouncil,
-  fetchOutcomeBanner,
   fetchRunDetail,
   fetchRunOutcomeFacts,
-  projectApplyEligibility,
   projectOutcomeBanner,
   projectRunOutcomeFacts,
   mergeDaemonRunOutcome,
 } from "./daemon-run.js";
+import {
+  inspectDelegationLines,
+  projectDelegation,
+  terminalDelegationLines,
+  terminalDetailFields,
+} from "./delegation-output.js";
 import { runPlanQuestionLoop } from "./plan-question-loop.js";
 import { resolveDecisionBody } from "./decision.js";
 import { primaryOutputForCli } from "./primary-output.js";
@@ -202,8 +208,7 @@ function effortHint(args: ParsedArgs): EffortHint | undefined {
   const v = flagStr(args, "effort");
   if (v === undefined) return undefined;
   const parsed = EffortHint.safeParse(v);
-  if (!parsed.success)
-    throw new Error(`invalid --effort '${v}' (expected low|medium|high|xhigh|max)`);
+  if (!parsed.success) throw new Error(`invalid --effort '${v}' (expected a ${EFFORT_HINT_HELP})`);
   return parsed.data;
 }
 
@@ -694,10 +699,7 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
       const out = mergeDaemonRunOutcome(started, final);
       const status = out.status;
       const reason = daemonOutcomeSummary({ ...started, status, error: out.error });
-      // ONE GET /runs/:id feeds all three terminal projections (INV-120/122).
       const detail = await fetchRunDetail(addr, out.runId);
-      const applyEligibility = projectApplyEligibility(detail);
-      const outcomeBanner = projectOutcomeBanner(detail);
       printJsonLine({
         frame: "run.terminal",
         runId: out.runId,
@@ -708,8 +710,7 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
         ...(out.error ? { error: out.error } : {}),
         ...daemonOutcomeProblemFields(out),
         ...(reason ? { summary: reason } : {}),
-        ...(outcomeBanner ? { outcomeBanner } : {}),
-        ...(applyEligibility ? { applyEligibility } : {}),
+        ...terminalDetailFields(detail),
       });
       return exitCodeForState(status, projectRunOutcomeFacts(detail));
     }
@@ -723,8 +724,6 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
       // re-implying eligibility from status. ONE GET /runs/:id feeds all three
       // terminal projections (INV-120/122).
       const detail = await fetchRunDetail(addr, out.runId);
-      const applyEligibility = projectApplyEligibility(detail);
-      const outcomeBanner = projectOutcomeBanner(detail);
       printJson({
         runId: out.runId,
         runDir: out.runDir,
@@ -734,8 +733,7 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
         ...(out.error ? { error: out.error } : {}),
         ...daemonOutcomeProblemFields(out),
         ...(reason ? { summary: reason } : {}),
-        ...(outcomeBanner ? { outcomeBanner } : {}),
-        ...(applyEligibility ? { applyEligibility } : {}),
+        ...terminalDetailFields(detail),
       });
       return exitCodeForState(out.status, projectRunOutcomeFacts(detail));
     }
@@ -754,8 +752,10 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
     print("");
     print(`run ${started.runId} [${publicStatus}]`);
     // Server-owned outcome headline (D18), printed verbatim above any output.
-    const terminalBanner = await fetchOutcomeBanner(addr, started.runId);
+    const terminalDetail = await fetchRunDetail(addr, started.runId);
+    const terminalBanner = projectOutcomeBanner(terminalDetail);
     if (terminalBanner) print(`  ${terminalBanner}`);
+    for (const line of terminalDelegationLines(projectDelegation(terminalDetail))) print(line);
     print(`  artifacts: ${final?.runDir ?? started.runDir}`);
     // A succeeded lifecycle exits 0 — INCLUDING a "Done · needs review" run
     // (review blocked / checks failed). The apply-eligibility verdict (state
@@ -1083,8 +1083,7 @@ async function dispatch(args: ParsedArgs, json: boolean): Promise<number> {
     }
 
     case "acp": {
-      if (args._[1] === "serve") return serveAcpBridge();
-      return printUsageError(json, "usage: claudexor acp serve");
+      return dispatchAcpCommand(args, json);
     }
 
     case "follow": {
@@ -1191,6 +1190,7 @@ async function dispatch(args: ParsedArgs, json: boolean): Promise<number> {
           `access: requested=${contract.data.access.requested_profile} effective=${contract.data.access.effective_profile}`,
         );
       }
+      for (const line of inspectDelegationLines(telemetry?.delegation ?? null)) print(line);
       if (telemetry) {
         print(
           `web: policy=${telemetry.external_context_policy} effective=${telemetry.effective_web_mode} required=${telemetry.web_required} evidence=${telemetry.web.status}`,

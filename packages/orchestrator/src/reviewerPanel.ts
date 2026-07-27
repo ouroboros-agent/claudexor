@@ -15,9 +15,14 @@ import type {
   ControlReviewerPanelEntry,
   EffortHint,
   Intent,
+  ModelEffortCapability,
   ProviderFamily,
 } from "@claudexor/schema";
-import { estimateEffectiveAuthRoute, knownModelIdsForRoute } from "@claudexor/schema";
+import {
+  effortLevelsForModel,
+  estimateEffectiveAuthRoute,
+  knownModelIdsForRoute,
+} from "@claudexor/schema";
 import type { HarnessAdapter } from "@claudexor/core";
 import { HarnessUnavailableError, validateModel } from "@claudexor/core";
 import { WorkspaceManager } from "@claudexor/workspace";
@@ -35,6 +40,50 @@ export interface ReviewerPanelDeps {
   registry: Map<string, HarnessAdapter>;
   harnessSettings: Record<string, PanelHarnessSettings | undefined>;
   authPreferenceFor: (harnessId: string) => AuthPreference;
+  /** Disclosure sink for a knob the panel dropped instead of refusing (the
+   * auto panel's `reviewerEfforts` map). Optional: the drop itself never
+   * depends on a listener being wired. */
+  onIgnoredSetting?: (detail: string) => void;
+}
+
+/**
+ * The reviewer effort gate: a requested level must be one the SELECTED reviewer
+ * actually advertises.
+ *
+ * ONE owner for both panel paths (INV-104's effort sibling). The wire type is an
+ * open slug rather than an enum — a level is only meaningful per (harness,
+ * model), so the boundary cannot know it — which means this manifest check IS
+ * the guarantee that a typo or an unsupported level is refused instead of
+ * travelling inward. Without it a reviewer effort dies silently: the adapter's
+ * normalizer drops an unresolvable level to "send no flag", while the review
+ * artifact still records `requested_effort`, so the run reads as though the
+ * level had been honored.
+ */
+function reviewerEffortRefusal(
+  harnessId: string,
+  requestedEffort: EffortHint | null,
+  capabilities: {
+    effort_levels: readonly EffortHint[];
+    model_effort_levels: Record<string, ModelEffortCapability>;
+  },
+  model: string | null,
+): string | null {
+  if (!requestedEffort) return null;
+  // Validate against the ladder of the model that will actually review: the
+  // model's own advertised list when the entry resolves one and the manifest
+  // recorded it, else the harness-wide merged ladder — which is then the only
+  // honest set, and the refusal says so.
+  const advertised = effortLevelsForModel(capabilities, model);
+  if (advertised.includes(requestedEffort)) return null;
+  const perModel =
+    model !== null && (capabilities.model_effort_levels[model]?.levels.length ?? 0) > 0;
+  const supported = advertised.join(", ");
+  const suffix = !supported
+    ? " (harness declares no effort controls)"
+    : perModel
+      ? ` (model '${model}' advertises: ${supported})`
+      : ` (harness-wide advertised ladder — no per-model ladder recorded${model ? ` for '${model}'` : ""}: ${supported})`;
+  return `reviewer harness '${harnessId}' does not support requested effort '${requestedEffort}'${suffix}`;
 }
 
 export async function resolveExplicitReviewerPanel(
@@ -172,15 +221,15 @@ export async function resolveExplicitReviewerPanel(
         }
       }
       const requestedEffort = entry.effort ?? null;
-      if (requestedEffort && !manifest.capabilities.effort_levels.includes(requestedEffort)) {
-        const supported = manifest.capabilities.effort_levels.join(", ");
-        const suffix = supported
-          ? ` (supported: ${supported})`
-          : " (harness declares no effort controls)";
-        throw new HarnessUnavailableError(
-          `reviewer harness '${entry.harness}' does not support requested effort '${requestedEffort}'${suffix}`,
-        );
-      }
+      // An EXPLICIT panel entry is a precise owner statement — an unadvertised
+      // level stays a hard, typed refusal (never forwarded to die natively).
+      const refusal = reviewerEffortRefusal(
+        entry.harness,
+        requestedEffort,
+        manifest.capabilities,
+        requestedModel,
+      );
+      if (refusal) throw new HarnessUnavailableError(refusal);
       specs.push({
         adapter,
         providerFamily: manifest.provider_family,
@@ -267,12 +316,32 @@ export async function resolveAutoReviewerPanel(
           );
         }
       }
+      // DISCLOSE-AND-DROP, deliberately weaker than the model gate above: the
+      // per-family `reviewerEfforts` map also rides stored replay surfaces
+      // (Exact Retry params, `ControlRunAgainDraft.request`), so a map recorded
+      // before a reviewer/catalog change must not hard-fail a replay that used
+      // to run. A fresh request and a replayed draft are indistinguishable at
+      // this layer, so the disclosed drop applies everywhere — the honest
+      // middle: the panel still reviews, at the reviewer's default effort, and
+      // the drop is disclosed instead of a typed refusal killing the run.
+      // (Explicit `reviewerPanel[].effort` entries above stay hard refusals.)
+      let requestedEffort = overrides.reviewerEfforts?.[m.provider_family] ?? null;
+      const dropped = reviewerEffortRefusal(
+        adapter.id,
+        requestedEffort,
+        m.capabilities,
+        requestedModel,
+      );
+      if (dropped) {
+        deps.onIgnoredSetting?.(`reviewer effort dropped: ${dropped}`);
+        requestedEffort = null;
+      }
       seen.add(m.provider_family);
       specs.push({
         adapter,
         providerFamily: m.provider_family,
         requestedModel,
-        requestedEffort: overrides.reviewerEfforts?.[m.provider_family] ?? null,
+        requestedEffort,
         authPreference,
       });
       if (specs.length >= 2) break;

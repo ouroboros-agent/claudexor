@@ -1,5 +1,55 @@
 # @claudexor/orchestrator
 
+## 3.1.2
+
+### Patch Changes
+
+- Restore Delegate in packaged installs through the exact daemon self-entry; enforce required MCP startup, bounded shared parent/child budget and cancellation authority, typed lineage and degradation receipts, and durable CLI/macOS projections across reload and reconnect.
+- Updated dependencies
+  - @claudexor/budget@3.1.2
+  - @claudexor/core@3.1.2
+  - @claudexor/event-log@3.1.2
+  - @claudexor/schema@3.1.2
+  - @claudexor/context@3.1.2
+  - @claudexor/delivery@3.1.2
+  - @claudexor/gateway@3.1.2
+  - @claudexor/review@3.1.2
+  - @claudexor/workspace@3.1.2
+  - @claudexor/arbitration@3.1.2
+  - @claudexor/config@3.1.2
+  - @claudexor/policy@3.1.2
+  - @claudexor/synthesis@3.1.2
+  - @claudexor/artifact-store@3.1.2
+  - @claudexor/util@3.1.2
+
+## 3.1.1
+
+### Patch Changes
+
+- Engine honesty fixes: a delivered plan now survives an unrecovered tool error
+  instead of being escalated to a harness error before finalization, an empty
+  thrown message can no longer terminalize a failed harness run as a clean
+  success, and the automatic economy-ranking pass reads one pinned clock for all
+  candidates instead of a fresh timestamp per comparison.
+- Updated dependencies
+- Updated dependencies
+- Updated dependencies
+  - @claudexor/core@3.1.1
+  - @claudexor/budget@3.1.1
+  - @claudexor/review@3.1.1
+  - @claudexor/schema@3.1.1
+  - @claudexor/context@3.1.1
+  - @claudexor/delivery@3.1.1
+  - @claudexor/gateway@3.1.1
+  - @claudexor/workspace@3.1.1
+  - @claudexor/arbitration@3.1.1
+  - @claudexor/config@3.1.1
+  - @claudexor/event-log@3.1.1
+  - @claudexor/policy@3.1.1
+  - @claudexor/synthesis@3.1.1
+  - @claudexor/artifact-store@3.1.1
+  - @claudexor/util@3.1.1
+
 ## 3.1.0
 
 ### Minor Changes

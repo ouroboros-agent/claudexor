@@ -52,6 +52,8 @@ engine strategies are flags on a mode, never modes:
 `--delegate` (agent-only) injects a SCOPED Claudexor MCP belt into the harness
 sandbox — the generalized `HarnessRunSpec.extra_mcp_servers` seam translated per
 adapter (claude `--mcp-config` inline JSON, codex `-c mcp_servers.<name>.*`).
+The running daemon entry must itself dispatch `mcp serve-belt`; every in-repo
+launcher preserves that executable-entry contract.
 The harness decides when to spawn bounded, isolated sub-runs; the belt exposes
 ONLY `claudexor_ask`, `claudexor_plan`, `claudexor_run` (isolated envelope
 sub-run — forced envelope, forced no-thread), `claudexor_best_of`,
@@ -60,13 +62,62 @@ apply/decision/thread/settings tool: the PARENT integrates results in its own
 workspace. Policy is enforced SERVER-SIDE at the tool boundary (never trusting
 the harness): nesting depth is 1 (the sub-runs a belt spawns carry no belt of
 their own, so nesting cannot exceed 1 — the belt also refuses when observed at
-depth>0), a max sub-run count per parent (default 8), and each sub-run draws a
-paid budget bounded by the parent ledger's headroom snapshot (finite headroom,
-or a typed refusal when exhausted — never a silent unlimited run). Only adapters
+depth>0), a max sub-run count per parent (default 8), and one live parent-owned
+paid-budget authority shared by the parent and every child. Reservations and
+settlements are global to that authority, while each child reports its own spend
+and the parent reports the aggregate; exhaustion is a typed refusal, never a
+silent independent or unlimited budget. The daemon keeps that family authority
+for the run lifetime: child admission is atomic and monotonic (pending starts
+count toward the max of 8), parent cancellation closes admission before it
+cascades, and the parent's terminal record waits for child drain. A bounded
+broken-runner fail-safe financially fences a survivor and records a typed
+failure; it never permits late child cash to appear after a successful parent
+terminal. After the drain, the ledger rechecks the family terminal state and
+reconciles the returned result plus `decision.yaml`; a late overshoot or
+unverifiable child settlement replaces the prepared success with a typed budget
+failure. Only adapters
 whose `capability_profile.mcp_injection` is true (claude, codex) can host the
-belt; `--delegate` on any other harness is a typed preflight refusal naming the
-harness. This replaces the former `orchestrate` mode (retired in v3); ordinary
-`claudexor plan` covers the "suggest"-style use-case.
+belt. `HarnessStatusDto` and the agent capability catalog carry one derived
+`delegation` projection (`available`, typed `reason`, remediation, and the access
+requirement), so CLI, Control API, and macOS consume the same readiness truth.
+The flag is permission, not a child-count promise: current top-level summaries
+record `delegation {requested,effective,used,reason,remediation}`; the field is
+nullable when reading legacy artifacts that predate this receipt. A known pre-injection
+runtime, manifest, or access incompatibility may continue as an ordinary Agent
+run with `effective:false` and a durable warning. An MCP startup failure AFTER
+the descriptor was injected is terminal and never silently degrades. An
+unrecovered non-ok result from an exact injected belt tool likewise hard-fails
+the Agent outcome; the Delegate receipt still says `used:true` because it records
+which path ran, not whether that operation succeeded. An isolated-envelope
+deliverable remains diagnostic and cannot be auto-adopted. If an explicitly
+in-place lane already changed the live tree, the failure first emits a durable
+`adopted:true`, `applied_review_blocked` WorkProduct with pre/post snapshots and
+a revert anchor, then emits the failed terminal; this records unavoidable live
+bytes honestly without treating them as reviewed success. A secret-bearing
+in-place diff takes the INV-062 exception before any candidate artifact or Git
+post-snapshot: the engine attempts an exact checked reverse apply from the
+  transient diff after scanning immutable binary preimages/postimages and textual
+  patch bytes. Non-Git binary stubs are scanned from a bounded no-follow live
+  descriptor and fail closed. Git-backed in-place output remains `applied_review_blocked` plus
+manual cleanup even after a successful worktree rollback because vendor-written
+index/ref/object state cannot be disproved post hoc; the engine never persists
+the patch or anchor and never claims false revertability. In a mixed
+pool, a capable lane keeps the run `effective:true`, while any selected lane
+that continued before injection makes the run reason `partially_degraded` and
+keeps the prominent warning; per-lane requirement receipts preserve its cause.
+
+Every belt child is scoped to the normalized original user-project root bound
+by the engine. It never inherits the parent harness's isolated envelope as its
+project, and a raw tool `repoPath` cannot redirect that server-owned boundary.
+The descriptor starts with an empty fail-closed placeholder and the orchestrator
+rebinds the exact root before injection. Every child also receives the real top-level `parentRunId` plus
+`delegatedFromRunId`; only the latter establishes Delegate provenance. Parent
+cancellation cascades to those children, and retry/run-again creates a fresh
+top-level family rather than inheriting Delegate lineage or admission state.
+Native Claude Code/Codex subagents do
+not receive `delegatedFromRunId`, are not Claudexor children, and cannot satisfy
+`used:true`. This replaces the former `orchestrate` mode (retired in v3);
+ordinary `claudexor plan` covers the "suggest"-style use-case.
 
 Old mode ids (`audit`, `orchestrate`, `best_of_n`, `max_attempts`,
 `until_clean`, `explore`, `create`, `readonly_audit`, plus the older
@@ -93,8 +144,9 @@ at every wire boundary.
   are deterministic offline test fixtures (incl. `fake-implement`, which writes a
   real worktree file); they are explicit-`--harness` only and never enter
   auto/reviewer pools.
-- `packages/workspace`: git worktree envelopes and scoped harness homes/config
-  dirs for write envelopes and read-only routes via `readOnlyHomeEnv`; these keep
+- `packages/workspace`: disposable candidates use private shared-clone Git
+  authority while persistent threads use git worktrees; scoped harness homes/
+  config dirs for write envelopes and read-only routes via `readOnlyHomeEnv` keep
   relocatable, route-local state outside both the worktree and the operator's
   home. A selected native Codex route uses its Claudexor-owned file-only profile;
   native Claude also uses a Claudexor-owned config dir and exposes only the
@@ -242,12 +294,50 @@ credential transports, isolation containment, the honest readonly mechanism,
 and finite `attachment_inputs` declarations (the never-consumed execution-surface/session/output
 subtrees were deleted in the stabilization triage — a declared capability with no
 consumer is a staged field). Capabilities are data-driven and declared by the
-adapter: `effort_levels` (a shared normalizer clamps a requested hint onto the
-nearest supported level; a requested effort on an EMPTY ladder is disclosed
-via `ignored_settings`, never silently dropped) and `known_models` (+ the
+adapter: `effort_levels` + `model_effort_levels` (+ the
+`effort_levels_verified_against` freshness note) and `known_models` (+ the
 `known_models_verified_against` freshness note) as the manifest model truth
 source under the STRICT semantics described in the model-governance section
-above — there is no warn-and-pass-through tier. `doctor` validates each
+above — there is no warn-and-pass-through tier.
+
+Reasoning effort is an OPEN vocabulary, mirroring the vendors: codex types its
+own `ReasoningEffort` as any non-empty value the model advertises, and Claude
+Code's ladder belongs to the INSTALLED binary (2.1.89 stops at `max`; 2.1.165
+adds `xhigh`). So `EffortHint` is a bounded lowercase slug rather than an
+enum, and the ORDERING AUTHORITY is the vendor's own advertised sequence —
+there is no static rank table. Vendors return their levels already ordered
+weakest→strongest (codex `app-server` `model/list` →
+`supportedReasoningEfforts` per model; the `--effort` line of `claude --help`),
+so a model's ladder is its own ordered list, a harness's ladder is the
+positional merge of its models' lists (`mergeEffortLadders`; the Swift
+`EffortLadder` merges the manifest's already-ordered arrays the same way), and
+a level's rank is its position in that merged order — which is what lets a
+brand-new vendor level sort correctly with no code change. Should two models
+ever advertise genuinely contradictory orders, the merge flags it and
+cross-model clamping is refused rather than an order invented. Adapters
+discover what is really advertised at discovery time and fall back to a
+recorded snapshot (stamped vendor data, kept in its captured order) when a
+probe cannot answer, so a probe failure costs freshness, never the run; both
+probes are cached, and `scripts/model-hints-freshness.mjs` WARNS when the live
+ladders disagree with the snapshot. Effort ceilings are per MODEL, not per
+harness (gpt-5.6-sol takes `ultra`, gpt-5.4 stops at `xhigh`), so
+`effortLevelsForModel` narrows the harness-wide merged ladder for the routed
+model. The shared normalizer then passes an ADVERTISED level through verbatim,
+clamps an unadvertised one onto the nearest advertised level INSIDE the merged
+vendor order, and refuses a level that order has never seen, disclosed via
+`ignored_settings` rather than silently downgraded. WHICH LAYER clamps is part
+of the contract: `discover()` probes the DEFAULT native harness home, so the
+manifest carries the default account's ladders, while codex advertises per
+ACCOUNT and every credential profile and API-key route runs under its own
+`CODEX_HOME`. Run preflight (`governRouteEffort`) therefore only DISCLOSES a
+level the harness's merged ladder does not know and forwards everything else
+verbatim; the adapter, which has resolved the profile env the child will
+actually run in, is the single layer that clamps. Reviewer efforts have no
+adapter-side disclosure channel, so the panel resolvers refuse a level the
+SELECTED reviewer does not advertise — against the named model's own ladder
+when the entry resolves one, else the harness-wide merged ladder — instead of
+forwarding it to be dropped. The CLI help, the MCP tool
+schema and the macOS picker's ordering all derive from that single source. `doctor` validates each
 harness's CONFIGURED default model against the truth source, so a broken
 default (e.g. a model the CLI cannot run) is reported honestly instead of
 masked by a smoke that used a different model, and the same verdict rides
@@ -640,6 +730,9 @@ budget, runs the harness, captures diff from git, runs deterministic gates,
 reviews/revalidates findings, optionally synthesizes a new checked candidate,
 and arbitrates. `--create` runs the same envelope pipeline with the
 create-from-scratch intent (the CLI verb `claudexor create` maps here).
+An isolated candidate refused by the secret fence is excluded when another
+safe working candidate survives; an all-refused race, an in-place cleanup
+receipt, or an injected Delegate-belt failure remains terminal for the race.
 
 ### Agent --attempts / --until-clean
 
@@ -954,8 +1047,9 @@ is always supplied on the current run.
 
 Planning is solo by default. The **Council** plan strategy (`plan --council`,
 optionally `--n 2..4`) turns it into a multi-harness draft-then-merge: round 1
-runs N members as parallel planner attempts (each the SAME native-plan-mode
-read-only spawn the solo loop drives, in its own lane on a thread turn), whose
+runs N members as parallel planner attempts (each the SAME vendor-native
+read-only planner spawn the solo loop drives, in its own lane on a thread turn;
+Cursor uses native read-only Ask so the final-message WorkReport remains available), whose
 drafts land as file-backed artifacts (`council/draft-<harness>.md`). The primary
 then runs ONE merge iteration (intent `synthesize`) whose prompt POINTS at the
 draft files by absolute path — like the frozen-plan brief, full text never rides
@@ -1126,6 +1220,14 @@ the configurable `interaction_timeout_ms` (default 15 min) into a benign
 decline (`interaction.timeout`) — the model continues with stated assumptions
 and the run never hangs forever. Declined/timed-out interactive flow-control
 tools are benign timeline events, never blocking tool errors.
+
+Delegate children use this same interaction contract. A parent/list child
+summary may carry `waitingOnUser:true`, but it does not own the question body;
+the macOS client therefore performs a coalesced fresh child-detail read even
+when that child had been hydrated earlier, renders the answer against the child
+interaction's canonical `runId`, and exposes a truthful retry if the detail read
+fails. Answer delivery remains the same journal-first child endpoint above; no
+parent-side proxy or app-local interaction state is introduced.
 
 `/v2/setup/jobs` (create / status / snapshot / events / cancel / reconcile / extend)
 is the native-login setup surface for Codex, Claude, and Cursor. Readiness and
@@ -1299,10 +1401,25 @@ construction (`final_verify: null`), a hash-bound `accept_risk` /
 projection reports `verify_pending` and stays eligible, and the fresh final
 check runs just-in-time on the apply path (the same gate, now handed the fresh
 verifier result) — a mechanical conflict there still fails closed.
-`TaskContract.constraints.protected_paths` holds config-owned **approval globs**
-— path globs (e.g. `migrations/**`, `**/*.env`) whose changes escalate a run to
-a human-approval gate before it can be applied — while
-`TaskContract.constraints.auto_protected_paths` is derived from configured
+The versioned project config owns restriction-only approval globs under
+`constraints.protected_paths` (empty by default). The schema accepts only
+canonical repo-relative forward-slash globs, rejecting absolute paths, dot
+segments, traversal, and backslashes. The orchestrator freezes the parsed list
+into `TaskContract.constraints.protected_paths`; any matching create, modify,
+delete, or either side of a rename escalates the completed run to a human
+decision before apply. Per-run approvals never narrow this list.
+
+Before a mutating turn starts, the daemon promotes an `in_place` project thread
+with configured project protected paths one-way into the existing persistent
+isolated-thread workspace. The promotion, worktree path/base, and invalidation
+of native sessions from the former live cwd are one durable journal mutation;
+the next lane receives the bounded continuation packet. The run can finish and
+produce a patch without changing the project tree, while the existing typed
+thread Apply decision remains the only delivery authority. A direct agent
+embedder that requests `inPlace` against the live project root fails before
+adapter spawn and must provide a distinct isolated execution root.
+
+`TaskContract.constraints.auto_protected_paths` is instead derived from configured
 deterministic gates. Existing auto-protected gate/test path edits block unless
 the run carries a typed `protected_path_approvals` entry for the matching glob
 (CLI: `--allow-protected-path`). Those approvals are scoped only to
@@ -1362,11 +1479,11 @@ fence (Bible INV-113); an unlisted mutation path is a release blocker:
    route reads the same instruction file Codex/Cursor/OpenCode read natively
    (Codex additionally gets `CLAUDE.md` as a project-doc fallback via config, and
    a CLAUDE.md-only project needs no write at all). The bridge is written in TWO
-   places, because an isolated envelope worktree materializes only the COMMITTED
+   places, because an isolated envelope checkout materializes only the COMMITTED
    tree and so never sees an untracked project-root bridge: (a) the PROJECT root
    (the durable, in-place/thread-visible write, announced via a typed
    `project.claude_bridge.created` run event — never silent); and (b) each
-   git-mode ENVELOPE worktree at workspace prep, so a Claude Code candidate racing
+   git-mode ENVELOPE checkout at workspace prep, so a Claude Code candidate racing
    inside an envelope reads the same instructions. The envelope write emits NO run
    event — the envelope is disposable and Claudexor-owned — and diff capture
    EXCLUDES the generated bridge from the candidate patch by exact path, gated on
@@ -1435,7 +1552,7 @@ route; a native→API-key retry cannot hide later metered spend under the first
 native route, and an undisclosed route remains cost-unverifiable. `finite(0)` admits
 only proven-zero or subscription-entitlement work; a positive finite cap permits
 at most one unknown-cost paid unit in flight. A later exact charge above the cap
-is retained and ends `exhausted_overshoot`; permanently unknown cost ends
+is retained and ends `budget_overshoot`; permanently unknown cost ends
 `cost_unverifiable` rather than fabricating `$0`. Parallel race waves reserve a
 per-candidate estimate floor (`budget.estimate_usd_floor`, default $0.05) after
 the first slot, so concurrent estimated work counts against headroom before
@@ -1720,6 +1837,10 @@ macOS UI/UX SSOT. This section keeps only the engine-facing facts.
   routing readiness, setup progress, and budget truth are projections of
   control-api DTOs and run artifacts, never app-local logic. Read-only modes
   expose no patch/apply controls.
+- Delegate readiness comes from each harness row's engine-owned `delegation`
+  projection. Run summaries carry the requested/effective/used/reason/remediation outcome
+  and the narrow `delegatedFromRunId` child link. The exact composer and run-row
+  presentation is defined in [`DESIGN_SYSTEM.md`](DESIGN_SYSTEM.md).
 - Attachments use a daemon-owned resource pipeline. `/v2/uploads` streams bytes
   to an external temporary file; finalize fsyncs, hashes, deduplicates the blob,
   atomically publishes it, and returns an immutable resource ID. `/v2/runs` and
@@ -1851,7 +1972,10 @@ fields equal the candidate's unsigned manifest — so the shipped closure is
 byte-for-byte the reviewed one. A wrong or expired (14-day retention)
 `candidate_run_id` fails the download. `scripts/release-workflow-check.mjs`
 enforces this wiring; the two authority files (review vs runtime-update) can
-never be the same key.
+never be the same key. The same A-5 boundary covers the release application:
+publish verifies and promotes the candidate DMG, ZIP, and SBOM byte-for-byte;
+only the signed runtime manifest, review attestation, and final checksum set are
+created by the publish run.
 
 **Install flow.** One click (bottom-left chip → Install) runs
 `RuntimeInstallCoordinator` (`apps/macos/ClaudexorApp`): verify monotonic →
@@ -1936,8 +2060,9 @@ code touching one of these areas must honor it or change it explicitly here.
 - The delegation belt (`agent --delegate`) has NO apply/decision/thread/settings
   tool: the parent integrates sub-run results in its own workspace, so a
   delegated sub-run adds no new live-tree mutation path. Sub-runs are isolated
-  envelopes (forced no-thread), depth is capped at 1, and each draws from the
-  parent budget headroom.
+  envelopes (forced no-thread), depth is capped at 1, and all family reservations
+  and settlements cross one daemon-owned parent budget authority. Child detail
+  exposes only the child's spend; the parent detail exposes the aggregate.
 - Planning rides the normal thread/turn path (the spec-interview state machine
   and its in-process grounding runs were retired in v3): a `plan` run surfaces
   typed open questions, answer turns refine it on the same persisted lane, and
@@ -2022,10 +2147,11 @@ code touching one of these areas must honor it or change it explicitly here.
   enforcement applies only to explicit `cached`/`live` policies (the WHITEPAPER
   documents the rationale).
 - READ-ONLY flows on non-git folders get a best-effort copied baseline for
-  diffing (write modes auto-initialize git per INV-075); if the
-  baseline copy or the `diff` tool fails, the run's diff is empty and
-  reviewers read the live tree (diff output capped at 200 kB with an in-band
-  truncation marker).
+  diffing (write modes auto-initialize git per INV-075). If exact capture or
+  reversal cannot be proven for an explicit in-place run, Claudexor fails
+  closed with a sanitized `manual_cleanup` receipt; it never substitutes an
+  empty diff and asks reviewers to trust the live tree. Presentation remains
+  capped at 200 kB only after the full text diff has crossed the secret fence.
 - Isolated-thread worktrees are pinned by persistent `claudexor/thread-*`
   branches. Journal SHA is a checked cache; successful apply advances the
   branch, and explicit trash/restore/purge owns its retention lifecycle.

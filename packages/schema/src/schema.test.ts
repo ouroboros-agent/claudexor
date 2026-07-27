@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { EffortHint, mergeEffortLadders } from "./effort.js";
 import {
   CredentialProfile,
   ControlRunDecisionRequest,
@@ -193,6 +194,55 @@ describe("RouteProof + HarnessManifest", () => {
   });
 });
 
+describe("EffortHint is an OPEN vocabulary, bounded by shape only", () => {
+  it("accepts a level no ranking table knows, because vendors advertise their own", () => {
+    // Mirrors codex's own generated schema, which types ReasoningEffort as "a
+    // non-empty reasoning effort value advertised by the model" — a bounded
+    // string, not an enum. Refusal happens where the advertised set is known.
+    expect(EffortHint.parse("hyperdrive")).toBe("hyperdrive");
+    expect(EffortHint.parse("xhigh")).toBe("xhigh");
+    expect(EffortHint.parse("gpt-5")).toBe("gpt-5");
+  });
+
+  it("still refuses values that are not a slug at all", () => {
+    for (const bad of [
+      "",
+      " ",
+      "TURBO",
+      "turbo boost",
+      "turbo!",
+      "-turbo",
+      "turbo-",
+      "a".repeat(33),
+    ]) {
+      expect(EffortHint.safeParse(bad).success, bad).toBe(false);
+    }
+  });
+
+  it("derives ordering from the vendor's own advertised sequences — there is no rank table", () => {
+    // The ONE ordering owner is `mergeEffortLadders`: position in the vendor's
+    // advertised list IS the rank, so a brand-new level ("hyperdrive") sorts
+    // where the vendor put it and contradictory vendor orders are flagged
+    // instead of silently re-ranked.
+    expect(
+      mergeEffortLadders([
+        ["low", "medium", "high", "xhigh"],
+        ["low", "medium", "high", "xhigh", "hyperdrive", "max"],
+      ]),
+    ).toEqual({
+      order: ["low", "medium", "high", "xhigh", "hyperdrive", "max"],
+      unconstrained: [],
+      consistent: true,
+    });
+    expect(
+      mergeEffortLadders([
+        ["low", "max"],
+        ["max", "low"],
+      ]).consistent,
+    ).toBe(false);
+  });
+});
+
 describe("Control API schemas", () => {
   it("hard-errors every removed portfolio boundary", () => {
     expect(RoutingGoal.safeParse("subscription-first").success).toBe(false);
@@ -201,6 +251,25 @@ describe("Control API schemas", () => {
     ).toThrow();
     expect(() => ProjectConfig.parse({ budget: { portfolio: "cheapest" } })).toThrow();
     expect(() => GlobalConfig.parse({ default_portfolio: "daily-rich" })).toThrow();
+  });
+
+  it("accepts only repo-relative project protected-path globs", () => {
+    expect(
+      ProjectConfig.parse({
+        constraints: { protected_paths: ["migrations/**", "**/*.env"] },
+      }).constraints.protected_paths,
+    ).toEqual(["migrations/**", "**/*.env"]);
+    expect(ProjectConfig.parse({}).constraints.protected_paths).toEqual([]);
+
+    for (const invalid of [
+      "/etc/**",
+      "../outside/**",
+      "safe/../outside/**",
+      "C:/temp/**",
+      "dir\\**",
+    ]) {
+      expect(() => ProjectConfig.parse({ constraints: { protected_paths: [invalid] } })).toThrow();
+    }
   });
 
   it("bounds maxSeconds to avoid a setTimeout 32-bit-ms overflow (W6/G10)", () => {
@@ -256,7 +325,7 @@ describe("Control API schemas", () => {
       ControlRunStartRequest.parse({
         prompt: "bad",
         mode: "ask",
-        reviewerEfforts: { anthropic: "banana" },
+        reviewerEfforts: { anthropic: "banana split" },
       }),
     ).toThrow();
     expect(() =>
@@ -350,7 +419,7 @@ describe("Control API schemas", () => {
       ControlRunStartRequest.parse({
         prompt: "bad",
         mode: "ask",
-        reviewerPanel: [{ harness: "cursor", effort: "turbo" }],
+        reviewerPanel: [{ harness: "cursor", effort: "TURBO BOOST" }],
       }),
     ).toThrow();
     expect(() =>

@@ -24,6 +24,11 @@ import { TERMINAL_STATES } from "./sse-shared.js";
 import { streamRunEvents } from "./run-events-stream.js";
 import { boundedArtifactText, outputReadyState, primaryOutput } from "./primary-output.js";
 import {
+  budgetValuationFromEvents,
+  cashEstimatedFromLedgerEvent,
+  normalizeLegacyBudgetComponents,
+} from "./budget-valuation.js";
+import {
   type RunEventsIntegrity,
   controlWebEvidence,
   eventPayload,
@@ -33,7 +38,8 @@ import {
   readRunEventsWithIntegrity,
   timelineEvents,
 } from "./run-timeline.js";
-import { projectSession, projectThread, projectTurn, turnRunCard } from "./thread-projection.js";
+import { projectTurnRunCards } from "./thread-projection.js";
+import { projectSession, projectThread, projectTurn } from "./thread-projection.js";
 import {
   chainThreadMutation,
   handleThreadTurnCreate,
@@ -46,6 +52,20 @@ import {
   type ThreadLifecycleRouteCtx,
 } from "./thread-lifecycle-routes.js";
 import * as runStart from "./run-start.js";
+import { cancelDelegationFamily } from "./delegation-control.js";
+import {
+  directDelegatedChildrenFromRecords,
+  delegatedDescendantsFromRecords,
+  paramsRecord,
+  type ControlOperatorDecisionRecord,
+  type DaemonFacadeClient,
+  type DaemonRunRecord,
+} from "./run-record.js";
+export {
+  type ControlOperatorDecisionRecord,
+  type DaemonFacadeClient,
+  type DaemonRunRecord,
+} from "./run-record.js";
 import { handleRunRetryRoute } from "./run-retry-routes.js";
 import {
   handleRunApplyRoutes,
@@ -139,8 +159,8 @@ import {
   ControlThreadUpdateRequest,
   ControlThreadDetail,
   ControlThreadListResponse,
-  ControlTurnRunCard,
   DecisionRecord,
+  Id,
   ModeKind,
   RoutingGoal,
   ReviewFinding,
@@ -175,57 +195,6 @@ import {
   sha256,
 } from "@claudexor/util";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
-
-export interface DaemonRunRecord {
-  id: string;
-  state: string;
-  runId?: string;
-  taskId?: string;
-  runDir?: string;
-  error?: string;
-  /** Machine-readable code of a typed pre-start refusal (e.g. the trust gate's
-   * trust_full_access_required) — surfaces key remedies on the CODE and the
-   * turn-turn route maps it to a client-actionable 4xx (W24). */
-  errorCode?: string;
-  /** HTTP status persisted from the typed throw (refusal semantics are born
-   * at the throw); the turn route serves it verbatim when 400-599. */
-  errorStatus?: number;
-  /** Retryability persisted from the typed throw. `false` marks a pre-start
-   * refusal that Exact Retry can never repair (plan_not_ready — the frozen
-   * planRef replays the same open questions, INV-081); absent = no claim. */
-  errorRetryable?: boolean;
-  params?: unknown;
-  createdAt?: string;
-  startedAt?: string;
-  finishedAt?: string;
-}
-
-export interface ControlOperatorDecisionRecord {
-  action: "accept_risk" | "override_needs_human";
-  findingIds: string[];
-  acceptedRisks: string[];
-  patchSha256: string;
-  decidedAt: string;
-}
-
-export interface DaemonFacadeClient {
-  enqueue(
-    params: unknown,
-    options?: {
-      idempotencyKey?: string;
-      clientId?: string;
-      idempotencyRequest?: unknown;
-      operation?: string;
-    },
-  ): Promise<{ id: string; state: string }>;
-  findAccepted?(
-    params: unknown,
-    options: { idempotencyKey: string; clientId?: string; operation?: string },
-  ): Promise<DaemonRunRecord | null>;
-  status(id: string): Promise<DaemonRunRecord>;
-  list(): Promise<DaemonRunRecord[]>;
-  cancel(id: string): Promise<unknown>;
-}
 
 export interface DaemonControlApiOptions {
   token: string;
@@ -840,6 +809,11 @@ export class DaemonControlApiServer {
       // Fence order: cursor FIRST, every projection (pending interactions
       // included) after it — see the detailFor doc comment.
       const lastSeq = rec.runDir ? lastSeqInFile(join(rec.runDir, "events.jsonl")) : 0;
+      const parentRunId = rec.runId ?? rec.id;
+      const children = directDelegatedChildrenFromRecords(
+        parentRunId,
+        await this.opts.daemon.list(),
+      ).map((candidate) => this.summarizeRunOrDiagnostic(candidate));
       return this.json(
         res,
         200,
@@ -848,6 +822,7 @@ export class DaemonControlApiServer {
           this.pendingInteractionsFor(rec),
           lastSeq,
           this.validOperatorDecisionFor(rec),
+          children,
         ),
       );
     }
@@ -983,14 +958,11 @@ export class DaemonControlApiServer {
         const runs = await this.opts.daemon.list();
         const byRun = new Map(runs.map((r) => [r.runId ?? r.id, r]));
         const thread = detail.thread as { head_run_id?: string | null };
-        const cards = new Map<string, ControlTurnRunCard>();
-        for (const turn of detail.turns as { run_id?: string | null }[]) {
-          const runId = turn.run_id ?? null;
-          if (runId && !cards.has(runId)) {
-            const rec = byRun.get(runId);
-            if (rec) cards.set(runId, turnRunCard(this.summarizeRunOrDiagnostic(rec)));
-          }
-        }
+        const cards = projectTurnRunCards(
+          detail.turns as { run_id?: string | null }[],
+          runs,
+          (record) => this.summarizeRunOrDiagnostic(record),
+        );
         const headRec = byRun.get(thread.head_run_id ?? "");
         const headNeedsHuman = headRec ? this.runNeedsAttention(headRec) : false;
         return this.json(
@@ -1612,7 +1584,22 @@ export class DaemonControlApiServer {
           error: `run is ${rec.state}; ${body.control.kind} has nothing to stop`,
         });
       }
-      await this.opts.daemon.cancel(rec.id);
+      let activeDescendants: DaemonRunRecord[];
+      try {
+        const cancelled = await cancelDelegationFamily({
+          daemon: this.opts.daemon,
+          parent: rec,
+          descendantsAfterFence: () => this.delegatedDescendants(rec.runId ?? rec.id),
+          pollMs: this.opts.pollMs,
+        });
+        activeDescendants = cancelled.descendants;
+      } catch (error) {
+        appendRunAuditEvent(rec, "control.rejected", {
+          control: body.control,
+          reason: error instanceof Error ? error.message : String(error),
+        });
+        return this.requestError(res, error);
+      }
       appendRunAuditEvent(rec, "control.applied", { control: body.control });
       return this.json(
         res,
@@ -1621,7 +1608,8 @@ export class DaemonControlApiServer {
           accepted: true,
           status: "applied",
           runId: rec.runId ?? rec.id,
-          message: `${body.control.kind} requested`,
+          cascadeRunIds: activeDescendants.map((child) => child.runId ?? child.id),
+          message: `${body.control.kind} requested${activeDescendants.length ? ` for parent and ${activeDescendants.length} delegated descendant(s)` : ""}`,
         }),
       );
     }
@@ -1916,6 +1904,12 @@ export class DaemonControlApiServer {
     return runs.find((r) => r.id === id || r.runId === id) ?? null;
   }
 
+  /** Persisted Delegate-only descendant graph. `parentRunId` alone is broader
+   * thread/retry lineage and deliberately does not participate. */
+  private async delegatedDescendants(parentRunId: string): Promise<DaemonRunRecord[]> {
+    return delegatedDescendantsFromRecords(parentRunId, await this.opts.daemon.list());
+  }
+
   /**
    * GET /v2/runs (QA-052): a bounded, newest-first, keyset-paginated page of run
    * summaries. Ordering, filtering, and slicing all happen on the raw daemon
@@ -2163,11 +2157,23 @@ export class DaemonControlApiServer {
     try {
       return this.summarizeRunLive(rec);
     } catch (err) {
+      const delegatedFromRunId = Id.safeParse(paramsRecord(rec)["delegatedFromRunId"]);
+      let waitingOnUser = false;
+      try {
+        waitingOnUser = this.pendingInteractionsFor(rec).length > 0;
+      } catch {
+        // The diagnostic row remains fail-soft even when interaction state is
+        // also corrupt; false is the only safe fallback without evidence.
+      }
       return ControlRunSummary.parse({
         jobId: rec.id,
         runId: rec.runId ?? rec.id,
+        ...(delegatedFromRunId.success ? { delegatedFromRunId: delegatedFromRunId.data } : {}),
+        waitingOnUser,
         state: "failed",
-        error: `unprojectable job record: ${err instanceof Error ? err.message : String(err)}`,
+        error: redactSecrets(
+          `unprojectable job record: ${err instanceof Error ? err.message : String(err)}`,
+        ),
       });
     }
   }
@@ -2229,12 +2235,6 @@ export class DaemonControlApiServer {
 }
 
 /* ---- Thread projections (engine snake_case -> control camelCase) ---- */
-
-function paramsRecord(rec: DaemonRunRecord): Record<string, unknown> {
-  return rec.params && typeof rec.params === "object" && !Array.isArray(rec.params)
-    ? (rec.params as Record<string, unknown>)
-    : {};
-}
 
 function projectMetadata(rec: DaemonRunRecord): {
   kind: "project" | "none";
@@ -2584,6 +2584,15 @@ function summarizeRun(
   return ControlRunSummary.parse({
     jobId: rec.id,
     runId: rec.runId ?? rec.id,
+    parentRunId:
+      (typeof p["parentRunId"] === "string" ? p["parentRunId"] : null) ??
+      task?.run_lineage.parent_run_id ??
+      null,
+    delegatedFromRunId:
+      (typeof p["delegatedFromRunId"] === "string" ? p["delegatedFromRunId"] : null) ??
+      task?.run_lineage.delegated_from_run_id ??
+      null,
+    delegation: telemetry?.delegation ?? null,
     taskId: rec.taskId,
     state: rec.state,
     runDir: rec.runDir,
@@ -2699,6 +2708,7 @@ function detailFor(
   pendingInteractions: ControlPendingInteraction[] = [],
   cursor?: number,
   operator: ControlOperatorDecisionRecord | null = null,
+  children: ControlRunSummary[] = [],
 ): ControlRunDetail {
   // Snapshot fence: capture the event cursor BEFORE building any projection.
   // The fence promise is "every event with seq <= lastSeq is reflected" — a
@@ -2727,6 +2737,7 @@ function detailFor(
   const planProjection = planProjectionFor(rec, summary.mode);
   return ControlRunDetail.parse({
     summary: { ...summary, waitingOnUser: pendingInteractions.length > 0 },
+    children,
     // Server-owned outcome headline (D18), from the single projection owner —
     // surfaces render it verbatim above model prose, never re-derive it.
     outcomeBanner: outcomeBanner(summary.outcomeFacts ?? null, {
@@ -2784,44 +2795,6 @@ function parseAccessMaybe(value: unknown): AccessProfile | undefined {
   return parsed.success ? parsed.data : undefined;
 }
 
-/**
- * Pure subscription-VALUATION fold over a run's events (QA-023c/QA-017b),
- * independent of the cash truth. The owner-locked ledger settles native-
- * subscription work to cash $0 while accumulating its token valuation on
- * `budget.cash.valuation_usd` (last-wins, cumulative). An UNKNOWN valuation (no
- * usage ever reported — e.g. a Cursor draft) stays NULL and is never coerced to
- * a fake $0. The legacy fallback for runs predating budget.cash is the summed
- * `budget.observation` spend. Vendor token valuation is at best an estimate.
- */
-export function budgetValuationFromEvents(events: Record<string, unknown>[]): {
-  valuationUsd: number | null;
-  valuationKnowledge: "exact" | "estimated" | "unknown";
-} {
-  let valuationUsd: number | null = null;
-  let observation = 0;
-  let sawObservation = false;
-  for (const ev of events) {
-    const payload = eventPayload(ev);
-    if (ev["type"] === "budget.cash") {
-      const val = payload["valuation_usd"];
-      if (typeof val === "number" && Number.isFinite(val)) valuationUsd = val;
-      continue;
-    }
-    if (ev["type"] === "budget.observation" && payload["kind"] === "spend") {
-      const usd = payload["usd"];
-      if (typeof usd === "number" && Number.isFinite(usd)) {
-        observation += usd;
-        sawObservation = true;
-      }
-    }
-  }
-  if (valuationUsd === null && sawObservation) valuationUsd = observation;
-  return {
-    valuationUsd,
-    valuationKnowledge: valuationUsd === null ? "unknown" : "estimated",
-  };
-}
-
 /** Typed severity per event type — no string matching over event names. */
 function budgetSnapshot(
   rec: DaemonRunRecord,
@@ -2844,7 +2817,13 @@ function budgetSnapshot(
     spendUsd === null ? "unknown" : "decision";
   // Subscription VALUATION (QA-023c/QA-017b) beside cash — computed by the pure
   // event fold so an UNKNOWN valuation stays null, never a fabricated $0.
-  const { valuationUsd, valuationKnowledge } = budgetValuationFromEvents(evs);
+  const normalized = normalizeLegacyBudgetComponents(
+    decision?.budget_summary ?? null,
+    evs,
+    budgetValuationFromEvents(evs),
+  );
+  let { valuationUsd, valuationKnowledge } = normalized;
+  estimated = normalized.cashEstimated;
   if (spendUsd === null) {
     // The CASH truth for a decision-less run (plan/ask/explore — they never
     // write a decision record) is the ledger's own `budget.cash` disclosure:
@@ -2865,7 +2844,10 @@ function budgetSnapshot(
       const payload = eventPayload(ev);
       if (ev["type"] === "budget.cash") {
         const cash = payload["cash_spend_usd"];
-        if (typeof cash === "number" && Number.isFinite(cash)) lastCash = cash;
+        if (typeof cash === "number" && Number.isFinite(cash)) {
+          lastCash = cash;
+          estimated = cashEstimatedFromLedgerEvent(payload);
+        }
         continue;
       }
       if (ev["type"] === "budget.observation" && payload["kind"] === "spend") {

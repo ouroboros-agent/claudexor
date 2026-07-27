@@ -24,7 +24,10 @@ const rootVersion = (
 const browserVersion = "0.0.78";
 const licenses = {
   "Apache-2.0": [{ name: "@playwright/mcp", versions: [browserVersion], license: "Apache-2.0" }],
-  MIT: [{ name: "example-prod-dependency", versions: ["1.2.3"], license: "MIT" }],
+  MIT: [
+    { name: "example-prod-dependency", versions: ["1.2.3"], license: "MIT" },
+    { name: "multi-version-dependency", versions: ["1.0.0", "2.0.0"], license: "MIT" },
+  ],
 };
 
 describe("release SPDX SBOM", () => {
@@ -49,7 +52,7 @@ describe("release SPDX SBOM", () => {
       const dependencies = document.relationships.filter(
         (relationship: any) => relationship.relationshipType === "DEPENDS_ON",
       );
-      expect(dependencies).toHaveLength(2);
+      expect(dependencies).toHaveLength(4);
       expect(
         dependencies.every((relationship: any) => relationship.spdxElementId === product.SPDXID),
       ).toBe(true);
@@ -84,6 +87,22 @@ describe("release SPDX SBOM", () => {
     const fixture = appFixture("0.0.77");
     try {
       expect(() => generate(fixture.app)).toThrow(/packaged Browser MCP does not match/);
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("emits byte-identical output when license groups arrive in a different order", () => {
+    const fixture = appFixture();
+    try {
+      const reordered = {
+        MIT: [
+          { ...licenses.MIT[1], versions: [...licenses.MIT[1].versions].reverse() },
+          licenses.MIT[0],
+        ],
+        "Apache-2.0": licenses["Apache-2.0"],
+      };
+      expect(generateRaw(fixture.app, reordered)).toBe(generateRaw(fixture.app, licenses));
     } finally {
       rmSync(fixture.root, { recursive: true, force: true });
     }
@@ -144,15 +163,17 @@ describe("remote runtime SPDX SBOM", () => {
 });
 
 function generate(app: string) {
-  return JSON.parse(
-    execFileSync(process.execPath, [generator, "--app-bundle", app], {
-      cwd: resolve("."),
-      encoding: "utf8",
-      env: { ...process.env, GITHUB_SHA: "a".repeat(40) },
-      input: JSON.stringify(licenses),
-      stdio: ["pipe", "pipe", "pipe"],
-    }),
-  );
+  return JSON.parse(generateRaw(app, licenses));
+}
+
+function generateRaw(app: string, licenseInput: typeof licenses): string {
+  return execFileSync(process.execPath, [generator, "--app-bundle", app], {
+    cwd: resolve("."),
+    encoding: "utf8",
+    env: { ...process.env, GITHUB_SHA: "a".repeat(40) },
+    input: JSON.stringify(licenseInput),
+    stdio: ["pipe", "pipe", "pipe"],
+  });
 }
 
 function appFixture(packagedBrowserVersion = browserVersion) {

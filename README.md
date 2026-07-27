@@ -8,6 +8,8 @@
 [![latest release](https://img.shields.io/github/v/release/razzant/claudexor?label=release)](https://github.com/razzant/claudexor/releases/latest)
 [![license](https://img.shields.io/github/license/razzant/claudexor)](LICENSE)
 
+[Website](https://claudexor.ai/)
+
 Claudexor is a local-first control plane for the AI coding agents you already
 pay for. It runs Codex CLI, Claude Code, Cursor CLI, OpenCode, and raw API
 adapters behind one typed interface: a chat of turns where read-only questions
@@ -182,10 +184,25 @@ Two power knobs shape review:
   `--reviewers "claude=claude-opus-4-8:max,cursor=gemini-3.1-pro"`. Omitted, the
   engine chooses a cross-family panel automatically.
 - **Approvals** — mark paths that must clear a human before a change touching
-  them can be applied. Set **approval globs** in project/spec config
-  (`TaskContract.constraints.protected_paths`) as path globs, e.g.
-  `migrations/**` or `**/*.env`. A run that changes a matching path escalates to
-  a human-approval gate and is never auto-applied.
+  them can be applied. Set canonical repo-relative globs in the versioned
+  `.claudexor/config.yaml` (empty by default):
+
+  ```yaml
+  version: 1
+  constraints:
+    protected_paths:
+      - migrations/**
+      - "**/*.env"
+  ```
+
+  Creating, modifying, deleting, or renaming a matching path completes the run
+  but pauses apply for a human decision. `--allow-protected-path` applies only
+  to engine-derived gate/test paths and cannot suppress these project rules.
+  Before a mutating turn starts, a live project thread with configured project
+  protected paths is promoted one-way to its persistent isolated worktree. The
+  run and patch therefore complete without touching the project tree; only the
+  existing typed thread Apply decision can deliver the accumulated change.
+  Direct one-shot `--in-place` agent runs refuse and name the isolation remedy.
 
 ## Modes
 
@@ -218,17 +235,24 @@ The belt exposes only `claudexor_ask` / `claudexor_plan` / `claudexor_run`
 PARENT integrates results in its own workspace. Policy is enforced server-side
 at the tool boundary: nesting depth is 1 (a sub-run cannot itself delegate),
 sub-runs are capped per parent (default 8), and each sub-run draws from the
-parent budget ledger's headroom. Only harnesses whose adapter declares
-`capability_profile.mcp_injection` (claude, codex) can host the belt; requesting
-`--delegate` on any other harness is a typed preflight refusal. This replaces the
-former `orchestrate` mode (retired in v3): "suggest"-style planning is ordinary
-`claudexor plan`.
+same live daemon-owned paid-budget authority as its parent. Reservations and
+settlements are enforced across the whole family; each child reports its own
+spend while the parent reports the aggregate. Only harnesses whose adapter declares
+`capability_profile.mcp_injection` (claude, codex) can host the belt. The flag is
+permission, not a requirement to create a child. Readiness and the final
+requested/effective/used outcome are engine-projected: a known pre-start
+incompatibility may continue as an ordinary Agent run only with a durable
+warning and typed remediation, while failure after belt injection is terminal. Claudexor children
+carry a typed parent link; native vendor subagents never count as belt use. This
+replaces the former `orchestrate` mode (retired in v3): "suggest"-style planning
+is ordinary `claudexor plan`.
 
 ### Council planning (`plan --council`)
 
 `--council` (plan-only) runs the Council plan strategy: N harnesses each draft a
-plan in parallel (round 1, native plan mode, read-only, each in its own lane on a
-thread turn), the drafts land as file-backed run artifacts
+plan in parallel (round 1, harness-native read-only planner transport, each in
+its own lane on a thread turn; Cursor uses native Ask so its final WorkReport
+remains available), the drafts land as file-backed run artifacts
 (`council/draft-<harness>.md`), and then the PRIMARY runs one merge iteration that
 POINTS at the draft files by absolute path (never embedding their full text) and
 synthesizes ONE unified plan. The tagged `## Open Questions` parser runs on the
@@ -388,7 +412,7 @@ state is separate from output readiness (`outputReadyState`), so a finished
 answer with warnings stays usable while failed required evidence blocks.
 Paid budgets are explicit (`--max-usd N`; zero is a real zero-cash cap) and
 unknown cost is never reported as `$0` — a finite run can end
-`cost_unverifiable` or `exhausted_overshoot`. Deterministic gates use exact
+`cost_unverifiable` or `budget_overshoot`. Deterministic gates use exact
 argv (`--test '["pnpm","test"]'`), and externally-granted test commands are
 invalidated when the config, argv, executable, script bytes, project, or
 access profile changes. The full semantics live in
@@ -560,6 +584,21 @@ Then follow the Install And Login sequence in docs/AGENT_ONBOARDING.md
 (verify version/doctor, check plugin status before touching anything, and log
 in only via `claudexor auth login <harness>` — never a bare vendor login).
 ```
+
+GitHub Copilot uses the portable plugin in this repository rather than the
+managed host installer:
+
+```bash
+npm install -g claudexor
+copilot plugin install razzant/claudexor:plugins/copilot
+```
+
+The portable plugin supports macOS and Linux and requires the `claudexor`
+command on `PATH`; Windows is not currently supported. It bundles one Agent
+Skill plus MCP wiring and never collects credentials or bypasses Claudexor's
+typed apply and human-decision gates. See
+[`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md#portable-agent-skill-and-copilot-plugin)
+for lifecycle and precedence details.
 
 The explicit Claude install also enables the official subscription-quota
 status-line source. If `~/.claude/settings.json` already has a `statusLine`

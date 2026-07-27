@@ -12,7 +12,7 @@ import {
   type ServeStdioOptions,
 } from "@modelcontextprotocol/server/stdio";
 import {
-  EffortHint,
+  effortJsonSchema,
   ExternalContextPolicy,
   ProviderFamily,
   validateOptionalNonEmptyString,
@@ -300,15 +300,14 @@ function structuredRunResult(result: unknown): Record<string, unknown> {
       r["applyEligibility"] && typeof r["applyEligibility"] === "object"
         ? r["applyEligibility"]
         : null,
-    // The server-owned outcome headline (D18) and derived plan readiness (D17)
-    // ride the same structured result as the axes — null on a deferred handle
-    // (the run is still live; read them later via claudexor_run_result).
     outcomeBanner: typeof r["outcomeBanner"] === "string" ? r["outcomeBanner"] : null,
     planReadiness:
       r["planReadiness"] && typeof r["planReadiness"] === "object" ? r["planReadiness"] : null,
-    // Council membership + merge disclosure (QA-023b): the SAME facts the run
-    // detail owns, so a host can machine-verify a `--council` plan's roster.
     council: r["council"] && typeof r["council"] === "object" ? r["council"] : null,
+    parentRunId: typeof r["parentRunId"] === "string" ? r["parentRunId"] : null,
+    delegatedFromRunId:
+      typeof r["delegatedFromRunId"] === "string" ? r["delegatedFromRunId"] : null,
+    delegation: r["delegation"] && typeof r["delegation"] === "object" ? r["delegation"] : null,
   };
 }
 
@@ -318,7 +317,10 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
     PROVIDER_FAMILIES.map((family) => [family, { type: "string", minLength: 1 }]),
   );
   const reviewerEffortProperties = Object.fromEntries(
-    PROVIDER_FAMILIES.map((family) => [family, { type: "string", enum: EffortHint.options }]),
+    PROVIDER_FAMILIES.map((family) => [
+      family,
+      effortJsonSchema(`Reviewer effort for the ${family} family.`),
+    ]),
   );
   const promptSchema = (minN = 1) => ({
     type: "object",
@@ -345,11 +347,7 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
         minLength: 1,
         description: "Optional model override for the primary harness.",
       },
-      effort: {
-        type: "string",
-        enum: EffortHint.options,
-        description: "Optional effort override for the primary harness.",
-      },
+      effort: effortJsonSchema("Optional effort override for the primary harness."),
       web: {
         type: "string",
         enum: ExternalContextPolicy.options,
@@ -400,7 +398,7 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
           properties: {
             harness: { type: "string", minLength: 1 },
             model: { type: "string", minLength: 1 },
-            effort: { type: "string", enum: ["low", "medium", "high", "xhigh", "max"] },
+            effort: effortJsonSchema("Effort for this reviewer entry."),
           },
           required: ["harness"],
         },

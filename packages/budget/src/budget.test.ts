@@ -1,6 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { BudgetLedger, promptFingerprint, routeCostEvidence } from "./ledger.js";
 import { observationsFromEvent } from "./observe.js";
+import {
+  attemptUsageCostSettlement,
+  isSubscriptionValuation,
+  reviewUsageCostSettlement,
+} from "./settlements.js";
 import {
   RoutingPreflightError,
   type RouterCandidate,
@@ -112,9 +117,15 @@ describe("BudgetLedger", () => {
   it("discloses CUMULATIVE cash after every settle — subscription work discloses 0 (W4.3)", () => {
     // The ledger is the one owner of the cash fact: consumers (run events →
     // UI) render what it discloses and never infer money from route labels.
-    const disclosed: Array<{ cash: number; valuation: number }> = [];
+    const disclosed: Array<{
+      cash: number;
+      valuation: number;
+      cashEstimated: boolean;
+      valuationKnowledge: "exact" | "estimated" | "unknown";
+    }> = [];
     const led = new BudgetLedger({ kind: "unlimited" }, undefined, {
-      onCashSettled: (cash, valuation) => disclosed.push({ cash, valuation }),
+      onCashSettled: (cash, valuation, cashEstimated, valuationKnowledge) =>
+        disclosed.push({ cash, valuation, cashEstimated, valuationKnowledge }),
     });
     const entitled = led.reserve({
       taskId: "t",
@@ -135,7 +146,11 @@ describe("BudgetLedger", () => {
       cashUsd: 3,
     });
     // Vendor priced the subscription work at $3 — the CASH fact is still $0.
-    expect(disclosed).toEqual([{ cash: 0, valuation: 3 }]);
+    expect(disclosed).toEqual([
+      { cash: 0, valuation: 3, cashEstimated: false, valuationKnowledge: "estimated" },
+    ]);
+    expect(led.estimated()).toBe(false);
+    expect(led.valuationKnowledge()).toBe("estimated");
 
     const paid = led.reserve({
       taskId: "t",
@@ -146,13 +161,12 @@ describe("BudgetLedger", () => {
     led.settle(paid.lease!.lease_id, exactSettlement(0.4));
     // Cumulative, not per-settle: the second disclosure carries the total.
     expect(disclosed).toEqual([
-      { cash: 0, valuation: 3 },
-      { cash: 0.4, valuation: 3 },
+      { cash: 0, valuation: 3, cashEstimated: false, valuationKnowledge: "estimated" },
+      { cash: 0.4, valuation: 3, cashEstimated: false, valuationKnowledge: "estimated" },
     ]);
   });
 
   it("settles all native token costs as valuation while API-key costs remain cash", async () => {
-    const { attemptUsageCostSettlement, isSubscriptionValuation } = await import("./ledger.js");
     expect(isSubscriptionValuation("local_session")).toBe(true);
     expect(isSubscriptionValuation("api_key")).toBe(false);
     expect(isSubscriptionValuation(null)).toBe(false);
@@ -162,6 +176,13 @@ describe("BudgetLedger", () => {
       attemptId: "native-attempt",
       intent: "implement",
       harnessId: "codex",
+      cost: routeCostEvidence({
+        billing: "subscription_entitlement",
+        knowledge: "exact",
+        source: "native-route",
+        provenance: ["route:local_session"],
+        estimatedUsd: 0,
+      }),
     });
     native.settle(
       nativeLease.lease!.lease_id,
@@ -169,6 +190,8 @@ describe("BudgetLedger", () => {
     );
     expect(native.spend()).toBe(0);
     expect(native.valuation()).toBe(0.25);
+    expect(native.estimated()).toBe(false);
+    expect(native.valuationKnowledge()).toBe("estimated");
     expect(native.terminal()).toBeNull();
 
     const nativeExact = new BudgetLedger({ kind: "unlimited" });
@@ -177,6 +200,13 @@ describe("BudgetLedger", () => {
       attemptId: "native-exact-attempt",
       intent: "implement",
       harnessId: "claude",
+      cost: routeCostEvidence({
+        billing: "subscription_entitlement",
+        knowledge: "exact",
+        source: "native-route",
+        provenance: ["route:local_session"],
+        estimatedUsd: 0,
+      }),
     });
     nativeExact.settle(
       nativeExactLease.lease!.lease_id,
@@ -184,6 +214,8 @@ describe("BudgetLedger", () => {
     );
     expect(nativeExact.spend()).toBe(0);
     expect(nativeExact.valuation()).toBe(0.37);
+    expect(nativeExact.estimated()).toBe(false);
+    expect(nativeExact.valuationKnowledge()).toBe("exact");
     expect(nativeExact.terminal()).toBeNull();
 
     const api = new BudgetLedger({ kind: "finite", maxUsd: 1 });
@@ -206,11 +238,12 @@ describe("BudgetLedger", () => {
     );
     expect(api.spend()).toBe(0.25);
     expect(api.valuation()).toBe(0);
+    expect(api.estimated()).toBe(true);
+    expect(api.valuationKnowledge()).toBe("unknown");
     expect(api.terminal()).toBeNull();
   });
 
   it("settles mixed reviewer routes as separated cash and valuation", async () => {
-    const { reviewUsageCostSettlement } = await import("./ledger.js");
     const ledger = new BudgetLedger({ kind: "unlimited" });
     const lease = ledger.reserve({
       taskId: "review-task",
@@ -220,10 +253,99 @@ describe("BudgetLedger", () => {
     });
     ledger.settle(
       lease.lease!.lease_id,
-      reviewUsageCostSettlement(0.25, 0.75, true, ["review:panel"]),
+      reviewUsageCostSettlement(0.25, 0.75, { cash: "exact", valuation: "estimated" }, [
+        "review:panel",
+      ]),
     );
     expect(ledger.spend()).toBe(0.25);
     expect(ledger.valuation()).toBe(0.75);
+  });
+
+  it("keeps subscription-only review cash exact and API-only valuation unknown", async () => {
+    const subscription = new BudgetLedger({ kind: "unlimited" });
+    const subscriptionLease = subscription.reserve({
+      taskId: "subscription-review",
+      intent: "review",
+      harnessId: "review-panel",
+    }).lease!;
+    subscription.settle(
+      subscriptionLease.lease_id,
+      reviewUsageCostSettlement(0, 0.75, { cash: "exact", valuation: "estimated" }, [
+        "review:subscription",
+      ]),
+    );
+    expect(subscription.spend()).toBe(0);
+    expect(subscription.estimated()).toBe(false);
+    expect(subscription.valuation()).toBe(0.75);
+    expect(subscription.valuationKnowledge()).toBe("estimated");
+
+    const api = new BudgetLedger({ kind: "unlimited" });
+    const apiLease = api.reserve({
+      taskId: "api-review",
+      intent: "review",
+      harnessId: "review-panel",
+    }).lease!;
+    api.settle(
+      apiLease.lease_id,
+      reviewUsageCostSettlement(0.25, 0, { cash: "exact", valuation: "unknown" }, ["review:api"]),
+    );
+    expect(api.spend()).toBe(0.25);
+    expect(api.estimated()).toBe(false);
+    expect(api.valuation()).toBe(0);
+    expect(api.valuationKnowledge()).toBe("unknown");
+  });
+
+  it("fails a finite review closed when a paid route reports no cash usage", () => {
+    const ledger = new BudgetLedger({ kind: "finite", maxUsd: 1 });
+    const lease = ledger.reserve({
+      taskId: "missing-paid-review-usage",
+      intent: "review",
+      harnessId: "review-panel",
+    }).lease!;
+    ledger.settle(
+      lease.lease_id,
+      reviewUsageCostSettlement(0, 0, { cash: "unknown", valuation: "unknown" }, [
+        "review:api-without-usage",
+      ]),
+    );
+
+    expect(ledger.spend()).toBe(0);
+    expect(ledger.estimated()).toBe(true);
+    expect(ledger.terminal()).toBe("cost_unverifiable");
+  });
+
+  it("keeps mixed-route cash exact when only the subscription valuation is estimated", async () => {
+    const ledger = new BudgetLedger({ kind: "unlimited" });
+    const lease = ledger.reserve({
+      taskId: "mixed-task",
+      attemptId: "mixed-attempt",
+      intent: "implement",
+      harnessId: "claude",
+      cost: routeCostEvidence({
+        // The attempt started native, then retried through an API key. Actual
+        // per-route settlement must override the native reservation for cash.
+        billing: "subscription_entitlement",
+        knowledge: "estimated",
+        source: "route-preflight",
+        provenance: ["route:local_session"],
+        estimatedUsd: 0,
+      }),
+    }).lease!;
+    ledger.settle(
+      lease.lease_id,
+      attemptUsageCostSettlement(1, true, "mixed-attempt", "claude", "local_session", {
+        cashUsd: 0.25,
+        valuationUsd: 0.75,
+        unknownUsd: 0,
+        cashEstimated: false,
+        valuationEstimated: true,
+      }),
+    );
+
+    expect(ledger.spend()).toBe(0.25);
+    expect(ledger.valuation()).toBe(0.75);
+    expect(ledger.estimated()).toBe(false);
+    expect(ledger.valuationKnowledge()).toBe("estimated");
   });
 
   it("counts in-flight holds against the cap (mid-flight enforcement, #9)", () => {
@@ -249,6 +371,28 @@ describe("BudgetLedger", () => {
     expect(led.tier()).toBe("ok");
   });
 
+  it("counts an in-attempt API fallback hold even when the lease began on subscription", () => {
+    const ledger = new BudgetLedger({ kind: "finite", maxUsd: 0.2 });
+    const lease = ledger.reserve({
+      taskId: "mixed-hold",
+      intent: "implement",
+      harnessId: "claude",
+      cost: routeCostEvidence({
+        billing: "subscription_entitlement",
+        knowledge: "exact",
+        source: "native-route",
+        provenance: ["route:local_session"],
+        estimatedUsd: 0,
+      }),
+    }).lease!;
+
+    // The orchestrator calls updateHold only for streamed API/unknown usage;
+    // native valuation never reaches this method.
+    ledger.updateHold(lease.lease_id, 0.25);
+    expect(ledger.tier()).toBe("hard");
+    expect(ledger.remainingUsd()).toBe(0);
+  });
+
   it("permits at most one unknown-cost paid unit in flight under a finite cap", () => {
     const ledger = new BudgetLedger({ kind: "finite", maxUsd: 1 });
     const first = ledger.reserve({
@@ -271,6 +415,134 @@ describe("BudgetLedger", () => {
       provenance: ["attempt:one"],
     });
     expect(ledger.terminal()).toBe("cost_unverifiable");
+  });
+
+  it("shares holds and unknown-paid exclusion across task-scoped child views", async () => {
+    const root = new BudgetLedger({ kind: "finite", maxUsd: 1 });
+    const childA = root.scopedToTask("child-a");
+    const childB = root.scopedToTask("child-b");
+    const [first, second] = await Promise.all([
+      Promise.resolve().then(() =>
+        childA.reserve({
+          taskId: "child-a",
+          intent: "implement",
+          harnessId: "a",
+          cost: metered(0.6),
+        }),
+      ),
+      Promise.resolve().then(() =>
+        childB.reserve({
+          taskId: "child-b",
+          intent: "implement",
+          harnessId: "b",
+          cost: metered(0.6),
+        }),
+      ),
+    ]);
+    expect([first.granted, second.granted].filter(Boolean)).toHaveLength(1);
+    expect([first, second].find((result) => !result.granted)).toMatchObject({
+      denied: "estimate_headroom",
+    });
+
+    const finiteUnknown = new BudgetLedger({ kind: "finite", maxUsd: 1 });
+    const unknownA = finiteUnknown.scopedToTask("unknown-a").reserve({
+      taskId: "unknown-a",
+      intent: "implement",
+      harnessId: "a",
+      cost: metered(),
+    });
+    const unknownB = finiteUnknown.scopedToTask("unknown-b").reserve({
+      taskId: "unknown-b",
+      intent: "implement",
+      harnessId: "b",
+      cost: metered(),
+    });
+    expect(unknownA.granted).toBe(true);
+    expect(unknownB).toMatchObject({ granted: false, denied: "unknown_paid_in_flight" });
+  });
+
+  it("reports aggregate root totals and task-local child totals/callbacks", () => {
+    const rootEvents: Array<[number, number]> = [];
+    const childAEvents: Array<[number, number]> = [];
+    const childBEvents: Array<[number, number]> = [];
+    const root = new BudgetLedger({ kind: "unlimited" }, undefined, {
+      onCashSettled: (cash, valuation) => rootEvents.push([cash, valuation]),
+    });
+    const childA = root.scopedToTask("child-a", (cash, valuation) =>
+      childAEvents.push([cash, valuation]),
+    );
+    const childB = root.scopedToTask("child-b", (cash, valuation) =>
+      childBEvents.push([cash, valuation]),
+    );
+    const leaseA = childA.reserve({
+      taskId: "child-a",
+      intent: "implement",
+      harnessId: "a",
+      cost: metered(0.2),
+    });
+    const leaseB = childB.reserve({
+      taskId: "child-b",
+      intent: "implement",
+      harnessId: "b",
+      cost: metered(0.3),
+    });
+    childA.settle(leaseA.lease!.lease_id, {
+      ...exactSettlement(0.2),
+      valuationUsd: 0.4,
+    });
+    childB.settle(leaseB.lease!.lease_id, {
+      ...exactSettlement(0.3),
+      valuationUsd: 0.6,
+    });
+    expect(root.spend()).toBeCloseTo(0.5, 8);
+    expect(root.valuation()).toBeCloseTo(1, 8);
+    expect(childA.spend()).toBeCloseTo(0.2, 8);
+    expect(childA.valuation()).toBeCloseTo(0.4, 8);
+    expect(childB.spend()).toBeCloseTo(0.3, 8);
+    expect(childB.valuation()).toBeCloseTo(0.6, 8);
+    expect(rootEvents).toEqual([
+      [0.2, 0.4],
+      [0.5, 1],
+    ]);
+    expect(childAEvents).toEqual([[0.2, 0.4]]);
+    expect(childBEvents).toEqual([[0.3, 0.6]]);
+  });
+
+  it("keeps non-financial signals local and fences scoped lease mutation", () => {
+    const root = new BudgetLedger({ kind: "finite", maxUsd: 1 });
+    const childA = root.scopedToTask("child-a");
+    const childB = root.scopedToTask("child-b");
+    const lease = childA.reserve({
+      taskId: "child-a",
+      intent: "implement",
+      harnessId: "a",
+      cost: metered(0.2),
+    });
+    expect(() => childB.cancel(lease.lease!.lease_id)).toThrow(
+      /budget task scope child-b cannot act for child-a/,
+    );
+    expect(() =>
+      childA.reserve({ taskId: "child-b", intent: "implement", harnessId: "b" }),
+    ).toThrow(/budget task scope child-a cannot act for child-b/);
+
+    const fp = promptFingerprint("same prompt");
+    childA.recordPrompt(fp);
+    expect(childA.isLoop(fp, 1)).toBe(true);
+    expect(childB.isLoop(fp, 1)).toBe(false);
+    childA.observe({
+      harness_id: "a",
+      ts: new Date().toISOString(),
+      quality: "native",
+      kind: "rate_limited",
+    });
+    expect(childA.observationsFor("a")).toHaveLength(1);
+    expect(childB.observationsFor("a")).toHaveLength(0);
+
+    childA.releaseTask();
+    expect(root.remainingUsd()).toBe(1);
+    expect(() =>
+      childA.reserve({ taskId: "child-a", intent: "implement", harnessId: "a" }),
+    ).toThrow(/scope is released/);
   });
 
   it("records late exact overshoot and blocks the next paid unit", () => {
@@ -1040,6 +1312,43 @@ describe("routing telemetry", () => {
       expect(r.reason).toBe("declared_order");
       // Equal slacks: the stable sort preserves the declared input order.
       expect(r.order).toEqual(["claude", "codex"]);
+    });
+
+    // The above used to be a coin flip on a busy machine: the ranking pass read
+    // Date.now() once per candidate, so a millisecond crossing between the two
+    // reads made two IDENTICAL quota states differ by ~5.6e-11 of pace slack,
+    // the comparator returned a non-zero order, and the rationale claimed
+    // expiring_quota_slack. This pins the clock to advance on EVERY read, which
+    // turns that race into a certainty; the pass must still see equal slacks
+    // because it evaluates them at one instant.
+    it("holds declared_order when the clock ticks between reads (one pinned instant per pass)", () => {
+      const led = new BudgetLedger();
+      const base = Date.now();
+      const reset = new Date(base + 9_000_000).toISOString();
+      for (const harness_id of ["codex", "claude"] as const) {
+        led.observe({
+          harness_id,
+          ts: new Date(base).toISOString(),
+          quality: "native",
+          kind: "quota_constraint",
+          constraint_id: "five-hour",
+          used_ratio: 0.3,
+          window_seconds: 18_000,
+          resets_at: reset,
+        });
+      }
+      let tick = 0;
+      const clock = vi.spyOn(Date, "now").mockImplementation(() => base + tick++);
+      try {
+        const r = explainRanking([cand("claude"), cand("codex")], routeContext(led, "auto"));
+        expect(r.reason).toBe("declared_order");
+        expect(r.order).toEqual(["claude", "codex"]);
+        // One pinned instant for the whole pass: the sort and the reason walk
+        // may not each pin their own, or they could explain different orders.
+        expect(tick).toBe(1);
+      } finally {
+        clock.mockRestore();
+      }
     });
   });
 

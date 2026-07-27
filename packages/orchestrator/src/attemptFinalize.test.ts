@@ -4,9 +4,12 @@ import {
   finalizeAttempt,
   readOnlyNoSuccessTerminal,
   resolveWorkReportEnvelope,
+  unrecoveredToolErrorFailure,
   unwrapWorkReportEnvelope,
+  webEvidenceFailure,
   type WorkReportEnvelopeMode,
 } from "./attemptFinalize.js";
+import type { ToolErrorRecord } from "./attemptTelemetry.js";
 
 const completed: WorkReport = { state: "completed", required_inputs: [] };
 const needsInput: WorkReport = {
@@ -469,5 +472,58 @@ describe("readOnlyNoSuccessTerminal (QA-036)", () => {
         attemptsCount: 0,
       }),
     ).toEqual({ lifecycle: "failed", reason: "budget_exhausted" });
+  });
+});
+
+describe("unrecoveredToolErrorFailure (INV-043/INV-044 deliverable exception)", () => {
+  const toolError = (tool: string, summary: string): ToolErrorRecord => ({
+    tool,
+    kind: "command",
+    target: null,
+    summary,
+    toolUseId: null,
+    recovered: false,
+  });
+
+  it("a delivered deliverable keeps unrecovered tool errors as warning evidence", () => {
+    expect(unrecoveredToolErrorFailure([toolError("command", "exit 1")], true)).toBeNull();
+  });
+
+  it("a deliverable-less attempt escalates the FIRST unrecovered error", () => {
+    expect(
+      unrecoveredToolErrorFailure(
+        [toolError("command", "exit 1"), toolError("read", "no such file")],
+        false,
+      ),
+    ).toBe("command failed without recovery: exit 1");
+  });
+
+  it("no unrecovered errors is never a failure, delivered or not", () => {
+    expect(unrecoveredToolErrorFailure([], false)).toBeNull();
+    expect(unrecoveredToolErrorFailure([], true)).toBeNull();
+  });
+});
+
+describe("webEvidenceFailure (one owner for the web axis message)", () => {
+  it("a recorded error summary is the reason verbatim", () => {
+    expect(webEvidenceFailure({ attempted: true, errorSummary: "429 from search" })).toBe(
+      "web evidence unsatisfied: 429 from search",
+    );
+    // The summary wins even when web was never attempted (nullish fallback only).
+    expect(webEvidenceFailure({ attempted: false, errorSummary: "blocked by policy" })).toBe(
+      "web evidence unsatisfied: blocked by policy",
+    );
+  });
+
+  it("an attempted-but-unsummarized failure reads as an unrecovered web tool", () => {
+    expect(webEvidenceFailure({ attempted: true, errorSummary: null })).toBe(
+      "web evidence unsatisfied: web tool failed without verified recovery",
+    );
+  });
+
+  it("never-attempted required web reads as never attempted", () => {
+    expect(webEvidenceFailure({ attempted: false, errorSummary: null })).toBe(
+      "web evidence unsatisfied: web evidence required but never attempted",
+    );
   });
 });

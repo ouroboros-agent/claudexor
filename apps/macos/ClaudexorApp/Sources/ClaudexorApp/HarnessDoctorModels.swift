@@ -38,8 +38,16 @@ struct HarnessInfo: Identifiable, Hashable {
     /// Manifest `browser_tool` capability — drives the composer's
     /// agent-browser toggle (only offered where Playwright MCP can inject).
     var acceptsBrowser: Bool = false
+    /// Engine-owned Delegate readiness for this exact harness/runtime route.
+    /// nil means a legacy runtime and fails closed in the composer.
+    var delegation: HarnessDelegationCapability? = nil
     /// Adapter-declared effort ladder. Empty means the control must stay hidden.
     var effortLevels: [String] = []
+    /// Per-model advertised effort ladders (manifest `model_effort_levels`),
+    /// each in the vendor's own order. A model absent here falls back to the
+    /// harness-wide `effortLevels` — same rule as the engine's
+    /// `effortLevelsForModel`.
+    var modelEffortLevels: [String: [String]] = [:]
     var id: String { family.rawValue }
     var nativeSessionReady: Bool {
         authSources.first { $0.source == "native_session" }?.isVerifiedNativeSession == true

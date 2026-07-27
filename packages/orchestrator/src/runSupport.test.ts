@@ -5,7 +5,33 @@ import {
   promptWithEngineConstraints,
   promptWithGateArgvDisclosure,
   redactHarnessEvent,
+  safeErrorMessage,
 } from "./runSupport.js";
+
+describe("safeErrorMessage (a thrown value never reports as no error)", () => {
+  it("keeps a real message verbatim", () => {
+    expect(safeErrorMessage(new Error("adapter exploded"))).toBe("adapter exploded");
+    expect(safeErrorMessage("plain string throw")).toBe("plain string throw");
+  });
+
+  it("substitutes a generic message for a blank one, so the throw stays visible", () => {
+    // Every error axis downstream folds with `??=` or tests `if (error)`, so an
+    // empty message would read as "nothing went wrong".
+    for (const thrown of [new Error(""), new Error("   \n\t "), "", "  "]) {
+      const message = safeErrorMessage(thrown);
+      expect(message.trim().length).toBeGreaterThan(0);
+      expect(message).toBe("thrown error carried no message");
+    }
+  });
+
+  it("still redacts secrets in a non-blank message", () => {
+    // Assembled at run time: a token-shaped LITERAL in a tracked file trips the
+    // repo's own secret scan (CI step 1), which is the same convention the
+    // redaction tests below and in attemptFinalize.test.ts already follow.
+    const fakeToken = ["sk-ant", "1234567890abcdefghij"].join("-");
+    expect(safeErrorMessage(new Error(`token ${fakeToken}`))).not.toContain(fakeToken);
+  });
+});
 
 describe("promptWithEngineConstraints (QA-022: protected paths + gate argv in one seam)", () => {
   it("appends the gate argv even when there are no protected paths", () => {
@@ -145,5 +171,34 @@ describe("harnessEventPayload (run-event projection)", () => {
       text: "working on it",
     };
     expect(harnessEventPayload("codex", "a01", narration)["final"]).toBeUndefined();
+  });
+});
+
+describe("harnessEventPayload hoists adapter ignored_settings (INV-105 from inside the run)", () => {
+  it("lifts payload.ignored_settings to the projection top level, where the timeline reads it", () => {
+    const disclosure: HarnessEvent = {
+      type: "message",
+      session_id: "ses-1",
+      ts: "2026-07-25T00:00:00Z",
+      text: "[effort] ignored: effort=ultra (not accepted by the resolved catalog)",
+      payload: { ignored_settings: ["effort=ultra (not accepted by the resolved catalog)"] },
+    };
+    const projected = harnessEventPayload("codex", "a01", disclosure);
+    // The timeline/live channel reads the TOP-LEVEL key (QA-070) — nested-only
+    // would render a benign info row over a knob that silently went nowhere.
+    expect(projected["ignored_settings"]).toEqual([
+      "effort=ultra (not accepted by the resolved catalog)",
+    ]);
+  });
+
+  it("adds no ignored_settings key for ordinary events", () => {
+    const plain: HarnessEvent = {
+      type: "message",
+      session_id: "ses-1",
+      ts: "2026-07-25T00:00:00Z",
+      text: "working",
+      payload: { note: "nothing ignored" },
+    };
+    expect("ignored_settings" in harnessEventPayload("codex", "a01", plain)).toBe(false);
   });
 });

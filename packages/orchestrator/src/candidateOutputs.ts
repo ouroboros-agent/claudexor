@@ -4,9 +4,11 @@ import {
   constants,
   copyFileSync,
   existsSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
   openSync,
+  realpathSync,
   readdirSync,
   readFileSync,
   rmSync,
@@ -16,6 +18,7 @@ import type { Stats } from "node:fs";
 import { dirname, extname, join, relative as pathRelative, resolve, sep } from "node:path";
 import type { ArtifactStore } from "@claudexor/artifact-store";
 import { CLAUDEXOR_ARTIFACT_DIR, summarizeDiffPaths } from "@claudexor/core";
+import { containsSecretLikeToken } from "@claudexor/util";
 
 const RASTER_OUTPUT_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif"]);
 const MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
@@ -42,6 +45,116 @@ function writeNoFollow(path: string, data: string | Buffer, mode: number, replac
   } finally {
     closeSync(fd);
   }
+}
+
+function rasterBytesIfSafe(
+  source: string,
+  maxBytes = MAX_OUTPUT_BYTES,
+): {
+  bytes: Buffer;
+  mode: number;
+} | null {
+  let fd: number | null = null;
+  try {
+    fd = openSync(source, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size > maxBytes) return null;
+    const bytes = readFileSync(fd);
+    if (bytes.length > maxBytes || containsSecretLikeToken(bytes.toString("latin1"))) return null;
+    return { bytes, mode: stat.mode & 0o777 };
+  } catch {
+    // Detection callers interpret an unreadable raster as an unprovable secret
+    // risk; persistence callers skip it. Never let a filesystem race turn the
+    // fail-closed artifact fence into an untyped attempt crash.
+    return null;
+  } finally {
+    if (fd !== null) {
+      try {
+        closeSync(fd);
+      } catch {
+        // The bytes are already bounded in memory or the read failed closed.
+      }
+    }
+  }
+}
+
+function copyRasterIfSafe(source: string, target: string, maxBytes: number): number | null {
+  const safe = rasterBytesIfSafe(source, maxBytes);
+  if (!safe) return null;
+  mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
+  writeNoFollow(target, safe.bytes, safe.mode, false);
+  return safe.bytes.length;
+}
+
+type CandidatePathStatus =
+  { kind: "safe"; path: string; stat: Stats } | { kind: "missing" | "symlink" | "unsafe" };
+
+/** Lexically contain a path and reject symlinks or unreadable/non-directory
+ * intermediate components before any candidate output is inspected. */
+function candidatePathStatus(root: string, raw: string): CandidatePathStatus {
+  const target = resolve(root, raw);
+  if (target === root || !target.startsWith(root + sep)) return { kind: "unsafe" };
+  const parts = pathRelative(root, target).split(sep).filter(Boolean);
+  let current = root;
+  for (let index = 0; index < parts.length; index += 1) {
+    current = join(current, parts[index]!);
+    let stat: Stats | null;
+    try {
+      stat = lstatIfPresent(current);
+    } catch {
+      return { kind: "unsafe" };
+    }
+    if (!stat) return { kind: "missing" };
+    if (stat.isSymbolicLink()) {
+      return { kind: index === parts.length - 1 ? "symlink" : "unsafe" };
+    }
+    if (index < parts.length - 1 && !stat.isDirectory()) return { kind: "unsafe" };
+    if (index === parts.length - 1) return { kind: "safe", path: target, stat };
+  }
+  return { kind: "unsafe" };
+}
+
+function artifactMediaPaths(root: string): { paths: string[]; unsafe: boolean } {
+  const artifactRoot = join(root, CLAUDEXOR_ARTIFACT_DIR);
+  const rootStatus = candidatePathStatus(root, artifactRoot);
+  if (rootStatus.kind === "missing") return { paths: [], unsafe: false };
+  if (rootStatus.kind !== "safe" || !rootStatus.stat.isDirectory()) {
+    return { paths: [], unsafe: true };
+  }
+  const paths: string[] = [];
+  let unsafe = false;
+  const walk = (dir: string): void => {
+    let entries: string[];
+    try {
+      entries = readdirSync(dir);
+    } catch {
+      unsafe = true;
+      return;
+    }
+    for (const name of entries.sort()) {
+      const status = candidatePathStatus(root, join(dir, name));
+      if (status.kind === "missing") continue;
+      // A leaf symlink is never followed or persisted, but its presence beside
+      // ordinary owned media does not make the whole candidate suspicious.
+      if (status.kind === "symlink") continue;
+      if (status.kind !== "safe") {
+        unsafe = true;
+        continue;
+      }
+      if (status.stat.isDirectory()) {
+        walk(status.path);
+        continue;
+      }
+      if (!RASTER_OUTPUT_EXTENSIONS.has(extname(name).toLowerCase())) continue;
+      if (!status.stat.isFile()) {
+        unsafe = true;
+        continue;
+      }
+      paths.push(pathRelative(root, status.path).split("\\").join("/"));
+    }
+  };
+  walk(artifactRoot);
+  return { paths, unsafe };
 }
 
 /** Stage large synthesis evidence in the envelope, returning an idempotent
@@ -100,22 +213,37 @@ export function persistCandidateOutputs(input: {
   const root = resolve(input.worktreePath);
   let total = 0;
   const preserved: string[] = [];
+  const candidates = new Map<string, { relative: string; source: string }>();
 
   for (const raw of input.changedPaths) {
-    const relative = raw.split("\\").join("/");
-    if (!RASTER_OUTPUT_EXTENSIONS.has(extname(relative).toLowerCase())) continue;
-    const source = resolve(root, relative);
-    if (source !== root && !source.startsWith(root + sep)) continue;
-    if (!existsSync(source)) continue;
-    // lstat (not stat): a candidate-created symlink must never make output
-    // preservation copy a host file outside the envelope.
-    const stat = lstatSync(source);
-    if (!stat.isFile() || stat.size > MAX_OUTPUT_BYTES || total + stat.size > MAX_TOTAL_BYTES)
+    if (!RASTER_OUTPUT_EXTENSIONS.has(extname(raw).toLowerCase())) continue;
+    const status = candidatePathStatus(root, raw);
+    if (status.kind !== "safe" || !status.stat.isFile()) continue;
+    const relative = pathRelative(root, status.path).split("\\").join("/");
+    let identity: string;
+    try {
+      // realpath returns the filesystem's canonical spelling, so case and
+      // Unicode-normalization aliases on macOS collapse before any O_EXCL
+      // destination write. The already-verified lexical path remains the
+      // source used by the no-follow copy fence.
+      identity = realpathSync.native(status.path);
+    } catch {
       continue;
+    }
+    if (!candidates.has(identity)) {
+      candidates.set(identity, { relative, source: status.path });
+    }
+  }
+
+  for (const { relative, source } of candidates.values()) {
     const target = join(input.attemptDir, "produced", relative);
-    mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
-    copyFileSync(source, target);
-    total += stat.size;
+    const copied = copyRasterIfSafe(
+      source,
+      target,
+      Math.min(MAX_OUTPUT_BYTES, MAX_TOTAL_BYTES - total),
+    );
+    if (copied === null) continue;
+    total += copied;
     preserved.push(relative);
   }
   return preserved;
@@ -135,39 +263,66 @@ export function collectArtifactDirMedia(input: {
   attemptDir: string;
 }): string[] {
   const root = resolve(input.worktreePath);
-  const artifactRoot = join(root, CLAUDEXOR_ARTIFACT_DIR);
-  if (!existsSync(artifactRoot)) return [];
   let total = 0;
   const preserved: string[] = [];
-  const walk = (dir: string): void => {
-    let entries: string[];
-    try {
-      entries = readdirSync(dir);
-    } catch {
-      return;
-    }
-    for (const name of entries.sort()) {
-      const abs = join(dir, name);
-      const stat = lstatIfPresent(abs);
-      // lstat: a symlink inside the artifact dir must never copy a host file.
-      if (!stat || stat.isSymbolicLink()) continue;
-      if (stat.isDirectory()) {
-        walk(abs);
-        continue;
-      }
-      if (!stat.isFile()) continue;
-      if (!RASTER_OUTPUT_EXTENSIONS.has(extname(name).toLowerCase())) continue;
-      if (stat.size > MAX_OUTPUT_BYTES || total + stat.size > MAX_TOTAL_BYTES) continue;
-      const rel = pathRelative(root, abs).split("\\").join("/");
-      const target = join(input.attemptDir, "produced", rel);
-      mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
-      copyFileSync(abs, target);
-      total += stat.size;
-      preserved.push(rel);
-    }
-  };
-  walk(artifactRoot);
+  for (const rel of artifactMediaPaths(root).paths) {
+    const status = candidatePathStatus(root, rel);
+    if (status.kind !== "safe" || !status.stat.isFile()) continue;
+    const target = join(input.attemptDir, "produced", rel);
+    const copied = copyRasterIfSafe(
+      status.path,
+      target,
+      Math.min(MAX_OUTPUT_BYTES, MAX_TOTAL_BYTES - total),
+    );
+    if (copied === null) continue;
+    total += copied;
+    preserved.push(rel);
+  }
   return preserved;
+}
+
+export function candidateOutputsContainSecret(input: {
+  worktreePath: string;
+  changedPaths: readonly string[];
+}): boolean {
+  return candidateOutputSecretRisk(input).risky;
+}
+
+export function candidateOutputSecretRisk(input: {
+  worktreePath: string;
+  changedPaths: readonly string[];
+}): {
+  risky: boolean;
+  riskyPaths: string[];
+  nonReversiblePaths: string[];
+  artifactDirectoryUnsafe: boolean;
+} {
+  const root = resolve(input.worktreePath);
+  const artifactMedia = artifactMediaPaths(root);
+  const riskyPaths: string[] = [];
+  const nonReversiblePaths: string[] = [];
+  const paths = [...input.changedPaths, ...artifactMedia.paths];
+  for (const relative of new Set(paths)) {
+    if (!RASTER_OUTPUT_EXTENSIONS.has(extname(relative).toLowerCase())) continue;
+    const status = candidatePathStatus(root, relative);
+    if (status.kind === "missing") continue;
+    if (status.kind !== "safe" || !status.stat.isFile()) {
+      riskyPaths.push(relative);
+      // A text patch can represent the symlink or special-file directory
+      // entry, but rollback cannot prove anything about bytes reached through
+      // that entry. Never collapse it to a followed realpath identity.
+      nonReversiblePaths.push(relative);
+      continue;
+    }
+    const safe = rasterBytesIfSafe(status.path);
+    if (!safe) riskyPaths.push(relative);
+  }
+  return {
+    risky: artifactMedia.unsafe || riskyPaths.length > 0,
+    riskyPaths,
+    nonReversiblePaths,
+    artifactDirectoryUnsafe: artifactMedia.unsafe,
+  };
 }
 
 export function rasterLinksInMarkdown(markdown: string): string[] {
@@ -189,28 +344,35 @@ export function writeCandidateAttemptArtifacts(input: {
   attemptDir: string;
   worktreePath: string;
   diff: string;
+  /** False for a secret-refused candidate: even an empty placeholder named
+   * patch.diff would falsely imply that an inspectable patch was retained. */
+  persistPatch?: boolean;
+  /** False for a secret-refused candidate: no answer-adjacent or artifact-dir
+   * media is retained, even when an individual raster is otherwise safe. */
+  persistProducedMedia?: boolean;
   answerText?: string;
   record: Record<string, unknown>;
 }): string[] {
-  input.store.writeText(join(input.attemptDir, "patch.diff"), input.diff);
+  if (input.persistPatch !== false) {
+    input.store.writeText(join(input.attemptDir, "patch.diff"), input.diff);
+  }
   const stats = summarizeDiffPaths(input.diff);
-  const produced = [
-    ...new Set([
-      ...persistCandidateOutputs({
-        worktreePath: input.worktreePath,
-        attemptDir: input.attemptDir,
-        changedPaths: [
-          ...new Set([...stats.paths, ...rasterLinksInMarkdown(input.answerText ?? "")]),
-        ],
-      }),
-      // F4: media in the claudexor-owned artifact dir is excluded from the diff,
-      // so it is never in `stats.paths` — collect it into the gallery here.
-      ...collectArtifactDirMedia({
-        worktreePath: input.worktreePath,
-        attemptDir: input.attemptDir,
-      }),
-    ]),
-  ];
+  // Build one candidate path set before the first filesystem write. A raster
+  // may be both linked from markdown and discovered under the owned artifact
+  // directory; copying each source in a separate pass would race itself on the
+  // O_EXCL destination and would incorrectly grant each pass its own byte cap.
+  const produced =
+    input.persistProducedMedia === false
+      ? []
+      : persistCandidateOutputs({
+          worktreePath: input.worktreePath,
+          attemptDir: input.attemptDir,
+          changedPaths: [
+            ...stats.paths,
+            ...rasterLinksInMarkdown(input.answerText ?? ""),
+            ...artifactMediaPaths(resolve(input.worktreePath)).paths,
+          ],
+        });
   input.store.writeYaml(join(input.attemptDir, "attempt.yaml"), {
     ...input.record,
     diffstat: {

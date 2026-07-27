@@ -1,9 +1,12 @@
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   renameSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -13,6 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ArtifactStore } from "@claudexor/artifact-store";
+import { BudgetLedger } from "@claudexor/budget";
 
 const shellGate = (command: string) => ({
   program: "sh",
@@ -30,6 +34,8 @@ import { writeEvidencePacket } from "@claudexor/context";
 import type { ReviewerSpec } from "@claudexor/review";
 import { Orchestrator } from "./orchestrator.js";
 import type { OrchestratorResult } from "./orchestrator.js";
+import { DelegationBudgetAuthority } from "./delegationBudgetAuthority.js";
+import { buildRevisePrompt } from "./revisePrompt.js";
 import { rmSync as __rmSyncReap } from "node:fs";
 import { afterAll as __afterAllReap } from "vitest";
 
@@ -90,6 +96,36 @@ async function initRepo(): Promise<string> {
     "init",
   ]);
   return repo;
+}
+
+function treeContainsBytes(root: string, needle: string): boolean {
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    const path = join(root, entry.name);
+    if (entry.isDirectory()) {
+      if (treeContainsBytes(path, needle)) return true;
+    } else if (entry.isFile() && readFileSync(path).includes(needle)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function gitObjectStoreContains(repo: string, needle: string): boolean {
+  const rows = execFileSync(
+    "git",
+    ["-C", repo, "cat-file", "--batch-all-objects", "--batch-check=%(objectname) %(objecttype)"],
+    { encoding: "utf8" },
+  );
+  for (const row of rows.trim().split("\n")) {
+    const [sha, type] = row.split(" ");
+    if (type === "blob" && sha) {
+      const bytes = execFileSync("git", ["-C", repo, "cat-file", "blob", sha]);
+      if (bytes.includes(needle)) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 function cleanReviewer(id: string, family: ProviderFamily): ReviewerSpec {
@@ -285,6 +321,79 @@ function diffImplementer(
       yield { type: "completed", session_id: spec.session_id, ts };
     },
   };
+}
+
+function blockAttemptPatchPersistence(repo: string, attemptId: string): void {
+  const runsDir = join(projectRuntimeDir(repo), "runs");
+  const runId = readdirSync(runsDir)[0];
+  if (!runId) throw new Error("fixture run directory was not created");
+  mkdirSync(join(runsDir, runId, "attempts", attemptId, "patch.diff"), { recursive: true });
+}
+
+function mixedRoutePersistenceAdapter(
+  id: string,
+  repo: string,
+  block: (call: number, intent: string) => string | null,
+): HarnessAdapter {
+  const base = diffImplementer(id);
+  let calls = 0;
+  return {
+    ...base,
+    async *run(spec) {
+      calls += 1;
+      const ts = new Date().toISOString();
+      yield {
+        type: "started",
+        session_id: spec.session_id,
+        ts,
+        credential_route: "vendor_native",
+      };
+      writeFileSync(join(spec.cwd, "CHANGED.txt"), `change from ${spec.intent}\n`);
+      yield { type: "message", session_id: spec.session_id, ts, text: "Implemented." };
+      yield {
+        type: "usage",
+        session_id: spec.session_id,
+        ts,
+        credential_route: "vendor_native",
+        usage: { cost_usd: 0.75, estimated: true },
+      };
+      yield {
+        type: "usage",
+        session_id: spec.session_id,
+        ts,
+        credential_route: "managed_api_key",
+        usage: { cost_usd: 0.25 },
+      };
+      const blockedAttempt = block(calls, spec.intent);
+      if (blockedAttempt) blockAttemptPatchPersistence(repo, blockedAttempt);
+      yield { type: "completed", session_id: spec.session_id, ts };
+    },
+  };
+}
+
+function expectBudgetSplit(runDir: string, cash: number, valuation: number): void {
+  const events = readFileSync(join(runDir, "events.jsonl"), "utf8")
+    .trim()
+    .split("\n")
+    .map(
+      (line) =>
+        JSON.parse(line) as {
+          type: string;
+          payload: { cash_spend_usd?: number; valuation_usd?: number };
+        },
+    );
+  const cashEvents = events.filter(
+    (event) => event.type === "budget.cash" && typeof event.payload.cash_spend_usd === "number",
+  );
+  expect(
+    cashEvents.some(
+      (event) =>
+        (event.payload.cash_spend_usd ?? Number.NaN) >= cash &&
+        (event.payload.cash_spend_usd ?? Number.NaN) < cash + 0.01 &&
+        Math.abs((event.payload.valuation_usd ?? Number.NaN) - valuation) < 0.000_001,
+    ),
+    JSON.stringify(events.filter((event) => event.type.startsWith("budget."))),
+  ).toBe(true);
 }
 
 function rawPatchImplementer(
@@ -627,6 +736,204 @@ describe("Orchestrator", () => {
     expect(existsSync(join(res.runDir, "final", "work_product.yaml"))).toBe(true);
   });
 
+  it("takes decision cash certainty from the ledger on race, convergence, and no-work paths", async () => {
+    const nativeEstimated = (id: string): HarnessAdapter => {
+      const base = diffImplementer(id);
+      return {
+        ...base,
+        async *run(spec) {
+          for await (const event of base.run(spec)) {
+            yield {
+              ...event,
+              credential_route: "vendor_native" as const,
+              ...(event.usage ? { usage: { ...event.usage, estimated: true } } : {}),
+            };
+          }
+        },
+      };
+    };
+    const assertExactCashDecision = (runDir: string) => {
+      const decision = readFileSync(join(runDir, "arbitration", "decision.yaml"), "utf8");
+      expect(decision).toMatch(/estimated: false/);
+      expect(decision).toMatch(/valuation_knowledge: estimated/);
+    };
+
+    const raceRepo = await initRepo();
+    const race = await new Orchestrator({
+      registry: new Map([["native", nativeEstimated("native")]]),
+      reviewers: reviewers(),
+    }).run({
+      repoRoot: raceRepo,
+      prompt: "do it",
+      mode: "agent",
+      harnesses: ["native"],
+      n: 2,
+    });
+    assertExactCashDecision(race.runDir);
+
+    const convergenceRepo = await initRepo();
+    const convergence = await new Orchestrator({
+      registry: new Map([["native", nativeEstimated("native")]]),
+      reviewers: reviewers(),
+    }).run({
+      repoRoot: convergenceRepo,
+      prompt: "do it",
+      mode: "agent",
+      harnesses: ["native"],
+      attempts: 2,
+    });
+    assertExactCashDecision(convergence.runDir);
+
+    const failedPaid: HarnessAdapter = {
+      ...realLikeAdapter("paid-failure"),
+      async *run(spec) {
+        const ts = new Date().toISOString();
+        yield {
+          type: "started",
+          session_id: spec.session_id,
+          ts,
+          credential_route: "managed_api_key",
+        };
+        yield {
+          type: "usage",
+          session_id: spec.session_id,
+          ts,
+          credential_route: "managed_api_key",
+          usage: { cost_usd: 0.02, estimated: true },
+        };
+        yield { type: "error", session_id: spec.session_id, ts, error: "failed after usage" };
+      },
+    };
+    const noWorkRepo = await initRepo();
+    const noWork = await new Orchestrator({
+      registry: new Map([[failedPaid.id, failedPaid]]),
+      reviewers: [],
+    }).run({
+      repoRoot: noWorkRepo,
+      prompt: "do it",
+      mode: "agent",
+      harnesses: [failedPaid.id],
+    });
+    expect(readFileSync(join(noWork.runDir, "arbitration", "decision.yaml"), "utf8")).toMatch(
+      /estimated: true/,
+    );
+  }, 30_000);
+
+  it("preserves mixed-route settlement when convergence persistence fails", async () => {
+    const repo = await initRepo();
+    const adapter = mixedRoutePersistenceAdapter("mixed-convergence", repo, (call) =>
+      call === 1 ? "a01" : null,
+    );
+    const res = await new Orchestrator({
+      registry: new Map([[adapter.id, adapter]]),
+      reviewers: reviewers(),
+    }).run({
+      repoRoot: repo,
+      prompt: "do it",
+      mode: "agent",
+      harnesses: [adapter.id],
+      attempts: 2,
+    });
+
+    expectBudgetSplit(res.runDir, 0.5, 1.5);
+    const attempt = readFileSync(join(res.runDir, "attempts", "a01", "attempt.yaml"), "utf8");
+    expect(attempt).toContain("cost_usd: 1");
+    expect(attempt).toContain("cost_estimated: true");
+    expect(attempt).toContain("errored: true");
+    expect(attempt).toContain("phase: harness");
+  }, 30_000);
+
+  it("preserves mixed-route settlement when race persistence fails", async () => {
+    const repo = await initRepo();
+    const adapter = mixedRoutePersistenceAdapter("mixed-race", repo, (call) =>
+      call === 1 ? "a01" : null,
+    );
+    const res = await new Orchestrator({
+      registry: new Map([[adapter.id, adapter]]),
+      reviewers: [],
+    }).run({
+      repoRoot: repo,
+      prompt: "do it",
+      mode: "agent",
+      harnesses: [adapter.id],
+    });
+
+    expectBudgetSplit(res.runDir, 0.25, 0.75);
+    const attempt = readFileSync(join(res.runDir, "attempts", "a01", "attempt.yaml"), "utf8");
+    expect(attempt).toContain("cost_usd: 1");
+    expect(attempt).toContain("cost_estimated: true");
+  }, 30_000);
+
+  it("preserves mixed-route settlement when synthesis persistence fails", async () => {
+    const repo = await initRepo();
+    const adapter = mixedRoutePersistenceAdapter("mixed-synthesis", repo, (_call, intent) =>
+      intent === "synthesize" ? "synth" : null,
+    );
+    const res = await new Orchestrator({
+      registry: new Map([[adapter.id, adapter]]),
+      reviewers: [],
+    }).run({
+      repoRoot: repo,
+      prompt: "do it",
+      mode: "agent",
+      harnesses: [adapter.id],
+      n: 2,
+      synthesis: "always",
+    });
+
+    expectBudgetSplit(res.runDir, 0.75, 2.25);
+  }, 30_000);
+
+  it("preserves mixed-route settlement when continuation persistence fails", async () => {
+    const repo = await initRepo();
+    const base = createFakeHarness("fake-context-then-complete");
+    let calls = 0;
+    const adapter: HarnessAdapter = {
+      ...base,
+      async *run(spec) {
+        calls += 1;
+        const continuation = calls === 2;
+        for await (const event of base.run(spec)) {
+          if (event.type === "usage") continue;
+          if (event.type === "started") {
+            yield { ...event, credential_route: "vendor_native" as const };
+            continue;
+          }
+          if (event.type === "completed") {
+            const ts = new Date().toISOString();
+            yield {
+              type: "usage",
+              session_id: spec.session_id,
+              ts,
+              credential_route: "vendor_native" as const,
+              usage: { cost_usd: 0.75, estimated: true },
+            };
+            yield {
+              type: "usage",
+              session_id: spec.session_id,
+              ts,
+              credential_route: "managed_api_key" as const,
+              usage: { cost_usd: 0.25 },
+            };
+            if (continuation) blockAttemptPatchPersistence(repo, "a01c");
+          }
+          yield event;
+        }
+      },
+    };
+    const res = await new Orchestrator({
+      registry: new Map([[adapter.id, adapter]]),
+      reviewers: [],
+    }).run({
+      repoRoot: repo,
+      prompt: "do it",
+      mode: "agent",
+      harnesses: [adapter.id],
+    });
+
+    expectBudgetSplit(res.runDir, 0.5, 1.5);
+  }, 30_000);
+
   it("D-16 r7: a context-exhausted candidate (partial diff, no completed report) terminalizes interrupted and is NEVER adopted", async () => {
     // The D-16 work-state veto hole: finalizeAttempt returns outcomeClass
     // "interrupted" for a capacity-exhausted attempt with a partial diff and no
@@ -831,6 +1138,138 @@ describe("Orchestrator", () => {
     expect(termIdx).toBeGreaterThan(readyIdx);
     expect(events).not.toContain('"type":"work_product.emitted"');
   }, 15000);
+
+  it("a non-converged attempt is re-prompted with the buildRevisePrompt contract, not an inline string", async () => {
+    // The revise contract is only worth anything if the loop actually delivers
+    // it. buildRevisePrompt's own suite proves the text; this pins the single
+    // integration point, so reverting the call site to an inline template
+    // literal fails here instead of silently shipping.
+    const repo = await initRepo();
+    const seen: string[] = [];
+    const recorder: HarnessAdapter = {
+      id: "recorder",
+      async discover() {
+        return HarnessManifest.parse({
+          id: "recorder",
+          display_name: "recorder",
+          kind: "local_cli",
+          provider_family: "local",
+          capabilities: { implement: true },
+          access_profiles_supported: ["workspace_write"],
+        });
+      },
+      async doctor() {
+        return ConformanceReport.parse({
+          harness_id: "recorder",
+          status: "ok",
+          enabled_intents: ["implement"],
+        });
+      },
+      async *run(spec) {
+        const ts = new Date().toISOString();
+        seen.push(spec.prompt);
+        yield {
+          type: "started",
+          session_id: spec.session_id,
+          ts,
+          observed_model: "recorder-model",
+          credential_route: "managed_api_key",
+        };
+        writeFileSync(join(spec.cwd, "CHANGED.txt"), `attempt ${seen.length}\n`);
+        yield { type: "message", session_id: spec.session_id, ts, text: "Implemented." };
+        yield {
+          type: "usage",
+          session_id: spec.session_id,
+          ts,
+          credential_route: "managed_api_key",
+          usage: { cost_usd: 0.001 },
+        };
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    };
+    function blockingReviewer(id: string, family: ProviderFamily): ReviewerSpec {
+      const adapter: HarnessAdapter = {
+        id,
+        async discover() {
+          return HarnessManifest.parse({
+            id,
+            display_name: id,
+            kind: "local_cli",
+            provider_family: family,
+            capabilities: { review: true },
+          });
+        },
+        async doctor() {
+          return ConformanceReport.parse({
+            harness_id: id,
+            status: "ok",
+            enabled_intents: ["review"],
+          });
+        },
+        async *run(spec) {
+          const ts = new Date().toISOString();
+          yield { type: "started", session_id: spec.session_id, ts, observed_model: `${id}-model` };
+          yield {
+            type: "message",
+            session_id: spec.session_id,
+            ts,
+            text: JSON.stringify([
+              {
+                severity: "BLOCK",
+                category: "correctness",
+                claim: "off-by-one in the retry window",
+                evidence: { files: [{ path: "CHANGED.txt", lines: "1" }] },
+                proposed_fix: "clamp the window",
+              },
+            ]),
+          };
+          yield {
+            type: "completed",
+            session_id: spec.session_id,
+            ts,
+            observed_model: `${id}-model`,
+          };
+        },
+      };
+      return { adapter, providerFamily: family };
+    }
+
+    const orch = new Orchestrator({
+      registry: new Map<string, HarnessAdapter>([["recorder", recorder]]),
+      reviewers: [
+        blockingReviewer("rev-openai", "openai"),
+        blockingReviewer("rev-anthropic", "anthropic"),
+      ],
+    });
+    await orch.run({
+      repoRoot: repo,
+      prompt: "converge it",
+      mode: "agent",
+      harnesses: ["recorder"],
+      attempts: 2,
+    });
+
+    expect(seen.length).toBeGreaterThanOrEqual(2);
+    // Attempt 1 is the operator's own prompt, untouched.
+    expect(seen[0]).toBe("converge it");
+    // Attempt 2 carries every contract sentence buildRevisePrompt emits. Derived
+    // from the builder rather than re-typed, so the pin cannot drift from it.
+    const revise = seen[1] as string;
+    const contractSentences = buildRevisePrompt("__BASE__", [], "")
+      .split("\n")
+      .filter(
+        (line) =>
+          line.trim().length > 0 &&
+          line !== "__BASE__" &&
+          line !== "Review findings:" &&
+          line !== "(no findings recorded)",
+      );
+    expect(contractSentences.length).toBeGreaterThan(0);
+    for (const sentence of contractSentences) expect(revise).toContain(sentence);
+    // ...on top of the original prompt and the findings that blocked it.
+    expect(revise.startsWith("converge it\n\n")).toBe(true);
+    expect(revise).toContain("off-by-one in the retry window");
+  }, 20000);
 
   it("until-clean terminates on no-progress (bounded, not infinite)", async () => {
     const repo = await initRepo();
@@ -1799,6 +2238,212 @@ describe("Orchestrator", () => {
     expect(review).not.toContain("candidate changed protected gate/test path");
   });
 
+  it("flows project protected paths into policy for every diff operation and ignores run approvals", async () => {
+    const repo = await initRepo();
+    mkdirSync(join(repo, ".claudexor"), { recursive: true });
+    mkdirSync(join(repo, "protected"), { recursive: true });
+    mkdirSync(join(repo, "public"), { recursive: true });
+    writeFileSync(
+      join(repo, ".claudexor", "config.yaml"),
+      "version: 1\nconstraints:\n  protected_paths:\n    - protected/**\n",
+    );
+    writeFileSync(join(repo, "protected", "modify.txt"), "before\n");
+    writeFileSync(join(repo, "protected", "delete.txt"), "delete me\n");
+    writeFileSync(join(repo, "protected", "rename-out.txt"), "move out\n");
+    writeFileSync(join(repo, "public", "rename-in.txt"), "move in\n");
+    await runCapture("git", ["-C", repo, "add", "-A"]);
+    await runCapture("git", [
+      "-C",
+      repo,
+      "-c",
+      "user.email=t@t.dev",
+      "-c",
+      "user.name=t",
+      "commit",
+      "-m",
+      "add protected-path fixtures",
+    ]);
+
+    const adapter: HarnessAdapter = {
+      ...diffImplementer("project-protected-impl"),
+      async *run(spec) {
+        const ts = new Date().toISOString();
+        yield {
+          type: "started",
+          session_id: spec.session_id,
+          ts,
+          observed_model: "project-protected-model",
+        };
+        writeFileSync(join(spec.cwd, "protected", "create.txt"), "created\n");
+        writeFileSync(join(spec.cwd, "protected", "modify.txt"), "after\n");
+        unlinkSync(join(spec.cwd, "protected", "delete.txt"));
+        renameSync(
+          join(spec.cwd, "protected", "rename-out.txt"),
+          join(spec.cwd, "public", "renamed-out.txt"),
+        );
+        renameSync(
+          join(spec.cwd, "public", "rename-in.txt"),
+          join(spec.cwd, "protected", "renamed-in.txt"),
+        );
+        yield { type: "message", session_id: spec.session_id, ts, text: "changed files" };
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    };
+    const registry = new Map<string, HarnessAdapter>([[adapter.id, adapter]]);
+    const orch = new Orchestrator({ registry, reviewers: [] });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "exercise protected-path operations",
+      mode: "agent",
+      harnesses: [adapter.id],
+      protectedPathApprovals: [
+        { path: "protected/**", reason: "approval must narrow only auto-protected paths" },
+      ],
+      n: 1,
+    });
+
+    expect(legacyOutcome(res)).toBe("blocked");
+    const taskYaml = readFileSync(join(res.runDir, "context", "task.yaml"), "utf8");
+    expect(taskYaml).toContain("protected_paths:\n    - protected/**");
+    const review = readFileSync(join(res.runDir, "reviews", "a01.yaml"), "utf8");
+    for (const path of [
+      "protected/create.txt",
+      "protected/modify.txt",
+      "protected/delete.txt",
+      "protected/rename-out.txt",
+      "protected/renamed-in.txt",
+    ]) {
+      expect(review).toContain(path);
+    }
+    expect(review).toContain("protected-path change requires human approval");
+  });
+
+  it("refuses live in-place protected-path runs before adapter spawn", async () => {
+    const repo = await initRepo();
+    mkdirSync(join(repo, ".claudexor"), { recursive: true });
+    mkdirSync(join(repo, "protected"), { recursive: true });
+    writeFileSync(
+      join(repo, ".claudexor", "config.yaml"),
+      "version: 1\nconstraints:\n  protected_paths:\n    - protected/**\n",
+    );
+    writeFileSync(join(repo, "protected", "live.txt"), "before\n");
+    let spawned = false;
+    const adapter: HarnessAdapter = {
+      ...diffImplementer("project-protected-live"),
+      async *run(spec) {
+        spawned = true;
+        writeFileSync(join(spec.cwd, "protected", "live.txt"), "after\n");
+        yield {
+          type: "completed",
+          session_id: spec.session_id,
+          ts: new Date().toISOString(),
+        };
+      },
+    };
+    const orch = new Orchestrator({
+      registry: new Map<string, HarnessAdapter>([[adapter.id, adapter]]),
+      reviewers: [],
+    });
+
+    await expect(
+      orch.run({
+        repoRoot: repo,
+        prompt: "edit protected live file",
+        mode: "agent",
+        harnesses: [adapter.id],
+        inPlace: true,
+        n: 1,
+      }),
+    ).rejects.toThrow(/protected_paths require an isolated execution root/);
+    expect(spawned).toBe(false);
+    expect(readFileSync(join(repo, "protected", "live.txt"), "utf8")).toBe("before\n");
+  });
+
+  it("allows protected-path policy inside a distinct persistent execution root", async () => {
+    const repo = await initRepo();
+    const isolated = await initRepo();
+    mkdirSync(join(repo, ".claudexor"), { recursive: true });
+    writeFileSync(
+      join(repo, ".claudexor", "config.yaml"),
+      "version: 1\nconstraints:\n  protected_paths:\n    - protected/**\n",
+    );
+    mkdirSync(join(isolated, "protected"), { recursive: true });
+    writeFileSync(join(isolated, "protected", "thread.txt"), "before\n");
+    await runCapture("git", ["-C", isolated, "add", "protected/thread.txt"]);
+    await runCapture("git", [
+      "-C",
+      isolated,
+      "-c",
+      "user.email=t@t.dev",
+      "-c",
+      "user.name=t",
+      "commit",
+      "-m",
+      "add protected fixture",
+    ]);
+    const adapter: HarnessAdapter = {
+      ...diffImplementer("project-protected-isolated"),
+      async *run(spec) {
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: spec.session_id, ts };
+        writeFileSync(join(spec.cwd, "protected", "thread.txt"), "after\n");
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    };
+    const orch = new Orchestrator({
+      registry: new Map<string, HarnessAdapter>([[adapter.id, adapter]]),
+      reviewers: [],
+    });
+    const result = await orch.run({
+      repoRoot: repo,
+      executionRoot: isolated,
+      prompt: "edit protected thread file",
+      mode: "agent",
+      harnesses: [adapter.id],
+      inPlace: true,
+      n: 1,
+    });
+
+    expect(legacyOutcome(result)).toBe("blocked");
+    expect(readFileSync(join(isolated, "protected", "thread.txt"), "utf8")).toBe("after\n");
+    expect(existsSync(join(repo, "protected", "thread.txt"))).toBe(false);
+  });
+
+  it("does not gate a candidate that misses project protected-path globs", async () => {
+    const repo = await initRepo();
+    mkdirSync(join(repo, ".claudexor"), { recursive: true });
+    writeFileSync(
+      join(repo, ".claudexor", "config.yaml"),
+      "version: 1\nconstraints:\n  protected_paths:\n    - protected/**\n",
+    );
+    await runCapture("git", ["-C", repo, "add", "-A"]);
+    await runCapture("git", [
+      "-C",
+      repo,
+      "-c",
+      "user.email=t@t.dev",
+      "-c",
+      "user.name=t",
+      "commit",
+      "-m",
+      "add protected-path config",
+    ]);
+    const adapter = diffImplementer("project-protected-nonmatch");
+    const registry = new Map<string, HarnessAdapter>([[adapter.id, adapter]]);
+    const orch = new Orchestrator({ registry, reviewers: [] });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "change an unrelated file",
+      mode: "agent",
+      harnesses: [adapter.id],
+      n: 1,
+    });
+
+    expect(legacyOutcome(res)).not.toBe("blocked");
+    const taskYaml = readFileSync(join(res.runDir, "context", "task.yaml"), "utf8");
+    expect(taskYaml).toContain("protected_paths:\n    - protected/**");
+  });
+
   it("blocks renaming an existing protected gate path out of the protected glob", async () => {
     const repo = await initRepo();
     mkdirSync(join(repo, "test"), { recursive: true });
@@ -1966,7 +2611,7 @@ describe("Orchestrator", () => {
     // working candidates the run fails with the ROOT CAUSE (no corpse review,
     // no empty final patch pretending to be a work product).
     expect(legacyOutcome(res)).toBe("failed");
-    expect(res.summary).toContain("secret-like token");
+    expect(res.summary).toContain("could not be proven secret-safe");
     expect(existsSync(join(res.runDir, "final", "patch.diff"))).toBe(false);
     expect(existsSync(join(res.runDir, "attempts", "a01", "patch.diff"))).toBe(false);
     const failure = readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8");
@@ -3574,7 +4219,7 @@ describe("Orchestrator", () => {
     );
   });
 
-  it("does not block on a tool error that was later recovered by the same tool", async () => {
+  it("does not block on a tool error later recovered by the same invocation", async () => {
     const repo = await initRepo();
     const adapter = askAdapter("recovers", function* (sessionId) {
       const ts = new Date().toISOString();
@@ -3599,20 +4244,13 @@ describe("Orchestrator", () => {
         },
       };
       yield {
-        type: "tool_call",
-        session_id: sessionId,
-        ts,
-        text: "Bash",
-        tool: { name: "Bash", kind: "command", use_id: "t2", target: "pnpm test" },
-      };
-      yield {
         type: "tool_result",
         session_id: sessionId,
         ts,
         tool: {
           name: "Bash",
           kind: "command",
-          use_id: "t2",
+          use_id: "t1",
           status: "ok",
           content_summary: "all green",
         },
@@ -3631,6 +4269,9 @@ describe("Orchestrator", () => {
     expect(legacyOutcome(res)).toBe("success");
     expect(readFileSync(join(res.runDir, "final", "answer.md"), "utf8")).toContain(
       "Recovered and finished.",
+    );
+    expect(readFileSync(join(res.runDir, "final", "telemetry.yaml"), "utf8")).toContain(
+      "unrecovered_tool_errors: 0",
     );
   });
 
@@ -3907,6 +4548,7 @@ describe("Orchestrator", () => {
     const guard = guardAnnouncedRun as unknown as (
       signal: AbortSignal | undefined,
       body: (announce: (a: unknown) => void) => Promise<unknown>,
+      beforeTerminal?: (context: unknown) => void | Promise<void>,
       onSettled?: (runId: string) => void,
     ) => Promise<OrchestratorResult>;
     const { ArtifactStore } = await import("@claudexor/artifact-store");
@@ -3922,6 +4564,7 @@ describe("Orchestrator", () => {
         async () => {
           throw new Error("pre-announce boom");
         },
+        undefined,
         (id) => settled.push(id),
       ),
     ).rejects.toThrow("pre-announce boom");
@@ -3946,6 +4589,7 @@ describe("Orchestrator", () => {
         });
         throw new Error("mid-strategy");
       },
+      undefined,
       (id) => settled.push(id),
     );
     expect(settled).toEqual(["hook-throw"]);
@@ -3976,6 +4620,7 @@ describe("Orchestrator", () => {
           candidates: [],
         } as unknown as OrchestratorResult;
       },
+      undefined,
       (id) => settled.push(id),
     );
     expect(settled).toEqual(["hook-throw", "hook-ok"]);
@@ -4265,7 +4910,7 @@ describe("Orchestrator", () => {
           text: "Subscription scout analysis.",
           credential_route: "vendor_native",
         };
-        yield { type: "completed", session_id: sessionId, ts };
+        yield { type: "completed", session_id: sessionId, ts, credential_route: "vendor_native" };
       });
     const registry = new Map<string, HarnessAdapter>([["sub-scout", subScout("sub-scout")]]);
     const orch = new Orchestrator({
@@ -4302,7 +4947,7 @@ describe("Orchestrator", () => {
           text: "Subscription scout analysis.",
           credential_route: "vendor_native",
         };
-        yield { type: "completed", session_id: sessionId, ts };
+        yield { type: "completed", session_id: sessionId, ts, credential_route: "vendor_native" };
       });
     const registry = new Map<string, HarnessAdapter>([["sub-scout", subScout("sub-scout")]]);
     const orch = new Orchestrator({
@@ -6054,6 +6699,274 @@ describe("Orchestrator", () => {
     });
   });
 
+  // Planner attempts share the explorer path's deliverable exception
+  // (INV-043/INV-044): a delivered plan downgrades a benign unrecovered tool
+  // error to warning evidence instead of discarding the plan. The deliverable
+  // is read from the UNWRAPPED D-16 envelope, so the finalizer's own classes
+  // (veto / contract failure / interrupted) still outrank the exception.
+  const TOOL_ERROR_PLAN = [
+    "# Plan despite the failed check",
+    "1. Do the thing in src/a.ts",
+    "",
+    "## Open Questions",
+    "- (none)",
+  ].join("\n");
+
+  function toolErrorPlannerAdapter(
+    id: string,
+    opts: {
+      /** Final message text; null emits no message at all (no deliverable). */
+      finalText: string | null;
+      /** Arm the constrained_json WorkReport envelope for this lane. */
+      constrained?: boolean;
+      /** Emit the unrecovered tool error (default true). */
+      toolError?: boolean;
+      /** Emit a terminal capacity_exhausted context signal. */
+      contextExhausted?: boolean;
+    },
+  ): HarnessAdapter {
+    return {
+      ...markdownPlannerAdapter(id, []),
+      async discover() {
+        return HarnessManifest.parse({
+          id,
+          display_name: id,
+          kind: "local_cli",
+          provider_family: "openai",
+          capabilities: {
+            plan: true,
+            ...(opts.constrained === true
+              ? {
+                  work_report_transport: "constrained",
+                  json_schema_output: true,
+                  structured_output_channel: "final_message",
+                }
+              : {}),
+          },
+          access_profiles_supported: ["readonly"],
+        });
+      },
+      async *run(spec) {
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: spec.session_id, ts };
+        if (opts.toolError !== false) {
+          yield {
+            type: "tool_call",
+            session_id: spec.session_id,
+            ts,
+            text: "pnpm test",
+            tool: { name: "command", kind: "command", use_id: "t1", target: "pnpm test" },
+          };
+          yield {
+            type: "tool_result",
+            session_id: spec.session_id,
+            ts,
+            tool: {
+              name: "command",
+              kind: "command",
+              use_id: "t1",
+              status: "error",
+              error_summary: "command exited with code 1",
+            },
+          };
+        }
+        if (opts.contextExhausted === true) {
+          yield {
+            type: "context",
+            session_id: spec.session_id,
+            ts,
+            context: {
+              kind: "capacity_exhausted",
+              cause: "window_exceeded",
+              native_code: null,
+              trigger: "auto",
+              pre_tokens: null,
+            },
+          };
+        }
+        if (opts.finalText !== null) {
+          yield { type: "message", session_id: spec.session_id, ts, text: opts.finalText };
+        }
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    };
+  }
+
+  async function runToolErrorPlan(
+    planner: HarnessAdapter,
+    extra: { web?: "live" } = {},
+  ): Promise<{ res: OrchestratorResult; outcome: Record<string, unknown> }> {
+    const repo = await initRepo();
+    const orch = new Orchestrator({ registry: new Map([["planner", planner]]), reviewers: [] });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "plan it",
+      mode: "plan",
+      harnesses: ["planner"],
+      ...extra,
+    });
+    const telemetry = new ArtifactStore(repo).readYaml<{
+      attempts: Array<{ attempt_id: string; outcome: Record<string, unknown> }>;
+    }>(join(res.runDir, "final", "telemetry.yaml"));
+    const attempt = telemetry?.attempts?.[0];
+    expect(attempt?.attempt_id).toBe("p01");
+    return { res, outcome: attempt?.outcome ?? {} };
+  }
+
+  it("a delivered plan survives an unrecovered tool error as success_with_warnings", async () => {
+    const { res, outcome } = await runToolErrorPlan(
+      toolErrorPlannerAdapter("planner", { finalText: TOOL_ERROR_PLAN }),
+    );
+    // The contracted deliverable landed — the unrecovered non-web tool error is
+    // disclosed as a warning, never a discarded plan (explorer parity).
+    expect(legacyOutcome(res)).toBe("success");
+    expect(readFileSync(join(res.runDir, "final", "plan.md"), "utf8")).toContain(
+      "# Plan despite the failed check",
+    );
+    expect(outcome).toMatchObject({
+      deliverable_present: true,
+      harness_errored: false,
+      tool_warnings_count: 1,
+      status: "success_with_warnings",
+    });
+  });
+
+  it("a deliverable-less planner still hard-fails on an unrecovered tool error", async () => {
+    const { res, outcome } = await runToolErrorPlan(
+      toolErrorPlannerAdapter("planner", { finalText: null }),
+    );
+    expect(legacyOutcome(res)).toBe("failed");
+    expect(readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8")).toContain(
+      "failed without recovery",
+    );
+    expect(outcome).toMatchObject({
+      deliverable_present: false,
+      status: "failed",
+    });
+  });
+
+  it("required web evidence still blocks a planner that delivered plan text", async () => {
+    // Delivers a plan but never attempts the REQUIRED web evidence — the web
+    // gate is a separate axis and is NOT softened by the deliverable exception.
+    // (web_policy "tools" makes the harness eligible for --web live.)
+    const planner: HarnessAdapter = {
+      ...toolErrorPlannerAdapter("planner", { finalText: TOOL_ERROR_PLAN, toolError: false }),
+      async discover() {
+        return HarnessManifest.parse({
+          id: "planner",
+          display_name: "planner",
+          kind: "local_cli",
+          provider_family: "openai",
+          capabilities: { plan: true, web_policy: "tools" },
+          access_profiles_supported: ["readonly"],
+        });
+      },
+    };
+    const { res, outcome } = await runToolErrorPlan(planner, { web: "live" });
+    expect(legacyOutcome(res)).toBe("blocked");
+    expect(readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8")).toContain(
+      "never attempted",
+    );
+    expect(outcome).toMatchObject({
+      web_required_unsatisfied: true,
+      status: "blocked",
+    });
+  });
+
+  it("a needs_input work_report veto still rides a delivered plan with a tool error", async () => {
+    // D-16 (INV-116): the plan DELIVERS and the tool error stays a warning, but
+    // the model-attested veto must survive on the work_state axis — the softened
+    // tool-error path must not launder a veto into a clean success.
+    const { res, outcome } = await runToolErrorPlan(
+      toolErrorPlannerAdapter("planner", {
+        constrained: true,
+        finalText: JSON.stringify({
+          work_report: {
+            state: "needs_input",
+            required_inputs: [
+              { kind: "decision", locator: "db-backend", description: "which db?" },
+            ],
+          },
+          output: TOOL_ERROR_PLAN,
+        }),
+      }),
+    );
+    expect(readFileSync(join(res.runDir, "final", "plan.md"), "utf8")).toContain(
+      "# Plan despite the failed check",
+    );
+    expect(outcome).toMatchObject({
+      deliverable_present: true,
+      harness_errored: false,
+      tool_warnings_count: 1,
+      status: "success_with_warnings",
+    });
+    expect(outcome["work_state"]).toMatchObject({ state: "needs_input" });
+    expect(res.facts.reason).toBe("input_required");
+  });
+
+  it("a malformed work_report is still a contract failure on a plan with a tool error", async () => {
+    // The tool error must NOT pre-empt the finalizer's contract failure: an
+    // active envelope that carried no valid report fails the attempt, and the
+    // failure names the contract, not the shell command.
+    const { res, outcome } = await runToolErrorPlan(
+      toolErrorPlannerAdapter("planner", {
+        constrained: true,
+        finalText: JSON.stringify({ work_report: { state: "bogus" }, output: TOOL_ERROR_PLAN }),
+      }),
+    );
+    expect(legacyOutcome(res)).toBe("failed");
+    const failure = readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8");
+    expect(failure).toContain("work_report");
+    expect(failure).not.toContain("failed without recovery");
+    expect(outcome).toMatchObject({
+      deliverable_present: false,
+      harness_errored: true,
+      status: "failed",
+    });
+  });
+
+  it("context exhaustion still outranks a delivered plan with a tool error", async () => {
+    // An interrupted planner is never a clean plan: terminal capacity
+    // exhaustion outranks both the deliverable exception and the tool warning.
+    const { res, outcome } = await runToolErrorPlan(
+      toolErrorPlannerAdapter("planner", {
+        finalText: TOOL_ERROR_PLAN,
+        contextExhausted: true,
+      }),
+    );
+    expect(res.lifecycle).not.toBe("succeeded");
+    expect(readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8")).toContain(
+      "context capacity exhausted",
+    );
+    expect(outcome).toMatchObject({ harness_errored: true, status: "failed" });
+  });
+
+  it("a planner that throws an EMPTY error still FAILS with a reportable message", async () => {
+    // `new Error("").message` is "", and a bare thrown "" stringifies to "". The
+    // error axes below the throw are decided by nullishness (`harnessError ??=`)
+    // and truthiness (`if (attemptError)`), which both read "" as "no error", so
+    // a harness that genuinely THREW could terminalize as a clean plan with
+    // nothing to show the operator. safeErrorMessage keeps the blank out of
+    // those tests at the source instead of patching one guard.
+    const { res, outcome } = await runToolErrorPlan({
+      ...toolErrorPlannerAdapter("planner", { finalText: null, toolError: false }),
+      async *run(): AsyncIterable<never> {
+        throw new Error("");
+      },
+    });
+    expect(legacyOutcome(res)).toBe("failed");
+    expect(outcome).toMatchObject({ harness_errored: true, status: "failed" });
+    // The attempt terminal must carry real text, not an empty string.
+    const completed = readRunEvents(res.runDir).find(
+      (e) => e.type === "harness.completed" && e.payload["attempt_id"] === "p01",
+    );
+    expect(completed?.payload["status"]).toBe("failed");
+    expect(String(completed?.payload["error"] ?? "").trim().length).toBeGreaterThan(0);
+    expect(readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8")).toContain(
+      "thrown error carried no message",
+    );
+  });
+
   // Council (INV-031): a planner that emits DRAFT questions on intent=plan and
   // a DIFFERENT merged set on intent=synthesize, so the "parser runs on the
   // merge output only" promise is verifiable — draft questions must not leak.
@@ -6701,7 +7614,7 @@ describe("Orchestrator", () => {
       tests: [shellGate("true")],
       n: 1,
       // fake-implement creates FAKE_CHANGE.txt: creating a denied file is a
-      // violation (stricter than protected paths, which gate existing files).
+      // violation (distinct from protected paths, which produce a human gate).
       denyPaths: ["FAKE_*.txt"],
     });
     expect(legacyOutcome(res)).toBe("blocked");
@@ -8882,13 +9795,27 @@ describe("stall rotation (pacing + coverage)", () => {
 });
 
 describe("delegation belt injection (D32)", () => {
-  /** An implement adapter that DECLARES mcp_injection and records the last spec
-   * it received, so we can assert what the engine injected. */
+  it.each(["ask", "plan"] as const)("refuses Delegate directly for %s mode", async (mode) => {
+    const repo = await initRepo();
+    const orch = new Orchestrator({ registry: new Map(), reviewers: [] });
+    await expect(orch.run({ repoRoot: repo, prompt: "x", mode, delegate: true })).rejects.toThrow(
+      /agent-only strategy/,
+    );
+  });
+
+  /** A writing adapter that DECLARES mcp_injection and records the last spec it
+   * received, so implement and create paths can assert what the engine injected. */
   function delegatingAdapter(
     id: string,
     mcpInjection: boolean,
     observe?: (spec: { extra_mcp_servers?: unknown }) => void,
     requiresFullAccess = false,
+    beltStatus?: string,
+    usageCostUsd?: number,
+    beltToolStatuses: Array<"ok" | "error"> = [],
+    afterBeltToolResult?: () => void,
+    writeCandidate?: (cwd: string) => void,
+    responseText = "Implemented.",
   ): HarnessAdapter {
     return {
       id,
@@ -8898,7 +9825,7 @@ describe("delegation belt injection (D32)", () => {
           display_name: id,
           kind: "local_cli",
           provider_family: "anthropic",
-          capabilities: { implement: true },
+          capabilities: { implement: true, create_from_scratch: true },
           capability_profile: {
             mcp_injection: mcpInjection,
             mcp_injection_requires_full_access: requiresFullAccess,
@@ -8910,15 +9837,59 @@ describe("delegation belt injection (D32)", () => {
         return ConformanceReport.parse({
           harness_id: id,
           status: "ok",
-          enabled_intents: ["implement"],
+          enabled_intents: ["implement", "create_from_scratch"],
         });
       },
       async *run(spec) {
         observe?.(spec as { extra_mcp_servers?: unknown });
         const ts = new Date().toISOString();
-        yield { type: "started", session_id: spec.session_id, ts };
-        writeFileSync(join(spec.cwd, "CHANGED.txt"), "change\n");
-        yield { type: "message", session_id: spec.session_id, ts, text: "Implemented." };
+        yield {
+          type: "started",
+          session_id: spec.session_id,
+          ts,
+          ...(beltStatus
+            ? { payload: { mcp_servers: [{ name: "claudexor", status: beltStatus }] } }
+            : {}),
+          ...(usageCostUsd
+            ? {
+                credential_route: "managed_api_key" as const,
+                credential_source: "api_key_env" as const,
+              }
+            : {}),
+        };
+        for (const status of beltToolStatuses) {
+          yield {
+            type: "tool_call",
+            session_id: spec.session_id,
+            ts,
+            tool: { name: "mcp__claudexor__claudexor_ask", kind: "mcp" },
+          };
+          yield {
+            type: "tool_result",
+            session_id: spec.session_id,
+            ts,
+            tool: {
+              name: "mcp__claudexor__claudexor_ask",
+              kind: "mcp",
+              status,
+              ...(status === "error" ? { error_summary: "delegated child failed" } : {}),
+            },
+          };
+          afterBeltToolResult?.();
+        }
+        if (writeCandidate) writeCandidate(spec.cwd);
+        else writeFileSync(join(spec.cwd, "CHANGED.txt"), "change\n");
+        yield { type: "message", session_id: spec.session_id, ts, text: responseText };
+        if (usageCostUsd) {
+          yield {
+            type: "usage",
+            session_id: spec.session_id,
+            ts,
+            credential_route: "managed_api_key",
+            credential_source: "api_key_env",
+            usage: { cost_usd: usageCostUsd },
+          };
+        }
         yield { type: "completed", session_id: spec.session_id, ts };
       },
     };
@@ -8929,7 +9900,72 @@ describe("delegation belt injection (D32)", () => {
     command: "/usr/bin/node",
     args: ["/cli", "mcp", "serve-belt"],
     env: { CLAUDEXOR_DELEGATION_DEPTH: "0" },
+    required: true,
   };
+
+  it("releases an attached child authority when convergence fails before run announcement", async () => {
+    const repo = await initRepo();
+    const authority = new DelegationBudgetAuthority();
+    authority.registerParent("run-parent", new BudgetLedger());
+    authority.noteChildAccepted("run-parent", "job-child");
+    const orch = new Orchestrator({
+      registry: new Map([["deleg", delegatingAdapter("deleg", true)]]),
+      reviewers: [],
+      delegationBudgetAuthority: authority,
+    });
+    await expect(
+      orch.run({
+        repoRoot: repo,
+        prompt: "x",
+        mode: "agent",
+        harnesses: ["deleg"],
+        attempts: 1,
+        runId: "run-child",
+        delegatedFromRunId: "run-parent",
+        delegationAdmissionId: "job-child",
+        onEvent: (event) => {
+          if (event.type === "run.created") throw new Error("event sink failed before announce");
+        },
+      }),
+    ).rejects.toThrow(/event sink failed before announce/);
+    authority.beginParentClose("run-parent");
+    await expect(authority.waitForChildren("run-parent", 20)).resolves.toBeUndefined();
+  });
+
+  it("settles a delegated child adapter's cash into its local and parent family ledgers", async () => {
+    const repo = await initRepo();
+    const authority = new DelegationBudgetAuthority();
+    const root = new BudgetLedger({ kind: "finite", maxUsd: 1 });
+    authority.registerParent("run-parent", root);
+    authority.noteChildAccepted("run-parent", "job-child");
+    const orch = new Orchestrator({
+      registry: new Map([
+        ["deleg", delegatingAdapter("deleg", true, undefined, false, undefined, 0.2)],
+      ]),
+      reviewers: [],
+      delegationBudgetAuthority: authority,
+    });
+
+    const result = await orch.run({
+      repoRoot: repo,
+      prompt: "child work",
+      mode: "agent",
+      harnesses: ["deleg"],
+      runId: "run-child",
+      delegatedFromRunId: "run-parent",
+      delegationAdmissionId: "job-child",
+      paidBudget: { kind: "finite", maxUsd: 1 },
+    });
+
+    expect(
+      result.lifecycle,
+      JSON.stringify({ facts: result.facts, summary: result.summary, runDir: result.runDir }),
+    ).toBe("succeeded");
+    expect(result.spendUsd).toBeCloseTo(0.2, 5);
+    expect(root.spend()).toBeCloseTo(0.2, 5);
+    authority.beginParentClose("run-parent");
+    await expect(authority.waitForChildren("run-parent", 20)).resolves.toBeUndefined();
+  });
 
   it("injects the belt descriptor into an agent lane whose adapter can host MCP servers, rebinding its budget to the RESOLVED cap", async () => {
     const repo = await initRepo();
@@ -8939,6 +9975,7 @@ describe("delegation belt injection (D32)", () => {
         ["deleg", delegatingAdapter("deleg", true, (s) => (injected = s.extra_mcp_servers))],
       ]),
       reviewers: [],
+      delegationBudgetAuthority: new DelegationBudgetAuthority(),
     });
     await orch.run({
       repoRoot: repo,
@@ -8947,12 +9984,19 @@ describe("delegation belt injection (D32)", () => {
       harnesses: ["deleg"],
       delegate: true,
       delegationBelt: belt,
+      runId: "run-current-delegate",
+      parentRunId: "run-prior-thread-turn",
     });
     // The engine rebinds the belt's parent-budget env to the resolved run
     // budget (default = unlimited here), preserving the descriptor's other env.
     const list = injected as Array<{ env: Record<string, string> }>;
     expect(list).toHaveLength(1);
     expect(list[0]!.env.CLAUDEXOR_DELEGATION_DEPTH).toBe("0");
+    // The belt parent is THIS Delegate run, never its ordinary thread ancestor.
+    expect(list[0]!.env.CLAUDEXOR_DELEGATION_PARENT_RUN_ID).toBe("run-current-delegate");
+    // Children are pinned to the original user project, never the executing
+    // parent envelope and never a raw path proposed by the harness.
+    expect(list[0]!.env.CLAUDEXOR_DELEGATION_REPO_ROOT).toBe(repo);
     expect(JSON.parse(list[0]!.env.CLAUDEXOR_DELEGATION_BUDGET)).toEqual({ kind: "unlimited" });
   });
 
@@ -8971,6 +10015,7 @@ describe("delegation belt injection (D32)", () => {
           ["deleg", delegatingAdapter("deleg", true, (s) => (injected = s.extra_mcp_servers))],
         ]),
         reviewers: [],
+        delegationBudgetAuthority: new DelegationBudgetAuthority(),
       });
       await orch.run({
         repoRoot: repo,
@@ -9000,12 +10045,13 @@ describe("delegation belt injection (D32)", () => {
         ["deleg", delegatingAdapter("deleg", true, (s) => (injected = s.extra_mcp_servers))],
       ]),
       reviewers: [],
+      delegationBudgetAuthority: new DelegationBudgetAuthority(),
     });
     await orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["deleg"] });
     expect(injected).toEqual([]);
   });
 
-  it("REFUSES --delegate below full access on a harness whose belt needs full access (codex sandbox), naming the remedy", async () => {
+  it("degrades before start below full access and records a durable warning", async () => {
     const repo = await initRepo();
     let injected: unknown = "unset";
     const orch = new Orchestrator({
@@ -9016,6 +10062,7 @@ describe("delegation belt injection (D32)", () => {
         ],
       ]),
       reviewers: [],
+      delegationBudgetAuthority: new DelegationBudgetAuthority(),
     });
     const res = await orch.run({
       repoRoot: repo,
@@ -9026,11 +10073,15 @@ describe("delegation belt injection (D32)", () => {
       delegationBelt: belt,
       // default write access (workspace_write) — below full
     });
-    expect(res.lifecycle).toBe("failed");
-    const failure = readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8");
-    expect(failure).toMatch(/full access|mcp_injection_requires_full_access|--access full/);
+    expect(res.lifecycle).toBe("succeeded");
+    expect(readFileSync(join(res.runDir, "events.jsonl"), "utf8")).toMatch(
+      /delegation\.belt\.degraded.*access_profile_incompatible/,
+    );
+    expect(readFileSync(join(res.runDir, "final", "telemetry.yaml"), "utf8")).toMatch(
+      /reason: access_profile_incompatible/,
+    );
     // The belt was never injected into a lane that would sandbox-cancel it.
-    expect(injected).toBe("unset");
+    expect(injected).toEqual([]);
   });
 
   it("injects the belt on a full-access-requiring harness WHEN the lane runs at full access", async () => {
@@ -9044,6 +10095,7 @@ describe("delegation belt injection (D32)", () => {
         ],
       ]),
       reviewers: [],
+      delegationBudgetAuthority: new DelegationBudgetAuthority(),
     });
     await orch.run({
       repoRoot: repo,
@@ -9060,11 +10112,12 @@ describe("delegation belt injection (D32)", () => {
     expect(JSON.parse(list[0]!.env.CLAUDEXOR_DELEGATION_BUDGET)).toEqual({ kind: "unlimited" });
   });
 
-  it("REFUSES --delegate (typed, naming the harness) on a lane that cannot inject MCP servers", async () => {
+  it("degrades before start on a non-injecting harness with durable typed cause", async () => {
     const repo = await initRepo();
     const orch = new Orchestrator({
       registry: new Map([["nocap", delegatingAdapter("nocap", false)]]),
       reviewers: [],
+      delegationBudgetAuthority: new DelegationBudgetAuthority(),
     });
     const res = await orch.run({
       repoRoot: repo,
@@ -9074,8 +10127,1231 @@ describe("delegation belt injection (D32)", () => {
       delegate: true,
       delegationBelt: belt,
     });
+    expect(res.lifecycle).toBe("succeeded");
+    expect(readFileSync(join(res.runDir, "events.jsonl"), "utf8")).toMatch(
+      /delegation\.belt\.degraded.*manifest_unsupported/,
+    );
+    expect(readFileSync(join(res.runDir, "final", "telemetry.yaml"), "utf8")).toMatch(
+      /reason: manifest_unsupported/,
+    );
+  });
+
+  it("prioritizes an effective Delegate lane for a single candidate from a mixed pool", async () => {
+    const repo = await initRepo();
+    let incapableRuns = 0;
+    let delegateRuns = 0;
+    const orch = new Orchestrator({
+      registry: new Map([
+        ["nocap", delegatingAdapter("nocap", false, () => (incapableRuns += 1))],
+        [
+          "deleg",
+          delegatingAdapter(
+            "deleg",
+            true,
+            () => {
+              delegateRuns += 1;
+            },
+            false,
+            "connected",
+          ),
+        ],
+      ]),
+      reviewers: [],
+      delegationBudgetAuthority: new DelegationBudgetAuthority(),
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["nocap", "deleg"],
+      n: 1,
+      delegate: true,
+      delegationBelt: belt,
+    });
+    expect(res.lifecycle).toBe("succeeded");
+    expect(delegateRuns).toBe(1);
+    expect(incapableRuns).toBe(0);
+    const telemetry = readFileSync(join(res.runDir, "final", "telemetry.yaml"), "utf8");
+    expect(telemetry).toContain("reason: delegate_effective_first");
+    expect(telemetry).toMatch(/order:\n\s+- deleg\n\s+- nocap/);
+  });
+
+  it("persists partially degraded truth after both mixed Delegate lanes actually run", async () => {
+    const repo = await initRepo();
+    let capableRuns = 0;
+    let incapableRuns = 0;
+    const orch = new Orchestrator({
+      registry: new Map([
+        ["nocap", delegatingAdapter("nocap", false, () => (incapableRuns += 1))],
+        ["deleg", delegatingAdapter("deleg", true, () => (capableRuns += 1), false, "connected")],
+      ]),
+      reviewers: [],
+      delegationBudgetAuthority: new DelegationBudgetAuthority(),
+    });
+
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["nocap", "deleg"],
+      n: 2,
+      delegate: true,
+      delegationBelt: belt,
+    });
+
+    expect({ capableRuns, incapableRuns }).toEqual({ capableRuns: 1, incapableRuns: 1 });
+    const telemetry = new ArtifactStore(repo).readYaml<{
+      delegation: { requested: boolean; effective: boolean; used: boolean; reason: string };
+      request_requirements: Array<{
+        capability: string;
+        harness_id: string;
+        requested: boolean;
+        effective: boolean;
+        reason: string;
+      }>;
+    }>(join(res.runDir, "final", "telemetry.yaml"));
+    expect(telemetry?.delegation).toMatchObject({
+      requested: true,
+      effective: true,
+      used: false,
+      reason: "partially_degraded",
+    });
+    expect(
+      telemetry?.request_requirements.find(
+        (receipt) => receipt.capability === "delegation" && receipt.harness_id === "deleg",
+      ),
+    ).toMatchObject({ requested: true, effective: true, reason: "effective" });
+    expect(
+      telemetry?.request_requirements.find(
+        (receipt) => receipt.capability === "delegation" && receipt.harness_id === "nocap",
+      ),
+    ).toMatchObject({ requested: true, effective: false, reason: "manifest_unsupported" });
+  });
+
+  it("starts convergence on an effective Delegate lane when a mixed pool also has an incapable lane", async () => {
+    const repo = await initRepo();
+    let incapableRuns = 0;
+    let delegateRuns = 0;
+    let injected: unknown;
+    const orch = new Orchestrator({
+      registry: new Map([
+        ["nocap", delegatingAdapter("nocap", false, () => (incapableRuns += 1))],
+        [
+          "deleg",
+          delegatingAdapter(
+            "deleg",
+            true,
+            (spec) => {
+              delegateRuns += 1;
+              injected = spec.extra_mcp_servers;
+            },
+            false,
+            "connected",
+          ),
+        ],
+      ]),
+      reviewers: reviewers(),
+      delegationBudgetAuthority: new DelegationBudgetAuthority(),
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["nocap", "deleg"],
+      attempts: 1,
+      delegate: true,
+      delegationBelt: belt,
+    });
+    expect(delegateRuns).toBe(1);
+    expect(incapableRuns).toBe(0);
+    expect(
+      (injected as Array<{ env: Record<string, string> }>)[0]!.env
+        .CLAUDEXOR_DELEGATION_PARENT_RUN_ID,
+    ).toBe(res.runId);
+  });
+
+  it("degrades before start when the installed runtime has no belt entry", async () => {
+    const repo = await initRepo();
+    let injected: unknown = "unset";
+    const orch = new Orchestrator({
+      registry: new Map([
+        ["deleg", delegatingAdapter("deleg", true, (s) => (injected = s.extra_mcp_servers))],
+      ]),
+      reviewers: [],
+      delegationBudgetAuthority: new DelegationBudgetAuthority(),
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["deleg"],
+      delegate: true,
+      delegationBelt: null,
+    });
+    expect(res.lifecycle).toBe("succeeded");
+    expect(injected).toEqual([]);
+    expect(readFileSync(join(res.runDir, "final", "telemetry.yaml"), "utf8")).toMatch(
+      /reason: runtime_unavailable/,
+    );
+  });
+
+  it("hard-fails when an injected belt reports startup failure", async () => {
+    const repo = await initRepo();
+    const orch = new Orchestrator({
+      registry: new Map([["deleg", delegatingAdapter("deleg", true, undefined, false, "failed")]]),
+      reviewers: [],
+      delegationBudgetAuthority: new DelegationBudgetAuthority(),
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["deleg"],
+      delegate: true,
+      delegationBelt: belt,
+    });
+    expect(res.lifecycle).toBe("failed");
+    expect(readFileSync(join(res.runDir, "final", "telemetry.yaml"), "utf8")).toMatch(
+      /reason: startup_failed/,
+    );
+  });
+
+  it("hard-fails a delivered Agent on an unrecovered exact belt tool error", async () => {
+    const repo = await initRepo();
+    const orch = new Orchestrator({
+      registry: new Map([
+        [
+          "deleg",
+          delegatingAdapter("deleg", true, undefined, false, "pending", undefined, ["error"]),
+        ],
+      ]),
+      reviewers: [],
+      delegationBudgetAuthority: new DelegationBudgetAuthority(),
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["deleg"],
+      delegate: true,
+      delegationBelt: belt,
+    });
+    expect(res.lifecycle).toBe("failed");
+    const telemetry = readFileSync(join(res.runDir, "final", "telemetry.yaml"), "utf8");
+    expect(telemetry).toMatch(/delegation:\n[\s\S]*used: true[\s\S]*reason: used/);
+    const failure = readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8");
+    expect(failure).toContain("phase: delegation_runtime");
+    expect(failure).toContain("category: harness_error");
+    expect(failure).toContain("harnessId: deleg");
+    expect(failure).toContain("attemptId: a01");
+    expect(failure).toContain("rawDetailRef: attempts/a01/attempt.yaml");
+    expect(failure).toContain("Delegate belt tool failed in deleg");
+    expect(telemetry).toMatch(/outcome:\n[\s\S]*status: failed/);
+    expect(readFileSync(join(res.runDir, "events.jsonl"), "utf8")).not.toContain(
+      '"type":"review.started"',
+    );
+  });
+
+  it("allows the same exact belt operation to recover before Agent finalization", async () => {
+    const repo = await initRepo();
+    const orch = new Orchestrator({
+      registry: new Map([
+        [
+          "deleg",
+          delegatingAdapter("deleg", true, undefined, false, "pending", undefined, ["error", "ok"]),
+        ],
+      ]),
+      reviewers: [],
+      delegationBudgetAuthority: new DelegationBudgetAuthority(),
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["deleg"],
+      delegate: true,
+      delegationBelt: belt,
+    });
+    expect(res.lifecycle).toBe("succeeded");
+    const telemetry = readFileSync(join(res.runDir, "final", "telemetry.yaml"), "utf8");
+    expect(telemetry).toMatch(/delegation:\n[\s\S]*used: true[\s\S]*reason: used/);
+    expect(telemetry).toMatch(/unrecovered_tool_errors: 0/);
+  });
+
+  it("hard-fails convergence before review after an unrecovered belt tool error", async () => {
+    const repo = await initRepo();
+    const orch = new Orchestrator({
+      registry: new Map([
+        [
+          "deleg",
+          delegatingAdapter("deleg", true, undefined, false, "pending", undefined, ["error"]),
+        ],
+      ]),
+      reviewers: reviewers(),
+      delegationBudgetAuthority: new DelegationBudgetAuthority(),
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["deleg"],
+      attempts: 3,
+      delegate: true,
+      delegationBelt: belt,
+    });
     expect(res.lifecycle).toBe("failed");
     const failure = readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8");
-    expect(failure).toMatch(/delegation belt|mcp_injection|nocap/);
+    expect(failure).toContain("phase: delegation_runtime");
+    expect(failure).toContain("category: harness_error");
+    expect(failure).toContain("harnessId: deleg");
+    expect(failure).toContain("attemptId: a01");
+    expect(failure).toContain("rawDetailRef: attempts/a01/attempt.yaml");
+    expect(res.summary).toContain("convergence cannot review, repair, or continue");
+    const events = readFileSync(join(res.runDir, "events.jsonl"), "utf8");
+    expect(events.match(/"type":"harness.started"/g)).toHaveLength(1);
+    expect(events).not.toContain('"type":"review.started"');
+  });
+
+  it.each([
+    { lane: "Delegate race", delegate: true, attempts: undefined },
+    { lane: "Delegate convergence", delegate: true, attempts: 2 },
+    { lane: "ordinary Agent", delegate: false, attempts: undefined },
+  ])(
+    "quarantines a secret-bearing in-place diff for $lane without artifacts or Git objects",
+    async ({ delegate, attempts }) => {
+      const repo = await initRepo();
+      const secret = `sk-${"a".repeat(24)}`;
+      const adapter = delegatingAdapter(
+        "deleg",
+        true,
+        undefined,
+        false,
+        delegate ? "pending" : undefined,
+        undefined,
+        delegate ? ["error"] : [],
+        undefined,
+        (cwd) => writeFileSync(join(cwd, "LEAK.txt"), `TOKEN=${secret}\n`),
+      );
+      const orch = new Orchestrator({
+        registry: new Map([["deleg", adapter]]),
+        reviewers: attempts ? reviewers() : [],
+        delegationBudgetAuthority: new DelegationBudgetAuthority(),
+      });
+      const res = await orch.run({
+        repoRoot: repo,
+        prompt: "x",
+        mode: "agent",
+        harnesses: ["deleg"],
+        inPlace: true,
+        ...(attempts ? { attempts } : {}),
+        ...(delegate ? { delegate: true, delegationBelt: belt } : {}),
+      });
+
+      expect(res.lifecycle).toBe("failed");
+      expect(existsSync(join(repo, "LEAK.txt"))).toBe(false);
+      expect(existsSync(join(res.runDir, "final", "patch.diff"))).toBe(false);
+      expect(existsSync(join(res.runDir, "attempts", "a01", "patch.diff"))).toBe(false);
+      const workProduct = readFileSync(join(res.runDir, "final", "work_product.yaml"), "utf8");
+      expect(workProduct).toContain("secret_diff_refused: true");
+      expect(workProduct).toContain("secret_recovery: manual_cleanup");
+      expect(workProduct).toContain("adopted: true");
+      expect(workProduct).toContain("apply_state: applied_review_blocked");
+      expect(workProduct).toContain("revert_anchor_id: null");
+      const attempt = readFileSync(join(res.runDir, "attempts", "a01", "attempt.yaml"), "utf8");
+      expect(attempt).toContain("secret_diff_refusal:");
+      if (delegate) {
+        expect(attempt).toMatch(/delegation_belt:\n[\s\S]*tool_evidence: true/);
+        expect(attempt).toContain("unrecovered_tool_errors: 1");
+        expect(readFileSync(join(res.runDir, "final", "telemetry.yaml"), "utf8")).toMatch(
+          /delegation:\n[\s\S]*used: true/,
+        );
+      }
+      const events = readFileSync(join(res.runDir, "events.jsonl"), "utf8");
+      expect(events).toContain('"type":"work_product.emitted"');
+      expect(events.indexOf('"type":"work_product.emitted"')).toBeLessThan(
+        events.indexOf('"type":"run.failed"'),
+      );
+      expect(treeContainsBytes(res.runDir, secret)).toBe(false);
+      expect(gitObjectStoreContains(repo, secret)).toBe(false);
+      const failure = readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8");
+      expect(failure).toContain(
+        delegate ? "phase: delegation_runtime" : "phase: artifact_security",
+      );
+    },
+  );
+
+  it.each([false, true])(
+    "quarantines a binary secret-bearing Agent diff (inPlace=%s)",
+    async (inPlace) => {
+      const repo = await initRepo();
+      const secret = `sk-${"b".repeat(24)}`;
+      const adapter = delegatingAdapter(
+        "deleg",
+        true,
+        undefined,
+        false,
+        undefined,
+        undefined,
+        [],
+        undefined,
+        (cwd) =>
+          writeFileSync(
+            join(cwd, "LEAK.bin"),
+            Buffer.concat([Buffer.from([0]), Buffer.from(secret), Buffer.from([0])]),
+          ),
+      );
+      const orch = new Orchestrator({
+        registry: new Map([["deleg", adapter]]),
+        reviewers: [],
+      });
+      const res = await orch.run({
+        repoRoot: repo,
+        prompt: "x",
+        mode: "agent",
+        harnesses: ["deleg"],
+        inPlace,
+      });
+
+      expect(res.lifecycle).toBe("failed");
+      expect(existsSync(join(repo, "LEAK.bin"))).toBe(false);
+      expect(existsSync(join(res.runDir, "final", "patch.diff"))).toBe(false);
+      expect(existsSync(join(res.runDir, "attempts", "a01", "patch.diff"))).toBe(false);
+      expect(treeContainsBytes(res.runDir, secret)).toBe(false);
+      expect(gitObjectStoreContains(repo, secret)).toBe(false);
+      expect(readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8")).toContain(
+        "phase: artifact_security",
+      );
+      expect(existsSync(join(res.runDir, "final", "work_product.yaml"))).toBe(inPlace);
+    },
+  );
+
+  it("reports manual cleanup when an in-place Delegate stages secret bytes", async () => {
+    const repo = await initRepo();
+    const secret = `sk-${"e".repeat(24)}`;
+    const adapter = delegatingAdapter(
+      "deleg",
+      true,
+      undefined,
+      false,
+      "pending",
+      undefined,
+      ["error"],
+      undefined,
+      (cwd) => {
+        writeFileSync(join(cwd, "LEAK.txt"), `${secret}\n`);
+        execFileSync("git", ["-C", cwd, "add", "LEAK.txt"]);
+      },
+    );
+    const orch = new Orchestrator({
+      registry: new Map([["deleg", adapter]]),
+      reviewers: [],
+      delegationBudgetAuthority: new DelegationBudgetAuthority(),
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["deleg"],
+      inPlace: true,
+      delegate: true,
+      delegationBelt: belt,
+    });
+
+    expect(res.lifecycle).toBe("failed");
+    expect(existsSync(join(repo, "LEAK.txt"))).toBe(false);
+    expect(execFileSync("git", ["-C", repo, "show", ":LEAK.txt"]).toString()).toContain(secret);
+    const workProduct = readFileSync(join(res.runDir, "final", "work_product.yaml"), "utf8");
+    expect(workProduct).toContain("secret_recovery: manual_cleanup");
+    expect(workProduct).toContain("apply_state: applied_review_blocked");
+    const failure = readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8");
+    expect(failure).toContain("Inspect and clean the state named in the recovery receipt");
+    expect(treeContainsBytes(res.runDir, secret)).toBe(false);
+  });
+
+  it("exactly reverts a secret-bearing non-Git in-place convergence attempt", async () => {
+    const repo = reapMk(join(tmpdir(), "claudexor-secret-nongit-"));
+    writeFileSync(join(repo, "README.md"), "# test\n");
+    const secret = `sk-${"g".repeat(24)}`;
+    const adapter = delegatingAdapter(
+      "deleg",
+      true,
+      undefined,
+      false,
+      undefined,
+      undefined,
+      [],
+      undefined,
+      (cwd) => writeFileSync(join(cwd, "LEAK.txt"), `${secret}\n`),
+    );
+    const orch = new Orchestrator({
+      registry: new Map([["deleg", adapter]]),
+      reviewers: reviewers(),
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["deleg"],
+      attempts: 2,
+      inPlace: true,
+    });
+
+    expect(res.lifecycle).toBe("failed");
+    expect(existsSync(join(repo, "LEAK.txt"))).toBe(false);
+    expect(existsSync(join(repo, ".git"))).toBe(false);
+    expect(readFileSync(join(res.runDir, "final", "work_product.yaml"), "utf8")).toContain(
+      "secret_recovery: reverted",
+    );
+    expect(treeContainsBytes(res.runDir, secret)).toBe(false);
+  });
+
+  it("refuses a secret-bearing non-Git binary output without persisting it", async () => {
+    const repo = reapMk(join(tmpdir(), "claudexor-secret-nongit-binary-"));
+    writeFileSync(join(repo, "README.md"), "# test\n");
+    const secret = `sk-${"i".repeat(24)}`;
+    const adapter = delegatingAdapter(
+      "deleg",
+      true,
+      undefined,
+      false,
+      undefined,
+      undefined,
+      [],
+      undefined,
+      (cwd) =>
+        writeFileSync(
+          join(cwd, "LEAK.bin"),
+          Buffer.concat([Buffer.from([0]), Buffer.from(secret), Buffer.from([0])]),
+        ),
+    );
+    const orch = new Orchestrator({
+      registry: new Map([["deleg", adapter]]),
+      reviewers: reviewers(),
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["deleg"],
+      attempts: 2,
+      inPlace: true,
+    });
+
+    expect(res.lifecycle).toBe("failed");
+    expect(existsSync(join(repo, "LEAK.bin"))).toBe(true);
+    expect(existsSync(join(res.runDir, "final", "patch.diff"))).toBe(false);
+    expect(existsSync(join(res.runDir, "attempts", "a01", "patch.diff"))).toBe(false);
+    expect(readFileSync(join(res.runDir, "final", "work_product.yaml"), "utf8")).toContain(
+      "secret_recovery: manual_cleanup",
+    );
+    expect(treeContainsBytes(res.runDir, secret)).toBe(false);
+  });
+
+  it("fails closed when non-Git binary output is unreadable during capture", async () => {
+    const repo = reapMk(join(tmpdir(), "claudexor-secret-nongit-unreadable-"));
+    writeFileSync(join(repo, "README.md"), "# test\n");
+    const secret = `sk-${"j".repeat(24)}`;
+    const adapter = delegatingAdapter(
+      "deleg",
+      true,
+      undefined,
+      false,
+      undefined,
+      undefined,
+      [],
+      undefined,
+      (cwd) => {
+        const leak = join(cwd, "LEAK.bin");
+        writeFileSync(leak, Buffer.concat([Buffer.from([0]), Buffer.from(secret)]));
+        chmodSync(leak, 0o000);
+      },
+    );
+    const orch = new Orchestrator({
+      registry: new Map([["deleg", adapter]]),
+      reviewers: reviewers(),
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["deleg"],
+      attempts: 2,
+      inPlace: true,
+    });
+
+    expect(res.lifecycle).toBe("failed");
+    expect(existsSync(join(res.runDir, "final", "patch.diff"))).toBe(false);
+    expect(existsSync(join(res.runDir, "attempts", "a01", "patch.diff"))).toBe(false);
+    expect(readFileSync(join(res.runDir, "final", "work_product.yaml"), "utf8")).toContain(
+      "secret_recovery: manual_cleanup",
+    );
+    expect(treeContainsBytes(res.runDir, secret)).toBe(false);
+    chmodSync(join(repo, "LEAK.bin"), 0o600);
+  });
+
+  it.each(["replace", "delete"] as const)(
+    "refuses a binary patch whose $case reverse payload contains a secret",
+    async (operation) => {
+      const repo = await initRepo();
+      const secret = `sk-${"c".repeat(24)}`;
+      const path = join(repo, "BASE.bin");
+      writeFileSync(path, Buffer.concat([Buffer.from([0]), Buffer.from(secret)]));
+      execFileSync("git", ["-C", repo, "add", "BASE.bin"]);
+      execFileSync("git", [
+        "-C",
+        repo,
+        "-c",
+        "user.email=t@t.dev",
+        "-c",
+        "user.name=Test",
+        "commit",
+        "-m",
+        "binary base",
+      ]);
+      const adapter = delegatingAdapter(
+        "deleg",
+        true,
+        undefined,
+        false,
+        undefined,
+        undefined,
+        [],
+        undefined,
+        (cwd) => {
+          const candidate = join(cwd, "BASE.bin");
+          if (operation === "delete") unlinkSync(candidate);
+          else writeFileSync(candidate, Buffer.from([0, 1, 2, 3]));
+        },
+      );
+      const orch = new Orchestrator({ registry: new Map([["deleg", adapter]]), reviewers: [] });
+      const res = await orch.run({
+        repoRoot: repo,
+        prompt: "x",
+        mode: "agent",
+        harnesses: ["deleg"],
+      });
+
+      expect(res.lifecycle).toBe("failed");
+      expect(existsSync(join(res.runDir, "final", "patch.diff"))).toBe(false);
+      expect(existsSync(join(res.runDir, "attempts", "a01", "patch.diff"))).toBe(false);
+      expect(treeContainsBytes(res.runDir, secret)).toBe(false);
+    },
+  );
+
+  it.each(["owned artifact", "ignored markdown link"] as const)(
+    "refuses secret-bearing raster output from an $source",
+    async (source) => {
+      const repo = await initRepo();
+      if (source === "ignored markdown link") {
+        writeFileSync(join(repo, ".gitignore"), "preview.png\n");
+        execFileSync("git", ["-C", repo, "add", ".gitignore"]);
+        execFileSync("git", [
+          "-C",
+          repo,
+          "-c",
+          "user.email=t@t.dev",
+          "-c",
+          "user.name=Test",
+          "commit",
+          "-m",
+          "ignore preview",
+        ]);
+      }
+      const secret = `sk-${"h".repeat(24)}`;
+      const adapter = delegatingAdapter(
+        "deleg",
+        true,
+        undefined,
+        false,
+        undefined,
+        undefined,
+        [],
+        undefined,
+        (cwd) => {
+          const path =
+            source === "owned artifact"
+              ? join(cwd, ".claudexor-artifacts", "browser", "shot.png")
+              : join(cwd, "preview.png");
+          mkdirSync(join(path, ".."), { recursive: true });
+          writeFileSync(path, Buffer.concat([Buffer.from([0]), Buffer.from(secret)]));
+          const clean = join(cwd, ".claudexor-artifacts", "browser", "clean.png");
+          mkdirSync(join(clean, ".."), { recursive: true });
+          writeFileSync(clean, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+        },
+        source === "ignored markdown link" ? "![preview](preview.png)" : "Implemented.",
+      );
+      const orch = new Orchestrator({ registry: new Map([["deleg", adapter]]), reviewers: [] });
+      const res = await orch.run({
+        repoRoot: repo,
+        prompt: "x",
+        mode: "agent",
+        harnesses: ["deleg"],
+      });
+
+      expect(res.lifecycle).toBe("failed");
+      expect(treeContainsBytes(res.runDir, secret)).toBe(false);
+      expect(existsSync(join(res.runDir, "final", "patch.diff"))).toBe(false);
+      expect(existsSync(join(res.runDir, "attempts", "a01", "patch.diff"))).toBe(false);
+      expect(existsSync(join(res.runDir, "attempts", "a01", "produced"))).toBe(false);
+    },
+  );
+
+  it("turns an unreadable raster into a sanitized artifact-security refusal", async () => {
+    const repo = await initRepo();
+    writeFileSync(join(repo, ".gitignore"), "unreadable.png\n");
+    execFileSync("git", ["-C", repo, "add", ".gitignore"]);
+    execFileSync("git", [
+      "-C",
+      repo,
+      "-c",
+      "user.email=t@t.dev",
+      "-c",
+      "user.name=Test",
+      "commit",
+      "-m",
+      "ignore unreadable preview",
+    ]);
+    const adapter = delegatingAdapter(
+      "deleg",
+      true,
+      undefined,
+      false,
+      undefined,
+      undefined,
+      [],
+      undefined,
+      (cwd) => {
+        const path = join(cwd, "unreadable.png");
+        writeFileSync(path, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+        chmodSync(path, 0o000);
+      },
+      "![preview](unreadable.png)",
+    );
+    const orch = new Orchestrator({ registry: new Map([["deleg", adapter]]), reviewers: [] });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["deleg"],
+    });
+
+    expect(res.lifecycle).toBe("failed");
+    expect(readFileSync(join(res.runDir, "attempts", "a01", "attempt.yaml"), "utf8")).toContain(
+      "secret_diff_refusal:",
+    );
+    expect(readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8")).toContain(
+      "phase: artifact_security",
+    );
+    expect(existsSync(join(res.runDir, "attempts", "a01", "produced"))).toBe(false);
+  });
+
+  it.each(["oversized", "unreadable"] as const)(
+    "emits a truthful manual-cleanup receipt for an $state in-place raster",
+    async (state) => {
+      const repo = reapMk(join(tmpdir(), `claudexor-raster-${state}-`));
+      writeFileSync(join(repo, "README.md"), "# test\n");
+      const raster = join(repo, ".claudexor-artifacts", "preview.png");
+      const adapter = delegatingAdapter(
+        "raster",
+        true,
+        undefined,
+        false,
+        undefined,
+        undefined,
+        [],
+        undefined,
+        (cwd) => {
+          const output = join(cwd, ".claudexor-artifacts", "preview.png");
+          mkdirSync(join(output, ".."), { recursive: true });
+          writeFileSync(
+            output,
+            state === "oversized"
+              ? Buffer.alloc(16 * 1024 * 1024 + 1)
+              : Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+          );
+          if (state === "unreadable") chmodSync(output, 0o000);
+        },
+      );
+      const orch = new Orchestrator({
+        registry: new Map([["raster", adapter]]),
+        reviewers: reviewers(),
+      });
+
+      const res = await orch.run({
+        repoRoot: repo,
+        prompt: "x",
+        mode: "agent",
+        harnesses: ["raster"],
+        attempts: 2,
+        inPlace: true,
+      });
+
+      expect(res.lifecycle).toBe("failed");
+      expect(existsSync(join(res.runDir, "final", "patch.diff"))).toBe(false);
+      const workProduct = readFileSync(join(res.runDir, "final", "work_product.yaml"), "utf8");
+      expect(workProduct).toContain("secret_recovery: manual_cleanup");
+      expect(workProduct.replace(/\s+/g, " ")).toContain(
+        state === "oversized"
+          ? "could not be proven reversible"
+          : "could not be proven secret-safe or captured as an exact reversible patch",
+      );
+      expect(workProduct).not.toContain("later user edits");
+      const refusalSurface = [
+        res.summary,
+        readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8"),
+        readFileSync(join(res.runDir, "attempts", "a01", "attempt.yaml"), "utf8"),
+      ].join("\n");
+      expect(refusalSurface).toContain("could not be proven secret-safe");
+      expect(refusalSurface).not.toContain("contains secret-like token");
+      if (state === "unreadable" && existsSync(raster)) chmodSync(raster, 0o600);
+    },
+  );
+
+  it("excludes a discarded secret candidate so its clean best-of sibling can win", async () => {
+    const repo = await initRepo();
+    const secret = `sk-${"q".repeat(24)}`;
+    const leaky = delegatingAdapter(
+      "leaky",
+      true,
+      undefined,
+      false,
+      undefined,
+      undefined,
+      [],
+      undefined,
+      (cwd) => writeFileSync(join(cwd, "LEAK.txt"), `${secret}\n`),
+    );
+    const clean = delegatingAdapter(
+      "clean",
+      true,
+      undefined,
+      false,
+      undefined,
+      undefined,
+      [],
+      undefined,
+      (cwd) => writeFileSync(join(cwd, "CLEAN.txt"), "clean candidate\n"),
+    );
+    const orch = new Orchestrator({
+      registry: new Map([
+        ["leaky", leaky],
+        ["clean", clean],
+      ]),
+      reviewers: reviewers(),
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["leaky", "clean"],
+      n: 2,
+    });
+
+    expect(res.lifecycle).toBe("succeeded");
+    expect(res.candidates.find((candidate) => candidate.attemptId === res.winner)?.harnessId).toBe(
+      "clean",
+    );
+    expect(readFileSync(join(res.runDir, "final", "patch.diff"), "utf8")).toContain("CLEAN.txt");
+    expect(treeContainsBytes(res.runDir, secret)).toBe(false);
+  });
+
+  it("keeps an all-secret best-of race as an artifact-security hard failure", async () => {
+    const repo = await initRepo();
+    const secret = `sk-${"s".repeat(24)}`;
+    const leaky = (id: string) =>
+      delegatingAdapter(id, true, undefined, false, undefined, undefined, [], undefined, (cwd) =>
+        writeFileSync(join(cwd, `${id}.txt`), `${secret}\n`),
+      );
+    const orch = new Orchestrator({
+      registry: new Map([
+        ["leaky-a", leaky("leaky-a")],
+        ["leaky-b", leaky("leaky-b")],
+      ]),
+      reviewers: reviewers(),
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["leaky-a", "leaky-b"],
+      n: 2,
+    });
+
+    expect(res.lifecycle).toBe("failed");
+    expect(res.winner).toBeNull();
+    expect(readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8")).toContain(
+      "phase: artifact_security",
+    );
+    expect(treeContainsBytes(res.runDir, secret)).toBe(false);
+  });
+
+  it("keeps harness commits inside the disposable candidate clone", async () => {
+    const repo = await initRepo();
+    const secret = `sk-${"d".repeat(24)}`;
+    const adapter = delegatingAdapter(
+      "deleg",
+      true,
+      undefined,
+      false,
+      undefined,
+      undefined,
+      [],
+      undefined,
+      (cwd) => {
+        expect(execFileSync("git", ["-C", cwd, "remote"]).toString()).toBe("");
+        writeFileSync(join(cwd, "LEAK.txt"), `${secret}\n`);
+        execFileSync("git", ["-C", cwd, "add", "LEAK.txt"]);
+        execFileSync("git", [
+          "-C",
+          cwd,
+          "-c",
+          "user.email=t@t.dev",
+          "-c",
+          "user.name=Test",
+          "commit",
+          "-m",
+          "candidate",
+        ]);
+      },
+    );
+    const orch = new Orchestrator({ registry: new Map([["deleg", adapter]]), reviewers: [] });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["deleg"],
+    });
+
+    expect(res.lifecycle).toBe("failed");
+    expect(gitObjectStoreContains(repo, secret)).toBe(false);
+    expect(treeContainsBytes(res.runDir, secret)).toBe(false);
+  });
+
+  it("keeps a failed in-place Delegate race honestly applied and revertable", async () => {
+    const repo = await initRepo();
+    const orch = new Orchestrator({
+      registry: new Map([
+        [
+          "deleg",
+          delegatingAdapter("deleg", true, undefined, false, "pending", undefined, ["error"]),
+        ],
+      ]),
+      reviewers: [],
+      delegationBudgetAuthority: new DelegationBudgetAuthority(),
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["deleg"],
+      inPlace: true,
+      create: true,
+      delegate: true,
+      delegationBelt: belt,
+    });
+    expect(res.lifecycle).toBe("failed");
+    expect(existsSync(join(repo, "CHANGED.txt"))).toBe(true);
+    const wp = readFileSync(join(res.runDir, "final", "work_product.yaml"), "utf8");
+    expect(wp).toContain("kind: new_repo");
+    expect(wp).toContain("adopted: true");
+    expect(wp).toContain("apply_state: applied_review_blocked");
+    expect(wp).toMatch(/pre_turn_sha: ['"]?[0-9a-f]{6,}/);
+    expect(wp).toMatch(/post_turn_sha: ['"]?[0-9a-f]{6,}/);
+    const events = readFileSync(join(res.runDir, "events.jsonl"), "utf8");
+    expect(events.indexOf('"type":"work_product.emitted"')).toBeGreaterThanOrEqual(0);
+    expect(events.indexOf('"type":"work_product.emitted"')).toBeLessThan(
+      events.indexOf('"type":"run.failed"'),
+    );
+    const anchorId = wp.match(/revert_anchor_id:\s+['"]?(sha256:[0-9a-f]{64})/)?.[1];
+    expect(anchorId).toBeDefined();
+    const { revertInPlaceFromAnchor } = await import("@claudexor/delivery");
+    expect(await revertInPlaceFromAnchor(repo, anchorId!)).toMatchObject({ reverted: true });
+    expect(existsSync(join(repo, "CHANGED.txt"))).toBe(false);
+  });
+
+  it("keeps a failed in-place Delegate convergence honestly applied and revertable", async () => {
+    const repo = await initRepo();
+    const orch = new Orchestrator({
+      registry: new Map([
+        [
+          "deleg",
+          delegatingAdapter("deleg", true, undefined, false, "pending", undefined, ["error"]),
+        ],
+      ]),
+      reviewers: reviewers(),
+      delegationBudgetAuthority: new DelegationBudgetAuthority(),
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["deleg"],
+      attempts: 3,
+      inPlace: true,
+      delegate: true,
+      delegationBelt: belt,
+    });
+    expect(res.lifecycle).toBe("failed");
+    expect(existsSync(join(repo, "CHANGED.txt"))).toBe(true);
+    const wp = readFileSync(join(res.runDir, "final", "work_product.yaml"), "utf8");
+    expect(wp).toContain("adopted: true");
+    expect(wp).toContain("apply_state: applied_review_blocked");
+    expect(wp).toContain("attempts: 1");
+    const events = readFileSync(join(res.runDir, "events.jsonl"), "utf8");
+    expect(events.indexOf('"type":"work_product.emitted"')).toBeGreaterThanOrEqual(0);
+    expect(events.indexOf('"type":"work_product.emitted"')).toBeLessThan(
+      events.indexOf('"type":"run.failed"'),
+    );
+    const anchorId = wp.match(/revert_anchor_id:\s+['"]?(sha256:[0-9a-f]{64})/)?.[1];
+    expect(anchorId).toBeDefined();
+    const { revertInPlaceFromAnchor } = await import("@claudexor/delivery");
+    expect(await revertInPlaceFromAnchor(repo, anchorId!)).toMatchObject({ reverted: true });
+    expect(existsSync(join(repo, "CHANGED.txt"))).toBe(false);
+  });
+
+  it("lets cancellation win when it arrives while a belt failure is finalizing", async () => {
+    const repo = await initRepo();
+    const abort = new AbortController();
+    const orch = new Orchestrator({
+      registry: new Map([
+        [
+          "deleg",
+          delegatingAdapter("deleg", true, undefined, false, "pending", undefined, ["error"], () =>
+            abort.abort("wall_clock_exceeded"),
+          ),
+        ],
+      ]),
+      reviewers: reviewers(),
+      delegationBudgetAuthority: new DelegationBudgetAuthority(),
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["deleg"],
+      attempts: 3,
+      delegate: true,
+      delegationBelt: belt,
+      signal: abort.signal,
+    });
+    expect(res.lifecycle).toBe("cancelled");
+    expect(res.facts.reason).toBe("wall_clock_exceeded");
+    expect(readFileSync(join(res.runDir, "events.jsonl"), "utf8")).not.toContain(
+      '"phase":"delegation_runtime"',
+    );
+  });
+
+  it("lets an unrecovered belt tool failure dominate a healthy mixed-race sibling", async () => {
+    const repo = await initRepo();
+    const orch = new Orchestrator({
+      registry: new Map([
+        [
+          "failed",
+          delegatingAdapter("failed", true, undefined, false, "pending", undefined, ["error"]),
+        ],
+        ["healthy", delegatingAdapter("healthy", true, undefined, false, "connected")],
+      ]),
+      reviewers: [],
+      delegationBudgetAuthority: new DelegationBudgetAuthority(),
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["failed", "healthy"],
+      n: 2,
+      delegate: true,
+      delegationBelt: belt,
+    });
+    expect(res.lifecycle).toBe("failed");
+    expect(res.winner).toBeNull();
+    expect(readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8")).toContain(
+      "phase: delegation_runtime",
+    );
+  });
+
+  it("lets an unrecovered belt failure dominate a discarded secret sibling", async () => {
+    const repo = await initRepo();
+    const secret = `sk-${"t".repeat(24)}`;
+    const orch = new Orchestrator({
+      registry: new Map([
+        [
+          "failed",
+          delegatingAdapter("failed", true, undefined, false, "pending", undefined, ["error"]),
+        ],
+        [
+          "leaky",
+          delegatingAdapter(
+            "leaky",
+            true,
+            undefined,
+            false,
+            "connected",
+            undefined,
+            [],
+            undefined,
+            (cwd) => writeFileSync(join(cwd, "LEAK.txt"), `${secret}\n`),
+          ),
+        ],
+      ]),
+      reviewers: [],
+      delegationBudgetAuthority: new DelegationBudgetAuthority(),
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["failed", "leaky"],
+      n: 2,
+      delegate: true,
+      delegationBelt: belt,
+    });
+
+    expect(res.lifecycle).toBe("failed");
+    expect(readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8")).toContain(
+      "phase: delegation_runtime",
+    );
+    expect(treeContainsBytes(res.runDir, secret)).toBe(false);
+  });
+
+  it("lets any injected belt startup failure dominate a mixed race", async () => {
+    const repo = await initRepo();
+    const orch = new Orchestrator({
+      registry: new Map([
+        ["failed", delegatingAdapter("failed", true, undefined, false, "failed")],
+        ["ready", delegatingAdapter("ready", true, undefined, false, "connected")],
+      ]),
+      reviewers: [],
+      delegationBudgetAuthority: new DelegationBudgetAuthority(),
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["failed", "ready"],
+      n: 2,
+      delegate: true,
+      delegationBelt: belt,
+    });
+    expect(res.lifecycle).toBe("failed");
+    expect(res.winner).toBeNull();
+    expect(readFileSync(join(res.runDir, "final", "telemetry.yaml"), "utf8")).toMatch(
+      /reason: startup_failed/,
+    );
+  });
+
+  it("hard-fails convergence immediately when an injected belt fails startup", async () => {
+    const repo = await initRepo();
+    const orch = new Orchestrator({
+      registry: new Map([["deleg", delegatingAdapter("deleg", true, undefined, false, "failed")]]),
+      reviewers: reviewers(),
+      delegationBudgetAuthority: new DelegationBudgetAuthority(),
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["deleg"],
+      attempts: 3,
+      delegate: true,
+      delegationBelt: belt,
+    });
+    expect(res.lifecycle).toBe("failed");
+    expect(readFileSync(join(res.runDir, "final", "telemetry.yaml"), "utf8")).toMatch(
+      /reason: startup_failed/,
+    );
+    const events = readFileSync(join(res.runDir, "events.jsonl"), "utf8");
+    expect(events.match(/"type":"harness.started"/g)).toHaveLength(1);
+    expect(events).not.toContain('"type":"review.started"');
+  });
+});
+
+describe("frozen-plan brief delivery (withPlanBrief, INV-081)", () => {
+  type PlanBriefInput = {
+    prompt: string;
+    planRef?: { runId: string; sha256: string; path: string };
+  };
+  function planBriefFixture() {
+    const dir = reapMk(join(tmpdir(), "claudexor-planbrief-"));
+    const store = new ArtifactStore(join(dir, "repo"), { claudexorDir: join(dir, "claudexor") });
+    const paths = store.createRun("run-planbrief");
+    const events: Array<{ type: string; payload: Record<string, unknown> }> = [];
+    const orch = new Orchestrator({ registry: new Map() });
+    const apply = (input: PlanBriefInput): PlanBriefInput =>
+      (
+        orch as unknown as {
+          withPlanBrief(
+            input: PlanBriefInput,
+            store: ArtifactStore,
+            paths: unknown,
+            log: unknown,
+          ): PlanBriefInput;
+        }
+      ).withPlanBrief(input, store, paths, {
+        emit: (type: string, payload: Record<string, unknown>) => events.push({ type, payload }),
+      });
+    return { dir, paths, events, apply };
+  }
+
+  it("[INV-081:plan-brief-materialized] verifies the frozen hash and materializes context/PLAN.md in the run artifact tree", () => {
+    const { dir, paths, events, apply } = planBriefFixture();
+    const planText = "# Plan\n\n1. do the thing\n";
+    const planPath = join(dir, "final-plan.md");
+    writeFileSync(planPath, planText);
+    const digest = sha256(planText).replace(/^sha256:/, "");
+    const out = apply({
+      prompt: "implement it",
+      planRef: { runId: "run-plan", sha256: digest, path: planPath },
+    });
+    const briefPath = join(paths.contextDir, "PLAN.md");
+    // The brief lands OUTSIDE every worktree (the run artifact tree), and the
+    // prompt points at that absolute path — the plan is a file, never
+    // re-embedded prose.
+    expect(readFileSync(briefPath, "utf8")).toBe(planText);
+    expect(out.prompt).toContain("implement it");
+    expect(out.prompt).toContain(`The approved plan is at: ${briefPath}`);
+    expect(events).toEqual([
+      {
+        type: "plan.brief.materialized",
+        payload: { plan_run_id: "run-plan", sha256: digest, path: "context/PLAN.md" },
+      },
+    ]);
+  });
+
+  it("[INV-081:plan-missing] a missing or unreadable frozen plan fails LOUDLY before any harness spawns", () => {
+    const { dir, paths, events, apply } = planBriefFixture();
+    const gone = join(dir, "no-such-plan.md");
+    expect(() =>
+      apply({
+        prompt: "implement it",
+        planRef: { runId: "run-plan", sha256: "c".repeat(64), path: gone },
+      }),
+    ).toThrow(`implement plan: the frozen plan at ${gone} is missing or unreadable`);
+    expect(existsSync(join(paths.contextDir, "PLAN.md"))).toBe(false);
+    expect(events).toEqual([]);
+  });
+
+  it("[INV-081:plan-hash-mismatch] a plan modified after freeze is a loud tamper failure, never a silent run", () => {
+    const { dir, paths, events, apply } = planBriefFixture();
+    const planPath = join(dir, "final-plan.md");
+    writeFileSync(planPath, "# Plan (original)\n");
+    const frozen = sha256(readFileSync(planPath, "utf8")).replace(/^sha256:/, "");
+    writeFileSync(planPath, "# Plan (tampered after freeze)\n");
+    expect(() =>
+      apply({
+        prompt: "implement it",
+        planRef: { runId: "run-plan", sha256: frozen, path: planPath },
+      }),
+    ).toThrow(/plan hash mismatch .*the plan was modified after freeze/);
+    expect(existsSync(join(paths.contextDir, "PLAN.md"))).toBe(false);
+    expect(events).toEqual([]);
+  });
+
+  it("input without a planRef passes through untouched (one-shot runs carry no plan brief)", () => {
+    const { paths, events, apply } = planBriefFixture();
+    const input = { prompt: "just do it" };
+    expect(apply(input)).toBe(input);
+    expect(existsSync(join(paths.contextDir, "PLAN.md"))).toBe(false);
+    expect(events).toEqual([]);
   });
 });

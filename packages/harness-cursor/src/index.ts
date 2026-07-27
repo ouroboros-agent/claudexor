@@ -713,10 +713,9 @@ async function* runCursor(
     return;
   }
   const args = ["-p", "--output-format", "stream-json", ...accessArgs(spec.access)];
-  // Native plan mode (D31): cursor exposes a first-class read-only planning
-  // mode; ride it for plan-intent lanes instead of prompt-templating only.
-  // (codex/opencode have no headless plan flag — they keep the template.)
-  if (spec.intent === "plan") args.push("--mode", "plan");
+  // Native Plan's createPlan schema cannot carry D-16 WorkReport; native read-only
+  // Ask preserves prompt-owned plan intent and the model-authored final report.
+  if (spec.intent === "plan") args.push("--mode", "ask");
   // W-C4 live deltas (engine-gated; the parser applies the documented taxonomy).
   if (spec.stream_deltas) args.push("--stream-partial-output");
   if (spec.model_hint) args.push("--model", spec.model_hint);
@@ -785,6 +784,7 @@ async function* runCursor(
     route === "local_session" ? "vendor_native" : "managed_api_key",
     route === "local_session" ? "native_session" : "api_key_env",
     spec.intent === "plan",
+    false,
   );
   yield* deps.runCliHarness({
     bin: BIN,

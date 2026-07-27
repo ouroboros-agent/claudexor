@@ -317,6 +317,42 @@ modes) run `node scripts/cursor-itest.mjs`; the real-harness battery covers
 (phases 10-12, filterable via `CLAUDEXOR_BATTERY_PHASES=10,11,12`). Use `claudexor doctor` for Codex/Claude/Cursor/
 OpenCode harness availability and smoke status.
 
+### Portable Agent Skill and Copilot plugin
+
+`plugins/copilot` is the portable GitHub Copilot distribution. It contains one
+canonical `skills/claudexor/SKILL.md` and a `.mcp.json` descriptor that invokes
+the preinstalled `claudexor mcp serve` command. It intentionally carries no
+absolute runtime path, frozen config root, plugin-version environment marker,
+credential, hook, command alias, or host-local business logic.
+
+```bash
+npm install -g claudexor
+copilot plugin install razzant/claudexor:plugins/copilot
+```
+
+The portable path supports macOS and Linux with Node.js 20.19 or newer. Windows
+is not supported. Copilot owns installation, caching, enable/disable, update,
+and uninstall for this plugin; `claudexor plugin install` does not add a fifth
+managed Copilot host. Generated Claude Code, Codex, Cursor, and OpenCode
+integrations keep their existing ownership and repair semantics and are never
+replaced automatically by the portable plugin.
+
+The bundled Skill starts with doctor-backed status and read-only tools. It may
+request mutating run tools only for explicit implementation intent, and MCP
+does not expose patch application. A host may use the ordinary CLI delivery
+path only after an explicit user request and a server-owned eligible apply
+verdict. Credentials remain in the existing `claudexor auth login` and
+`claudexor secrets set` flows; risk acceptance and overrides remain human
+decisions.
+
+The public MCP Registry descriptor is `server.json`. It points to the executable
+`claudexor` npm package and supplies fixed `mcp serve` package arguments for the
+embedded local stdio server. `mcpName` in that package, the Registry name, the
+package version, and the portable plugin version are release-parity checked.
+Registry publication runs only through the separate manual tag-bound
+`publish-mcp.yml` GitHub OIDC workflow after the npm package and public stable
+GitHub Release exist; it is idempotent and confirms the exact registry record.
+
 Harness readiness is route/context-specific. `auth_sources` / `authSources`
 separates credential availability (`available | unavailable | unknown`) from
 verification (`passed | failed | not_run`); manifests still declare only
@@ -360,6 +396,20 @@ For Zed, register Claudexor as an agent server in `settings.json`:
 ```
 
 The server uses `@agentclientprotocol/sdk` and stable ACP protocol version 1.
+ACP Terminal Auth is **experimental**. When a client explicitly advertises the
+experimental terminal-auth capability, Claudexor currently offers Codex
+subscription login on macOS and Linux. The client runs
+`claudexor acp serve auth login codex` in its interactive terminal; that exact
+suffix is allowlisted and routed to the existing durable device-code login.
+Clients without the capability receive no terminal auth methods. Claude and
+Cursor are not advertised yet because their current macOS setup flow opens a
+second Terminal and cannot prove completion inside the ACP client's terminal.
+The current experimental surface is proactive: clients may present the method
+from `initialize`; Claudexor does not yet emit auth_required or implement the
+legacy authenticate request. Cancelling the ACP-owned terminal and an
+unsupported Codex device flow both exit non-zero and never launch a second
+Terminal window.
+
 `session/new` creates a daemon thread (default `in_place`) and returns that
 thread id. `session/list`, `session/load`, `session/resume`, `session/close`,
 `session/prompt`, and `session/cancel` all resolve through the same `/v2`
@@ -659,7 +709,7 @@ always preferred.
 | `CLAUDEXOR_PLUGIN_VERSION` | mcp-server | Set by generated host configs; a mismatch with the CLI version is a hard `mcp serve` refusal (`plugin_artifact_skew`) whose message names `claudexor plugin repair all`. |
 | `CLAUDEXOR_ROOT_MODE` | plugins / mcp-server | Provenance marker (`explicit`) the installer stamps ALONGSIDE a serialized `CLAUDEXOR_CONFIG_DIR` only for an operator-chosen non-default root; its absence next to a frozen non-default root is treated as legacy skew and refused. Default-root installs serialize neither. Never set by hand. |
 | `CLAUDEXOR_MANAGED` | plugins | Ownership marker the installer writes into generated host MCP configs (never set by hand). |
-| `CLAUDEXOR_DELEGATION_PARENT_RUN_ID` / `CLAUDEXOR_DELEGATION_DEPTH` / `CLAUDEXOR_DELEGATION_MAX_SUBRUNS` / `CLAUDEXOR_DELEGATION_BUDGET` | mcp-server (delegation belt) | Injected by the daemon into the `agent --delegate` belt process (`claudexor mcp serve-belt`); carry the parent run id, nesting depth (belt refuses depth>0), the per-parent sub-run cap, and the parent paid-budget headroom snapshot. Never set by hand. |
+| `CLAUDEXOR_DELEGATION_PARENT_RUN_ID` / `CLAUDEXOR_DELEGATION_REPO_ROOT` / `CLAUDEXOR_DELEGATION_DEPTH` / `CLAUDEXOR_DELEGATION_MAX_SUBRUNS` / `CLAUDEXOR_DELEGATION_BUDGET` | mcp-server (delegation belt) | Injected by the daemon into the `agent --delegate` belt process (`claudexor mcp serve-belt`); carry the parent run id, the original normalized user-project root, nesting depth (belt refuses depth>0), the per-parent sub-run cap, and the resolved parent budget used to bind children to one live daemon-owned paid-budget authority. The bound root prevents a child from falling into the parent harness envelope or being redirected by a raw tool argument. These bootstrap values seed a conservative process-local refusal ledger so the belt can fail closed between daemon responses; daemon family accounting remains the authoritative cap, every child reports its own spend, and the parent reports the aggregate. Never set by hand. |
 | `CLAUDEXOR_REVIEWER_TIMEOUT_MS` | config | Per-reviewer timeout override for review panels. |
 | `CLAUDEXOR_REVIEW_WAVE_ID` | release review | Operator-generated UUID shared by native and triad/scope reviewer processes; sealed release attestation refuses mixed or sequential wave artifacts. |
 | `CLAUDEXOR_HARNESS_INACTIVITY_TIMEOUT_MS` | config | Inactivity window before a silent harness stream is failed (not a wall-clock cap). |

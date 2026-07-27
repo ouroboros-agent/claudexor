@@ -4,7 +4,7 @@ import ClaudexorKit
 /// THE owner of run FACTS and their formatting (W4.5 sol #16): every text,
 /// glyph, tone, and help string a surface shows about a run's route, apply
 /// state, output, web evidence, or budget is produced here exactly once.
-/// Surfaces (TurnCard, Run Detail header) COMPOSE their own layouts from
+/// Surfaces (TurnCard, run-filtered workspace facts row) COMPOSE their layouts from
 /// these facts — layout stays per-surface, the facts never fork. The terminal
 /// outcome LINE stays composed by `OutcomePresentation` (F2 W21), which
 /// consumes the same single apply-state mapper below.
@@ -87,10 +87,10 @@ enum RunFacts {
                     requested: task.n, delivered: task.candidates.count)
     }
 
-    // MARK: Header composition (Run Detail)
+    // MARK: Workspace facts composition
 
-    /// The PRIMARY header facts (W4.5: 3-4 facts — route, apply, attention).
-    /// Everything else belongs in Details.
+    /// The PRIMARY workspace facts (W4.5: 3-4 facts — route, apply, attention).
+    /// Supporting facts follow in the same run-filtered facts row.
     static func headerPrimary(_ task: TaskRun) -> [Fact] {
         var facts: [Fact] = []
         if let route = task.authRoute, let effective = route.effective, effective != "unknown" {
@@ -128,12 +128,37 @@ enum RunFacts {
 
     /// The DETAILS facts: real evidence that does not belong in the primary
     /// row — provenance, mode, model mismatch, access, output state,
-    /// web evidence, browser requirement. Rendered by the header's Details
-    /// disclosure; empty entries are simply absent (honest degradation).
+    /// web evidence, browser requirement. Rendered in the run-filtered
+    /// workspace facts row; empty entries are simply absent (honest degradation).
     static func headerDetails(_ task: TaskRun) -> [Fact] {
         var facts: [Fact] = []
         facts.append(Fact(id: "mode", text: task.mode.label, glyph: task.mode.glyph,
                           tone: .neutral, help: nil))
+        if let delegation = task.delegation,
+           let receipt = DelegationPresentation.runReceipt(delegation) {
+            let delegationTone: OutcomePresentation.Tone =
+                DelegationPresentation.warningShaped(delegation) ? .warning : .neutral
+            facts.append(contentsOf: [
+                Fact(id: "delegation_requested", text: receipt.requested,
+                     glyph: "arrow.triangle.branch", tone: delegationTone, help: receipt.detail),
+                Fact(id: "delegation_effective", text: receipt.effective,
+                     glyph: "checkmark.circle", tone: delegationTone, help: receipt.detail),
+                Fact(id: "delegation_used", text: receipt.used,
+                     glyph: "wrench.and.screwdriver", tone: delegationTone, help: receipt.detail),
+                Fact(id: "delegation_reason", text: receipt.reason,
+                     glyph: "info.circle", tone: delegationTone, help: receipt.detail),
+            ])
+        }
+        if let child = DelegationPresentation.childReceipt(
+            delegatedFromRunId: task.delegatedFromRunId) {
+            facts.append(Fact(
+                id: "delegated_child",
+                text: "\(child.badge) · \(child.parentLabel)",
+                glyph: "arrow.turn.down.right",
+                tone: .neutral,
+                help: "Claudexor child run delegated by \(child.parentRunId)."
+            ))
+        }
         if let mismatch = task.authRoute?.modelMismatch {
             facts.append(Fact(
                 id: "model_mismatch",

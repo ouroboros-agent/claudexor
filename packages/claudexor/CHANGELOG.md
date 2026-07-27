@@ -1,5 +1,25 @@
 # claudexor
 
+## 3.1.2
+
+### Patch Changes
+
+- Restore Delegate in packaged installs through the exact daemon self-entry; enforce required MCP startup, bounded shared parent/child budget and cancellation authority, typed lineage and degradation receipts, and durable CLI/macOS projections across reload and reconnect.
+- Updated dependencies
+  - @claudexor/cli@3.1.2
+
+## 3.1.1
+
+### Patch Changes
+
+- Maintenance: CI publishes the required `build-test` check context from the
+  matrix job, the fast-uri floor is pinned at 3.1.4 (GHSA-v2hh-gcrm-f6hx), major
+  dependency bumps stay out of the dependabot groups, and routine dependency and
+  GitHub Actions updates landed (knip 6.29.0, prettier 3.9.6, turbo 2.10.6,
+  @agentclientprotocol/sdk 1.3.0, attest/pages/artifact actions).
+- Updated dependencies
+  - @claudexor/cli@3.1.1
+
 ## 3.1.0
 
 ### Patch Changes

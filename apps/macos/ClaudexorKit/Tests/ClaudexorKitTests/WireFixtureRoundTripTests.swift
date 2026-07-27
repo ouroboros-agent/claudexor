@@ -24,6 +24,9 @@ import Testing
         case "ControlThread": return try recode(ThreadSummary.self, data)
         case "ControlThreadTurn": return try recode(ThreadTurnInfo.self, data)
         case "RunOutcomeFacts": return try recode(RunOutcomeFacts.self, data)
+        case "DelegationCapability": return try recode(HarnessDelegationCapability.self, data)
+        case "RunDelegationInfo": return try recode(RunDelegationInfo.self, data)
+        case "RunFailure": return try recode(RunFailureInfo.self, data)
         case "ControlBudgetSnapshot": return try recode(BudgetSnapshot.self, data)
         case "PlanReadiness": return try recode(PlanReadiness.self, data)
         case "PlanQuestionsArtifact": return try recode(PlanQuestionsArtifact.self, data)
@@ -38,7 +41,8 @@ import Testing
     /// The set of schema names the switch above handles (kept in lockstep with it).
     private static let handledSchemas: Set<String> = [
         "ControlHandshakeResponse", "ControlProblem", "ControlThread", "ControlThreadTurn",
-        "RunOutcomeFacts", "ControlBudgetSnapshot", "PlanReadiness", "PlanQuestionsArtifact",
+        "RunOutcomeFacts", "DelegationCapability", "RunDelegationInfo", "RunFailure",
+        "ControlBudgetSnapshot", "PlanReadiness", "PlanQuestionsArtifact",
         "ApplyEligibility", "ControlQuotaResponse", "ControlHarnessSettingsPatch",
         "ControlSettingsSnapshot",
     ]
@@ -59,6 +63,29 @@ import Testing
         ))
         return try #require(
             JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: String]
+        )
+    }
+
+    /// There is NO rank table on either side of the wire: the manifest's
+    /// `effort_levels` arrive in the vendor's own order and the picker merges
+    /// them positionally. Subset ladders merge into the longest one, and a
+    /// vendor level this app has never heard of ("hyper") lands at its
+    /// vendor-advertised position — not at the tail of a hardcoded list.
+    @Test func effortLadderMergesVendorOrderedLaddersPositionally() {
+        #expect(
+            EffortLadder.merge([
+                ["low", "medium", "high", "xhigh", "max", "ultra"],
+                ["low", "medium", "high", "xhigh"],
+                ["low", "medium", "high", "xhigh", "hyper", "max"],
+            ]) == ["low", "medium", "high", "xhigh", "hyper", "max", "ultra"]
+        )
+    }
+
+    /// Contradictory vendor orders cannot be ranked honestly; the picker falls
+    /// back to first-seen order instead of inventing one.
+    @Test func effortLadderFallsBackToFirstSeenOnContradiction() {
+        #expect(
+            EffortLadder.merge([["low", "high"], ["high", "low"]]) == ["low", "high"]
         )
     }
 
@@ -114,6 +141,17 @@ import Testing
 
         for failure in failures { Issue.record(Comment(rawValue: failure)) }
         #expect(failures.isEmpty)
+    }
+
+    @Test func delegateDrainFailureCodeSurvivesSwiftDecode() throws {
+        let url = try Self.wireDir()
+            .appendingPathComponent("run-failure-delegation-drain-timeout.json")
+        let wrapper = try #require(
+            JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        let value = try #require(wrapper["value"])
+        let data = try JSONSerialization.data(withJSONObject: value)
+        let failure = try JSONDecoder().decode(RunFailureInfo.self, from: data)
+        #expect(failure.code == "delegation_child_drain_timeout")
     }
 }
 

@@ -2,6 +2,7 @@ import { PassThrough } from "node:stream";
 import { createInterface } from "node:readline";
 import { describe, expect, it } from "vitest";
 import { defaultClaudexorTools, serveClaudexorMcp, type McpTool, type RunnerFn } from "./index.js";
+import { beltClaudexorTools } from "./delegation-belt.js";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -44,6 +45,15 @@ function wire(tools: McpTool[], opts: { version?: string } = {}) {
     await sleep(20);
   };
   return { send, initialize, responses, requests, close: () => handle.close() };
+}
+
+async function wireToolCall(tools: McpTool[], name: string, args: Record<string, unknown>) {
+  const w = wire(tools);
+  await w.initialize();
+  w.send({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } });
+  await sleep(120);
+  await w.close();
+  return w.responses.find((response) => response.id === 1)?.result;
 }
 
 describe("Claudexor MCP server (SDK v2)", () => {
@@ -119,6 +129,52 @@ describe("Claudexor MCP server (SDK v2)", () => {
     // Still never a raw JSON dump of the internal run object.
     expect(text).not.toContain("winner");
     expect(text).not.toContain("{");
+  });
+
+  it("marks belt policy refusals and non-success child terminals as MCP errors", async () => {
+    const policy = {
+      parentRunId: "run-parent",
+      repoRoot: "/tmp/project",
+      depth: 0,
+      maxSubRuns: 8,
+      parentBudget: { kind: "unlimited" as const },
+    };
+    const denied = await wireToolCall(
+      beltClaudexorTools(async () => ({ status: "succeeded" }), { ...policy, depth: 1 }),
+      "claudexor_run",
+      { prompt: "x" },
+    );
+    expect(denied?.isError).toBe(true);
+    expect(denied?.content?.[0]?.text).toMatch(/delegation refused.*depth 1/i);
+
+    for (const status of ["failed", "cancelled", "interrupted"] as const) {
+      const result = await wireToolCall(
+        beltClaudexorTools(async () => ({ runId: `child-${status}`, status, spendUsd: 0 }), policy),
+        "claudexor_run",
+        { prompt: "x" },
+      );
+      expect(result?.isError).toBe(true);
+      expect(result?.content?.[0]?.text).toMatch(new RegExp(`child-${status}.*${status}`, "i"));
+    }
+
+    const succeeded = await wireToolCall(
+      beltClaudexorTools(
+        async () => ({ runId: "child-ok", status: "succeeded", spendUsd: 0 }),
+        policy,
+      ),
+      "claudexor_run",
+      { prompt: "x" },
+    );
+    expect(succeeded?.isError).not.toBe(true);
+    expect(succeeded?.content?.[0]?.text).toContain("status: succeeded");
+
+    const failedRead = await wireToolCall(
+      beltClaudexorTools(async () => ({ runId: "child-failed", status: "failed" }), policy),
+      "claudexor_run_result",
+      { runId: "child-failed" },
+    );
+    expect(failedRead?.isError).not.toBe(true);
+    expect(failedRead?.content?.[0]?.text).toContain("status: failed");
   });
 
   it("no-argument tools (status/capabilities) are callable with {} — prompt is required only where the schema requires it", async () => {
@@ -251,7 +307,7 @@ describe("Claudexor MCP server (SDK v2)", () => {
         name: "claudexor_run",
         arguments: { prompt: "go", reviewerEfforts: { opneai: "xhigh" } },
       },
-      { id: 15, name: "claudexor_run", arguments: { prompt: "go", effort: "turbo" } },
+      { id: 15, name: "claudexor_run", arguments: { prompt: "go", effort: "TURBO BOOST" } },
       { id: 16, name: "claudexor_run", arguments: { prompt: "go", web: "internet" } },
       { id: 17, name: "claudexor_run", arguments: { prompt: "go", harness: "" } },
       { id: 18, name: "claudexor_run", arguments: { prompt: "go", primaryHarness: " " } },
@@ -523,7 +579,16 @@ describe("Claudexor MCP server (SDK v2)", () => {
     expect(schema?.properties?.model?.minLength).toBe(1);
     expect(schema?.properties?.harness?.minLength).toBe(1);
     expect(schema?.properties?.primaryHarness?.minLength).toBe(1);
-    expect(schema?.properties?.effort?.enum).toContain("xhigh");
+    // The MCP effort surface is OPEN by design: pinning an enum here would
+    // reject a level a model genuinely advertises. It carries the slug SHAPE,
+    // and its description points at the vendor-advertised ladders instead of
+    // naming any level list of its own (there is no static rank table).
+    expect(schema?.properties?.effort?.enum).toBeUndefined();
+    expect(schema?.properties?.effort?.type).toBe("string");
+    expect(schema?.properties?.effort?.pattern).toBeTruthy();
+    expect(schema?.properties?.effort?.description).toContain(
+      "level the resolved harness/model advertises",
+    );
     expect(schema?.properties?.web?.enum).toContain("live");
     expect(schema?.properties?.externalContextPolicy?.enum).toContain("cached");
     expect(schema?.properties?.reviewerModels?.type).toBe("object");
@@ -531,7 +596,10 @@ describe("Claudexor MCP server (SDK v2)", () => {
     expect(schema?.properties?.reviewerModels?.properties?.openai?.type).toBe("string");
     expect(schema?.properties?.reviewerEfforts?.type).toBe("object");
     expect(schema?.properties?.reviewerEfforts?.additionalProperties).toBe(false);
-    expect(schema?.properties?.reviewerEfforts?.properties?.openai?.enum).toContain("xhigh");
+    expect(schema?.properties?.reviewerEfforts?.properties?.openai?.type).toBe("string");
+    expect(schema?.properties?.reviewerEfforts?.properties?.openai?.description).toContain(
+      "level the resolved harness/model advertises",
+    );
     expect(schema?.properties?.tests?.type).toBe("array");
     expect(schema?.properties?.paidBudget?.anyOf).toHaveLength(2);
     expect(schema?.properties?.access?.enum).toContain("workspace_write");

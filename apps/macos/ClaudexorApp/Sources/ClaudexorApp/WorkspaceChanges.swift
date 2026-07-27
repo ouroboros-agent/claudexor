@@ -97,7 +97,11 @@ struct RunDiffSection: View {
         // A scoped run needs its detail (eligibility/revertable) to gate apply.
         .task(id: showActions ? runId : "") {
             if showActions, let run, run.applyEligibility == nil || run.isLive {
-                await model.loadRunDetail(runId, locationID: locationID)
+                if locationID == .local {
+                    await model.ensureRunDetail(runId)
+                } else {
+                    await model.loadRunDetail(runId, locationID: locationID)
+                }
             }
         }
     }
@@ -202,10 +206,18 @@ struct RunDiffSection: View {
             runId: "\(locationID.rawValue)|\(runId)",
             plane: .diff)
         diffSlot.begin(id)
+        if locationID == .local, model.task(runId, at: locationID) == nil {
+            await model.ensureRunDetail(runId, insertingIfMissing: true)
+        }
         let run = model.task(runId, at: locationID)
         switch Self.diffLoadStep(runExists: run != nil, diffIsEmpty: run?.diff.isEmpty ?? true,
                                  phase: run?.phase, hasPatchArtifact: run?.hasPatchArtifact == true) {
-        case .noRun, .noPatch:
+        case .noRun:
+            // Every id on this surface came from the server-owned thread
+            // projection. A failed cold detail GET is unavailable evidence,
+            // never proof that the projected child made no changes.
+            diffSlot.commit(.failed(.transport(Self.missingProjectedRunMessage)), for: id)
+        case .noPatch:
             diffSlot.commit(.empty, for: id)
         case .hydrated:
             diffSlot.commit(.loaded(run?.diff ?? []), for: id)
@@ -262,13 +274,16 @@ struct RunDiffSection: View {
         if !hasPatchArtifact { return .noPatch }
         return .fetch
     }
+
+    static let missingProjectedRunMessage =
+        "Could not load this projected run's detail. Check the engine connection and retry."
 }
 
 /// The pre-fetch outcomes of `RunDiffSection.diffLoadStep` — separated from the
 /// slot mutation so the lost-stream mapping (`.unknown` + no patch → disclosed
 /// failure, never a false "no changes") is unit-tested.
 enum DiffLoadStep: Equatable {
-    case noRun            // no such run in the model → empty
+    case noRun            // projected run detail unavailable → disclosed retryable failure
     case hydrated         // the run's diff is already present → loaded
     case pending          // active, no captured patch yet → keep loading
     case lostEngineState  // `.unknown` with no captured patch → disclosed failure

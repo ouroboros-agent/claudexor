@@ -9,7 +9,6 @@ import type {
   ConformanceReport,
   CredentialProfile,
   CredentialProfileStatus,
-  EffortHint,
   HarnessEvent,
   HarnessManifest,
   HarnessRunSpec,
@@ -18,12 +17,24 @@ import {
   ConformanceReport as ConformanceReportSchema,
   HarnessManifest as HarnessManifestSchema,
 } from "@claudexor/schema";
+import {
+  CODEX_EFFORT_SNAPSHOT,
+  CODEX_EFFORT_SNAPSHOT_VERIFIED_AGAINST,
+  codexEffortFor,
+  codexEffortsForEnv,
+  probeCodexEfforts,
+  unionEffortLevels,
+  type CodexEffortCatalog,
+  type CodexEffortProbe,
+} from "./effort-probe.js";
+import { codexRunEffortResolution } from "./effort-gate.js";
+import { tomlBasicString } from "./toml.js";
+export { CODEX_EFFORT_SNAPSHOT, clearCodexEffortCache, unionEffortLevels } from "./effort-probe.js";
 import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
 import {
   abortSignalFromSpec,
   brokenInstallAdvisory,
   browserMcpCommand,
-  normalizeEffort,
   providerScrubEnv,
   resolveHarnessBinary,
   runCliHarness,
@@ -33,7 +44,7 @@ import {
   shouldVerifyApiKey,
 } from "@claudexor/core";
 import { CLAUDEXOR_VERSION, nowIso, redactSecrets } from "@claudexor/util";
-import { parseCodexEvent, type CodexParseState } from "./parse.js";
+import { parseCodexEvent, parseCodexStderrFailure, type CodexParseState } from "./parse.js";
 import { probeCodexCredentialProfile, resolveCodexProfileRoute } from "./profile.js";
 import { smokeIsolatedApiKey } from "./smoke.js";
 export { canonicalCodexProfileHome, codexAccountIdentity } from "./profile.js";
@@ -43,23 +54,12 @@ import { codexImageArgs } from "./attachments.js";
 import { BIN, detectVersion, missingCliError, missingCliReport, probeEnv } from "./missing-cli.js";
 export { BIN } from "./missing-cli.js";
 
-/**
- * Ordered (weakest→strongest) reasoning-effort levels codex's
- * `model_reasoning_effort` config accepts. SINGLE source: the manifest's
- * `effort_levels` and the run-time normalizer both read this. The cross-harness
- * `max` hint clamps to `xhigh` (the ceiling) via the shared normalizer.
- */
-const CODEX_EFFORT_LEVELS: readonly EffortHint[] = ["low", "medium", "high", "xhigh"];
-
 /** Exported for focused route-policy tests; runtime uses this exact selector. */
 export const selectCodexRunAuthRoute = selectStrictAuthRoute;
 
 export {
   CODEX_FILE_AUTH_ARGS,
   CODEX_FILE_AUTH_OVERRIDE,
-  CODEX_PROJECT_DOC_FALLBACK_ARGS,
-  CODEX_PROJECT_DOC_FALLBACK_OVERRIDE,
-  codexApiKey,
   codexAuthModeAt,
   defaultNativeCodexHome,
   ensureCodexApiAuth,
@@ -76,32 +76,6 @@ import {
   probeLogin,
   type CodexLoginProbe,
 } from "./auth.js";
-
-/**
- * A TOML basic-string literal for a `-c key=value` override. `developer_instructions`
- * is a documented additive Codex config key (layered as a developer block BEFORE
- * AGENTS.md, not a replacement); passing per-invocation `-c` keeps it isolated
- * to this run (never a shared-config mutation). Instructions may contain quotes
- * and newlines, so they are TOML-escaped.
- */
-function tomlBasicString(value: string): string {
-  // TOML basic-string escapes, built by code point so the SOURCE carries no
-  // literal control characters: a backslash and quote are escaped, a literal
-  // newline/tab/CR become their escapes (a raw newline is invalid in a basic
-  // string), other control chars become \uXXXX, and everything else is literal.
-  let out = '"';
-  for (const ch of value) {
-    const code = ch.charCodeAt(0);
-    if (ch === "\\") out += "\\\\";
-    else if (ch === '"') out += '\\"';
-    else if (code === 10) out += "\\n";
-    else if (code === 13) out += "\\r";
-    else if (code === 9) out += "\\t";
-    else if (code < 32 || code === 127) out += "\\u" + code.toString(16).padStart(4, "0");
-    else out += ch;
-  }
-  return out + '"';
-}
 
 function sandboxArgs(access: AccessProfile): string[] {
   switch (access) {
@@ -210,6 +184,9 @@ export function codexBrowserArgs(
       "-c",
       `mcp_servers.${server.name}.tool_timeout_sec=120`,
     );
+    if (server.required) {
+      args.push("-c", `mcp_servers.${server.name}.required=true`);
+    }
     // Env rides as PER-KEY dotted `-c` overrides, one flag per entry. codex's
     // `-c` parser wants a TOML value; a single `env=${JSON.stringify(map)}`
     // hands it a whole JSON-object STRING, which it rejects ("invalid type:
@@ -256,7 +233,12 @@ export function codexExecArgs(
     resume_session_id?: string | null;
     extra_mcp_servers?: HarnessRunSpec["extra_mcp_servers"];
   },
-  opts: { suppressNodeRepl?: boolean; outputSchemaPath?: string | null } = {},
+  opts: {
+    suppressNodeRepl?: boolean;
+    outputSchemaPath?: string | null;
+    /** The account's advertised effort catalog; the snapshot by default. */
+    effortCatalog?: CodexEffortCatalog;
+  } = {},
 ): string[] {
   // Codex.app's inherited `node_repl` MCP (its in-app-browser controller) can't
   // run in headless `codex exec` and fails every call → it used to flip an
@@ -268,10 +250,13 @@ export function codexExecArgs(
   // so a thread's later moves continue the same conversation instead of restarting.
   // LIVE-VERIFIED (codex 0.137): the resume subcommand does NOT accept --sandbox;
   // sandboxing must ride as `-c sandbox_mode="..."` config overrides there.
-  // Clamp the requested effort onto codex's supported ladder via the shared
-  // normalizer (single source: CODEX_EFFORT_LEVELS). Null = not requested OR
-  // effort not tunable -> pass no flag.
-  const effort = normalizeEffort(spec.effort_hint, CODEX_EFFORT_LEVELS);
+  // Effort is resolved against what THIS MODEL advertises, not a harness-wide
+  // ladder: gpt-5.6-sol takes `ultra`, gpt-5.4 stops at `xhigh`.
+  const effort = codexEffortFor(
+    opts.effortCatalog ?? CODEX_EFFORT_SNAPSHOT,
+    spec.model_hint,
+    spec.effort_hint,
+  );
   if (spec.resume_session_id) {
     const args = [
       "exec",
@@ -367,6 +352,9 @@ type CodexRuntimeDeps = {
   resolveProfileSecret: (ref: string) => string | null;
   smokeIsolatedApiKey: typeof smokeIsolatedApiKey;
   runCliHarness: typeof runCliHarness;
+  /** Live per-model effort discovery; null on any failure (caller falls back). */
+  probeEfforts: CodexEffortProbe;
+  nowMs: () => number;
 };
 
 export function createCodexAdapter(deps: Partial<CodexRuntimeDeps> = {}): HarnessAdapter {
@@ -379,6 +367,8 @@ export function createCodexAdapter(deps: Partial<CodexRuntimeDeps> = {}): Harnes
     resolveProfileSecret: (ref) => resolveSecret(ref),
     smokeIsolatedApiKey,
     runCliHarness,
+    probeEfforts: (bin, env) => probeCodexEfforts(bin, env ? { env } : {}),
+    nowMs: () => Date.now(),
     ...deps,
   };
   return {
@@ -393,6 +383,10 @@ export function createCodexAdapter(deps: Partial<CodexRuntimeDeps> = {}): Harnes
       const apiKey = runtime.hasApiKey();
       const login = await runtime.probeLogin(BIN, { env: codexNativeEnv() });
       const nativeSessionAvailable = login.method === "chatgpt";
+      // Per-model effort vocabulary from the vendor, probed in the SAME native env
+      // the login probe used (the catalog belongs to that CODEX_HOME's account). A
+      // failed probe falls back to the snapshot and stamps the version it came from.
+      const efforts = await codexEffortsForEnv(runtime, codexNativeEnv());
       const authModes = [
         ...(nativeSessionAvailable ? ["local_session"] : []),
         ...(apiKey ? ["api_key"] : []),
@@ -422,9 +416,14 @@ export function createCodexAdapter(deps: Partial<CodexRuntimeDeps> = {}): Harnes
           work_report_transport: "constrained",
           structured_output_channel: "final_message",
           web_policy: "native",
-          // codex model_reasoning_effort accepts low|medium|high|xhigh (max clamps
-          // to xhigh). Single source for the manifest AND the run-time normalizer.
-          effort_levels: [...CODEX_EFFORT_LEVELS],
+          // Effort is per MODEL here (`model/list` → supportedReasoningEfforts),
+          // so the harness-wide list is the UNION and `model_effort_levels`
+          // carries the truth a specific model is held to.
+          effort_levels: unionEffortLevels(efforts.catalog.models),
+          model_effort_levels: efforts.catalog.models,
+          effort_levels_verified_against: efforts.live
+            ? version
+            : CODEX_EFFORT_SNAPSHOT_VERIFIED_AGAINST,
           // Manifest model truth source (strict model-truth validation: an explicit model outside
           // this list is refused, never forwarded to die as a native error).
           // Current + still-API-available ids per the vendor Codex models page,
@@ -755,9 +754,19 @@ async function* runCodex(
       );
     }
   }
+  // Probed in THIS run's resolved env, so a credential profile or API-key route
+  // gets its OWN account's catalog, not whichever one landed in the cache first.
+  // INV-105 on the RUN: version-gate snapshot-fallback trust (an installed
+  // codex that is not 0.144.1 is never sent the snapshot's levels), and
+  // disclose a DROP/CLAMP on the same catalog the args resolve with — preflight
+  // passed this level against the DEFAULT account's manifest, but THIS env's
+  // catalog may drop it or clamp it onto the routed model's ceiling.
+  const effort = await codexRunEffortResolution(spec, runtime, env, abortSignalFromSpec(spec));
+  if (effort.disclosure) yield effort.disclosure;
   const args = codexExecArgs(spec, {
     suppressNodeRepl: codexConfigHasNodeRepl(env["CODEX_HOME"]),
     outputSchemaPath,
+    effortCatalog: effort.catalog,
   });
   // Route evidence: the auth mode this child ACTUALLY runs under, read from
   // the same auth.json codex loads (typed `auth_mode` field — chatgpt vs
@@ -773,7 +782,12 @@ async function* runCodex(
   // codex recorded in its own rollout transcript; cache that one read.
   let codexThreadId: string | undefined;
   let transcriptModel: string | undefined;
-  const parseState: CodexParseState = { envelopeActive: !!spec.output_schema }; // finality + #19816
+  const parseState: CodexParseState = {
+    envelopeActive: !!spec.output_schema,
+    requiredMcpServers: (spec.extra_mcp_servers ?? [])
+      .filter((server) => server.required)
+      .map((server) => server.name),
+  }; // finality + #19816 + required MCP startup proof
 
   try {
     yield* runtime.runCliHarness({
@@ -852,6 +866,15 @@ async function* runCodex(
           // unstamped null would register as the engine-default subject.
         }
         return out;
+      },
+      parseStderrFailure: (message, sessionId) => {
+        const event = parseCodexStderrFailure(message, sessionId, parseState);
+        if (event) {
+          event.credential_route = credentialRoute;
+          event.credential_source = credentialSource;
+          if (profile) event.credential_profile_id = profile.profile_id;
+        }
+        return event;
       },
     });
   } finally {

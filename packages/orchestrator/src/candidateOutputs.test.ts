@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   buildFileBackedSynthesisInput,
+  candidateOutputsContainSecret,
   collectArtifactDirMedia,
   materializeWinnerOutputs,
   persistCandidateOutputs,
@@ -56,12 +57,93 @@ describe("candidate produced-output persistence", () => {
     expect(existsSync(join(attemptDir, "produced", ".claudexor-artifacts", "evil.png"))).toBe(
       false,
     );
+    expect(candidateOutputsContainSecret({ worktreePath: worktree, changedPaths: [] })).toBe(false);
   });
 
   it("returns nothing when there is no artifact dir (F4)", () => {
     const worktree = root("claudexor-art-none-");
     const attemptDir = root("claudexor-art-none-attempt-");
     expect(collectArtifactDirMedia({ worktreePath: worktree, attemptDir })).toEqual([]);
+  });
+
+  it("does not persist a raster larger than the per-file byte ceiling", () => {
+    const worktree = root("claudexor-art-large-");
+    const attemptDir = root("claudexor-art-large-attempt-");
+    mkdirSync(join(worktree, ".claudexor-artifacts"), { recursive: true });
+    writeFileSync(
+      join(worktree, ".claudexor-artifacts", "large.png"),
+      Buffer.alloc(16 * 1024 * 1024 + 1),
+    );
+
+    expect(collectArtifactDirMedia({ worktreePath: worktree, attemptDir })).toEqual([]);
+    expect(existsSync(join(attemptDir, "produced", ".claudexor-artifacts", "large.png"))).toBe(
+      false,
+    );
+    expect(candidateOutputsContainSecret({ worktreePath: worktree, changedPaths: [] })).toBe(true);
+  });
+
+  it("treats an unreadable raster as an unprovable secret risk", () => {
+    const worktree = root("claudexor-art-unreadable-");
+    const path = join(worktree, "unreadable.png");
+    writeFileSync(path, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    chmodSync(path, 0o000);
+    try {
+      expect(
+        candidateOutputsContainSecret({ worktreePath: worktree, changedPaths: ["unreadable.png"] }),
+      ).toBe(true);
+    } finally {
+      chmodSync(path, 0o600);
+    }
+  });
+
+  it("treats an unreadable artifact directory as an unprovable secret risk", () => {
+    const worktree = root("claudexor-art-unreadable-dir-");
+    const artifactDir = join(worktree, ".claudexor-artifacts");
+    mkdirSync(artifactDir);
+    writeFileSync(join(artifactDir, "shot.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    chmodSync(artifactDir, 0o000);
+    try {
+      expect(candidateOutputsContainSecret({ worktreePath: worktree, changedPaths: [] })).toBe(
+        true,
+      );
+    } finally {
+      chmodSync(artifactDir, 0o700);
+    }
+  });
+
+  it("rejects raster paths through a symlinked parent directory", () => {
+    const worktree = root("claudexor-art-linked-parent-");
+    const attemptDir = root("claudexor-art-linked-parent-attempt-");
+    const outside = root("claudexor-art-linked-parent-outside-");
+    writeFileSync(join(outside, "private.png"), Buffer.from("outside-private-bytes"));
+    symlinkSync(outside, join(worktree, "screens"));
+
+    expect(
+      candidateOutputsContainSecret({
+        worktreePath: worktree,
+        changedPaths: ["screens/private.png"],
+      }),
+    ).toBe(true);
+    expect(
+      persistCandidateOutputs({
+        worktreePath: worktree,
+        attemptDir,
+        changedPaths: ["screens/private.png"],
+      }),
+    ).toEqual([]);
+    expect(existsSync(join(attemptDir, "produced"))).toBe(false);
+  });
+
+  it("rejects a symlinked claudexor artifact root", () => {
+    const worktree = root("claudexor-art-linked-root-");
+    const attemptDir = root("claudexor-art-linked-root-attempt-");
+    const outside = root("claudexor-art-linked-root-outside-");
+    writeFileSync(join(outside, "private.png"), Buffer.from("outside-private-bytes"));
+    symlinkSync(outside, join(worktree, ".claudexor-artifacts"));
+
+    expect(candidateOutputsContainSecret({ worktreePath: worktree, changedPaths: [] })).toBe(true);
+    expect(collectArtifactDirMedia({ worktreePath: worktree, attemptDir })).toEqual([]);
+    expect(existsSync(join(attemptDir, "produced"))).toBe(false);
   });
 
   it("keeps giant candidate diffs out of the argv prompt without truncation", () => {
@@ -170,5 +252,116 @@ describe("candidate produced-output persistence", () => {
     expect(produced).toEqual(["screenshots/ignored.png"]);
     expect(existsSync(join(attemptDir, "produced", "screenshots", "ignored.png"))).toBe(true);
     expect(writes[0]?.["produced_files"]).toEqual(["screenshots/ignored.png"]);
+  });
+
+  it("copies an owned raster linked from markdown exactly once", () => {
+    const worktree = root("claudexor-linked-owned-tree-");
+    const attemptDir = root("claudexor-linked-owned-attempt-");
+    const relative = ".claudexor-artifacts/browser/shot.png";
+    mkdirSync(join(worktree, ".claudexor-artifacts", "browser"), { recursive: true });
+    writeFileSync(join(worktree, relative), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+
+    const produced = writeCandidateAttemptArtifacts({
+      store: {
+        writeText: () => undefined,
+        writeYaml: () => undefined,
+      } as never,
+      attemptDir,
+      worktreePath: worktree,
+      diff: "",
+      answerText: `![shot](./${relative})`,
+      record: { attempt_id: "a01" },
+    });
+
+    expect(produced).toEqual([relative]);
+    expect(readFileSync(join(attemptDir, "produced", relative))).toEqual(
+      Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+    );
+  });
+
+  it("deduplicates a markdown case alias before writing on case-insensitive filesystems", () => {
+    const worktree = root("claudexor-case-alias-tree-");
+    const attemptDir = root("claudexor-case-alias-attempt-");
+    const relative = ".claudexor-artifacts/browser/shot.png";
+    const alias = ".claudexor-artifacts/browser/SHOT.png";
+    mkdirSync(join(worktree, ".claudexor-artifacts", "browser"), { recursive: true });
+    writeFileSync(join(worktree, relative), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+
+    // Linux CI commonly uses a case-sensitive filesystem; the production
+    // regression is macOS/APFS-specific and is exercised wherever the alias
+    // resolves to the owned file.
+    if (!existsSync(join(worktree, alias))) return;
+    const produced = writeCandidateAttemptArtifacts({
+      store: {
+        writeText: () => undefined,
+        writeYaml: () => undefined,
+      } as never,
+      attemptDir,
+      worktreePath: worktree,
+      diff: "",
+      answerText: `![shot](${alias})`,
+      record: { attempt_id: "a01" },
+    });
+
+    expect(produced).toEqual([alias]);
+    expect(readFileSync(join(attemptDir, "produced", alias))).toEqual(
+      Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+    );
+  });
+
+  it("enforces one combined byte ceiling across linked and owned rasters", () => {
+    const worktree = root("claudexor-combined-cap-tree-");
+    const attemptDir = root("claudexor-combined-cap-attempt-");
+    mkdirSync(join(worktree, "linked"), { recursive: true });
+    mkdirSync(join(worktree, ".claudexor-artifacts"), { recursive: true });
+    const bytes = Buffer.alloc(12 * 1024 * 1024);
+    writeFileSync(join(worktree, "linked", "first.png"), bytes);
+    writeFileSync(join(worktree, ".claudexor-artifacts", "second.png"), bytes);
+    writeFileSync(join(worktree, ".claudexor-artifacts", "third.png"), bytes);
+
+    const produced = writeCandidateAttemptArtifacts({
+      store: {
+        writeText: () => undefined,
+        writeYaml: () => undefined,
+      } as never,
+      attemptDir,
+      worktreePath: worktree,
+      diff: "",
+      answerText: "![first](linked/first.png)",
+      record: { attempt_id: "a01" },
+    });
+
+    expect(produced).toEqual(["linked/first.png", ".claudexor-artifacts/second.png"]);
+    expect(existsSync(join(attemptDir, "produced", ".claudexor-artifacts", "third.png"))).toBe(
+      false,
+    );
+  });
+
+  it("persists no produced media for a secret-refused candidate", () => {
+    const worktree = root("claudexor-refused-output-tree-");
+    const attemptDir = root("claudexor-refused-output-attempt-");
+    mkdirSync(join(worktree, ".claudexor-artifacts"), { recursive: true });
+    writeFileSync(join(worktree, "clean.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    writeFileSync(
+      join(worktree, ".claudexor-artifacts", "clean.png"),
+      Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+    );
+    const writes: Record<string, unknown>[] = [];
+    const produced = writeCandidateAttemptArtifacts({
+      store: {
+        writeText: () => undefined,
+        writeYaml: (_path: string, value: unknown) => writes.push(value as Record<string, unknown>),
+      } as never,
+      attemptDir,
+      worktreePath: worktree,
+      diff: "diff --git a/clean.png b/clean.png\n",
+      answerText: "![clean](clean.png)",
+      persistPatch: false,
+      persistProducedMedia: false,
+      record: { attempt_id: "a01", secret_diff_refusal: { reason: "secret_like_output" } },
+    });
+    expect(produced).toEqual([]);
+    expect(existsSync(join(attemptDir, "produced"))).toBe(false);
+    expect(writes[0]?.["produced_files"]).toEqual([]);
   });
 });

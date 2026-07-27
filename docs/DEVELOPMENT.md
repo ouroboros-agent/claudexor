@@ -126,6 +126,10 @@ where the panel composition, wave discipline, reviewer count, and round
 bound live as process law. Older schemas (v2's six-slot panel, v3 without
 the packet-split coverage receipt) are no longer accepted for new seals;
 already-sealed artifacts remain archived.
+Only after that authority check does the workflow promote the candidate run's
+DMG, ZIP, and SBOM byte-for-byte instead of rebuilding the app; publish
+generates only the signed runtime manifest, review attestation, and final
+checksum set around those accepted bytes.
 Missing signing/notary/npm credentials fail; there is no unsigned or
 GitHub-only release fallback. npm
 packages publish in dependency order with `--provenance`; a retry skips an

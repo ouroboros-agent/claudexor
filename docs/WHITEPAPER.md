@@ -102,11 +102,14 @@ The canonical intent and strategy enumeration is an operational contract
 (schema + `docs/ARCHITECTURE.md`), deliberately small, and old spellings
 hard-error rather than alias.
 
-Planning is conversational. Claudexor rides each vendor's native plan mode —
-they all converge on the same shape: research read-only, ask clarifying
-questions, propose, refine — and surfaces the questions as typed cards the
-user can answer; each answer round continues the planner's own lane
-natively. A plan that still has open questions is not implementable; a plan
+Planning is conversational. Claudexor rides each vendor's native read-only
+planning surface. Cursor uses its read-only Ask transport because native Plan
+terminates through a tool schema that cannot carry Claudexor's mandatory final
+WorkReport; the plan intent still comes from Claudexor's planning prompt. The
+lanes converge on the same shape: research read-only, ask clarifying questions,
+propose, refine — and surface the questions as typed cards the user can answer;
+each answer round continues the planner's own lane natively. A plan that still
+has open questions is not implementable; a plan
 whose questions are resolved freezes on implement into a content-hashed
 contract file delivered to the executor as a file it can re-read at any
 time, not as prompt text pasted into the conversation.
@@ -122,6 +125,21 @@ granted a typed tool belt to spawn isolated read-only scouts and candidate
 sub-runs, with server-enforced isolation, depth, count, and budget limits —
 and no self-apply tool: the parent integrates results in its own workspace,
 and every mutation of the live tree still passes the single delivery gate.
+The grant is permission, not an obligation to create a child. Its absence or
+degradation stays visible, and only engine-recorded Claudexor lineage counts as
+a delegated child; a vendor's own internal subagent is a different mechanism,
+not evidence that the Claudexor tool belt worked. One daemon-lifetime family
+authority admits at most eight direct children, shares reservations and
+settlements, closes admission before cascade cancellation, and delays the
+parent terminal receipt until child spending can no longer arrive late.
+Because this belt is an explicitly required capability after injection, an
+unrecovered exact belt-operation failure cannot be hidden by a parent
+deliverable or native subagent; only a matching operation success recovers it.
+Children are pinned by the engine to the original user project rather than the
+parent's temporary envelope, so model-supplied paths cannot change that trust
+boundary. An envelope result from a failed operation remains diagnostic; an
+explicitly in-place run that already wrote live bytes records them as applied
+but review-blocked and revertable before it reports failure.
 
 Rejected alternatives, recorded so they stay rejected: a user-facing
 "orchestrate" mode (no leading tool exposes orchestration as a mode; users
@@ -214,7 +232,7 @@ Claude Code executor reads the same guidance, Claudexor bridges it with a thin
 `AGENTS.md` and no `CLAUDE.md`. The bridge is exclusive-create and no-follow, so
 a hand-written `CLAUDE.md` is never touched, and it is written both to the
 project root (durable, announced as a run event) and into each disposable
-envelope worktree — which materializes only committed files — so a candidate
+envelope checkout — which materializes only committed files — so a candidate
 racing in isolation reads it too. The envelope copy stays out of a candidate's
 patch only while it provably remains Claudexor's own writing: the diff excludes
 it when Claudexor created it during this run AND its bytes still equal the

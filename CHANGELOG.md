@@ -3,6 +3,85 @@
 Release history for Claudexor. The current version is declared in the root
 `package.json` (the version SSOT); tags `v*` correspond to GitHub Releases.
 
+- **v3.1.2** (2026-07-26) — Delegate recovery patch. Packaged macOS and npm
+  installs now expose the six-tool delegation belt through the exact daemon
+  self-entry instead of failing because a neighboring `cli.js` is absent.
+  Claude Code and Codex treat the injected MCP server as required: a known
+  pre-start incompatibility continues as ordinary Agent only with a durable,
+  visible requested/effective/used/reason/remediation receipt, while failure
+  after injection is terminal. Parent and child runs share one daemon-owned
+  budget, depth/count admission, cancellation, and drain barrier; late child
+  spend can no longer escape the parent's terminal decision. Control API, CLI,
+  and macOS preserve typed Delegate lineage, degradation warnings, failure
+  reasons, child ordering, and reconnect/reload truth without confusing native
+  vendor subagents for Claudexor children. Child questions stay answerable
+  inline through their canonical run id, and signed candidate probes tolerate
+  macOS canonical temporary-path aliases without weakening the entry fence.
+  Cursor Plan uses the native read-only Ask final-message channel so its
+  model-authored WorkReport cannot be lost behind the native `createPlan`
+  terminal tool.
+
+- **v3.1.1** (2026-07-25) — patch release: engine honesty, per-model effort
+  ladders, and control-plane fixes on top of v3.1.0. Engine: a DELIVERED plan
+  now survives an unrecovered tool error — the planner no longer escalates a
+  finished deliverable to a harness error before the finalizer runs, so one
+  failing shell command cannot throw away a good plan; an empty thrown message
+  no longer reads as "no error", so a harness that threw can never terminalize
+  as a clean success; the grep-family exit-1 carve-out and secret-redaction
+  mirroring keep tool-error accounting truthful; and the automatic
+  economy-ranking pass reads ONE pinned clock instead of a fresh `Date.now()`
+  per candidate, so ranking is stable within a pass. Effort: the ladder is per
+  (harness, model) and follows the vendor-advertised order — the static rank
+  table is gone, levels are discovered live from each CLI (Claude `--effort`
+  help parsing reads the whole block and anchors on the enumerating
+  parenthesis; Codex discovery is keyed by the resolved `CODEX_HOME`, bounded,
+  refuses malformed model/list values, and settles its probe on close) with a
+  version-matched snapshot fallback; the full official vocabularies are
+  supported (+minimal/+ultra in the schema vocabulary, codex +max/+ultra,
+  claude +xhigh); a level the run cannot honor is disclosed instead of
+  silently clamped, a profile-scoped run is no longer held to the DEFAULT
+  account's ladder, hint-less runs resolve against the default model's own
+  ladder, and the macOS composer's effort menu narrows to the per-turn (or
+  persisted default) model's actual surface. Control plane: exact retry on a
+  run that never started answers with its typed refusal (a 403, not a 202
+  handle), and CLI retry/run-again read the refusal's real problem message
+  instead of an `error` field the daemon never serves. Review: both loop
+  prompts pin the finding contract explicitly, and a reviewer effort the
+  selected reviewer does not advertise is refused rather than silently
+  remapped. Portable discovery and distribution (#75): project protected
+  paths are back as canonical repo-relative globs in the versioned
+  `.claudexor/config.yaml` — a mutating turn on a live project thread with
+  configured protected paths first promotes the thread ONE-WAY to its
+  persistent isolated worktree, so the run and patch complete without
+  touching the project tree and only the typed thread Apply decision can
+  deliver the change (`--allow-protected-path` cannot suppress project
+  rules; direct one-shot `--in-place` agent runs refuse and name the
+  isolation remedy); a portable GitHub Copilot plugin ships in-repo
+  (`plugins/copilot`: one Agent Skill plus `.mcp.json` wiring over the
+  preinstalled `claudexor` CLI) — Copilot owns its install/update lifecycle
+  (it is NOT a fifth managed host), macOS/Linux with Node 20.19+ only (no
+  Windows), the Skill starts doctor-backed and read-only, and MCP still
+  never exposes patch application; official MCP Registry publication
+  metadata lands (`server.json` bound to the executable npm package and its
+  exact version, release-parity checked) with publication only via the
+  separate manual tag-bound `publish-mcp.yml` OIDC workflow after the npm
+  package and public stable GitHub Release exist; and ACP Terminal Auth is
+  added as an EXPERIMENTAL surface — only when a client explicitly
+  advertises the experimental terminal-auth capability does Claudexor offer
+  Codex subscription login through the client's own terminal (the exact
+  allowlisted `claudexor acp serve auth login codex` suffix routed to the
+  existing durable device-code login, macOS/Linux); Claude and Cursor are
+  not advertised yet, the surface is proactive-only (no `auth_required`
+  emission or legacy authenticate request), and cancellation or an
+  unsupported device flow exits non-zero without spawning a second
+  Terminal. Maintenance: CI publishes the required `build-test` check context
+  from the matrix job (PRs no longer sit BLOCKED waiting for a context that
+  never arrives), the fast-uri floor is pinned at 3.1.4
+  (GHSA-v2hh-gcrm-f6hx), major bumps stay out of the dependabot groups, and
+  routine dependency/actions updates landed (knip 6.29.0, prettier 3.9.6,
+  turbo 2.10.6, @agentclientprotocol/sdk 1.3.0, attest/pages/artifact
+  actions).
+
 - **v3.1.0** (2026-07-24) — a five-phase release: engine truth, machine
   contracts, the macOS app, platform (engine-runtime auto-install + Codex
   login), and release/meta. Engine: a shared typed attempt-finalizer replaces

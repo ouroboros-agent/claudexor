@@ -41,20 +41,39 @@ for (const file of files) {
 }
 
 const release = readFileSync(".github/workflows/release.yml", "utf8");
+const publishMcp = readFileSync(".github/workflows/publish-mcp.yml", "utf8");
 const prepareJob = jobBody(release, "prepare");
+const packageMacosJob = jobBody(release, "package-macos");
 const publishNpmJob = jobBody(release, "publish-npm");
 const publishReleaseJob = jobBody(release, "publish-release");
+const staleAttestationSchemaPattern = /schema-v[23]/;
+const exactPromotionPairedNeedles = [
+  [
+    "SBOM license-input prepared-SHA binding",
+    'GITHUB_SHA="$PREPARED_SHA" pnpm licenses list --prod --json',
+  ],
+  [
+    "SBOM generator prepared-SHA binding",
+    'GITHUB_SHA="$PREPARED_SHA" node scripts/generate-release-sbom.mjs',
+  ],
+  ["daemon version probe comparison", "probe.version !== process.argv[2]"],
+  ["daemon build-SHA probe comparison", "probe.buildSha !== process.argv[3]"],
+];
 for (const [label, pattern] of [
   ["workflow has candidate mode", /candidate/],
   ["workflow has publish mode", /publish/],
   ["review attestation is verified", /verify-release-input\.mjs/],
   [
-    // validateReleaseAttestation rejects any non-v3 attestation, so the
+    // validateReleaseAttestation rejects any non-v4 attestation, so the
     // workflow_dispatch input must document the schema owners actually sign.
     "attestation input is documented as a schema-v4 owner-review attestation",
     /review_attestation_b64:\s*\n\s*description:[^\n]*schema-v4 owner-review attestation/,
   ],
   ["npm provenance is mandatory", /--provenance/],
+  [
+    "installed npm daemon wrapper serves the scoped delegation belt",
+    /smoke-delegation-belt-entry\.mjs[\s\S]*?node_modules\/\.bin\/claudexord/,
+  ],
   ["artifact provenance is emitted", /actions\/attest-build-provenance@[0-9a-f]{40}/],
   ["signing is fail-closed", /Signing and notarization secrets are required/],
   ["release assets use collision checks", /Release asset collision/],
@@ -100,8 +119,8 @@ for (const [label, pattern] of [
     /download-artifact@[0-9a-f]{40}[\s\S]*?run-id:\s*\$\{\{\s*needs\.prepare\.outputs\.candidate_run_id\s*\}\}/,
   ],
   [
-    "publish verifies the promoted candidate closure provenance",
-    /gh attestation verify "candidate-assets\/claudexor-runtime-\$VERSION\.tar\.gz"/,
+    "publish verifies every promoted candidate asset provenance",
+    /for file in candidate-assets\/\*; do[\s\S]*?gh attestation verify "\$file"/,
   ],
   [
     "publish promotes the candidate closure bytes rather than rebuilding",
@@ -109,6 +128,164 @@ for (const [label, pattern] of [
   ],
 ]) {
   if (!pattern.test(release)) errors.push(`release.yml: ${label}`);
+}
+errors.push(...exactCandidateAppPromotionErrors(packageMacosJob));
+const exactPromotionMutationCases = [
+  [
+    "candidate-only signing guard",
+    packageMacosJob.replace(
+      "- name: Require and import Apple release credentials\n        if: needs.prepare.outputs.mode == 'candidate'",
+      "- name: Require and import Apple release credentials\n        if: always()",
+    ),
+  ],
+  [
+    "unconditional release Node pin",
+    packageMacosJob.replace(
+      "- name: Pin release Node runtime\n        shell: bash",
+      "- name: Pin release Node runtime\n        if: needs.prepare.outputs.mode == 'candidate'\n        shell: bash",
+    ),
+  ],
+  [
+    "candidate-only build guard",
+    packageMacosJob.replace(
+      "- name: Build signed DMG and ZIP\n        if: needs.prepare.outputs.mode == 'candidate'",
+      "- name: Build signed DMG and ZIP\n        if: always()",
+    ),
+  ],
+  [
+    "candidate-only fresh verification guard",
+    packageMacosJob.replace(
+      "- name: Verify signed and notarized artifacts\n        if: needs.prepare.outputs.mode == 'candidate'",
+      "- name: Verify signed and notarized artifacts\n        if: always()",
+    ),
+  ],
+  [
+    "candidate DMG source",
+    packageMacosJob.replace(
+      'cp "candidate-assets/Claudexor-$VERSION.dmg" "$assets/"',
+      'cp "apps/macos/dist/Claudexor-$VERSION.dmg" "$assets/"',
+    ),
+  ],
+  [
+    "candidate ZIP source",
+    packageMacosJob.replace(
+      'cp "candidate-assets/Claudexor-$VERSION.zip" "$assets/"',
+      'cp "apps/macos/dist/Claudexor-$VERSION.zip" "$assets/"',
+    ),
+  ],
+  [
+    "candidate SBOM source",
+    packageMacosJob.replace(
+      'cp "candidate-assets/Claudexor-$VERSION.spdx.json" "$assets/"',
+      'cp "apps/macos/dist/Claudexor-$VERSION.spdx.json" "$assets/"',
+    ),
+  ],
+  [
+    "candidate SBOM license-input prepared-SHA binding",
+    replaceLastOccurrence(
+      packageMacosJob,
+      'GITHUB_SHA="$PREPARED_SHA" pnpm licenses list --prod --json',
+      "pnpm licenses list --prod --json",
+    ),
+    "candidate SBOM must bind both license input and document namespace to the prepared SHA",
+  ],
+  [
+    "promoted SBOM license-input prepared-SHA binding",
+    packageMacosJob.replace(
+      'GITHUB_SHA="$PREPARED_SHA" pnpm licenses list --prod --json',
+      "pnpm licenses list --prod --json",
+    ),
+    "candidate SBOM must be regenerated from the promoted app and compared",
+  ],
+  [
+    "candidate SBOM generator prepared-SHA binding",
+    replaceLastOccurrence(
+      packageMacosJob,
+      'GITHUB_SHA="$PREPARED_SHA" node scripts/generate-release-sbom.mjs',
+      "node scripts/generate-release-sbom.mjs",
+    ),
+    "candidate SBOM must bind both license input and document namespace to the prepared SHA",
+  ],
+  [
+    "promoted SBOM generator prepared-SHA binding",
+    packageMacosJob.replace(
+      'GITHUB_SHA="$PREPARED_SHA" node scripts/generate-release-sbom.mjs',
+      "node scripts/generate-release-sbom.mjs",
+    ),
+    "candidate SBOM must be regenerated from the promoted app and compared",
+  ],
+  [
+    "candidate run SHA binding",
+    packageMacosJob.replace('test "$run_sha" = "$PREPARED_SHA"', 'test -n "$run_sha"'),
+  ],
+  [
+    "candidate provenance source binding",
+    `${packageMacosJob.replace('--source-digest "$PREPARED_SHA"', "--source-digest unknown")}\n# --source-digest "$PREPARED_SHA"`,
+  ],
+  [
+    "provenance-before-checksum order",
+    packageMacosJob.replace(
+      "for file in candidate-assets/*; do",
+      "(cd candidate-assets && shasum -a 256 -c SHA256SUMS)\n          for file in candidate-assets/*; do",
+    ),
+  ],
+  [
+    "candidate daemon version probe",
+    packageMacosJob.replace("probe.version !== process.argv[2]", "false"),
+    "candidate ZIP app must probe the exact daemon version and build SHA before upload",
+  ],
+  [
+    "candidate daemon build-SHA probe",
+    packageMacosJob.replace("probe.buildSha !== process.argv[3]", "false"),
+    "candidate ZIP app must probe the exact daemon version and build SHA before upload",
+  ],
+  [
+    "promoted daemon version probe",
+    replaceLastOccurrence(packageMacosJob, "probe.version !== process.argv[2]", "false"),
+    "candidate ZIP app must verify signature, version, and exact daemon build SHA",
+  ],
+  [
+    "promoted daemon build-SHA probe",
+    replaceLastOccurrence(packageMacosJob, "probe.buildSha !== process.argv[3]", "false"),
+    "candidate ZIP app must verify signature, version, and exact daemon build SHA",
+  ],
+  [
+    "isolated belt smoke HOME",
+    packageMacosJob.replace(
+      'HOME="$promoted_belt_home" node scripts/smoke-delegation-belt-entry.mjs',
+      "node scripts/smoke-delegation-belt-entry.mjs",
+    ),
+  ],
+  [
+    "publish assembly step scoping",
+    `${packageMacosJob.replace(
+      'cp "candidate-assets/Claudexor-$VERSION.dmg" "$assets/"',
+      'cp "apps/macos/dist/Claudexor-$VERSION.dmg" "$assets/"',
+    )}\n# cp "candidate-assets/Claudexor-$VERSION.dmg" "$assets/"`,
+  ],
+];
+for (const [label, needle] of exactPromotionPairedNeedles) {
+  exactPromotionMutationCases.push([
+    `${label} occurrence cardinality`,
+    `${packageMacosJob}\n# ${needle}`,
+    `${label} must occur exactly twice`,
+  ]);
+}
+for (const [label, broken, expectedFinding] of exactPromotionMutationCases) {
+  const findings = exactCandidateAppPromotionErrors(broken);
+  if (
+    findings.length === 0 ||
+    (expectedFinding !== undefined &&
+      !findings.some((finding) => finding.includes(expectedFinding)))
+  ) {
+    errors.push(`release-workflow-check self-test: failed to reject ${label}`);
+  }
+}
+for (const staleVersion of ["schema-v2", "schema-v3"]) {
+  const expected = "release.yml: stale schema-v2/v3 attestation wording is forbidden";
+  if (!staleAttestationFindings(`${release}\n# ${staleVersion}`).includes(expected)) {
+    errors.push(`release-workflow-check self-test: failed to reject ${staleVersion}`);
+  }
 }
 if (!/^\s+ref:\s*\$\{\{\s*github\.sha\s*\}\}\s*$/m.test(prepareJob)) {
   errors.push(
@@ -145,9 +322,25 @@ if (!String(coreManifest.scripts?.prepack ?? "").includes("verify-npm-darwin-pac
 }
 const npmPublisher = readFileSync("scripts/publish-npm-release.mjs", "utf8");
 const verifyDarwinPackage = npmPublisher.indexOf("verify-npm-darwin-package.mjs");
+const verifyClaudexorPackage = npmPublisher.indexOf("verify-npm-claudexor-package.mjs");
+const smokePackedDelegationBelt = npmPublisher.indexOf("smokePackedDelegationBelt(packed");
 const publishTarball = npmPublisher.indexOf('"publish"');
 if (verifyDarwinPackage < 0 || publishTarball < 0 || verifyDarwinPackage > publishTarball) {
   errors.push("publish-npm-release.mjs: Darwin package verification must precede npm publish");
+}
+if (verifyClaudexorPackage < 0 || publishTarball < 0 || verifyClaudexorPackage > publishTarball) {
+  errors.push(
+    "publish-npm-release.mjs: Claudexor MCP package verification must precede npm publish",
+  );
+}
+if (
+  smokePackedDelegationBelt < 0 ||
+  publishTarball < 0 ||
+  smokePackedDelegationBelt > publishTarball
+) {
+  errors.push(
+    "publish-npm-release.mjs: exact packed delegation belt smoke must precede npm publish",
+  );
 }
 for (const [label, pattern] of [
   ["published provenance is bound to source identity", /validatePublishedProvenance/],
@@ -199,10 +392,66 @@ for (const [label, pattern] of [
   ["unsigned release fallback is forbidden", /continue-on-error:\s*true/],
   ["runtime package downloads are forbidden", /\bnpx\b|@latest/],
   ["tag-push publication is forbidden", /^\s*push:\s*\n\s*tags:/m],
-  // The attestation is schema v4; stale v2/v3 wording must never return.
-  ["stale schema-v2 attestation wording is forbidden", /schema-v2/],
 ]) {
   if (pattern.test(release)) errors.push(`release.yml: ${label}`);
+}
+errors.push(...staleAttestationFindings(release));
+
+for (const [label, pattern] of [
+  ["manual tag input is required", /workflow_dispatch:[\s\S]*?tag:[\s\S]*?required:\s*true/],
+  ["GitHub OIDC permission is required", /id-token:\s*write/],
+  [
+    "tag input is bound to the root package version",
+    /root_version=.*package\.json[\s\S]*expected_tag="v\$root_version"[\s\S]*test "\$MCP_TAG_INPUT" = "\$expected_tag"/,
+  ],
+  ["tag dispatch is bound to GITHUB_REF", /GITHUB_REF[\s\S]*refs\/tags\/\$MCP_TAG_INPUT/],
+  ["annotated release tag is required", /git cat-file -e "\$MCP_TAG_INPUT\^\{tag\}"/],
+  ["tag commit must be on origin main", /git merge-base --is-ancestor/],
+  ["npm MCP metadata is verified", /mcp-registry-check\.mjs --npm/],
+  [
+    "publisher download is version pinned",
+    /releases\/download\/v1\.8\.0\/mcp-publisher_linux_amd64\.tar\.gz/,
+  ],
+  [
+    "publisher archive checksum is pinned",
+    /1370446bbe74d562608e8005a6ccce02d146a661fbd78674e11cc70b9618d6cf/,
+  ],
+  ["publisher validates server metadata", /\.\/mcp-publisher validate/],
+  ["registry preflight is idempotent", /mcp-registry-check\.mjs --registry before/],
+  ["registry uses GitHub OIDC", /\.\/mcp-publisher login github-oidc/],
+  ["registry publishes metadata", /\.\/mcp-publisher publish/],
+  ["registry publication is confirmed", /mcp-registry-check\.mjs --registry after/],
+]) {
+  if (!pattern.test(publishMcp)) errors.push(`publish-mcp.yml: ${label}`);
+}
+for (const [label, pattern] of [
+  ["tag-push trigger is forbidden", /^\s*push:\s*$/m],
+  ["floating publisher download is forbidden", /releases\/latest|@latest/],
+  [
+    "long-lived registry tokens are forbidden",
+    /MCP_GITHUB_TOKEN|MCP_REGISTRY_TOKEN|\$\{\{\s*secrets\./,
+  ],
+  ["failure bypass is forbidden", /continue-on-error:\s*true/],
+]) {
+  if (pattern.test(publishMcp)) errors.push(`publish-mcp.yml: ${label}`);
+}
+
+const mcpPackage = JSON.parse(readFileSync("packages/claudexor/package.json", "utf8"));
+const mcpServer = JSON.parse(readFileSync("server.json", "utf8"));
+if (mcpPackage.mcpName !== "io.github.razzant/claudexor") {
+  errors.push("packages/claudexor/package.json: unexpected mcpName");
+}
+if (
+  mcpServer.name !== mcpPackage.mcpName ||
+  mcpServer.packages?.length !== 1 ||
+  mcpServer.packages[0]?.identifier !== "claudexor" ||
+  JSON.stringify(mcpServer.packages[0]?.packageArguments) !==
+    JSON.stringify([
+      { type: "positional", value: "mcp" },
+      { type: "positional", value: "serve" },
+    ])
+) {
+  errors.push("server.json: executable npm MCP identity or package arguments drifted");
 }
 
 const directInputs = [...release.matchAll(/\$\{\{\s*inputs\.[^}]+\}\}/g)].map((match) => match[0]);
@@ -225,4 +474,129 @@ function jobBody(workflow, name) {
   }
   const next = workflow.slice(start + 2).search(/^  [a-z0-9-]+:\n/m);
   return next < 0 ? workflow.slice(start) : workflow.slice(start, start + 2 + next);
+}
+
+function exactCandidateAppPromotionErrors(job) {
+  const findings = [];
+  const candidateVerifyStep = stepBody(job, "Verify signed and notarized artifacts");
+  const verifyStep = stepBody(job, "Verify promoted candidate app artifacts (publish, A-5)");
+  const assembleStep = stepBody(job, "Assemble checksums, SBOM and review evidence");
+  const requirePattern = (label, pattern, scope = job) => {
+    if (!pattern.test(scope)) findings.push(`release.yml: ${label}`);
+  };
+  for (const [label, needle] of exactPromotionPairedNeedles) {
+    const count = job.split(needle).length - 1;
+    if (count !== 2) {
+      findings.push(
+        `release.yml: ${label} must occur exactly twice for candidate/promoted mutation targeting (got ${count})`,
+      );
+    }
+  }
+  requirePattern(
+    "release Node runtime must be pinned unconditionally",
+    /- name: Pin release Node runtime\n\s+shell: bash\n\s+run: echo "CLAUDEXOR_NODE_BIN=\$\(node -p 'process\.execPath'\)" >> "\$GITHUB_ENV"/,
+  );
+  requirePattern(
+    "app signing credential import must be candidate-only",
+    /- name: Require and import Apple release credentials\n\s+if: needs\.prepare\.outputs\.mode == 'candidate'/,
+  );
+  requirePattern(
+    "signed app build must be candidate-only",
+    /- name: Build signed DMG and ZIP\n\s+if: needs\.prepare\.outputs\.mode == 'candidate'[\s\S]*?apps\/macos\/scripts\/build-app\.sh/,
+  );
+  requirePattern(
+    "fresh app verification must be candidate-only",
+    /- name: Verify signed and notarized artifacts\n\s+if: needs\.prepare\.outputs\.mode == 'candidate'/,
+  );
+  requirePattern(
+    "candidate ZIP app must probe the exact daemon version and build SHA before upload",
+    /PREPARED_SHA:[\s\S]*?ditto -x -k "\$zip"[\s\S]*?claudexord\.bundle\.cjs" --probe[\s\S]*?probe\.version !== process\.argv\[2\][\s\S]*?probe\.buildSha !== process\.argv\[3\][\s\S]*?"\$probe" "\$VERSION" "\$PREPARED_SHA"/,
+    candidateVerifyStep,
+  );
+  requirePattern(
+    "candidate run must bind the release workflow, exact SHA, and successful conclusion",
+    /test "\$run_path" = "\.github\/workflows\/release\.yml"[\s\S]*?test "\$run_sha" = "\$PREPARED_SHA"[\s\S]*?test "\$run_conclusion" = success/,
+    verifyStep,
+  );
+  requirePattern(
+    "candidate provenance must bind signer workflow and source digest",
+    /gh attestation verify "\$file"[\s\S]*?--signer-workflow "\$GITHUB_REPOSITORY\/\.github\/workflows\/release\.yml"[\s\S]*?--source-digest "\$PREPARED_SHA"/,
+    verifyStep,
+  );
+  requirePattern(
+    "candidate file set must be exact and regular before promotion",
+    /unexpected candidate asset set[\s\S]*?stat\.isFile\(\)[\s\S]*?stat\.isSymbolicLink\(\)[\s\S]*?stat\.size === 0/,
+    verifyStep,
+  );
+  const attestation = verifyStep.indexOf('gh attestation verify "$file"');
+  const checksum = verifyStep.indexOf("shasum -a 256 -c SHA256SUMS");
+  if (!(attestation >= 0 && attestation < checksum)) {
+    findings.push(
+      "release.yml: provenance must be verified before candidate SHA256SUMS is trusted",
+    );
+  }
+  requirePattern(
+    "candidate ZIP app must verify signature, version, and exact daemon build SHA",
+    /ditto -x -k "\$candidate_zip"[\s\S]*?codesign --verify --strict[\s\S]*?PlistBuddy[\s\S]*?test "\$app_version" = "\$VERSION"[\s\S]*?claudexord\.bundle\.cjs" --probe[\s\S]*?probe\.version !== process\.argv\[2\][\s\S]*?probe\.buildSha !== process\.argv\[3\]/,
+    verifyStep,
+  );
+  requirePattern(
+    "candidate app must pass packaged belt smoke",
+    /promoted_belt_home="\$RUNNER_TEMP\/promoted-belt-home"[\s\S]*?HOME="\$promoted_belt_home" node scripts\/smoke-delegation-belt-entry\.mjs[\s\S]*?--entry "\$promoted_app\/Claudexor\.app\/Contents\/Resources\/claudexord\.bundle\.cjs"[\s\S]*?--config-root "\$promoted_belt_home\/config"/,
+    verifyStep,
+  );
+  requirePattern(
+    "candidate SBOM must be regenerated from the promoted app and compared",
+    /GITHUB_SHA="\$PREPARED_SHA" pnpm licenses list --prod --json \|[\s\S]*?GITHUB_SHA="\$PREPARED_SHA" node scripts\/generate-release-sbom\.mjs[\s\S]*?--app-bundle "\$promoted_app\/Claudexor\.app"[\s\S]*?cmp "\$candidate_sbom" "\$RUNNER_TEMP\/promoted-candidate\.spdx\.json"/,
+    verifyStep,
+  );
+  requirePattern(
+    "publish assembly must copy and compare exact candidate DMG, ZIP, and SBOM",
+    /if \[ "\$RELEASE_MODE_INPUT" = publish \]; then[\s\S]*?cp "candidate-assets\/Claudexor-\$VERSION\.dmg" "\$assets\/"[\s\S]*?cp "candidate-assets\/Claudexor-\$VERSION\.zip" "\$assets\/"[\s\S]*?cp "candidate-assets\/Claudexor-\$VERSION\.spdx\.json" "\$assets\/"[\s\S]*?cmp "candidate-assets\/Claudexor-\$VERSION\.dmg" "\$assets\/Claudexor-\$VERSION\.dmg"[\s\S]*?cmp "candidate-assets\/Claudexor-\$VERSION\.zip" "\$assets\/Claudexor-\$VERSION\.zip"[\s\S]*?cmp "candidate-assets\/Claudexor-\$VERSION\.spdx\.json" "\$assets\/Claudexor-\$VERSION\.spdx\.json"/,
+    assembleStep,
+  );
+  requirePattern(
+    "candidate SBOM must bind both license input and document namespace to the prepared SHA",
+    /else[\s\S]*?GITHUB_SHA="\$PREPARED_SHA" pnpm licenses list --prod --json \|[\s\S]*?GITHUB_SHA="\$PREPARED_SHA" node scripts\/generate-release-sbom\.mjs[\s\S]*?--app-bundle apps\/macos\/dist\/Claudexor\.app/,
+    assembleStep,
+  );
+  const publishArmStart = assembleStep.indexOf('if [ "$RELEASE_MODE_INPUT" = publish ]; then');
+  const publishArmEnd = assembleStep.indexOf("\n          else", publishArmStart);
+  const publishArm =
+    publishArmStart >= 0 && publishArmEnd > publishArmStart
+      ? assembleStep.slice(publishArmStart, publishArmEnd)
+      : "";
+  if (/apps\/macos\/dist\//.test(publishArm)) {
+    findings.push("release.yml: publish app assembly must not read fresh app build outputs");
+  }
+  const download = job.indexOf("Promote the exact candidate release artifact");
+  const verify = job.indexOf("Verify promoted candidate app artifacts");
+  const assemble = job.indexOf("Assemble checksums, SBOM and review evidence");
+  if (!(download >= 0 && download < verify && verify < assemble)) {
+    findings.push("release.yml: candidate download, verification, and assembly order is invalid");
+  }
+  return findings;
+}
+
+function stepBody(job, name) {
+  const marker = `      - name: ${name}\n`;
+  const start = job.indexOf(marker);
+  if (start < 0) return "";
+  const rest = job.slice(start + marker.length);
+  const next = rest.search(/^      - name: /m);
+  return next < 0 ? job.slice(start) : job.slice(start, start + marker.length + next);
+}
+
+function replaceLastOccurrence(text, needle, replacement) {
+  const index = text.lastIndexOf(needle);
+  return index < 0
+    ? text
+    : `${text.slice(0, index)}${replacement}${text.slice(index + needle.length)}`;
+}
+
+function staleAttestationFindings(workflow) {
+  // The attestation is schema v4; stale v2/v3 wording must never return.
+  return staleAttestationSchemaPattern.test(workflow)
+    ? ["release.yml: stale schema-v2/v3 attestation wording is forbidden"]
+    : [];
 }

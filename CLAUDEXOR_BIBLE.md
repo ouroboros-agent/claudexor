@@ -150,10 +150,42 @@ invariant or owner decision before proceeding.
   the harness sandbox so the harness spawns bounded, isolated sub-runs
   (ask/plan/run/best-of + status/result — NO apply/decision/thread/settings);
   server-side policy at the tool boundary caps nesting depth at 1, sub-run count
-  per parent (default 8), and the paid-budget draw from the parent ledger
-  headroom. Only adapters declaring `capability_profile.mcp_injection` (claude,
-  codex) can host the belt; `--delegate` elsewhere is a typed preflight refusal.
-  verify: `ModeKind` in schema; docs-truth mode-id check; canary
+  per parent (default 8), and one live daemon-owned paid-budget authority shared
+  by the parent and every child. The flag grants permission; the parent may finish without creating
+  a child. Only adapters declaring `capability_profile.mcp_injection` (claude,
+  codex) can host the belt, and the engine projects belt readiness instead of a
+  surface guessing it. A known failure BEFORE injection may continue as an
+  ordinary Agent run only with durable requested/effective/used/reason/remediation
+  facts and a visible warning. Once the belt descriptor was injected, an
+  explicit startup failure is terminal. An unrecovered non-ok result from an
+  exact injected belt operation is also terminal for the Agent outcome: this is
+  the required-capability exception to INV-043. An envelope deliverable stays
+  available only as diagnostic evidence and cannot succeed or be auto-adopted.
+  If an explicitly in-place lane already wrote the live tree, the failed turn
+  instead records those unavoidable bytes as `adopted:true` plus
+  `applied_review_blocked`, emits the WorkProduct event before the terminal, and
+  preserves a revert anchor; it never misreports the tree as untouched. INV-062
+  is the narrow exception: a secret-bearing in-place diff is never persisted as
+  a patch or anchor and is immediately reverse-applied through the exact
+  postimage check. The diff owner scans immutable binary preimages and
+  postimages as well as text before deleting its private capture; non-Git
+  binary stubs scan the live postimage through a bounded no-follow descriptor
+  and fail closed when it cannot be proven safe. A Git-backed
+  in-place refusal remains a sanitized `adopted:true`/
+  `applied_review_blocked` manual-cleanup receipt even when worktree rollback
+  succeeds, because harness-written index, ref, or object state cannot be
+  proven absent after the fact; it never claims false revertability. A later
+  success recovers only the same invocation: tool + kind
+  + target must match, and matching non-null tool-use ids are additionally
+  required when both sides carry them; the tuple remains the compatibility key
+  when either id is absent. The Delegate receipt remains `used:true` because it
+  records the path, not its success. Neither failure may silently degrade or be
+  counted as a native vendor subagent.
+  Every child is bound to the original normalized user-project root rather than
+  the parent's execution envelope; raw tool arguments cannot redirect it.
+  Claudexor children carry server-owned Delegate lineage; model prose never
+  establishes provenance. verify: `ModeKind` in schema; docs-truth mode-id
+  check; delegation capability/outcome/lineage + failed-start tests; canary
   `[INV-030:orchestrate-retired]`.
 - **INV-031** Engine strategies are FLAGS on a mode, never modes of their
   own: best-of-N (`--n`), capped repair (`--attempts`), repair-to-clean
@@ -220,7 +252,9 @@ invariant or owner decision before proceeding.
   verified recovery exists, but it does not by itself discard a produced
   deliverable. Recovery must be attributable to the failed operation, not
   merely a later call of the same-named tool — the engine keys recovery by
-  tool AND target. verify: attemptTelemetry recovery-keying tests.
+  tool + kind + target and, when both records carry one, matching tool-use id;
+  the tuple remains the compatibility fallback for legacy adapter evidence.
+  verify: attemptTelemetry recovery-keying tests.
 - **INV-044** The engine separates terminal state from tool hygiene: a
   completed answer/report/patch may succeed with warnings, while failed web
   evidence, terminal harness errors, failed apply/verify steps, or required
@@ -403,8 +437,11 @@ invariant or owner decision before proceeding.
   is a server-owned file reference materialized outside every worktree, the
   engine verifies the hash before any harness spawns, and a tampered or
   unreadable plan fails loudly. Retry replays the reference verbatim — a
-  retried implement can never silently run without its plan. verify:
-  withPlanBrief hash tests; thread-turn plan_hash/409 tests.
+  retried implement can never silently run without its plan, and a client
+  can never mint the reference (POST /runs rejects planRef). verify:
+  `[INV-081:plan-brief-materialized]`, `[INV-081:plan-hash-mismatch]`,
+  `[INV-081:plan-missing]`, `[INV-081:planref-boundary]`; thread-turn
+  plan_hash/409 tests.
 - **INV-082** Plans and repo config cannot carry protected-path approvals;
   operator approval is always supplied on the current run. verify:
   run-level approval schema strictness.

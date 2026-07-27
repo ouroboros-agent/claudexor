@@ -1,5 +1,27 @@
 # @claudexor/daemon
 
+## 3.1.2
+
+### Patch Changes
+
+- Restore Delegate in packaged installs through the exact daemon self-entry; enforce required MCP startup, bounded shared parent/child budget and cancellation authority, typed lineage and degradation receipts, and durable CLI/macOS projections across reload and reconnect.
+- Updated dependencies
+  - @claudexor/core@3.1.2
+  - @claudexor/schema@3.1.2
+  - @claudexor/journal@3.1.2
+  - @claudexor/util@3.1.2
+
+## 3.1.1
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+  - @claudexor/core@3.1.1
+  - @claudexor/schema@3.1.1
+  - @claudexor/journal@3.1.1
+  - @claudexor/util@3.1.1
+
 ## 3.1.0
 
 ### Patch Changes

@@ -1,4 +1,5 @@
 import {
+  EFFORT_HINT_HELP,
   EffortHint,
   ProviderFamily,
   type ControlReviewerPanelEntry,
@@ -27,7 +28,7 @@ export function parseReviewerEffortMap(
       );
     const parsed = EffortHint.safeParse(effort);
     if (!parsed.success)
-      throw new Error(`invalid reviewer effort '${effort}' (expected low|medium|high|xhigh|max)`);
+      throw new Error(`invalid reviewer effort '${effort}' (expected a ${EFFORT_HINT_HELP})`);
     map[parsedFamily.data] = parsed.data;
   }
   return Object.keys(map).length > 0 ? map : undefined;
@@ -69,9 +70,20 @@ export function parseReviewerModelMap(
  * into an ordered reviewer list. Entries are harness-id based, not
  * provider-family based, so repeated harnesses are preserved for multi-model
  * panels on the same native provider.
+ *
+ * `advertisedEfforts` disambiguates a trailing `:token`: every slug is a
+ * well-formed effort, so only membership in a harness-ADVERTISED set can say
+ * whether `cursor=org:model:v2` ends in an effort or a model-id segment. The
+ * set is the union across harnesses (the harness's live manifest is not
+ * resolvable at flag-parse time); a level outside it stays part of the model
+ * id or, in the `harness:effort` spelling, is refused — the unambiguous
+ * `--reviewer-effort family=level` spelling carries any level the set has not
+ * caught up with. The macOS composer applies the same rule with its live
+ * manifest union (`ComposerOptionParser`).
  */
 export function parseReviewerPanel(
   value: string | undefined,
+  advertisedEfforts: ReadonlySet<string>,
 ): ControlReviewerPanelEntry[] | undefined {
   if (value === undefined) return undefined;
   const out: ControlReviewerPanelEntry[] = [];
@@ -89,12 +101,16 @@ export function parseReviewerPanel(
       const colon = harness.lastIndexOf(":");
       if (colon > -1) {
         const suffix = harness.slice(colon + 1).trim();
-        const parsedEffort = EffortHint.safeParse(suffix);
-        if (!parsedEffort.success)
+        // Disambiguation keys off the ADVERTISED set, not the open vocabulary:
+        // every slug is a well-formed effort, so accepting any of them here
+        // would make `cursor=org:model:v2` swallow `v2`. A level the set does
+        // not know rides the unambiguous `--reviewer-effort family=level`
+        // spelling instead.
+        if (!advertisedEfforts.has(suffix))
           throw new Error(
             `invalid --reviewer-panel entry '${pair}' (expected harness[:effort] or harness[=model[:effort]])`,
           );
-        effort = parsedEffort.data;
+        effort = suffix;
         harness = harness.slice(0, colon).trim();
       }
     }
@@ -107,9 +123,10 @@ export function parseReviewerPanel(
       const colon = model.lastIndexOf(":");
       if (colon > -1) {
         const suffix = model.slice(colon + 1).trim();
-        const parsedEffort = EffortHint.safeParse(suffix);
-        if (parsedEffort.success) {
-          effort = parsedEffort.data;
+        // Same advertised-set disambiguation: a colon suffix no harness
+        // advertises stays part of the model id (`org:model:v2`).
+        if (advertisedEfforts.has(suffix)) {
+          effort = suffix;
           model = model.slice(0, colon).trim();
           if (!model)
             throw new Error(`invalid --reviewer-panel entry '${pair}' (missing model after '=')`);

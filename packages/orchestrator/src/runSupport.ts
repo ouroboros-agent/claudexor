@@ -212,6 +212,27 @@ export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * The redacted message of a thrown value — GUARANTEED non-blank.
+ *
+ * A thrown value can legitimately carry no text: `new Error("").message` is the
+ * empty string, and a bare thrown `""` stringifies to one. Every error axis
+ * downstream of this helper is decided by truthiness or by nullishness — an
+ * attempt's `harnessError` is folded with `??=` and the final `attemptError` is
+ * gated by `if (attemptError)` — so an empty message reads as "nothing went
+ * wrong" and an attempt whose harness actually THREW terminalizes as a silent
+ * success with no error to show the operator.
+ *
+ * Substituting a stable generic message fixes that class at its source rather
+ * than at one guard: the only value the truthiness/nullishness tests treat as
+ * "no error" is the one value this function can no longer return. That is what
+ * makes the nullish folds correct instead of accidentally correct.
+ */
+export function safeErrorMessage(err: unknown): string {
+  const message = redactSecrets(err instanceof Error ? err.message : String(err));
+  return message.trim().length > 0 ? message : "thrown error carried no message";
+}
+
 export function redactHarnessEvent(ev: HarnessEvent): HarnessEvent {
   try {
     return JSON.parse(redactSecrets(JSON.stringify(ev))) as HarnessEvent;
@@ -237,7 +258,13 @@ export function harnessEventPayload(
     (safe.usage
       ? `usage: ${safe.usage.input_tokens ?? 0} in / ${safe.usage.output_tokens ?? 0} out`
       : safe.type);
+  // INV-105 from INSIDE the adapter (an effort the run's resolved catalog
+  // refused after preflight passed it): hoist the adapter's `ignored_settings`
+  // to the projection's top level, where the timeline/live disclosure channel
+  // already reads it for harness.started (QA-070) — same warning either way.
+  const ignored = (safe.payload as Record<string, unknown> | undefined)?.["ignored_settings"];
   return {
+    ...(Array.isArray(ignored) ? { ignored_settings: ignored } : {}),
     harness_id: harnessId,
     attempt_id: attemptId,
     session_id: safe.session_id,

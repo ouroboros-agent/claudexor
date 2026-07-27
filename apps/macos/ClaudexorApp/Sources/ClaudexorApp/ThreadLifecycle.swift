@@ -58,16 +58,47 @@ extension AppModel {
         {
             pendingRemoteThreadSelection = nil
         }
+        // View hydration is presentation-scoped. Once another thread is
+        // selected, a later bounded runs refresh may evict this thread's
+        // off-page Delegate family; reopening must be allowed to restore it.
+        let reconcileRunList = locationID == .local && (
+            runListReconciliationNeeded || (
+                selectedThreadId != nil && selectedThreadId != id && !liveTasks.isEmpty
+            )
+        )
+        if locationID == .local, selectedThreadId != id {
+            hydratedRunDetails.removeAll()
+        }
         threadLoadGeneration += 1
         let generation = threadLoadGeneration
         selectedExecutionLocation = locationID
         selectedThreadId = id
         if !keepsVisibleDetail { selectedThreadDetail = nil }
         threadStatus = nil
-        do {
-            let detail = try await requestClient.threadDetail(id: id)
+        // Start the new thread fetch before reconciling the bounded global run
+        // page. The two requests overlap, while the list pass reclaims any
+        // detail-restored family from the previous selection in a quiet daemon.
+        let detailLoad = Task { try await requestClient.threadDetail(id: id) }
+        if reconcileRunList {
+            // Dirty-before-I/O: a direct A→B switch must retry reclamation if
+            // this bounded list request fails, just like the draft detour.
+            runListReconciliationNeeded = true
+            let refreshSuccesses = successfulRunsRefreshes
+            await refreshRuns()
             guard selectedExecutionLocation == locationID,
-                  selectedThreadId == id, threadLoadGeneration == generation else { return }
+                  selectedThreadId == id,
+                  threadLoadGeneration == generation
+            else { return }
+            if successfulRunsRefreshes > refreshSuccesses {
+                runListReconciliationNeeded = false
+            }
+        }
+        do {
+            let detail = try await detailLoad.value
+            guard selectedExecutionLocation == locationID,
+                  selectedThreadId == id,
+                  threadLoadGeneration == generation
+            else { return }
             selectedThreadDetail = detail
             guard selectedExecutionLocation == locationID,
                   selectedThreadId == id, threadLoadGeneration == generation else { return }
@@ -78,8 +109,11 @@ extension AppModel {
             if locationID == .local {
                 for turn in detail.turns.suffix(5) {
                     guard selectedThreadId == id, threadLoadGeneration == generation else { return }
-                    if let runId = turn.runId, liveTasks.contains(where: { $0.id == runId }) {
-                        await loadRunDetail(runId)
+                    if let runId = turn.runId {
+                        let missing = !liveTasks.contains(where: { $0.id == runId })
+                        if !missing || turn.run?.delegation?.requested == true {
+                            await ensureRunDetail(runId, insertingIfMissing: missing)
+                        }
                     }
                 }
             } else {
@@ -143,6 +177,8 @@ extension AppModel {
     func startDraftThread() {
         let previousLocation = selectedExecutionLocation
         let previousRoot = currentThread?.repoRoot
+        runListReconciliationNeeded = runListReconciliationNeeded || !liveTasks.isEmpty
+        hydratedRunDetails.removeAll()
         threadLoadGeneration += 1
         selectedThreadId = nil
         selectedThreadDetail = nil

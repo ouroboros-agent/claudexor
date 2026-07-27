@@ -18,6 +18,9 @@ import {
   RawPatchRefusalCode,
 } from "./raw.js";
 import { QuotaConstraint, QuotaSource } from "./quota.js";
+import { EffortHint, ModelEffortCapability } from "./effort.js";
+// Re-exported so sibling contract modules keep one import path for the type.
+export { EffortHint } from "./effort.js";
 
 /** Quality of a usage/quota signal a harness can emit. */
 export const SignalQuality = z
@@ -26,19 +29,6 @@ export const SignalQuality = z
     "Quality of a usage/quota signal a harness can emit, from exact vendor accounting through native CLI reporting, engine observation, manual entry, to unknown.",
   );
 export type SignalQuality = z.infer<typeof SignalQuality>;
-
-/**
- * Open cross-harness reasoning-effort vocabulary. Adapters declare the SUBSET
- * they actually support via `HarnessCapabilities.effort_levels`; a shared
- * normalizer maps any requested level onto the nearest supported one. New levels
- * (e.g. a future `ultra`) extend this union without touching adapter logic.
- */
-export const EffortHint = z
-  .enum(["low", "medium", "high", "xhigh", "max"])
-  .describe(
-    "Cross-harness reasoning-effort level, weakest to strongest; adapters declare the subset they support and a shared normalizer clamps requests onto the nearest supported level.",
-  );
-export type EffortHint = z.infer<typeof EffortHint>;
 
 // Staged-field rule: only kinds a shipped adapter declares. New adapter
 // categories (local servers, SDK embeddings, external bridges) add their
@@ -185,15 +175,42 @@ export const HarnessCapabilities = z
         "Where a schema-constrained answer surfaces: side_tool (rides a tool; final message stays markdown) or final_message (constrains the final message itself).",
       ),
     /**
-     * Ordered (weakest→strongest) reasoning-effort levels this harness actually
-     * accepts. Empty = effort is not a tunable surface. The shared effort
-     * normalizer clamps any requested EffortHint onto the nearest member.
+     * Ordered (weakest→strongest) reasoning-effort levels this harness accepts,
+     * as the harness-wide UNION over its models. Empty = effort is not a tunable
+     * surface. This stays the coarse fallback every existing reader keeps using;
+     * `model_effort_levels` below narrows it for a specific model.
      */
     effort_levels: z
       .array(EffortHint)
       .default([])
       .describe(
-        "Ordered (weakest to strongest) reasoning-effort levels this harness actually accepts; empty means effort is not a tunable surface.",
+        "Ordered (weakest to strongest) reasoning-effort levels this harness accepts across all its models; empty means effort is not a tunable surface.",
+      ),
+    /**
+     * Per-model advertised effort vocabulary, discovered live where the vendor
+     * exposes it. Effort ceilings are a property of the MODEL, not the harness:
+     * codex advertises `ultra` on gpt-5.6-sol and stops at `xhigh` on gpt-5.4.
+     * A model absent here falls back to `effort_levels` (see
+     * `effortLevelsForModel`, the ONE owner of that lookup).
+     */
+    model_effort_levels: z
+      .record(z.string(), ModelEffortCapability)
+      .default({})
+      .describe(
+        "Per-model advertised reasoning-effort vocabulary keyed by model id; a model absent here falls back to the harness-wide effort_levels union.",
+      ),
+    /**
+     * Vendor CLI version the effort ladders were last verified against. Set from
+     * the LIVE probe when one succeeded, and from the recorded static snapshot's
+     * stamp when the probe fell back — so the freshness gate can tell the two
+     * apart. Null = never verified / not applicable.
+     */
+    effort_levels_verified_against: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe(
+        "Vendor CLI version the effort ladders were last verified against; null = never verified / not applicable.",
       ),
     /**
      * Known model ids/aliases this harness accepts — the manifest-declared model
@@ -363,14 +380,14 @@ export const HarnessCapabilityProfile = z
      * (the generalized browser-MCP seam): claude via `--mcp-config` inline JSON,
      * codex via `-c mcp_servers.<name>.*` overrides. Consumers: the browser-tool
      * wiring and the delegation belt. When false, `HarnessRunSpec.extra_mcp_servers`
-     * is refused at preflight (never silently dropped) and the Agent `delegate`
-     * toggle is a typed refusal naming the harness.
+     * is refused at preflight (never silently dropped), while the Agent
+     * `delegate` toggle degrades to ordinary Agent with a durable typed receipt.
      */
     mcp_injection: z
       .boolean()
       .default(false)
       .describe(
-        "The adapter can inject engine-owned MCP servers into the harness sandbox (browser tool, delegation belt); false = extra_mcp_servers and the delegate toggle are refused.",
+        "The adapter can inject engine-owned MCP servers into the harness sandbox (browser tool, delegation belt); false = browser MCP is refused and Delegate degrades to ordinary Agent with a durable typed receipt.",
       ),
     /**
      * The injected belt can only reach the daemon (socket + control API, OUTSIDE
@@ -378,13 +395,13 @@ export const HarnessCapabilityProfile = z
      * that escalation-requiring MCP call in headless exec; only danger-full-access
      * lets it through — the browser MCP already rides this. Claude does not
      * sandbox its MCP servers (false). true => a --delegate lane below full
-     * access is a typed preflight refusal, never a silent non-delegation.
+     * access degrades to ordinary Agent with a durable typed receipt.
      */
     mcp_injection_requires_full_access: z
       .boolean()
       .default(false)
       .describe(
-        "An injected MCP server can only reach the daemon (belt) at full access; below it the harness sandbox cancels the call. true => --delegate below full access is refused for this harness.",
+        "An injected MCP server can only reach the daemon (belt) at full access; below it the harness sandbox cancels the call. true => Delegate below full access degrades to ordinary Agent with a durable typed receipt.",
       ),
   })
   .default({})
@@ -522,15 +539,7 @@ export const BrowserToolSpec = z
   );
 export type BrowserToolSpec = z.infer<typeof BrowserToolSpec>;
 
-/**
- * One extra MCP server the adapter injects into the harness sandbox (generalized
- * from the browser-MCP seam). The engine names them, supplies the exact local
- * command + args + env, and each adapter translates the list into its native
- * MCP-injection transport (claude `--mcp-config` inline JSON, codex
- * `-c mcp_servers.<name>.*` overrides). Only injected on adapters whose
- * `capability_profile.mcp_injection` is true. `name` is the server key the
- * harness exposes its tools under (`mcp__<name>__*`).
- */
+/** One engine-injected MCP server translated into each harness's native transport. */
 export const ExtraMcpServer = z
   .object({
     name: z
@@ -547,6 +556,12 @@ export const ExtraMcpServer = z
       .record(z.string(), z.string())
       .default({})
       .describe("Extra environment variables for the MCP server process."),
+    required: z
+      .boolean()
+      .default(false)
+      .describe(
+        "Whether the harness must fail startup when this MCP server cannot initialize; omitted/false preserves optional-server behavior.",
+      ),
   })
   .describe(
     "One extra MCP server the adapter injects into the harness sandbox; translated per adapter alongside the browser one.",

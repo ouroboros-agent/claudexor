@@ -86,11 +86,15 @@ extension AppModel {
         _ body: (inout TaskRun) -> Void
     ) {
         if locationID == .local {
-            guard let index = liveTasks.firstIndex(where: { $0.id == id }) else { return }
+            guard let index = liveTasks.firstIndex(where: {
+                $0.id == id || $0.resolvedRunId == id
+            }) else { return }
             body(&liveTasks[index])
             return
         }
-        guard let index = remoteTasks[locationID]?.firstIndex(where: { $0.id == id })
+        guard let index = remoteTasks[locationID]?.firstIndex(where: {
+            $0.id == id || $0.resolvedRunId == id
+        })
         else { return }
         body(&remoteTasks[locationID]![index])
     }

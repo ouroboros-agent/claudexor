@@ -6,6 +6,47 @@ Silent drops are the failure mode this file exists to prevent — the 2.1.0
 audit found ten F2.5 leftovers that were neither shipped nor consciously
 deferred; they are recorded here now.
 
+## Discovery/distribution review advisories (3.2 wave; X243-X261)
+
+- X243: add the experimental ACP Terminal Auth rationale to the WHITEPAPER if
+  the conceptual model expands beyond the current thin, capability-gated
+  setup projection.
+- X244: add the ACP initialize capability → exact CLI suffix → durable setup
+  job → non-success exit ownership chain to the architecture runtime map.
+- X245: update the integrations guide's Claude bridge paragraph: exclusion
+  requires created-this-run provenance and exact generated-byte equality, not
+  merely the ownership marker.
+- X246: correct SECURITY.md's pre-existing secret-store wording. Managed API
+  keys use the daemon-owned 0600 file store; only vendor-owned native state may
+  use a vendor Keychain.
+- X247: either forward `--json` through `acp serve auth login codex` or reject
+  it explicitly; ACP clients do not send the flag, so the current experimental
+  path remains functional.
+- X248: make `gen-version.mjs` and Prettier produce byte-identical portable
+  plugin JSON formatting to avoid harmless regeneration churn.
+- X249: add the manual, post-npm MCP Registry OIDC publish step to the sole
+  release checklist once the first registry release is proven live.
+- X251: after the first live MCP publish, confirm whether the registry API
+  preserves `$schema`; if it normalizes server records, compare a canonical
+  field projection instead of raw deep equality.
+- X252: remove the duplicated ACP usage string by projecting the registry entry
+  from `ACP_SERVE_USAGE` or adding a parity assertion.
+- X253: ACP Terminal Auth currently calls the default Codex login but describes
+  it as a named subscription profile. Use neutral copy such as "Sign in to
+  Codex for Claudexor" when the experimental surface next changes.
+- X256: if a project first accumulates uncommitted or untracked live-tree work
+  and only then enables `protected_paths`, the one-way thread promotion starts
+  from repository state rather than explicitly proving that every live byte is
+  present in the persistent worktree. Add a package-boundary migration test and
+  either transfer the complete dirty delta or refuse with a typed remedy.
+- X260: a legacy or hand-edited no-project thread journal could declare an
+  isolated workspace and reach worktree setup for the synthetic no-project
+  root. Add an explicit `NO_PROJECT_ROOT` short-circuit when that legacy state
+  is worth supporting.
+- X261: `threadWorktreeMutation` currently infers promotion from an `in_place`
+  workspace. Make promotion an explicit parameter before adding any future
+  `setThreadWorktree` caller that might only intend to update delivery state.
+
 ## v3.0.0 review wave 1 deferrals (adjudication; ledgered `backlog`)
 
 - D-b: `GET /threads` needs-decision derivation cost — the derivation reads one
@@ -290,6 +331,11 @@ revision/etag, already logged above), are intentionally not duplicated.
 
 ### Engine
 
+- Delegate family drain: `waitForChildren` awaits the injected
+  `cancelAdmission` callback before its bounded child-settlement timeout starts.
+  The shipped daemon binding is synchronous, so this is not default-reachable;
+  a future asynchronous embedder should bound or include that callback in the
+  same deadline.
 - runRace continuation telemetry replaces the exhausted attempt in runsBySlot
   — final/telemetry.yaml attempts roster omits the superseded a01 attempt
   though its spend settled.
@@ -337,7 +383,6 @@ revision/etag, already logged above), are intentionally not duplicated.
 - [F45] anthropic/claude-fable-5 | runtime_behavior_changes | apps/macos/ClaudexorApp/Sources/ClaudexorApp/RuntimeInstallCoordinator.swift install(): failure paths at steps 5/6 (probe mismatch, busy) clean up with removeVersionDir, but a throw from step 7 (`try await daemon.stop()`), the pointer-write catch, the relaunch-throw path, and the handshake-mismatch rollback all leave the freshly unpacked, quarantine-stripped versions/<v> directory on disk with no pointer referencing it.
 - [F45] anthropic/claude-fable-5 | forgotten_touchpoints | .github/workflows/repo-metrics.yml pauses the daily cron 'for the v3.1.0 release freeze' and says RE-ENABLE is the 'release runbook final step', but docs/CHECKLISTS.md — per CLAUDEXOR_BIBLE.md the SOLE home of the release protocol — is not touched anywhere in this diff, so the re-enable step exists only as a workflow comment and can be silently forgotten after publish.
 - [F45] anthropic/claude-fable-5 | prompt_doc_sync | README.md Metrics section states the charts are 'refreshed daily by a scheduled workflow that commits the charts back into the repo', but .github/workflows/repo-metrics.yml ships with the schedule COMMENTED OUT for the freeze (workflow_dispatch only) — until the runbook re-enable happens, the public README describes a cadence that is not running.
-- [F45] anthropic/claude-fable-5 | prompt_doc_sync | docs/FEATURES.md engine/delegation row ('--delegate belt in the PACKAGED macOS app, QA-024') still carries Planned='Ф4' and prose 'Making the packaged app actually HOST the belt ... is Ф4 packaging work', but Ф4 is this very release (D-2 + D-17 per USER_INTENT.md) and the belt packaging did not ship — the pointer is now stale. Retarget the row's Planned column (e.g.
 - [F45] anthropic/claude-fable-5 | implicit_contracts | GatewayClient.engineHasActiveWork (ClaudexorKit/GatewayClient.swift) hardcodes the state-filter values ["running", "queued"] for GET /v2/runs, but the daemon's `state` query is STRICT ('a typoed or malformed value is a typed 400' per the ARCHITECTURE run-list contract / packages/control-api/src/run-list.ts), and the only tests (RuntimeBusyGateTests) run against BusyStubURLProtocol, never the real enum.
 - [F45] openai/gpt-5.6-sol | runtime_behavior_changes | packages/cli/src/claudexord-probe.test.ts imports runProbeIfRequested from packages/cli/src/claudexord.ts, but claudexord.ts unconditionally invokes main() at module evaluation. Running this focused test therefore also starts durable daemon initialization, writer-lease acquisition, journal/setup services, and socket/control startup in the test worker.
 - [F45] anthropic/claude-fable-5 | runtime_behavior_changes | packages/cli/src/claudexord.ts `runStopIfRequested` (the identity-proven `claudexord --stop` the macOS RuntimeInstallCoordinator drives before the atomic pointer swap) ships with NO test at the package boundary: packages/cli/src/claudexord-probe.test.ts covers only `runProbeIfRequested`, and the Swift AppRuntimeDaemonControlTests exercise a fake script, not this TS logic.
@@ -353,5 +398,85 @@ revision/etag, already logged above), are intentionally not duplicated.
 - [F45] anthropic/claude-fable-5 | forgotten_touchpoints | docs/CHECKLISTS.md — the Bible-designated sole home of the release protocol (INV-130 hierarchy) — is NOT in the changed-file list, yet the publish flow gained two new mandatory operator inputs (release.yml runtime_manifest_b64 + candidate_run_id, validated fail-closed in the prepare job) and .github/workflows/repo-metrics.yml explicitly defers its schedule re-enable to a 'release runbook final step'.
 - [F45] anthropic/claude-fable-5 | prompt_doc_sync | docs/DEVELOPMENT.md, the new sign:runtime-manifest example: the line '--in       runtime-manifest.json           # the candidate's unsigned manifest' has NO trailing backslash (and an inline comment) inside a multi-line continuation command, so the documented owner signing command breaks after the --in line when pasted — the remaining --sha256/--private-key/--authority/--out flags are lost and the signer exits with usage.
 
-- [post-3.1.0] QA-024: the delegation belt cannot be hosted from the packaged macOS app (fails typed, never false-succeeds). Follow-up: make the packaged app a legitimate delegation host, or document the CLI-only constraint in FEATURES.
 - [post-3.1.0] Re-run the full post-release program audit (codex gpt-5.6-sol, deep-scan) after the claude weekly quota resets — the 2026-07-24 attempt died at the reducer stage with 96% quota used; its scout findings are ledgered as X237-X239.
+
+## 3.1.2 external-review advisories (2026-07-26)
+
+These are the WARN-or-below findings from the frozen-candidate, Fable-high,
+synthesis, and exact-SHA confirmation waves. They do not expand the 3.1.2
+blocker fix batch. Related ledger context spans X303-X343, X360, X367-X377,
+and X382 onward through the latest row associated with this section. Those
+ranges also contain fixed and declined records, so the ledger row itself is
+authoritative for each exact disposition.
+
+- Remove private `paramsRecord` copies after the shared run-record owner is
+  adopted everywhere.
+- Refine Delegate-family cancellation receipts so successfully delivered but
+  still-draining cancellation is not presented as a rejected operation.
+- Require `DIFF_SHA256.txt` explicitly in frozen-packet validation and seal the
+  targeted secret-scan receipt used before review transport.
+- Keep failed in-place `new_repo` WorkProduct kind and `meta.result_kind`
+  identical, and document the exported delegation root field in the util
+  package changelog.
+- Add a recorded Codex required-MCP failure fixture with version provenance;
+  align the Swift drain-timeout fixture phase with production
+  `delegation_drain`.
+- Make deferred EventLog terminal return values explicitly provisional and
+  remove the `clearDeferredTerminal` future-misuse seam.
+- Preserve cancellation precedence when a strategy throw and drain-barrier
+  rejection coincide.
+- Close the delegated parent-close/start gap in race, plan, and read-only
+  report without creating an announced-but-nonterminal event.
+- Preserve the mixed-pool degradation nuance in aggregate remediation even
+  when another lane has the dominant startup-failed cause.
+- Cancel discarded eager macOS detail requests.
+- Consume the server-owned remediation copy in the macOS Delegate projection.
+- Make disposable private candidate clones self-contained, or pin their source
+  snapshot for the run lifetime, so a concurrent explicit aggressive GC of the
+  source repository cannot remove an unreachable dirty-snapshot base.
+- Return typed MCP `isError:true` for malformed/manual unscoped belt status and
+  result reads, matching run-producing policy refusals.
+- Generate a distinct review-packet change-to-decision/invariant registry and
+  warn if it is byte-identical to the accepted plan.
+- Decouple `RunDelegationInfo` schema validity from exact remediation prose, or
+  normalize the canonical copy at the projection boundary for future mixed
+  versions.
+- Couple raster detection and persistence to one parent-directory authority so
+  a concurrent component swap cannot change the bytes or path after approval.
+- Generate complete package changelog notes for the workspace, orchestrator,
+  and MCP public surfaces changed in the Delegate recovery.
+- Derive non-Git missing-side headers from immutable capture evidence rather
+  than rechecking live path existence after `diff` completes.
+- Make Git binary-object scanning use the same byte-faithful convention as the
+  plain-diff binary scanner.
+- Include README in the Pages metadata-check trigger and `site/llms.txt` in the
+  legacy-origin coverage set.
+- Remove dead presentational rules left by the site redesign, including
+  `canvas#field` and the unused nav/vendor selectors.
+- Extend the site metadata checker to prove referenced local assets and anchors,
+  sweep every crawler surface, and preserve compatibility anchors for published
+  deep links.
+- Validate and clamp manually injected Delegate policy JSON before deriving
+  local budget, depth, or child-count refusals.
+- Replace JSON alternates quoting with Git-compatible C-style path quoting for
+  legal control-character repository paths.
+- Remove the network map's composite image role so assistive technology can
+  reach every substantive harness/capability description.
+- Move durable secret-refusal WorkProduct, attempt, and event fields under one
+  schema-owned receipt contract.
+- Exclude `.claudexor-artifacts` from non-Git in-place diff capture with the
+  same F4/noChanges semantics as Git-mode capture.
+- Consolidate the duplicated environment-scoped Git invocation helper shared
+  by workspace capture and revert logic.
+- Resolve the duplicated historical X227 ledger identifier while preserving
+  both original wave references and dispositions.
+- Distinguish a belt runner throw before daemon child creation from a response
+  failure after the server-owned child exists before releasing the local count
+  slot; the daemon family authority remains the hard eight-child owner.
+- Extract one small route-certainty interval primitive shared by candidate and
+  reviewer accounting after 3.1.2, without changing the current fail-closed
+  semantics.
+- Restore complete historical X194 and X200 finding summaries in the ledger
+  and backlog from retained reports.
+- Add explicit finite-cap route-disclosure pins for every optional adapter lane
+  so route-silent streams remain an intentional typed refusal.

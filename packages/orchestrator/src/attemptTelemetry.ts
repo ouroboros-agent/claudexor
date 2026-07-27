@@ -2,8 +2,8 @@
  * Attempt-level telemetry: the single owner of tool-error records, web
  * evidence state, transient-failure observations, and the attempt outcome
  * truth. Adapters emit typed events; the orchestrator observes them here —
- * no regex over prose, and a tool error is "recovered" only when the SAME
- * tool later succeeds against the SAME target.
+ * no regex over prose. Recovery needs matching tool + kind + target plus matching
+ * non-null use ids when both exist; a missing id retains the tuple fallback.
  */
 import type {
   AttemptTelemetryRecord,
@@ -15,7 +15,13 @@ import type {
   ToolKind,
   WorkState,
 } from "@claudexor/schema";
+import {
+  newAttemptUsageCost,
+  observeAttemptUsageEvent,
+  type AttemptUsageCost,
+} from "./attemptUsageCost.js";
 import { redactSecrets } from "@claudexor/util";
+import * as belt from "./delegationToolEvidence.js";
 import {
   type TransientFailureObservation,
   classifyCompletedCrash,
@@ -32,7 +38,7 @@ export interface ToolErrorRecord {
   target: string | null;
   summary: string;
   toolUseId: string | null;
-  /** True when a later successful result of the SAME tool against the SAME target exists in this attempt (INV-043). */
+  /** True when a later success matches tool + kind + target and any ids both records provide (INV-043). */
   recovered: boolean;
 }
 
@@ -86,9 +92,10 @@ export interface BrowserEvidenceState {
  * Delegation-belt runtime readiness for one attempt (QA-024). `requested` is
  * set at attempt creation when a belt MCP server was injected into the spec;
  * `ready`/`failed` are filled from the harness's `started` event (its
- * `mcp_servers[<belt>].status`); `toolEvidence` flips when any `mcp__<belt>__*`
- * tool actually runs. A requested belt that reports `failed` with no tool
- * evidence is the false-success trap the outcome axis must catch.
+ * `mcp_servers[<belt>].status`); `toolEvidence` flips when any exact belt tool
+ * actually runs. Startup failure lives in this state; an exact non-ok tool
+ * result lives in `toolErrors` and hard-fails under INV-030 while reusing
+ * INV-043's invocation-aware recovery key.
  */
 export interface DelegationBeltState {
   requested: boolean;
@@ -158,7 +165,7 @@ export interface AttemptTelemetry {
   };
   /** Per-usage-event billing split. Route can change across native retries,
    * so this is deliberately not derived from the attempt's first route. */
-  usageCost: { cashUsd: number; valuationUsd: number; unknownUsd: number };
+  usageCost: AttemptUsageCost;
 }
 
 export function createAttemptTelemetry(
@@ -219,7 +226,7 @@ export function createAttemptTelemetry(
     sideToolWorkReport: null,
     outcome: null,
     usage: { inputTokens: null, outputTokens: null, cachedInputTokens: null },
-    usageCost: { cashUsd: 0, valuationUsd: 0, unknownUsd: 0 },
+    usageCost: newAttemptUsageCost(),
   };
 }
 
@@ -251,18 +258,6 @@ function observeBeltStartup(t: AttemptTelemetry, ev: HarnessEvent): void {
     }
     return;
   }
-}
-
-/**
- * The delegation belt was requested (--delegate injected it) but never became
- * operational: the harness reported the server `failed` and no belt tool ever
- * ran (QA-024). This is the false-success trap — the harness may have answered
- * from its own native subagent with no Claudexor sub-run provenance. A belt
- * that was ready-but-unused is NOT unavailable (docs leave the spawn decision to
- * the harness); only a startup failure counts.
- */
-export function delegationBeltUnavailable(t: AttemptTelemetry): boolean {
-  return t.delegationBelt.requested && t.delegationBelt.failed && !t.delegationBelt.toolEvidence;
 }
 
 /**
@@ -304,20 +299,20 @@ function bumpWebVerification(t: AttemptTelemetry, retrieval: string | undefined)
  * matching or tool-name heuristics.
  */
 export function observeAttemptTelemetry(t: AttemptTelemetry, ev: HarnessEvent): void {
-  // Delegation belt readiness (QA-024): the harness's `started` frame lists its
-  // MCP servers and each one's status. When the engine injected a belt, read
-  // THAT server's status as first-class readiness truth — never prose. A
-  // `failed` belt with no later tool evidence is the false-success trap.
-  if (ev.type === "started" && t.delegationBelt.requested) {
+  // Delegation belt readiness (QA-024): normalized startup/error events carry
+  // typed MCP server statuses. Read THAT server's status as first-class truth;
+  // a failed belt must never launder into a native-subagent success.
+  if (t.delegationBelt.requested && Array.isArray(ev.payload?.["mcp_servers"])) {
     observeBeltStartup(t, ev);
   }
-  // Belt tool evidence: any `mcp__<belt>__*` tool call/result proves the belt
-  // was actually reachable and used (a real Claudexor sub-run path), which
-  // distinguishes a used belt from one the harness silently substituted.
-  if (t.delegationBelt.requested && t.delegationBelt.serverName && ev.tool?.name) {
-    if (ev.tool.name.startsWith(`mcp__${t.delegationBelt.serverName}`)) {
-      t.delegationBelt.toolEvidence = true;
-    }
+  // Exact adapter-neutral evidence distinguishes the belt from a native subagent;
+  // recovery uses matching ids when both exist, else legacy tool+kind+target.
+  const beltToolEvent =
+    t.delegationBelt.requested &&
+    t.delegationBelt.serverName &&
+    belt.isDelegationBeltTool(ev.tool, t.delegationBelt.serverName);
+  if (beltToolEvent) {
+    t.delegationBelt.toolEvidence = true;
   }
   // Route evidence: remember the model identity the stream itself disclosed.
   if (ev.observed_model && !t.observedModel) t.observedModel = ev.observed_model;
@@ -327,23 +322,7 @@ export function observeAttemptTelemetry(t: AttemptTelemetry, ev: HarnessEvent): 
     if (ev.credential_route === "vendor_native") t.authMode = "local_session";
     else if (ev.credential_route === "managed_api_key") t.authMode = "api_key";
   }
-  if (ev.credential_route === "vendor_native") t.currentAuthMode = "local_session";
-  else if (ev.credential_route === "managed_api_key") t.currentAuthMode = "api_key";
-  if (ev.type === "message" && ev.payload?.["auth_switched"] === true) {
-    if (ev.payload["to_auth_mode"] === "subscription") t.currentAuthMode = "local_session";
-    if (ev.payload["to_auth_mode"] === "api_key") t.currentAuthMode = "api_key";
-  }
-  if (ev.usage?.cost_usd) {
-    const usageMode =
-      ev.credential_route === "vendor_native"
-        ? "local_session"
-        : ev.credential_route === "managed_api_key"
-          ? "api_key"
-          : t.currentAuthMode;
-    if (usageMode === "local_session") t.usageCost.valuationUsd += ev.usage.cost_usd;
-    else if (usageMode === "api_key") t.usageCost.cashUsd += ev.usage.cost_usd;
-    else t.usageCost.unknownUsd += ev.usage.cost_usd;
-  }
+  t.currentAuthMode = observeAttemptUsageEvent(t.usageCost, ev, t.currentAuthMode);
   // First-wins like the route: the source is decided once before spawn.
   if (!t.authSource && ev.credential_source) t.authSource = ev.credential_source;
   // LAST-wins (unlike the route): W5.4 failover rotates the profile between
@@ -422,9 +401,21 @@ export function observeAttemptTelemetry(t: AttemptTelemetry, ev: HarnessEvent): 
   if (tool.status === undefined) {
     // A result without a status must never silently count as ok.
     t.statuslessResults += 1;
+    if (beltToolEvent)
+      belt.recordDelegationBeltResultFailure(
+        t,
+        tool,
+        "required delegation belt tool result omitted status",
+      );
     return;
   }
   if (tool.status === "cancelled" || tool.status === "denied") {
+    if (beltToolEvent)
+      belt.recordDelegationBeltResultFailure(
+        t,
+        tool,
+        `required delegation belt tool result marked ${tool.status}`,
+      );
     if (tool.kind === "web") {
       t.web.attempted = true;
       t.web.tool = tool.name;
@@ -471,19 +462,19 @@ export function observeAttemptTelemetry(t: AttemptTelemetry, ev: HarnessEvent): 
     }
     return;
   }
-  // status === "ok": a later success of the SAME tool against the SAME target
-  // is the verified recovery for that call's earlier errors within this
-  // attempt (keying fix: `bash echo done` must NOT launder an earlier
-  // `bash npm test` failure — the name alone proved nothing).
+  // status === "ok": recovery needs the same tool + kind + target, plus the same
+  // non-null use id when both sides have one. A missing id retains the legacy
+  // tuple key for adapters and synthetic telemetry that cannot correlate calls.
+  const resultToolUseId = tool.use_id ?? null;
   for (const err of t.toolErrors) {
-    // INV-043: recovery must be attributable to the failed operation — same
-    // tool, same KIND, same target (a non-web tool sharing a name with a web
-    // tool must not clear its web error).
+    // INV-043: a later identical-looking invocation cannot launder an earlier
+    // error when both vendor records prove different invocation ids.
     if (
       !err.recovered &&
       err.tool === tool.name &&
       err.kind === tool.kind &&
-      err.target === (tool.target ?? null)
+      err.target === (tool.target ?? null) &&
+      (err.toolUseId === null || resultToolUseId === null || err.toolUseId === resultToolUseId)
     ) {
       err.recovered = true;
     }
@@ -496,12 +487,12 @@ export function observeAttemptTelemetry(t: AttemptTelemetry, ev: HarnessEvent): 
     // legitimate alternative-route recovery, not laundering (blocking it
     // would false-block the most common web workflow). What must NOT vanish
     // is the DISCLOSURE: `failed` clears only when the success matches the
-    // failed call's target (INV-043 keying), so telemetry.yaml keeps the
+    // failed invocation (INV-043 keying), so telemetry.yaml keeps the
     // unrecovered failure + errorSummary visible even on satisfied runs.
     t.web.satisfied = true;
-    // Derived rollup, single source of truth: the tool+target-keyed
+    // Derived rollup, single source of truth: the invocation-keyed
     // toolErrors store (the recovery loop above already marked matching
-    // errors recovered). Multiple failed targets stay disclosed until EACH
+    // errors recovered). Multiple failed invocations stay disclosed until EACH
     // recovers; a missing target never wildcards (exact null==null match).
     t.web.failed = t.toolErrors.some((e) => e.kind === "web" && !e.recovered);
     // Keep the summary in lockstep with the rollup: point at a live
@@ -575,15 +566,10 @@ export function setAttemptOutcome(
 ): void {
   const warnings = toolWarnings(t).length;
   const contractFailed = !opts.deliverablePresent || opts.gatesPassed === false;
-  // QA-024: a requested belt that failed to start with no tool evidence is an
-  // explicitly-requested capability that never became operational — treated
-  // like an unsatisfied hard requirement (never a silent clean success). It
-  // rides the same axis order as web: it can only ELEVATE severity, never mask
-  // a harder failure. NOTE (D-16 seam): this producer maps belt-unavailable to
-  // `failed`; a future finalizer that prefers a softer disclosure would flip
-  // this to `success_with_warnings` — the typed telemetry fact
-  // (delegation_belt.*) is what a consumer reads either way.
-  const beltUnavailable = delegationBeltUnavailable(t);
+  // INV-030: after injection, startup failure or an unrecovered exact belt
+  // operation is an unsatisfied required capability. It can only ELEVATE
+  // severity, never soften into a warning or mask a harder terminal fact.
+  const beltUnavailable = belt.delegationBeltUnavailable(t) || belt.delegationBeltToolFailure(t);
   const status: AttemptOutcomeStatus = opts.webRequiredUnsatisfied
     ? "blocked"
     : opts.harnessErrored || contractFailed || beltUnavailable
@@ -660,7 +646,7 @@ export function telemetrySummary(t: AttemptTelemetry): Record<string, unknown> {
             ready: t.delegationBelt.ready,
             failed: t.delegationBelt.failed,
             tool_evidence: t.delegationBelt.toolEvidence,
-            unavailable: delegationBeltUnavailable(t),
+            unavailable: belt.delegationBeltUnavailable(t),
           },
         }
       : {}),
@@ -733,7 +719,7 @@ export function attemptTelemetryRecord(
       gates_passed: t.outcome?.gatesPassed ?? null,
       harness_errored: t.outcome?.harnessErrored ?? false,
       web_required_unsatisfied: t.outcome?.webRequiredUnsatisfied ?? false,
-      delegation_belt_unavailable: delegationBeltUnavailable(t),
+      delegation_belt_unavailable: belt.delegationBeltUnavailable(t),
       tool_warnings_count: t.outcome?.toolWarningsCount ?? warnings.length,
       status: t.outcome?.status ?? (warnings.length > 0 ? "success_with_warnings" : "success"),
       ...(t.outcome?.workState ? { work_state: t.outcome.workState } : {}),

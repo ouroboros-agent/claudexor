@@ -1,5 +1,29 @@
 # @claudexor/harness-cursor
 
+## 3.1.2
+
+### Patch Changes
+
+- Cursor Plan intent now uses Cursor's native read-only Ask transport so the
+  mandatory model-authored WorkReport remains in the final-message channel
+  instead of being lost behind the native `createPlan` terminal tool.
+- Updated dependencies
+  - @claudexor/core@3.1.2
+  - @claudexor/schema@3.1.2
+  - @claudexor/secrets@3.1.2
+  - @claudexor/util@3.1.2
+
+## 3.1.1
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+  - @claudexor/core@3.1.1
+  - @claudexor/schema@3.1.1
+  - @claudexor/secrets@3.1.1
+  - @claudexor/util@3.1.1
+
 ## 3.1.0
 
 ### Patch Changes

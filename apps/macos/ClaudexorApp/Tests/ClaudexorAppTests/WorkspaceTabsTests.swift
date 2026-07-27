@@ -4,6 +4,15 @@ import Testing
 /// Thread-workspace tabs (Changes / Artifacts / Evidence / remote Terminal) +
 /// the default + no-auto-jump-after-manual-selection guard.
 @Suite struct WorkspaceTabsTests {
+    @Test func evidenceHydrationIsIdentityKeyedAndFailedLoadsRemainRetryable() {
+        #expect(RunEvidenceSection.needsDetailLoad(
+            runId: "run-b", loadedRunId: "run-a", hydrated: true))
+        #expect(RunEvidenceSection.needsDetailLoad(
+            runId: "run-b", loadedRunId: nil, hydrated: false))
+        #expect(!RunEvidenceSection.needsDetailLoad(
+            runId: "run-b", loadedRunId: "run-b", hydrated: true))
+    }
+
     private func inputs(runSelected: Bool = false, failedNoOutput: Bool = false) -> WorkspaceTabInputs {
         WorkspaceTabInputs(runSelected: runSelected, selectedRunFailedNoOutput: failedNoOutput)
     }

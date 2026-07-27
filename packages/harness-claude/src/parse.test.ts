@@ -15,6 +15,124 @@ describe("parseClaudeEvent", () => {
     expect(() => HarnessEvent.parse(out?.[0])).not.toThrow();
   });
 
+  it("fails closed when a required injected MCP server is missing from init", () => {
+    const parse = createClaudeParser({ requiredMcpServers: ["claudexor"] });
+    const out = parse(
+      { type: "system", subtype: "init", model: "claude-opus", mcp_servers: [] },
+      "s-required",
+    );
+    expect(out?.[0]?.payload?.["mcp_servers"]).toEqual([{ name: "claudexor", status: "failed" }]);
+    expect(out?.[1]).toMatchObject({
+      type: "error",
+      payload: { code: "required_mcp_startup_failed" },
+    });
+  });
+
+  it.each(["connected", "ready", "ok"])(
+    "preserves %s required MCP startup evidence from Claude init",
+    (status) => {
+      const parse = createClaudeParser({ requiredMcpServers: ["claudexor"] });
+      const out = parse(
+        {
+          type: "system",
+          subtype: "init",
+          mcp_servers: [{ name: "claudexor", status }],
+        },
+        "s-required",
+      );
+      expect(out?.[0]?.payload?.["mcp_servers"]).toEqual([{ name: "claudexor", status }]);
+      expect(out).toHaveLength(1);
+    },
+  );
+
+  it.each(["pending", "connecting", "starting"])(
+    "does not turn an asynchronous required MCP %s status into a false startup failure",
+    (status) => {
+      const parse = createClaudeParser({ requiredMcpServers: ["claudexor"] });
+      const out = parse(
+        {
+          type: "system",
+          subtype: "init",
+          mcp_servers: [{ name: "claudexor", status }],
+        },
+        "s-required",
+      );
+      expect(out).toHaveLength(1);
+      expect(out?.[0]?.payload?.["mcp_servers"]).toEqual([{ name: "claudexor", status }]);
+      expect(out?.some((event) => event.type === "error")).toBe(false);
+    },
+  );
+
+  it.each(["failed", "error", "disconnected", "disabled"])(
+    "stops on a required MCP server with terminal or unknown status %s",
+    (status) => {
+      const parse = createClaudeParser({ requiredMcpServers: ["claudexor"] });
+      const out = parse(
+        {
+          type: "system",
+          subtype: "init",
+          mcp_servers: [{ name: "claudexor", status }],
+        },
+        "s-required",
+      );
+      expect(out?.[0]?.payload?.["mcp_servers"]).toEqual([{ name: "claudexor", status: "failed" }]);
+      expect(out?.filter((event) => event.type === "error")).toHaveLength(1);
+      expect(out?.[1]?.payload?.["code"]).toBe("required_mcp_startup_failed");
+    },
+  );
+
+  it("fails closed on a required MCP server with a malformed status", () => {
+    const parse = createClaudeParser({ requiredMcpServers: ["claudexor"] });
+    const out = parse(
+      {
+        type: "system",
+        subtype: "init",
+        mcp_servers: [{ name: "claudexor", status: 42 }],
+      },
+      "s-required",
+    );
+    expect(out?.[0]?.payload?.["mcp_servers"]).toEqual([{ name: "claudexor", status: "failed" }]);
+    expect(out?.[1]?.payload?.["code"]).toBe("required_mcp_startup_failed");
+  });
+
+  it("keeps pending provisional but still fails a later explicit status", () => {
+    const parse = createClaudeParser({ requiredMcpServers: ["claudexor"] });
+    const pending = parse(
+      {
+        type: "system",
+        subtype: "init",
+        mcp_servers: [{ name: "claudexor", status: "pending" }],
+      },
+      "s-required",
+    );
+    const failed = parse(
+      {
+        type: "system",
+        subtype: "init",
+        mcp_servers: [{ name: "claudexor", status: "error" }],
+      },
+      "s-required",
+    );
+    expect(pending).toHaveLength(1);
+    expect(failed?.[1]?.payload?.["code"]).toBe("required_mcp_startup_failed");
+  });
+
+  it("does not synthesize a fatal for an optional failed MCP server", () => {
+    const parse = createClaudeParser();
+    const out = parse(
+      {
+        type: "system",
+        subtype: "init",
+        mcp_servers: [{ name: "optional_docs", status: "failed" }],
+      },
+      "s-optional",
+    );
+    expect(out).toHaveLength(1);
+    expect(out?.[0]?.payload?.["mcp_servers"]).toEqual([
+      { name: "optional_docs", status: "failed" },
+    ]);
+  });
+
   it("returns null for unrecognized shapes so the run loop can count drops", () => {
     expect(parseClaudeEvent({ type: "totally_new_event" }, "s1")).toBeNull();
     expect(parseClaudeEvent({ type: "system", subtype: "compact" }, "s1")).toEqual([]);
@@ -335,6 +453,48 @@ describe("parseClaudeEvent", () => {
     expect(out[0]?.tool?.error_summary).toBeUndefined();
     expect(out[0]?.tool?.content_summary).toContain("WebSearch denied by policy");
     expect(() => HarnessEvent.parse(out[0])).not.toThrow();
+  });
+
+  it("preserves an MCP belt isError result as exact error evidence", () => {
+    const parse = createClaudeParser();
+    parse(
+      {
+        type: "assistant",
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              id: "toolu_belt",
+              name: "mcp__claudexor__claudexor_run",
+              input: { prompt: "x" },
+            },
+          ],
+        },
+      },
+      "s1",
+    );
+    const out = parse(
+      {
+        type: "user",
+        message: {
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "toolu_belt",
+              is_error: true,
+              content: [{ type: "text", text: "delegated sub-run child-failed ended failed" }],
+            },
+          ],
+        },
+      },
+      "s1",
+    ) as HarnessEvent[];
+    expect(out[0]?.tool).toMatchObject({
+      name: "mcp__claudexor__claudexor_run",
+      kind: "mcp",
+      status: "error",
+    });
+    expect(out[0]?.tool?.error_summary).toContain("child-failed");
   });
 
   it("keeps Claude sibling-cancelled prose as a normal error without structured signal", () => {

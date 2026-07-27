@@ -1912,6 +1912,87 @@ describe("DaemonControlApiServer", () => {
     );
   });
 
+  it("GET /threads/:id embeds bounded exact-lineage Delegate child ids on the parent turn", async () => {
+    const { daemon, record } = fakeDaemon();
+    const now = new Date().toISOString();
+    const children: DaemonRunRecord[] = Array.from({ length: 10 }, (_, index) => ({
+      id: `job-thread-child-${index}`,
+      runId: `run-thread-child-${index}`,
+      state: "succeeded",
+      createdAt: `2026-07-${String(index + 1).padStart(2, "0")}T00:00:00.000Z`,
+      params: { delegatedFromRunId: record.runId },
+    })).reverse();
+    const ordinary: DaemonRunRecord = {
+      id: "job-thread-followup",
+      runId: "run-thread-followup",
+      state: "succeeded",
+      params: { parentRunId: record.runId },
+    };
+    const wrapped: DaemonFacadeClient = {
+      ...daemon,
+      async list() {
+        return [record, ordinary, ...children];
+      },
+    };
+    const threadObj = {
+      schema_version: 2,
+      id: "th-delegate",
+      created_at: now,
+      updated_at: now,
+      repo: { root: "/repo", base_ref: "HEAD" },
+      title: "Delegate",
+      mode: "agent",
+      workspace: { mode: "in_place" },
+      auth_preference: "auto",
+      primary_harness: null,
+      run_ids: [record.runId],
+      head_run_id: record.runId,
+      state: "active",
+    };
+    const services: DaemonControlApiOptions["services"] = {
+      threadDetail: async () => ({
+        thread: threadObj,
+        sessions: [],
+        turns: [
+          {
+            id: "tn-delegate",
+            thread_id: "th-delegate",
+            run_id: record.runId,
+            parent_run_id: null,
+            kind: "initial",
+            prompt: "delegate",
+            created_at: now,
+          },
+        ],
+      }),
+    };
+    await withDaemonServer(
+      wrapped,
+      async (base) => {
+        const response = await apiFetch(`${base}/threads/th-delegate`, {
+          headers: { authorization: `Bearer ${token}` },
+        });
+        const responseText = await response.text();
+        expect(response.status, responseText).toBe(200);
+        const body = JSON.parse(responseText) as {
+          turns: Array<{ run: { delegatedChildRunIds: string[] } | null }>;
+        };
+        expect(body.turns[0]?.run?.delegatedChildRunIds).toEqual([
+          "run-thread-child-0",
+          "run-thread-child-1",
+          "run-thread-child-2",
+          "run-thread-child-3",
+          "run-thread-child-4",
+          "run-thread-child-5",
+          "run-thread-child-6",
+          "run-thread-child-7",
+        ]);
+      },
+      undefined,
+      services,
+    );
+  });
+
   it("POST /runs REFUSES a threadId (D10): a thread turn goes through /threads/:id/turns", async () => {
     const { daemon } = fakeDaemon();
     let enqueued = 0;
@@ -2923,6 +3004,7 @@ describe("DaemonControlApiServer", () => {
       const threadObj = planThread(repo, "run-plan");
       const turns: Record<string, unknown>[] = [];
       let overriddenRecorded: boolean | undefined;
+      let enqueuedParams: Record<string, unknown> | undefined;
       const jobs = new Map<string, DaemonRunRecord>([
         ["job-plan", { id: "job-plan", state: "succeeded", runId: "run-plan", runDir: planRunDir }],
       ]);
@@ -2930,6 +3012,7 @@ describe("DaemonControlApiServer", () => {
         // Override recorded on the turn -> the runner SKIPS the readiness gate
         // and the run binds normally.
         async enqueue(params: unknown) {
+          enqueuedParams = params as Record<string, unknown>;
           const rec: DaemonRunRecord = {
             id: "job-override",
             state: "running",
@@ -2995,6 +3078,14 @@ describe("DaemonControlApiServer", () => {
           // The override provenance is recorded on the turn (D17), not silently
           // dropped.
           expect(overriddenRecorded).toBe(true);
+          // The turn pipeline MINTS the frozen-plan reference server-side and
+          // enqueues it directly — the POST /runs planRef guard never applies
+          // to this path (INV-081).
+          expect(enqueuedParams?.["planRef"]).toEqual({
+            runId: "run-plan",
+            sha256: sha256("# Plan\n\nDo the thing.\n").replace(/^sha256:/, ""),
+            path: join(planRunDir, "final", "plan.md"),
+          });
         },
         undefined,
         services,
@@ -3947,7 +4038,14 @@ describe("DaemonControlApiServer", () => {
           prompt: "2+2?",
           mode: "ask",
           harnesses: ["codex"],
-          reviewerEfforts: { anthropic: "banana" },
+          // Malformed SHAPE is refused at the boundary (spaces/uppercase are not
+          // an effort slug). A well-formed but unsupported LEVEL is refused too,
+          // one layer in: the wire vocabulary is open because a level only means
+          // something per (harness, model), so the reviewer's own advertised
+          // ladder is the judge — see the reviewer effort gate in
+          // orchestrator/reviewerPanel.ts, pinned in reviewerPanel.test.ts.
+          // Nothing well-formed is waved through unchecked.
+          reviewerEfforts: { anthropic: "Banana Split" },
         }),
       });
       expect(invalidValue.status).toBe(400);
@@ -4058,7 +4156,11 @@ describe("DaemonControlApiServer", () => {
           prompt: "review it",
           mode: "agent",
           scope: { kind: "project", root: panelRoot },
-          reviewerPanel: [{ harness: "cursor", effort: "turbo" }],
+          // Shape refusal at the wire; a well-formed level such as `turbo` is
+          // refused by the reviewer effort gate against what the selected
+          // reviewer actually advertises (reviewerPanel.test.ts), never
+          // forwarded to be silently dropped by the adapter's normalizer.
+          reviewerPanel: [{ harness: "cursor", effort: "TURBO BOOST" }],
         }),
       });
       expect(invalid.status).toBe(400);
@@ -5163,6 +5265,171 @@ describe("DaemonControlApiServer", () => {
       expect(cancel.status).toBe(200);
       expect(cancelled).toEqual(["job-d1"]);
     });
+  });
+
+  it("cancels active Claudexor Delegate descendants but not ordinary parentRunId follow-ups", async () => {
+    const cancelled: string[] = [];
+    const records: DaemonRunRecord[] = [
+      { id: "job-parent", runId: "run-parent", state: "running", params: { delegate: true } },
+      {
+        id: "job-child",
+        runId: "run-child",
+        state: "running",
+        params: { parentRunId: "run-parent", delegatedFromRunId: "run-parent" },
+      },
+      {
+        id: "job-followup",
+        runId: "run-followup",
+        state: "running",
+        params: { parentRunId: "run-parent" },
+      },
+    ];
+    const daemon: DaemonFacadeClient = {
+      async enqueue() {
+        return { id: "unused", state: "queued" };
+      },
+      async status(id) {
+        return records.find((record) => record.id === id) as DaemonRunRecord;
+      },
+      async list() {
+        return records;
+      },
+      async fenceDelegationParent(runId) {
+        expect(runId).toBe("run-parent");
+        return { runId, fenced: true };
+      },
+      async cancel(id) {
+        cancelled.push(id);
+        const record = records.find((candidate) => candidate.id === id);
+        if (record) record.state = "cancelled";
+        return { id, cancelled: true };
+      },
+    };
+    await withDaemonServer(daemon, async (base) => {
+      const response = await apiFetch(`${base}/runs/run-parent/control`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ control: { kind: "cancel" } }),
+      });
+      expect(response.status).toBe(200);
+      expect(cancelled).toEqual(["job-child", "job-parent"]);
+      expect(await response.json()).toMatchObject({ cascadeRunIds: ["run-child"] });
+    });
+  });
+
+  it("projects direct Delegate children in parent detail even beyond the newest-200 list window", async () => {
+    const { daemon, record } = fakeDaemon();
+    const fillers: DaemonRunRecord[] = Array.from({ length: 220 }, (_, index) => ({
+      id: `job-fill-${index}`,
+      runId: `run-fill-${index}`,
+      state: "succeeded",
+      params: { parentRunId: "run-unrelated" },
+    }));
+    const child: DaemonRunRecord = {
+      id: "job-child-old",
+      runId: "run-child-old",
+      state: "succeeded",
+      params: {
+        parentRunId: "run-parent-other-field",
+        delegatedFromRunId: "run-d1",
+      },
+    };
+    const wrapped: DaemonFacadeClient = {
+      ...daemon,
+      async list() {
+        return [record, ...fillers, child];
+      },
+    };
+    await withDaemonServer(wrapped, async (base) => {
+      const response = await apiFetch(`${base}/runs/run-d1`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as {
+        children: Array<{ runId: string; delegatedFromRunId: string | null }>;
+      };
+      expect(body.children).toEqual([
+        expect.objectContaining({
+          runId: "run-child-old",
+          delegatedFromRunId: "run-d1",
+        }),
+      ]);
+    });
+  });
+
+  it("projects parent-detail children through the cached live fail-soft owner", async () => {
+    const { daemon, record } = fakeDaemon();
+    const waitingChild: DaemonRunRecord = {
+      id: "job-child-waiting",
+      runId: "run-child-waiting",
+      state: "running",
+      params: { delegatedFromRunId: "run-d1" },
+    };
+    const corruptChild = {
+      id: "job-child-corrupt",
+      runId: "run-child-corrupt",
+      state: "foreign-state",
+      params: { delegatedFromRunId: "run-d1" },
+    } as unknown as DaemonRunRecord;
+    const wrapped: DaemonFacadeClient = {
+      ...daemon,
+      async list() {
+        return [record, waitingChild, corruptChild];
+      },
+    };
+    await withDaemonServer(
+      wrapped,
+      async (base) => {
+        const response = await apiFetch(`${base}/runs/run-d1`, {
+          headers: { authorization: `Bearer ${token}` },
+        });
+        expect(response.status).toBe(200);
+        const body = (await response.json()) as {
+          children: Array<{
+            runId: string;
+            state: string;
+            delegatedFromRunId: string | null;
+            waitingOnUser?: boolean;
+            error?: string | null;
+          }>;
+        };
+        expect(body.children).toHaveLength(2);
+        expect(body.children).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              runId: "run-child-waiting",
+              state: "running",
+              waitingOnUser: true,
+            }),
+            expect.objectContaining({
+              runId: "run-child-corrupt",
+              state: "failed",
+              delegatedFromRunId: "run-d1",
+              waitingOnUser: true,
+              error: expect.stringContaining("unprojectable job record"),
+            }),
+          ]),
+        );
+      },
+      undefined,
+      {
+        pendingInteractions: (runId) =>
+          runId === "run-child-waiting" || runId === "run-child-corrupt"
+            ? [
+                {
+                  interactionId: "int-child",
+                  runId,
+                  attemptId: "a01",
+                  harnessId: "claude",
+                  sourceTool: "AskUserQuestion",
+                  questions: [],
+                  requestedAt: "t",
+                  timeoutAt: null,
+                },
+              ]
+            : [],
+      },
+    );
   });
 
   it("returns queued job metadata when a daemon job has not produced run artifacts yet", async () => {
@@ -6499,6 +6766,12 @@ describe("DaemonControlApiServer", () => {
         summary: {
           mode?: string;
           prompt?: string;
+          delegation?: {
+            requested: boolean;
+            effective: boolean;
+            used: boolean;
+            reason: string;
+          } | null;
           requestRequirements?: Array<{
             harness_id: string;
             effective: boolean;
@@ -6516,9 +6789,11 @@ describe("DaemonControlApiServer", () => {
       };
       expect(body.summary.mode).toBe("agent");
       expect(body.summary.prompt).toBe("hello");
+      expect(body.summary.delegation).toBeNull();
       expect(body.summary.requestRequirements).toEqual([
         expect.objectContaining({ harness_id: "codex", effective: true, reason: "effective" }),
       ]);
+
       // summary.md lost its primary-output authority (V8/PLAN addendum 2); the
       // patch is now the primary output for this write run.
       expect(body.primaryOutput?.kind).toBe("patch");
@@ -6585,7 +6860,34 @@ describe("DaemonControlApiServer", () => {
     });
   });
 
-  it("budget snapshot prefers the ledger's CASH disclosure over valuation observations (W4.3)", async () => {
+  it("projects a current telemetry Delegate receipt without fabricating legacy state", async () => {
+    const { daemon, record } = fakeDaemon();
+    const telemetryPath = join(record.runDir!, "final", "telemetry.yaml");
+    const telemetry = parseYaml(readFileSync(telemetryPath, "utf8")) as Record<string, unknown>;
+    telemetry["delegation"] = {
+      requested: true,
+      effective: true,
+      used: true,
+      reason: "used",
+    };
+    writeFileSync(telemetryPath, stringifyYaml(telemetry));
+    await withDaemonServer(daemon, async (base) => {
+      const detail = await apiFetch(`${base}/runs/run-d1`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(
+        ((await detail.json()) as { summary: { delegation: unknown } }).summary.delegation,
+      ).toEqual({
+        requested: true,
+        effective: true,
+        used: true,
+        reason: "used",
+        remediation: null,
+      });
+    });
+  });
+
+  it("budget snapshot projects the ledger's CASH value and estimation truth (W4.3)", async () => {
     // A decision-less subscription run (plan/ask): valuation ticks are
     // NON-ZERO while the cash truth is $0. Summing them as spend showed
     // valuation under a "real money" label (F4 review); budget.cash — the
@@ -6607,7 +6909,12 @@ describe("DaemonControlApiServer", () => {
           run_id: "run-d1",
           task_id: "task-d1",
           type: "budget.cash",
-          payload: { cash_spend_usd: 0, valuation_usd: 2.5 },
+          payload: {
+            cash_spend_usd: 0,
+            valuation_usd: 2.5,
+            estimated: false,
+            valuation_knowledge: "estimated",
+          },
         }),
         "",
       ].join("\n"),
@@ -6618,11 +6925,99 @@ describe("DaemonControlApiServer", () => {
       });
       expect(detail.status).toBe(200);
       const body = (await detail.json()) as {
-        budget: { spendUsd?: number | null; source: string; estimated: boolean };
+        budget: {
+          spendUsd?: number | null;
+          valuationUsd?: number | null;
+          valuationKnowledge: string;
+          source: string;
+          estimated: boolean;
+        };
       };
       expect(body.budget.spendUsd).toBe(0); // the cash truth, not the $2.50 valuation
+      expect(body.budget.valuationUsd).toBe(2.5);
+      expect(body.budget.valuationKnowledge).toBe("estimated");
       expect(body.budget.source).toBe("events");
-      expect(body.budget.estimated).toBe(false); // settled ledger cash is exact
+      expect(body.budget.estimated).toBe(false); // exact $0 cash; valuation confidence is separate
+    });
+  });
+
+  it("normalizes legacy combined cash/valuation certainty without rewriting history", async () => {
+    const legacyEvent = fakeDaemon();
+    rmSync(join(legacyEvent.record.runDir as string, "arbitration", "decision.yaml"), {
+      force: true,
+    });
+    appendFileSync(
+      join(legacyEvent.record.runDir as string, "events.jsonl"),
+      `${JSON.stringify({
+        ts: new Date().toISOString(),
+        run_id: "run-d1",
+        task_id: "task-d1",
+        type: "budget.cash",
+        payload: {
+          cash_spend_usd: 0,
+          valuation_usd: 1.75,
+          estimated: true,
+          // Pre-component event: deliberately no valuation_knowledge.
+        },
+      })}\n`,
+    );
+    await withDaemonServer(legacyEvent.daemon, async (base) => {
+      const detail = await apiFetch(`${base}/runs/run-d1`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      const body = (await detail.json()) as {
+        budget: {
+          spendUsd: number | null;
+          estimated: boolean;
+          valuationUsd: number | null;
+          valuationKnowledge: string;
+        };
+      };
+      expect(body.budget).toMatchObject({
+        spendUsd: 0,
+        estimated: false,
+        valuationUsd: 1.75,
+        valuationKnowledge: "estimated",
+      });
+    });
+
+    const legacyDecision = fakeDaemon();
+    writeFileSync(
+      join(legacyDecision.record.runDir as string, "arbitration", "decision.yaml"),
+      [
+        "winner: a01",
+        "facts:",
+        "  lifecycle: succeeded",
+        "  review: approved",
+        "  checks: passed",
+        "  noChanges: false",
+        "  reason: null",
+        "budget_summary:",
+        "  spend_usd: 0",
+        "  cash_usd: 0",
+        "  valuation_usd: 2.25",
+        "  estimated: true",
+        "",
+      ].join("\n"),
+    );
+    await withDaemonServer(legacyDecision.daemon, async (base) => {
+      const detail = await apiFetch(`${base}/runs/run-d1`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      const body = (await detail.json()) as {
+        budget: {
+          spendUsd: number | null;
+          estimated: boolean;
+          valuationUsd: number | null;
+          valuationKnowledge: string;
+        };
+      };
+      expect(body.budget).toMatchObject({
+        spendUsd: 0,
+        estimated: false,
+        valuationUsd: 2.25,
+        valuationKnowledge: "estimated",
+      });
     });
   });
 
@@ -6913,6 +7308,7 @@ describe("DaemonControlApiServer", () => {
   it("rerun_with_feedback enqueues a follow-up run carrying the operator feedback", async () => {
     const { daemon, record } = fakeDaemon();
     record.state = "succeeded";
+    record.params = { ...(record.params as Record<string, unknown>), retryOf: "run-original" };
     writeFileSync(
       join(record.runDir as string, "arbitration", "decision.yaml"),
       "winner: a01\nfacts:\n  lifecycle: succeeded\n  review: blocked\n  checks: not_configured\n  noChanges: false\n  reason: review_blocked\nfinal_verify:\n  attempted: true\n  applied_cleanly: true\n  gates_passed: true\n",
@@ -6944,6 +7340,7 @@ describe("DaemonControlApiServer", () => {
       expect(body.newRunId).toBeTruthy();
       expect(String(enqueued?.["prompt"])).toContain("Narrow the diff to src/auth only.");
       expect(enqueued?.["parentRunId"]).toBe("run-d1");
+      expect(enqueued).not.toHaveProperty("retryOf");
     });
   });
 
@@ -6977,6 +7374,143 @@ describe("DaemonControlApiServer", () => {
       });
       expect(record.params).not.toHaveProperty("retryOf");
     });
+  });
+
+  it("Exact Retry projects a pre-start terminal as its typed refusal, not a 202 handle", async () => {
+    const { daemon, record } = fakeDaemon();
+    // The replay is queued, but the job dies BEFORE it binds a run: the trust
+    // gate refuses with a typed 403. A 202 durable handle here would promise a
+    // run that never appears (and `claudexor retry` would exit 0 on it).
+    const refusing: DaemonFacadeClient = {
+      ...daemon,
+      async enqueue() {
+        return { id: "job-retry-refused", state: "queued" };
+      },
+      async status(id: string) {
+        if (id === record.id) return record;
+        return {
+          id: "job-retry-refused",
+          state: "failed",
+          error: "full access is required for this project",
+          errorCode: "trust_full_access_required",
+          errorStatus: 403,
+        };
+      },
+    };
+    await withDaemonServer(refusing, async (base) => {
+      const response = await apiFetch(`${base}/runs/run-d1/retry`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "Idempotency-Key": "refused-retry" },
+        body: "{}",
+      });
+      expect(response.status).toBe(403);
+      expect(await response.json()).toMatchObject({
+        code: "trust_full_access_required",
+        message: "full access is required for this project",
+        retryable: false,
+        // The retry's own identity rides as bounded context, so a client knows
+        // WHICH replay was refused.
+        context: { jobId: "job-retry-refused", state: "failed", retryOf: "run-d1" },
+      });
+    });
+  });
+
+  it("Exact Retry fails an UNTYPED pre-start terminal as 500, not a 202 handle", async () => {
+    const { daemon, record } = fakeDaemon();
+    // No errorCode and no errorStatus: an infra terminal (cancelled/killed
+    // before a run bound) that proves nothing about retryability. It still
+    // never binds a run, so a 202 durable handle would be a lie; without a
+    // typed refusal to key a status on, it is the generic 500 that POST /runs
+    // already returns for the same record.
+    const untyped: DaemonFacadeClient = {
+      ...daemon,
+      async enqueue() {
+        return { id: "job-retry-untyped", state: "queued" };
+      },
+      async status(id: string) {
+        if (id === record.id) return record;
+        return {
+          id: "job-retry-untyped",
+          state: "cancelled",
+          error: "job was cancelled before it bound a run",
+        };
+      },
+    };
+    await withDaemonServer(untyped, async (base) => {
+      const response = await apiFetch(`${base}/runs/run-d1/retry`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "Idempotency-Key": "untyped-retry" },
+        body: "{}",
+      });
+      expect(response.status).toBe(500);
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body).toMatchObject({
+        // No typed refusal code to serve, so the problem projection's generic
+        // status code stands in — the retry never claims a product taxonomy it
+        // was not given.
+        code: "http_500",
+        message: "job was cancelled before it bound a run",
+        context: { jobId: "job-retry-untyped", state: "cancelled", retryOf: "run-d1" },
+      });
+      // The 202 shape carried `runId: null` as a durable handle. A refusal has
+      // no handle at all.
+      expect(body).not.toHaveProperty("runId");
+    });
+  });
+
+  it("Exact Retry of a THREAD turn carries the new turnId into the refusal context", async () => {
+    const { daemon, record } = fakeDaemon();
+    record.params = {
+      ...(record.params as Record<string, unknown>),
+      threadId: "th-source",
+      turnId: "tn-source",
+    };
+    // The thread-scoped retry pre-creates its replacement turn BEFORE the
+    // enqueue, so the refusal must disclose WHICH turn is now stranded —
+    // otherwise the client cannot bind the failure to the turn it just made.
+    const refusing: DaemonFacadeClient = {
+      ...daemon,
+      async enqueue() {
+        return { id: "job-retry-thread", state: "queued" };
+      },
+      async status(id: string) {
+        if (id === record.id) return record;
+        return {
+          id: "job-retry-thread",
+          state: "failed",
+          error: "journal recovery is required for this project",
+          errorCode: "journal_recovery_required",
+          errorStatus: 409,
+        };
+      },
+    };
+    const services: DaemonControlApiOptions["services"] = {
+      createThreadTurn: async () => ({ id: "tn-retry" }),
+    };
+    await withDaemonServer(
+      refusing,
+      async (base) => {
+        const response = await apiFetch(`${base}/runs/run-d1/retry`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}`, "Idempotency-Key": "thread-retry-refused" },
+          body: "{}",
+        });
+        expect(response.status).toBe(409);
+        expect(await response.json()).toMatchObject({
+          code: "journal_recovery_required",
+          message: "journal recovery is required for this project",
+          retryable: false,
+          context: {
+            jobId: "job-retry-thread",
+            state: "failed",
+            retryOf: "run-d1",
+            turnId: "tn-retry",
+          },
+        });
+      },
+      undefined,
+      services,
+    );
   });
 
   it("QA-035: Exact Retry replays the model+effort frozen in the source contract despite a settings change", async () => {
@@ -7166,7 +7700,10 @@ describe("DaemonControlApiServer", () => {
     record.params = {
       ...(record.params as Record<string, unknown>),
       turnId: "tn-old",
+      retryOf: "run-d0",
       planRunId: "run-plan",
+      planRef: { runId: "run-plan", sha256: "a".repeat(64), path: "/tmp/final/plan.md" },
+      threadId: "th-old",
     };
     await withDaemonServer(daemon, async (base) => {
       const response = await apiFetch(`${base}/runs/run-d1/run-again`, {
@@ -7178,9 +7715,73 @@ describe("DaemonControlApiServer", () => {
         differences: Array<{ field: string }>;
       };
       expect(body.request).toMatchObject({ prompt: "hello", mode: "agent" });
+      // The draft must be POSTable as-is: POST /runs 400s every one of these
+      // (planRef/threadId included — a surviving planRef would replay the
+      // frozen-plan reference past the boundary, INV-081).
       expect(body.request).not.toHaveProperty("turnId");
+      expect(body.request).not.toHaveProperty("retryOf");
       expect(body.request).not.toHaveProperty("planRunId");
-      expect(body.differences.map((entry) => entry.field)).toEqual(["turnId", "planRunId"]);
+      expect(body.request).not.toHaveProperty("planRef");
+      expect(body.request).not.toHaveProperty("threadId");
+      expect(body.differences.map((entry) => entry.field)).toEqual([
+        "turnId",
+        "retryOf",
+        "planRunId",
+        "planRef",
+        "threadId",
+      ]);
+    });
+  });
+
+  it("refuses retry-style Delegate child replays while Run Again returns an ordinary editable draft", async () => {
+    const { daemon, record } = fakeDaemon();
+    record.state = "succeeded";
+    record.params = {
+      ...(record.params as Record<string, unknown>),
+      parentRunId: "run-parent",
+      delegatedFromRunId: "run-parent",
+    };
+    writeFileSync(
+      join(record.runDir as string, "arbitration", "decision.yaml"),
+      "winner: a01\nfacts:\n  lifecycle: succeeded\n  review: blocked\n  checks: not_configured\n  noChanges: false\n  reason: review_blocked\nfinal_verify:\n  attempted: true\n  applied_cleanly: true\n  gates_passed: true\n",
+    );
+    await withDaemonServer(daemon, async (base) => {
+      const retry = await apiFetch(`${base}/runs/run-d1/retry`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "Idempotency-Key": "child-retry" },
+        body: "{}",
+      });
+      expect(retry.status).toBe(409);
+      await expect(retry.json()).resolves.toMatchObject({
+        code: "delegated_child_retry_unavailable",
+        retryable: false,
+      });
+
+      const decision = await apiFetch(`${base}/runs/run-d1/decision`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "Idempotency-Key": "child-decision" },
+        body: JSON.stringify({ action: "rerun_with_feedback", feedback: "try again" }),
+      });
+      expect(decision.status).toBe(409);
+      await expect(decision.json()).resolves.toMatchObject({
+        code: "delegated_child_rerun_unavailable",
+        retryable: false,
+      });
+
+      const runAgain = await apiFetch(`${base}/runs/run-d1/run-again`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(runAgain.status).toBe(200);
+      const draft = (await runAgain.json()) as {
+        request: Record<string, unknown>;
+        differences: Array<{ field: string }>;
+      };
+      expect(draft.request).not.toHaveProperty("parentRunId");
+      expect(draft.request).not.toHaveProperty("delegatedFromRunId");
+      expect(draft.differences.map((entry) => entry.field)).toEqual([
+        "parentRunId",
+        "delegatedFromRunId",
+      ]);
     });
   });
 
@@ -7841,6 +8442,109 @@ describe("DaemonControlApiServer", () => {
       await server.stop();
       rmSync(repo, { recursive: true, force: true });
     }
+  });
+
+  it("[INV-081:planref-boundary] rejects client-supplied planRef on POST /runs (a self-consistent forged hash never reaches the orchestrator)", async () => {
+    // The withPlanBrief tamper fence verifies the sha256 the planRef CARRIES,
+    // so a forged reference whose hash matches its own file passes the fence
+    // by construction — the boundary must refuse the field entirely.
+    const { daemon } = fakeDaemon();
+    let enqueued = 0;
+    const guarded: DaemonFacadeClient = {
+      ...daemon,
+      async enqueue(params, options) {
+        enqueued += 1;
+        return daemon.enqueue(params, options);
+      },
+    };
+    const server = new DaemonControlApiServer({ ...readyIdentity, token, daemon: guarded });
+    const { host, port } = await server.start();
+    const base = `http://${host}:${port}`;
+    const repo = reapMk(join(tmpdir(), "claudexor-planref-"));
+    try {
+      const secret = join(repo, "not-a-plan.txt");
+      writeFileSync(secret, "arbitrary file the forged planRef points at\n");
+      const forged = {
+        runId: "run-plan",
+        sha256: sha256(readFileSync(secret, "utf8")).replace(/^sha256:/, ""),
+        path: secret,
+      };
+      const response = await apiFetch(`${base}/runs`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          prompt: "x",
+          mode: "agent",
+          scope: { kind: "project", root: repo },
+          planRef: forged,
+        }),
+      });
+      expect(response.status).toBe(400);
+      expect(((await response.json()) as { message: string }).message).toContain(
+        "planRef is not accepted on POST /runs",
+      );
+      expect(enqueued).toBe(0);
+    } finally {
+      await server.stop();
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects client-forged Delegate lineage on POST /runs", async () => {
+    const { daemon } = fakeDaemon();
+    const repo = reapMk(join(tmpdir(), "claudexor-delegation-lineage-"));
+    try {
+      await withDaemonServer(daemon, async (base) => {
+        for (const field of ["parentRunId", "delegatedFromRunId"] as const) {
+          const response = await apiFetch(`${base}/runs`, {
+            method: "POST",
+            headers: { authorization: `Bearer ${token}` },
+            body: JSON.stringify({
+              prompt: "x",
+              mode: "agent",
+              scope: { kind: "project", root: repo },
+              [field]: "run-parent",
+            }),
+          });
+          expect(response.status).toBe(400);
+          expect(((await response.json()) as { message: string }).message).toMatch(
+            /server-owned lineage/,
+          );
+        }
+      });
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("Exact Retry still replays a server-minted planRef verbatim (the boundary guard is POST /runs only)", async () => {
+    const { daemon, record } = fakeDaemon();
+    const planRef = { runId: "run-plan", sha256: "b".repeat(64), path: "/tmp/final/plan.md" };
+    record.params = {
+      ...(record.params as Record<string, unknown>),
+      planRunId: "run-plan",
+      planRef,
+    };
+    let enqueuedParams: Record<string, unknown> | undefined;
+    const wrapped: DaemonFacadeClient = {
+      ...daemon,
+      async enqueue(params, options) {
+        enqueuedParams = params as Record<string, unknown>;
+        return daemon.enqueue(params, options);
+      },
+    };
+    await withDaemonServer(wrapped, async (base) => {
+      const retry = await apiFetch(`${base}/runs/run-d1/retry`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "Idempotency-Key": "planref-retry" },
+        body: "{}",
+      });
+      expect(retry.status).toBe(200);
+      // INV-081: the frozen-plan reference survives the replay UNCHANGED — a
+      // retried implement can never silently run without its plan.
+      expect(enqueuedParams?.["planRef"]).toEqual(planRef);
+      expect(enqueuedParams?.["retryOf"]).toBe("run-d1");
+    });
   });
 });
 
