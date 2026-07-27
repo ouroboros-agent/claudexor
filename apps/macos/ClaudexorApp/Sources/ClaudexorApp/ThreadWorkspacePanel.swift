@@ -86,11 +86,23 @@ struct ThreadWorkspacePanel: View {
             }
             // Filtering to a fresh receipt loads that run's detail (eligibility,
             // review, diagnostics) — the run-filtered view IS the demoted detail.
-            .task(id: filterRunId ?? "") {
-                if let id = filterRunId, model.task(id)?.isLive == true { await model.loadRunDetail(id) }
+            .task(id: "\(model.selectedExecutionLocation.rawValue)|\(filterRunId ?? "")") {
+                let locationID = model.selectedExecutionLocation
+                if let id = filterRunId,
+                   model.task(id, at: locationID)?.isLive == true
+                {
+                    await model.loadRunDetail(id, locationID: locationID)
+                }
             }
             .onChange(of: filterRunId) { _, _ in userSelectedTab = false; autoSelectDefaultTab() }
             .onChange(of: filteredRun?.phase) { _, _ in autoSelectDefaultTab() }
+            .onChange(of: model.selectedLocatedThreadID) { _, _ in
+                userSelectedTab = false
+                tab = WorkspaceTabPolicy.validated(
+                    current: tab,
+                    available: availableTabs)
+                autoSelectDefaultTab()
+            }
             .onAppear { autoSelectDefaultTab() }
         } else {
             EmptyStateView(
@@ -172,7 +184,7 @@ struct ThreadWorkspacePanel: View {
 
     private var tabBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            SegmentedTabs(items: WorkspaceTab.allCases.map { ($0, $0.label, $0.glyph) },
+            SegmentedTabs(items: availableTabs.map { ($0, $0.label, $0.glyph) },
                           selection: Binding(get: { tab }, set: { newValue in
                               userSelectedTab = true
                               tab = newValue
@@ -183,10 +195,21 @@ struct ThreadWorkspacePanel: View {
         }
     }
 
+    private var availableTabs: [WorkspaceTab] {
+        model.selectedExecutionLocation == .local
+            ? [.changes, .artifacts, .evidence]
+            : [.changes, .artifacts, .evidence, .terminal]
+    }
+
     @ViewBuilder
     private func content(_ detail: ThreadDetailResponse) -> some View {
+        if tab == .terminal,
+           model.selectedExecutionLocation != .local,
+           let root = detail.thread.repoRoot
+        {
+            RemoteThreadTerminalView(repoRoot: root)
         // A trivial thread (no runs at all) has nothing to show — be honest.
-        if runIds.isEmpty {
+        } else if runIds.isEmpty {
             EmptyStateView(
                 title: "No project output in this thread",
                 message: "This thread hasn't produced changes, artifacts, or evidence yet.",
@@ -197,6 +220,7 @@ struct ThreadWorkspacePanel: View {
             switch tab {
             case .changes:
                 WorkspaceChangesView(
+                    locationID: model.selectedExecutionLocation,
                     threadId: detail.thread.id,
                     isolated: detail.thread.workspaceMode == "isolated",
                     runIds: scope,
@@ -204,7 +228,11 @@ struct ThreadWorkspacePanel: View {
             case .artifacts:
                 artifactsTab(detail, scope: scope)
             case .evidence:
-                WorkspaceEvidenceView(runIds: scope)
+                WorkspaceEvidenceView(
+                    locationID: model.selectedExecutionLocation,
+                    runIds: scope)
+            case .terminal:
+                EmptyView()
             }
         }
     }
@@ -215,7 +243,8 @@ struct ThreadWorkspacePanel: View {
     @ViewBuilder
     private func artifactsTab(_ detail: ThreadDetailResponse, scope: [String]) -> some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-            if let root = detail.thread.repoRoot,
+            if model.selectedExecutionLocation == .local,
+               let root = detail.thread.repoRoot,
                FileManager.default.fileExists(atPath: (root as NSString).appendingPathComponent("index.html")) {
                 HStack {
                     Button { showPreview = true } label: {
@@ -227,7 +256,16 @@ struct ThreadWorkspacePanel: View {
                 }
                 .sheet(isPresented: $showPreview) { PreviewSheet(repoRoot: root) }
             }
-            ArtifactGalleryView(runIds: scope, produced: true)
+            if model.selectedExecutionLocation != .local {
+                Text(
+                    "Remote static files are not copied to this Mac. Start a dev server in Terminal, then open its port from the Terminal tab.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            ArtifactGalleryView(
+                locationID: model.selectedExecutionLocation,
+                runIds: scope,
+                produced: true)
                 .frame(minHeight: 200)
         }
     }

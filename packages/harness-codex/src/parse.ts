@@ -22,6 +22,14 @@ const CODEX_TRANSIENT_RE =
 export interface CodexParseState {
   lastAgentMessage?: string;
   /**
+   * `codex exec --json` emits both `thread.started` and `turn.started` for one
+   * run. The normalized protocol has one run-level `started` event, so retain
+   * the first native lifecycle frame and recognize-but-skip the duplicate.
+   * `turn.started` remains a fallback for older/partial streams that omit the
+   * thread frame.
+   */
+  startedEmitted?: boolean;
+  /**
    * D-16 / codex #19816: true when THIS run armed a WorkReport output-schema
    * envelope (`--output-schema` present). codex applies the schema to
    * INTERMEDIATE agent messages too, not just the final one, so a mid-run
@@ -86,6 +94,8 @@ export function parseCodexEvent(
   const type = obj?.type;
 
   if (type === "thread.started") {
+    if (state?.startedEmitted) return [];
+    if (state) state.startedEmitted = true;
     // Expose the native session id uniformly so the engine can record it for resume.
     return [
       {
@@ -168,10 +178,11 @@ export function parseCodexEvent(
     // finalize as THIS turn's answer (review sol #2 — the leak was cleared
     // only on turn.completed, so a failed/empty turn inherited a stale one).
     if (state) state.lastAgentMessage = undefined;
-    // A lifecycle marker, NOT reasoning: mapping it to `thinking` used to
-    // plant a junk "turn started" block at the top of every chat transcript
-    // (the reducer renders thinking verbatim). `started` keeps the boundary
-    // in the activity feed without polluting the reasoning disclosure.
+    // `thread.started` is the canonical run boundary. Keep this as a fallback
+    // for a partial/older native stream, but never emit a second normalized
+    // start for the ordinary thread.started + turn.started pair.
+    if (state?.startedEmitted) return [];
+    if (state) state.startedEmitted = true;
     return [
       {
         type: "started",

@@ -55,6 +55,7 @@ import {
   assertCredentialProfileCompatibility,
   assertCredentialProfileRegistered,
 } from "./profile-compatibility.js";
+import { listRemoteDirectory, readScopedProjectFile } from "./remote-filesystem.js";
 
 const NO_PROJECT_ROOT = noProjectRepoRoot();
 
@@ -143,6 +144,9 @@ export function controlServices(
         projects: store.list().map((p) => ({ ...p, nesting: store.nestingFor(p.id) })) as unknown[],
       };
     },
+    listDirectory: async (path?: string) => listRemoteDirectory(path),
+    fetchProjectFile: async (projectId: string, path: string) =>
+      readScopedProjectFile(projects(), projectId, path),
     registerProject: async (input: Parameters<ProjectStore["register"]>[0]) => {
       const project = threads.registerProject(input);
       return { ...project, nesting: projects().nestingFor(project.id) };
