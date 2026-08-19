@@ -5,6 +5,7 @@ import type {
   ConformanceReport,
   CredentialProfile,
   CredentialProfileStatus,
+  HarnessCapabilityProfile,
   HarnessEvent,
   HarnessManifest,
   HarnessModel,
@@ -46,6 +47,15 @@ export interface DoctorSpec {
  */
 export interface HarnessAdapter {
   readonly id: string;
+
+  /**
+   * Static capability declaration available without spawning the vendor CLI.
+   * Policy/admission consumers use this exact object before any live probe;
+   * discover() may only overlay runtime facts such as the preferred auth
+   * source. Keeping the declaration on the adapter prevents a profile-policy
+   * conflict from spending a vendor call merely to learn that it must refuse.
+   */
+  readonly capabilityProfile?: HarnessCapabilityProfile;
 
   /** Detect installation/version/auth and declare capabilities. */
   discover(): Promise<HarnessManifest>;

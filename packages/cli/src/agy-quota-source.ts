@@ -1,14 +1,16 @@
-import { spawn } from "node:child_process";
 import { loadConfig } from "@claudexor/config";
-import { providerScrubEnv } from "@claudexor/core";
+import { credentialProfilePolicyState } from "@claudexor/core";
 import type { QuotaRefreshResult } from "@claudexor/daemon";
 import {
   AGY_BIN,
+  AGY_CAPABILITY_PROFILE,
   AGY_GEMINI_MODELS,
   AGY_THIRD_PARTY_MODELS,
   agyProfileRunEnv,
-  agyTokenFilePresent,
   canonicalAgyProfileHome,
+  classifyAgyPrintResult,
+  runAgyPrintCommand,
+  type AgyPrintClassification,
 } from "@claudexor/harness-agy";
 import { QuotaConstraint as QuotaConstraintSchema } from "@claudexor/schema";
 import type { QuotaAbsence, QuotaConstraint, QuotaSnapshot } from "@claudexor/schema";
@@ -23,11 +25,11 @@ import { noProjectRepoRoot, redactSecrets } from "@claudexor/util";
  * throw: one account's failure must never blind the others.
  */
 export async function refreshAgyQuota(
-  options: { bin?: string; baseEnv?: NodeJS.ProcessEnv } = {},
+  options: { bin?: string; baseEnv?: NodeJS.ProcessEnv; platform?: NodeJS.Platform } = {},
 ): Promise<QuotaRefreshResult> {
   const bin = options.bin ?? AGY_BIN();
   const snapshots: QuotaSnapshot[] = [];
-  const universe = agyQuotaCandidates();
+  const universe = agyQuotaCandidates(options.platform);
   const absences: QuotaAbsence[] = [...universe.absences];
   // Profiles are read CONCURRENTLY: several accounts is the point of the
   // feature, the daemon awaits every refresher in one cycle, and each read can
@@ -36,29 +38,16 @@ export async function refreshAgyQuota(
   const results = await Promise.all(
     universe.candidates.map(async (candidate) => {
       const home = candidate.home;
-      // Logged-out precheck (codex pattern): a profile HOME without the
-      // vendor's file token cannot yield a window — typed absence WITHOUT
-      // spawning agy, which would otherwise open the user's browser and block
-      // on an interactive login prompt.
-      if (!agyTokenFilePresent(home)) {
-        return {
-          absence: agyAbsence(
-            candidate.subjectId,
-            "not_logged_in",
-            `no Antigravity token in ${home}`,
-          ),
-        };
-      }
       try {
         const env = agyProfileRunEnv(home, options.baseEnv ?? process.env);
-        const parsed = await readAgyQuota(bin, env);
+        const parsed = await readAgyQuota(bin, env, options.platform);
         if (parsed.kind === "auth_revoked")
           return { absence: agyAbsence(candidate.subjectId, "auth_revoked", parsed.detail) };
         if (parsed.kind !== "constraints")
           return { absence: agyAbsence(candidate.subjectId, "refresh_failed", parsed.detail) };
         // Which window governs a run that names no model depends on the model
         // this profile is actually set to, which the vendor answers for free.
-        const selected = await readAgySelectedModel(bin, env);
+        const selected = await readAgySelectedModel(bin, env, options.platform);
         return {
           snapshot: {
             subject: {
@@ -100,16 +89,16 @@ export async function refreshAgyQuota(
 async function readAgySelectedModel(
   bin: string,
   env: Record<string, string | null | undefined>,
+  platform?: NodeJS.Platform,
 ): Promise<string | null> {
-  const result = await readAgyCommand(bin, "/model", env);
-  if ("failure" in result) return null;
-  try {
-    const parsed = JSON.parse(result.stdout.trim() || "{}");
-    const id = parsed?.command?.data?.id;
-    return typeof id === "string" && id ? id : null;
-  } catch {
-    return null;
-  }
+  const result = await readAgyCommand(bin, "/model", env, platform);
+  if (result.kind !== "success") return null;
+  const command = result.envelope["command"];
+  if (!command || typeof command !== "object" || Array.isArray(command)) return null;
+  const data = (command as Record<string, unknown>)["data"];
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+  const id = (data as Record<string, unknown>)["id"];
+  return typeof id === "string" && id ? id : null;
 }
 
 /**
@@ -155,11 +144,35 @@ interface AgyQuotaCandidate {
   subjectId: string;
 }
 
-function agyQuotaCandidates(): { candidates: AgyQuotaCandidate[]; absences: QuotaAbsence[] } {
+function agyQuotaCandidates(platform: NodeJS.Platform = process.platform): {
+  candidates: AgyQuotaCandidate[];
+  absences: QuotaAbsence[];
+} {
   const global = loadConfig(noProjectRepoRoot()).global;
   if (global.harnesses.agy?.enabled === false) return { candidates: [], absences: [] };
   const candidates: AgyQuotaCandidate[] = [];
   const absences: QuotaAbsence[] = [];
+  const enabled = global.credential_profiles.filter(
+    (profile) =>
+      profile.harness_id === "agy" && profile.enabled && profile.credential_kind !== "api_key",
+  );
+  const cardinality = credentialProfilePolicyState({
+    adapter: { id: "agy", capabilityProfile: AGY_CAPABILITY_PROFILE },
+    registry: global.credential_profiles,
+    platform,
+  });
+  if (cardinality.ambiguous) {
+    return {
+      candidates: [],
+      absences: enabled.map((profile) =>
+        agyAbsence(
+          profile.profile_id,
+          "credential_profile_ambiguous",
+          `agy has ${cardinality.enabledProfileCount} enabled bindings on ${cardinality.platform}; disable extra profiles before quota can select or probe this OS-user credential`,
+        ),
+      ),
+    };
+  }
   for (const profile of global.credential_profiles) {
     if (profile.harness_id !== "agy" || !profile.enabled) continue;
     if (profile.credential_kind !== "config_dir_login") continue;
@@ -209,81 +222,29 @@ type AgyQuotaParse =
   | { kind: "failed"; detail: string };
 
 /**
- * Spawn one print-mode slash command and return its raw stdout, or a typed
- * failure. stdin is closed (an authenticated agy runs fine that way — PLAN
- * §1.2b) and the caller's token precheck already proved a login exists, so
- * this can never reach an interactive prompt.
- *
- * stderr is NOT piped: nothing reads it, and an unread pipe fills at 64 KB and
- * blocks the vendor mid-write — which threw away a perfectly good stdout
- * envelope and burned the whole timeout.
+ * Shared adapter-owned bounded runner/classifier. No token/keyring precheck:
+ * only the vendor envelope proves auth, and every operational failure stays a
+ * refresh failure rather than a false logout.
  */
 async function readAgyCommand(
   bin: string,
-  command: string,
+  command: "/model" | "/quota",
   env: Record<string, string | null | undefined>,
-): Promise<{ stdout: string } | { failure: string }> {
-  const merged: NodeJS.ProcessEnv = {};
-  for (const [k, v] of Object.entries({ ...env, ...providerScrubEnv() })) {
-    if (typeof v === "string") merged[k] = v;
-  }
-  merged.AGY_CLI_DISABLE_AUTO_UPDATE = "true";
-  const child = spawn(bin, ["-p", command, "--output-format", "json"], {
-    stdio: ["ignore", "pipe", "ignore"],
-    env: merged,
-  });
-  let timedOut = false;
-  const kill = setTimeout(() => {
-    timedOut = true;
-    child.kill("SIGKILL");
-  }, AGY_COMMAND_TIMEOUT_MS);
-  // Bounded by BYTES on the raw stream: a line-keyed cap cannot bound a stream
-  // with no newline in it, and readline's own buffer would grow first.
-  let stdout = "";
-  let overflowed = false;
-  child.stdout.on("data", (chunk: Buffer) => {
-    if (overflowed) return;
-    if (stdout.length + chunk.length > MAX_QUOTA_STDOUT) {
-      overflowed = true;
-      child.kill("SIGKILL");
-      return;
-    }
-    stdout += chunk.toString("utf8");
-  });
-  // `exit`, never `close`: `close` waits for every stdio pipe to end, so a
-  // surviving agy DESCENDANT holding stdout would keep this promise pending
-  // forever even after the SIGKILL — and a pending promise wedges
-  // QuotaPollPacer.inFlight, which stalls the daemon's whole quota refresh
-  // cycle (claude and codex included). codex-quota-source and
-  // claude-statusline both use `exit` for exactly this reason.
-  const outcome = await new Promise<{ code: number | null } | { spawnFailed: true }>((resolve) => {
-    child.once("exit", (code) => resolve({ code }));
-    child.once("error", () => resolve({ spawnFailed: true }));
-  });
-  clearTimeout(kill);
-  child.stdout.destroy();
-  // The three not-a-result outcomes stay DISTINGUISHABLE: an operator reading
-  // "could not be spawned" must not be looking at a vendor that simply hung.
-  if ("spawnFailed" in outcome)
-    return { failure: `agy could not be spawned (is ${bin} installed?)` };
-  if (overflowed) return { failure: "agy printed more output than the quota reader accepts" };
-  if (timedOut)
-    return {
-      failure: `agy did not answer ${command} within ${AGY_COMMAND_TIMEOUT_MS / 1000}s and was stopped`,
-    };
-  return { stdout };
+  platform?: NodeJS.Platform,
+): Promise<AgyPrintClassification> {
+  return classifyAgyPrintResult(await runAgyPrintCommand(bin, command, env, { platform }));
 }
-
-const AGY_COMMAND_TIMEOUT_MS = 30_000;
 
 /** Spawn the vendor's own `/quota` slash command and parse it tolerantly. */
 async function readAgyQuota(
   bin: string,
   env: Record<string, string | null | undefined>,
+  platform?: NodeJS.Platform,
 ): Promise<AgyQuotaParse> {
-  const result = await readAgyCommand(bin, "/quota", env);
-  if ("failure" in result) return { kind: "failed", detail: result.failure };
-  return parseAgyQuotaEnvelope(result.stdout);
+  const result = await readAgyCommand(bin, "/quota", env, platform);
+  if (result.kind === "unauthenticated") return { kind: "auth_revoked", detail: result.detail };
+  if (result.kind === "probe_failed") return { kind: "failed", detail: result.detail };
+  return parseAgyQuotaSuccessEnvelope(result.envelope);
 }
 
 /**
@@ -295,19 +256,29 @@ async function readAgyQuota(
  * window can never block Gemini routing (INV-136 model scope; roast E2/grok).
  */
 export function parseAgyQuotaEnvelope(raw: string): AgyQuotaParse {
-  let parsed: any;
-  try {
-    parsed = JSON.parse(raw.trim() || "{}");
-  } catch {
-    return { kind: "failed", detail: "agy quota output was not valid JSON" };
-  }
-  if (parsed?.status === "ERROR" || (typeof parsed?.error === "string" && parsed.error)) {
-    const detail = String(parsed.error ?? "authentication required");
-    return /auth|login|credential|token/i.test(detail)
-      ? { kind: "auth_revoked", detail: redactSecrets(detail).slice(0, 300) }
-      : { kind: "failed", detail: redactSecrets(detail).slice(0, 300) };
-  }
-  const groups = parsed?.command?.data?.groups;
+  const classified = classifyAgyPrintResult({
+    kind: "completed",
+    code: 0,
+    signal: null,
+    stdout: raw,
+    stderr: "",
+  });
+  if (classified.kind === "unauthenticated")
+    return { kind: "auth_revoked", detail: classified.detail };
+  if (classified.kind === "probe_failed") return { kind: "failed", detail: classified.detail };
+  return parseAgyQuotaSuccessEnvelope(classified.envelope);
+}
+
+function parseAgyQuotaSuccessEnvelope(parsed: Record<string, unknown>): AgyQuotaParse {
+  const command = parsed["command"];
+  const data =
+    command && typeof command === "object" && !Array.isArray(command)
+      ? (command as Record<string, unknown>)["data"]
+      : null;
+  const groups =
+    data && typeof data === "object" && !Array.isArray(data)
+      ? (data as Record<string, unknown>)["groups"]
+      : null;
   if (!Array.isArray(groups)) return { kind: "failed", detail: "agy quota envelope had no groups" };
   const constraints: QuotaConstraint[] = [];
   for (const group of groups) {
@@ -360,8 +331,6 @@ function isoOrNull(value: unknown): string | null {
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
 }
-
-const MAX_QUOTA_STDOUT = 256 * 1024;
 
 const WINDOW_SECONDS: Record<string, number> = {
   "5h": 5 * 60 * 60,

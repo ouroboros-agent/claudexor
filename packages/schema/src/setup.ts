@@ -260,15 +260,17 @@ export const ControlSetupJobCreateRequest = z
     harness: ControlHarnessSetupHarness,
     action: SetupTransport.ControlSetupJobAction,
     authRequest: z.literal("subscription"),
-    /** Target a REGISTERED config-dir credential profile (INV-135): the
-     * vendor login runs scoped to the profile's own dir and verification
-     * probes THE PROFILE — the default native store is never touched.
+    /** Target a REGISTERED config-dir credential binding (INV-135): the vendor
+     * login runs under the binding's exact scoped environment and verification
+     * probes that binding under its effective platform credential policy.
      * Absent = the harness's default session (unchanged behavior). */
     profileId: z
       .string()
       .min(1)
       .optional()
-      .describe("Registered config_dir_login profile to log in; absent = the default session."),
+      .describe(
+        "Registered config_dir_login binding to log in under its exact scoped environment; absent = the default session.",
+      ),
     /** Codex-only interactive login flow selection. Default (absent) is
      * device_auth — the D-17 primary flow: typed device-code over the official
      * codex app-server (NO Terminal), completed in an isolated browser context

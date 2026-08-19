@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type SpawnOptions } from "node:child_process";
 import {
   closeSync,
   constants,
@@ -28,6 +28,7 @@ import { ensureDaemon, connectDaemonIfRunning } from "./daemon-run.js";
 import { controlApiFetch, CONTROL_PROTOCOL_MAJOR, handshakeControlApi } from "./live.js";
 import { printJson, printUsageError } from "./cli-io.js";
 import { resolveSetupLoginRunnerPath } from "./setup-job-support.js";
+import { runnerBootstrapEnv } from "./setup-login-runner-support.js";
 import {
   admitAndAwaitRuntimeReplacementStop,
   decideRuntimeReplacementWithoutControl,
@@ -319,6 +320,44 @@ export function claimSetupAttachment(directory: string): void {
   closeSync(descriptor);
 }
 
+export interface SetupAttachRunnerInvocation {
+  command: string;
+  args: string[];
+  options: SpawnOptions;
+}
+
+/**
+ * Windows must keep the login worker in the terminal that attached the job:
+ * entering `--worker` directly avoids the detached bootstrap hop that daemon-
+ * hosted jobs require. POSIX retains the existing bootstrap invocation.
+ */
+export function setupAttachRunnerInvocation(input: {
+  platform: NodeJS.Platform;
+  nodePath: string;
+  runnerPath: string;
+  manifestPath: string;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+}): SetupAttachRunnerInvocation {
+  if (input.platform === "win32") {
+    return {
+      command: input.nodePath,
+      args: [input.runnerPath, "--worker", input.manifestPath],
+      options: {
+        cwd: input.cwd,
+        stdio: "inherit",
+        env: runnerBootstrapEnv(input.env),
+        detached: false,
+      },
+    };
+  }
+  return {
+    command: input.nodePath,
+    args: [input.runnerPath, input.manifestPath],
+    options: { cwd: input.cwd, stdio: "inherit", env: input.env },
+  };
+}
+
 export async function setupCommand(args: ParsedArgs, json: boolean): Promise<number> {
   const sub = args._[1];
   const jobId = args._[2];
@@ -364,11 +403,13 @@ export async function setupCommand(args: ParsedArgs, json: boolean): Promise<num
   // users cancel/recreate instead of accidentally launching the vendor login
   // twice against one daemon-owned job.
   claimSetupAttachment(artifactDirectory);
-  return waitForChild(
-    spawn(process.execPath, [runner, manifest], {
-      cwd: artifactDirectory,
-      stdio: "inherit",
-      env: process.env,
-    }),
-  );
+  const invocation = setupAttachRunnerInvocation({
+    platform: platform(),
+    nodePath: process.execPath,
+    runnerPath: runner,
+    manifestPath: manifest,
+    cwd: artifactDirectory,
+    env: process.env,
+  });
+  return waitForChild(spawn(invocation.command, invocation.args, invocation.options));
 }

@@ -4,10 +4,19 @@ import {
   pickAllowlistedEnv,
   resolveHarnessBinary,
 } from "@claudexor/core";
-import { defaultNativeClaudeConfigDir } from "@claudexor/harness-claude";
-import { CODEX_FILE_AUTH_ARGS, defaultNativeCodexHome } from "@claudexor/harness-codex";
-import { canonicalCursorProfileHome, cursorProfilePathEnv } from "@claudexor/harness-cursor";
-import { canonicalAgyProfileHome } from "@claudexor/harness-agy";
+import { CLAUDE_MANAGED_LOGIN, defaultNativeClaudeConfigDir } from "@claudexor/harness-claude";
+import {
+  CODEX_FILE_AUTH_ARGS,
+  CODEX_MANAGED_LOGIN,
+  defaultNativeCodexHome,
+} from "@claudexor/harness-codex";
+import {
+  CURSOR_MANAGED_LOGIN,
+  canonicalCursorProfileHome,
+  cursorProfilePathEnv,
+} from "@claudexor/harness-cursor";
+import { AGY_MANAGED_LOGIN, canonicalAgyProfileHome } from "@claudexor/harness-agy";
+import type { ManagedLogin } from "@claudexor/schema";
 import { ensureDir } from "@claudexor/util";
 import { isAbsolute } from "node:path";
 
@@ -90,6 +99,18 @@ const NATIVE_LOGIN_DEFINITIONS: Record<string, LoginDefinition> = {
 };
 
 /**
+ * One-to-one bridge from setup command ownership to the manifest-owned input
+ * declaration. Command argv/flow/window stay above; stdin class never has a
+ * second hand-written owner in this registry.
+ */
+export const NATIVE_LOGIN_INPUTS: Record<string, ManagedLogin> = {
+  codex: CODEX_MANAGED_LOGIN,
+  claude: CLAUDE_MANAGED_LOGIN,
+  cursor: CURSOR_MANAGED_LOGIN,
+  agy: AGY_MANAGED_LOGIN,
+};
+
+/**
  * Structured native-login command shared by CLI and setup surfaces. The
  * resolver hook uses the same normalized harness PATH as discovery and makes
  * the spawned executable absolute whenever it is installed.
@@ -101,6 +122,8 @@ export function nativeLoginSpec(
 ): NativeLoginSpec | null {
   const definition = NATIVE_LOGIN_DEFINITIONS[harness];
   if (!definition) return null;
+  const managedLogin = NATIVE_LOGIN_INPUTS[harness];
+  if (!managedLogin) return null;
   const resolved = resolver(definition.binaryName());
   if (!resolved || !isAbsolute(resolved)) return null;
   if (harness === "codex") {
@@ -139,7 +162,7 @@ export function nativeLoginSpec(
   // interpose a tty (proven 2026-08-16: with a plain pipe agy answers
   // "authentication required", with a pty it prints the URL and consumes the
   // pasted code).
-  const withInput = harness === "claude" || harness === "agy";
+  const withInput = managedLogin.stdin !== "none";
   return {
     binary: resolved,
     args: [...definition.args],
@@ -150,7 +173,8 @@ export function nativeLoginSpec(
     // real window instead of the engine's 15 minutes keeps the card's countdown
     // honest and lets it re-issue the link the moment the vendor gives up
     // (Л-23) rather than counting down against a process that already exited.
-    ...(harness === "agy" ? { ptyStdin: true, loginWindowMs: AGY_LOGIN_WINDOW_MS } : {}),
+    ...(managedLogin.stdin === "terminal" ? { ptyStdin: true } : {}),
+    ...(harness === "agy" ? { loginWindowMs: AGY_LOGIN_WINDOW_MS } : {}),
   };
 }
 
@@ -228,19 +252,20 @@ export function nativeLoginEnv(
     // INV-135); ordinary ~/.claude is never created, read, or mutated here.
     ensureDir(env.CLAUDE_CONFIG_DIR);
   } else if (harness === "agy") {
-    // agy takes its whole config root from $HOME; the profile HOME IS the
-    // isolation locator. There is NO default agy credential store (owner
+    // agy takes its whole state root from $HOME; the profile HOME is the named
+    // binding's isolation locator. There is NO default agy binding store (owner
     // decision Л-4), so an absent override must REFUSE: falling through would
-    // leave the daemon's own HOME in place and write a vendor token into the
-    // operator's real home directory (INV-135).
+    // leave the daemon's own HOME in place and put vendor state/login artifacts
+    // in the operator's real home directory (INV-135). Credential custody itself
+    // remains platform-defined and may be OS-user-scoped.
     if (!configDirOverride) {
       throw new Error(
         "agy has no default credential store: an Antigravity login must target a named profile HOME (INV-135, owner decision Л-4)",
       );
     }
-    // No keychain is created inside the profile HOME — the vendor falls back to
-    // its file-based token there (PLAN Л-15). Pin the auto-updater so the
-    // closed binary cannot replace itself mid-login.
+    // HOME scopes vendor state. The effective credential transport remains a
+    // platform/version fact (Windows is OS-user scoped), so login never treats
+    // a token path as an auth oracle. Pin the closed vendor's auto-updater.
     const home = canonicalAgyProfileHome(configDirOverride);
     ensureDir(home);
     env.AGY_CLI_DISABLE_AUTO_UPDATE = "true";

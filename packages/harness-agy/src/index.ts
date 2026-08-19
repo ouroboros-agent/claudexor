@@ -1,17 +1,22 @@
 import type {
   AccessProfile,
   ConformanceReport,
+  HarnessCapabilityProfile,
   HarnessEvent,
   HarnessManifest,
   HarnessRunSpec,
 } from "@claudexor/schema";
 import {
   ConformanceReport as ConformanceReportSchema,
+  credentialProfilePolicyForPlatform,
+  credentialTransportsForPlatform,
+  HarnessCapabilityProfile as HarnessCapabilityProfileSchema,
   HarnessManifest as HarnessManifestSchema,
 } from "@claudexor/schema";
 import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
 import {
   HarnessUnavailableError,
+  harnessPlatform,
   promptWithInstructions,
   runCapture,
   runCliHarness,
@@ -23,12 +28,12 @@ import { AGY_VENDOR_CLI_VERSION } from "./vendor-cli-version.js";
 // The package publishes only what other packages consume. The profile probe,
 // the route resolver and the stream parser are reached through the adapter
 // this file returns, so re-exporting them would be a dead public surface.
+export { AGY_BIN, agyProfileRunEnv, canonicalAgyProfileHome } from "./profile.js";
 export {
-  AGY_BIN,
-  agyProfileRunEnv,
-  agyTokenFilePresent,
-  canonicalAgyProfileHome,
-} from "./profile.js";
+  classifyAgyPrintResult,
+  runAgyPrintCommand,
+  type AgyPrintClassification,
+} from "./print-command.js";
 
 /**
  * Access mapping, each leg LIVE-PROVEN on agy 1.1.13 (PLAN §1.2 F11, §1.2d):
@@ -96,6 +101,72 @@ const AGY_KNOWN_MODELS = [
 export const AGY_GEMINI_MODELS = AGY_KNOWN_MODELS.filter((m) => m.startsWith("gemini-"));
 export const AGY_THIRD_PARTY_MODELS = AGY_KNOWN_MODELS.filter((m) => !m.startsWith("gemini-"));
 
+/** One manifest-owned declaration of the managed login's stdin contract. */
+export const AGY_MANAGED_LOGIN = { stdin: "terminal" } as const;
+
+/**
+ * Static auth/profile policy. Windows Credential Manager is scoped to the OS
+ * user, not the profile HOME, so only one enabled binding is honest there.
+ * Darwin/Linux retain the legacy profile-scoped, unbounded defaults.
+ */
+export const AGY_CAPABILITY_PROFILE: HarnessCapabilityProfile =
+  HarnessCapabilityProfileSchema.parse({
+    auth: {
+      supported_sources: ["native_session"],
+      preferred_source: "native_session",
+      credential_transports: [
+        {
+          source: "native_session",
+          kind: "config_file",
+          relocatable_by: ["HOME"],
+          platforms: ["darwin", "linux"],
+        },
+        {
+          source: "native_session",
+          kind: "os_keychain",
+          relocatable_by: [],
+          platforms: ["win32"],
+        },
+      ],
+      credential_profile_policies: [
+        {
+          source: "native_session",
+          platforms: ["win32"],
+          identity_scope: "os_user",
+          max_enabled_profiles: 1,
+          cleanup_owner: "vendor",
+        },
+      ],
+      managed_login: AGY_MANAGED_LOGIN,
+    },
+    access_control: { readonly_mechanism: "permission_deny" },
+    isolation: { supported_containment: ["env_or_file_injection"] },
+    attachment_inputs: [],
+  });
+
+/** Platform disclosure derived from the same transport and effective-policy
+ * facts used by admission. Darwin is the one live-proven profile-isolation
+ * lane; other lanes stay explicit rather than maintaining parallel truth. */
+export function agyPlatformIsolationDetail(
+  platform: NodeJS.Platform = process.platform,
+): string | null {
+  const host = harnessPlatform(platform);
+  if (!host) return `Antigravity credential behavior is undeclared on ${platform}`;
+  const transports = credentialTransportsForPlatform(AGY_CAPABILITY_PROFILE.auth, host);
+  const policy = credentialProfilePolicyForPlatform(
+    AGY_CAPABILITY_PROFILE.auth,
+    "native_session",
+    host,
+  );
+  if (host === "darwin") return null;
+  const kinds =
+    transports.map((transport) => transport.kind).join(" + ") || "no declared transport";
+  if (policy.identity_scope === "os_user") {
+    return `Antigravity uses ${kinds} credentials scoped to the current OS user; the named HOME scopes vendor state but is not an independent identity (maximum ${policy.max_enabled_profiles ?? "unbounded"} enabled binding)`;
+  }
+  return `named-account isolation is unverified on ${host}: the declared ${kinds} transport has profile-scoped policy but no live multi-account proof on this platform`;
+}
+
 const AGY_ENABLED_INTENTS = [
   "explain",
   "plan",
@@ -112,6 +183,7 @@ const AGY_ENABLED_INTENTS = [
 export function createAgyAdapter(): HarnessAdapter {
   return {
     id: "agy",
+    capabilityProfile: AGY_CAPABILITY_PROFILE,
 
     async discover(): Promise<HarnessManifest> {
       const version = await detectVersion();
@@ -150,23 +222,7 @@ export function createAgyAdapter(): HarnessAdapter {
           known_models: [...AGY_KNOWN_MODELS],
           known_models_verified_against: AGY_VENDOR_CLI_VERSION,
         },
-        capability_profile: {
-          auth: {
-            supported_sources: ["native_session"],
-            preferred_source: "native_session",
-            credential_transports: [
-              // The profile HOME relocates the vendor's whole config root and
-              // its file-based OAuth token (Л-15/Л-16): config_file, HOME.
-              { source: "native_session", kind: "config_file", relocatable_by: ["HOME"] },
-            ],
-          },
-          // readonly = vendor plan mode: write tools are withheld
-          // (permission-denied), reads and answers flow (live-proven F11).
-          access_control: { readonly_mechanism: "permission_deny" },
-          isolation: { supported_containment: ["env_or_file_injection"] },
-          // No proven attachment path yet — honest empty set (INV-064/065).
-          attachment_inputs: [],
-        },
+        capability_profile: AGY_CAPABILITY_PROFILE,
         auth_modes: ["local_session"],
         access_profiles_supported: [
           "readonly",
@@ -184,17 +240,13 @@ export function createAgyAdapter(): HarnessAdapter {
         version === null ? null : (/\d+\.\d+\.\d+/.exec(version)?.[0] ?? null);
       const versionDrift =
         version !== null && installedSemver !== AGY_VENDOR_CLI_VERSION
-          ? `installed agy "${version}" differs from the verified ${AGY_VENDOR_CLI_VERSION}; the file-token profile mechanism is re-proven per version (R-2')`
+          ? `installed agy "${version}" differs from the verified ${AGY_VENDOR_CLI_VERSION}; the platform credential transport and profile policy are re-proven per version (R-2')`
           : null;
-      // Л-24: the account isolation mechanism — one Claudexor-owned HOME per
-      // identity, with the vendor keeping its token in a file inside it — was
-      // proven on macOS across three live Google accounts. The same HOME lever
-      // exists on every platform the vendor supports, but nobody has run it
-      // there, so the platform says so instead of implying a proof it lacks.
-      const platformProof =
-        process.platform === "darwin"
-          ? null
-          : `named-account isolation is unverified on ${process.platform}: the mechanism is the same profile HOME proven on macOS, but no live multi-account run has been recorded here`;
+      // Л-24 + INV-067: config-file identity isolation is live-proven only on
+      // macOS. Linux retains that declared transport without a live multi-
+      // account proof. Windows has a different effective policy altogether:
+      // the vendor credential is OS-user-scoped and HOME scopes state only.
+      const platformProof = agyPlatformIsolationDetail();
       const requestedSource = spec.authSource;
       if (requestedSource !== undefined && requestedSource !== "native_session") {
         return ConformanceReportSchema.parse({
@@ -260,7 +312,7 @@ export function createAgyAdapter(): HarnessAdapter {
             ? [{ id: "version_pin", status: "fail" as const, detail: versionDrift }]
             : [{ id: "version_pin", status: "pass" as const, detail: AGY_VENDOR_CLI_VERSION }]),
           ...(platformProof
-            ? [{ id: "platform_isolation", status: "warn" as const, detail: platformProof }]
+            ? [{ id: "platform_isolation", status: "skip" as const, detail: platformProof }]
             : []),
         ],
         enabled_intents: [],

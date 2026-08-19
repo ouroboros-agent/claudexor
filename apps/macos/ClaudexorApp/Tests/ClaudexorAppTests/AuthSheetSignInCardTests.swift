@@ -103,22 +103,24 @@ import Testing
         #expect(dead.localizedCaseInsensitiveContains("get a new link"))
     }
 
-    /// The Log in tooltip promised a Terminal window for every family except
-    /// codex. No login this sheet starts opens one: it always uses the `daemon`
-    /// transport, and every daemon-hosted mode is hosted in the sheet's own card
-    /// (packages/cli/src/setup-jobs.ts). One sentence, no per-family guessing.
-    @Test func loginTooltipNeverPromisesATerminalWindow() {
+    /// Login copy follows the presence-aware engine fact instead of promising
+    /// an in-app link for a harness that requires external attach.
+    @Test func loginTooltipUsesTheDeclaredTransport() {
         for family in [HarnessFamily.agy, .claude, .codex, .cursor] {
-            let start = AuthSheetPresentation.nativeLoginHelp(family: family, verified: false)
+            let start = AuthSheetPresentation.nativeLoginHelp(
+                family: family, verified: false, setupLogin: .inApp)
             let manage = AuthSheetPresentation.nativeLoginHelp(family: family, verified: true)
             #expect(start.contains(family.label))
             #expect(manage.contains(family.label))
-            #expect(!start.localizedCaseInsensitiveContains("a Terminal window opens"))
-            #expect(start.contains("no Terminal window"))
+            #expect(start.contains("in this sheet"))
             #expect(start != manage)
         }
-        #expect(AuthSheetPresentation.nativeLoginHelp(family: .agy, verified: false)
-            .contains("Antigravity"))
+        #expect(AuthSheetPresentation.nativeLoginHelp(
+            family: .agy, verified: false, setupLogin: .externalTerminal)
+            .contains("attached terminal"))
+        #expect(AuthSheetPresentation.nativeLoginHelp(
+            family: .agy, verified: false, setupLogin: .unavailable)
+            .contains("no managed"))
     }
 
     /// Recheck ran `refreshAuthReadinessAfterSetupLifecycle`, which returns

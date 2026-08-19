@@ -14,8 +14,9 @@ import type {
 import { withQuotaAvailability } from "@claudexor/schema";
 import { vendorVerifiedProfileStatus } from "@claudexor/orchestrator";
 import { accountPoolsProjection, profileAccountProjection } from "./accounts-projection.js";
-import { buildGateway, harnessModels } from "./registry.js";
+import { buildGateway, buildRegistry, harnessModels } from "./registry.js";
 import { delegationCapabilityFor } from "./delegation-capability.js";
+import { effectiveSetupLoginCapability } from "./setup-login-capability.js";
 
 const NO_PROJECT_ROOT = noProjectRepoRoot();
 
@@ -27,6 +28,7 @@ export type HarnessListInput = {
 
 export async function projectHarnessStatuses(statuses: readonly HarnessStatus[]) {
   const cfg = loadConfig(NO_PROJECT_ROOT);
+  const adapters = buildRegistry({ includeFakes: false });
   return Promise.all(
     statuses.map(async (status) => {
       const configured = cfg.global.harnesses[status.id]?.default_model ?? null;
@@ -44,6 +46,9 @@ export async function projectHarnessStatuses(statuses: readonly HarnessStatus[])
         configuredModel: configured,
         configuredModelCheck: check,
         delegation: delegationCapabilityFor(status.manifest),
+        setupLogin: await effectiveSetupLoginCapability(status.id, {
+          getAdapter: (id) => adapters.get(id),
+        }),
         readiness: normalizeReadiness({
           checks: status.checks,
           authSources: status.authSources,
@@ -63,7 +68,7 @@ export async function projectHarnessStatuses(statuses: readonly HarnessStatus[])
 export function createCredentialProfilesService(quotaRegistry: () => QuotaRegistry) {
   const projectProfiles = () => {
     const profiles = loadConfig(NO_PROJECT_ROOT).global.credential_profiles;
-    return Promise.all(profiles.map(profileAccountProjection));
+    return Promise.all(profiles.map((profile) => profileAccountProjection(profile, profiles)));
   };
   // The plain (non-snapshot) form is the UI's poll target: without a cache it
   // ran a doctor probe per registered profile plus a full harness sweep

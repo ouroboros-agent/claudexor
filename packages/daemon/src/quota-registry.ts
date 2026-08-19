@@ -285,11 +285,13 @@ export class QuotaRegistry {
    * a subject. */
   private recomputeAbsences(claims: readonly QuotaAbsence[], now: number): void {
     // Every other reason answers "why is there no snapshot", so a snapshot
-    // silences it. `auth_revoked` says the vendor REJECTED the credential the
-    // snapshot was read with: the window is no longer spendable, and leaving
-    // it would report a dead profile as verified for up to 24h.
+    // silences it. `auth_revoked` says the vendor rejected the credential;
+    // `credential_profile_ambiguous` says current platform policy forbids
+    // choosing the subject at all. Both authoritatively retire cached derived
+    // evidence before their typed absence is projected.
     for (const claim of claims) {
-      if (claim.reason !== "auth_revoked") continue;
+      if (claim.reason !== "auth_revoked" && claim.reason !== "credential_profile_ambiguous")
+        continue;
       const { harness, subject_id } = claim.subject;
       const present = [...this.snapshots.values()].some(
         (s) => s.subject.harness === harness && s.subject.subject_id === subject_id,
@@ -365,7 +367,8 @@ export class QuotaRegistry {
           // Reconcile the subject with the event's Claudexor profile stamp
           // (round-17 #2): a profiled run's quota must never register as the
           // engine-default subject just because the vendor record carries no
-          // subject of its own. The profile stamp is the credential identity.
+          // subject of its own. The profile stamp is the binding key used for
+          // routing and quota attribution, not a claim about physical custody.
           subject_id: event.data.credential_profile_id ?? quota.subject_id ?? null,
         },
         constraints: quota.constraints,

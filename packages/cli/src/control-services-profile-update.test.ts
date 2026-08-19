@@ -20,6 +20,7 @@ const gatewayMock = vi.hoisted(() => ({
   calls: [] as Array<{ fresh?: boolean }>,
   accountIdentities: {} as Record<string, { email?: string; plan?: string } | null>,
   profileIdentities: {} as Record<string, { email?: string; plan?: string } | null>,
+  profileProbeCalls: [] as string[],
   profileReadiness: {
     availability: "unknown",
     verification: "not_run",
@@ -61,14 +62,22 @@ vi.mock("./registry.js", async (importOriginal) => {
         registry.set(id, {
           ...adapter,
           ...(adapter.probeCredentialProfile
-            ? { probeCredentialProfile: async (profile) => statusFor(profile) }
+            ? {
+                probeCredentialProfile: async (profile) => {
+                  gatewayMock.profileProbeCalls.push(profile.profile_id);
+                  return statusFor(profile);
+                },
+              }
             : {}),
           ...(adapter.probeCredentialAccount
             ? {
-                probeCredentialAccount: async (profile) => ({
-                  status: statusFor(profile),
-                  identity: gatewayMock.profileIdentities[profile.profile_id] ?? null,
-                }),
+                probeCredentialAccount: async (profile) => {
+                  gatewayMock.profileProbeCalls.push(profile.profile_id);
+                  return {
+                    status: statusFor(profile),
+                    identity: gatewayMock.profileIdentities[profile.profile_id] ?? null,
+                  };
+                },
               }
             : {}),
         });
@@ -195,6 +204,7 @@ describe("updateCredentialProfile (INV-135 Enabled toggle) + accounts projection
     gatewayMock.calls = [];
     gatewayMock.accountIdentities = {};
     gatewayMock.profileIdentities = {};
+    gatewayMock.profileProbeCalls = [];
     noteCredentialChange.mockClear();
     gatewayMock.profileReadiness = { availability: "unknown", verification: "not_run" };
     gatewayMock.profileReadinessById = {};
@@ -238,6 +248,19 @@ describe("updateCredentialProfile (INV-135 Enabled toggle) + accounts projection
     );
     expect(on.profile.enabled).toBe(true);
     expect(noteCredentialChange).toHaveBeenCalledTimes(2);
+  });
+
+  it("emits an own setupLogin property from both current capability producers", async () => {
+    const svc = services();
+    const harnesses = await svc.harnesses({ fresh: true });
+    expect(harnesses.harnesses).toHaveLength(1);
+    expect(Object.hasOwn(harnesses.harnesses[0]!, "setupLogin")).toBe(true);
+    expect(harnesses.harnesses[0]!.setupLogin).toEqual({ mode: "in_app" });
+
+    const catalog = await svc.agentCapabilities();
+    expect(catalog.harnesses).toHaveLength(1);
+    expect(Object.hasOwn(catalog.harnesses[0]!, "setupLogin")).toBe(true);
+    expect(catalog.harnesses[0]!.setupLogin).toEqual({ mode: "in_app" });
   });
 
   it("mirrors native_credentials_enabled for ANY row at the harness default store — migration record or not", async () => {
@@ -336,6 +359,25 @@ describe("updateCredentialProfile (INV-135 Enabled toggle) + accounts projection
     expect(none.accountPools.find((pool) => pool.harness_id === "claude")?.next_up.kind).toBe(
       "none",
     );
+  });
+
+  it("never vendor-probes disabled profile rows during Accounts projection", async () => {
+    registerConfigDirProfile({ harnessId: "agy", profileId: "enabled", platform: "darwin" });
+    registerConfigDirProfile({ harnessId: "agy", profileId: "disabled", platform: "darwin" });
+    updateGlobalConfig((config) => ({
+      ...config,
+      credential_profiles: config.credential_profiles.map((profile) =>
+        profile.profile_id === "disabled" ? { ...profile, enabled: false } : profile,
+      ),
+    }));
+    gatewayMock.profileReadiness = { availability: "available", verification: "passed" };
+    const listing = ControlCredentialProfilesResponse.parse(await services().credentialProfiles());
+    expect(listing.profiles).toHaveLength(2);
+    expect(gatewayMock.profileProbeCalls).toContain("enabled");
+    expect(gatewayMock.profileProbeCalls).not.toContain("disabled");
+    expect(
+      listing.profiles.find((entry) => entry.profile.profile_id === "disabled")?.status,
+    ).toMatchObject({ availability: "unavailable", verification: "not_run" });
   });
 
   it("projects none when no account row exists, regardless of default-store doctor truth", async () => {

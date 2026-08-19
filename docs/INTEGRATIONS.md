@@ -714,7 +714,12 @@ input/output/cache-read tokens; `thinking_tokens` has no schema home and is
 dropped rather than folded into output. No typed rate-limit path exists. The CLI has no config-dir env var
 (upstream #155), so a named identity is a Claudexor-owned `HOME` — which also
 relocates the vendor's conversation and cache state, so one profile HOME holds
-every thread's vendor state.
+every thread's vendor state. Credential custody is platform-shaped: on
+Darwin/Linux the credential transport is scoped with that HOME; on Windows the
+vendor credential is OS-user-scoped, so Claudexor permits one enabled binding
+and does not claim per-HOME Google identity isolation. Doctor `/model` and quota
+`/quota` share one bounded, console-free print runner and exact auth-response
+classifier; local token-file presence is not readiness.
 
 **OpenCode** — markerless: no typed final message; the engine's
 AnswerAssembly falls back to joining narration (the documented degradation
@@ -807,10 +812,10 @@ Deliberate limits of the external/host surfaces. Each is a designed boundary
   `cost_unverifiable`. `cost_details.upstream_inference_cost` is not the account
   charge receipt and is not lifted into canonical cost; Claudexor neither
   estimates raw-api spend nor maintains vendor price tables.
-- Cursor native auth lives in the macOS Keychain, so scoped envelopes bridge
-  the host keychain (declared `scoped_home_keychain_bridge` containment)
-  rather than fully isolating HOME; the cursor doctor's paid smoke result is
-  cached per adapter instance.
+- Cursor account auth uses the vendor's file credential store inside each
+  Claudexor-owned row HOME. The host macOS Keychain login is retired: scoped
+  envelopes neither bridge nor probe it. The cursor doctor's paid smoke result
+  is cached per adapter instance.
 - Benchmark suites (swe-bench, terminal_bench) are operator-run with real keys
   and Docker; they are never wired into CI. The real-harness battery is
   likewise a manual pre-release operator step (see `docs/CHECKLISTS.md`), not

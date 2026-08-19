@@ -12,14 +12,16 @@ import Testing
     /// A disabled row is not a rotation target, so it never counts.
     @Test func autoBalanceEligibilityUniformlyNeedsTwoEnabledAccountRows() {
         #expect(AccountsPresentation.configDirLoginHarnessIds.contains("agy"))
-        #expect(AccountsAutoBalance.capableHarnessIds.contains("agy"))
-        for harness in AccountsAutoBalance.capableHarnessIds {
+        for harness in AccountsPresentation.configDirLoginHarnessIds {
             #expect(AccountsAutoBalance.eligibleHarnessIds(
-                profiles: [(harness, true)]).isEmpty)
+                profiles: [(harness, true)],
+                serverEligibleHarnessIds: [harness]).isEmpty)
             #expect(AccountsAutoBalance.eligibleHarnessIds(
-                profiles: [(harness, true), (harness, true)]) == [harness])
+                profiles: [(harness, true), (harness, true)],
+                serverEligibleHarnessIds: [harness]) == [harness])
             #expect(AccountsAutoBalance.eligibleHarnessIds(
-                profiles: [(harness, true), (harness, false)]).isEmpty)
+                profiles: [(harness, true), (harness, false)],
+                serverEligibleHarnessIds: [harness]).isEmpty)
         }
     }
 

@@ -31,6 +31,7 @@ import {
   assertSetupJobExtendable,
   resolveLoginProfileBinding,
   resolveSetupLoginRunnerPath,
+  setupProfileBindingMessage,
   shellQuote,
   stateMatchesDurableExecution,
   waitWithAbort,
@@ -56,7 +57,6 @@ import { SetupSupervisor } from "./setup-supervisor.js";
 import { createDeviceCodeDisclosureWatcher } from "./setup-device-code-disclosure.js";
 import {
   awaitingSetupUserMessage,
-  deviceAuthUnsupportedMessage,
   deviceCodeRejectionRemedy,
   clientPtyWaitingPatch,
   isDeviceCodeSetupJob,
@@ -70,6 +70,7 @@ import {
   isUrlDisclosureLoginMode,
   submitSetupLoginInput,
 } from "./setup-login-completion.js";
+import { setupRunnerFailureOutcome } from "./setup-runner-outcome.js";
 
 const NO_PROJECT_ROOT = noProjectRepoRoot();
 const LOGIN_EXTENSION_MS = 15 * 60_000;
@@ -702,24 +703,9 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
       return;
     }
     job = persistNativeCommandOutcome(jobId, result);
-    if (!result.commandStarted) {
-      if (result.errorCode === "device_auth_unsupported") {
-        finish(
-          jobId,
-          "not_supported",
-          "not_supported",
-          deviceAuthUnsupportedMessage(job.harness, platform),
-        );
-        return;
-      }
-      finish(
-        jobId,
-        "failed",
-        "launch_failed",
-        result.errorCode === "permit_timeout"
-          ? `${job.harness} login worker timed out before a durable execution permit was issued.`
-          : `${job.harness} login command could not be spawned after authorization.`,
-      );
+    const runnerFailure = setupRunnerFailureOutcome(job.harness, result, platform);
+    if (runnerFailure) {
+      finish(jobId, ...runnerFailure);
       return;
     }
     if (result.exitCode === 0 && result.signal === null) {
@@ -1032,6 +1018,7 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
     profileConfigDir?: string,
   ): ControlSetupJob {
     const deviceCode = spec.loginMode === "device_code";
+    const clientPty = job.transport === "client_pty";
     // Daemon-hosted modes never touch Terminal and run on any posix platform;
     // only the legacy Terminal handoff (codex browser_redirect) is macOS-only.
     const daemonHosted = deviceCode || isUrlDisclosureLoginMode(spec.loginMode);
@@ -1082,24 +1069,28 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
         args: [...spec.args],
         cwd: paths.dir,
         ...(targetConfigDir ? { profileConfigDir: targetConfigDir } : {}),
-        // D-17 device-code (app-server) login: the runner hosts the app-server
-        // and writes the transient disclosure sidecar. Terminal-mode logins
-        // (claude/cursor, codex fallback) carry the SAME sidecar path so the
-        // runner can capture the vendor login's OAuth URL into it as an
-        // `oauth_url` disclosure — the no-Terminal "open this link" card.
-        // Pre-upgrade sealed manifests (no deviceCodePath) stay digest-valid.
-        deviceCodePath: paths.runnerDeviceCode,
-        ...(deviceCode
-          ? { loginMode: "device_code" as const, appServerFlow: spec.appServerFlow }
-          : isUrlDisclosureLoginMode(spec.loginMode)
-            ? {
-                loginMode: spec.loginMode,
-                // ptyStdin only where the vendor refuses a piped stdin.
-                ...(spec.loginMode === "url_disclosure_with_input"
-                  ? { inputPath: paths.runnerInput, ...(spec.ptyStdin ? { ptyStdin: true } : {}) }
+        // These fields describe DAEMON-owned disclosure/control only. A
+        // client_pty manifest is an external-attach command contract: attach
+        // runs the vendor in the already attached terminal with inherited
+        // stdio, so it must not contain sidecars, login modes, or a PTY helper.
+        ...(!clientPty
+          ? {
+              deviceCodePath: paths.runnerDeviceCode,
+              ...(deviceCode
+                ? { loginMode: "device_code" as const, appServerFlow: spec.appServerFlow }
+                : isUrlDisclosureLoginMode(spec.loginMode)
+                  ? {
+                      loginMode: spec.loginMode,
+                      ...(spec.loginMode === "url_disclosure_with_input"
+                        ? {
+                            inputPath: paths.runnerInput,
+                            ...(spec.ptyStdin ? { ptyStdin: true } : {}),
+                          }
+                        : {}),
+                    }
                   : {}),
-              }
-            : {}),
+            }
+          : {}),
         statePath: paths.runnerState,
         resultPath: paths.runnerResult,
         permitPath: paths.runnerPermit,
@@ -1109,6 +1100,29 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
         commandDigest: authorizedCommandDigest,
       });
       atomicPrivateJson(paths.manifest, manifest);
+      // External attach is a real transport, not a daemon-hosted login with a
+      // second terminal layered on top. Seal and wait before any runner spawn.
+      if (clientPty) {
+        const authorization = {
+          executionId,
+          executable,
+          args: [...spec.args],
+          commandDigest: authorizedCommandDigest,
+          manifestDigest: manifest.manifestDigest,
+        };
+        const waiting = update(
+          job.jobId,
+          clientPtyWaitingPatch({
+            job,
+            deadlineAt: loginDeadlineAt,
+            startedAt: iso(),
+            command: spec.displayCommand,
+            authorization,
+          }),
+        );
+        log(job.jobId, `client_pty attach prepared: ${paths.manifest}`);
+        return waiting;
+      }
       if (daemonHosted) {
         // D-17 primary flow: launch the app-server runner DETACHED (no Terminal,
         // no login.command script). The runner survives daemon restart exactly
@@ -1157,27 +1171,6 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
             failLaunch(signal ? `signal ${signal}` : `exit code ${code}`);
         });
         runner.unref();
-        return waiting;
-      }
-      if (job.transport === "client_pty") {
-        const authorization = {
-          executionId,
-          executable,
-          args: [...spec.args],
-          commandDigest: authorizedCommandDigest,
-          manifestDigest: manifest.manifestDigest,
-        };
-        const waiting = update(
-          job.jobId,
-          clientPtyWaitingPatch({
-            job,
-            deadlineAt: loginDeadlineAt,
-            startedAt: iso(),
-            command: spec.displayCommand,
-            authorization,
-          }),
-        );
-        log(job.jobId, `client_pty attach prepared: ${paths.manifest}`);
         return waiting;
       }
       // External-risk disclosure (v3.0.3, Bible): a browser-based OpenAI
@@ -1287,7 +1280,12 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
     create(input: unknown, idempotency?: { key: string; client: string }): ControlSetupJob {
       const request = ControlSetupJobCreateRequest.parse(input);
       const { harness, action } = request;
-      const profileBinding = resolveLoginProfileBinding(harness, action, request.profileId);
+      const profileBinding = resolveLoginProfileBinding(
+        harness,
+        action,
+        request.profileId,
+        platform,
+      );
       assertDefaultLoginAllowed(harness, profileBinding !== null);
       const binding = idempotency ? { ...idempotency, request } : undefined;
       const prior = binding ? store.resolveCreate(binding) : null;
@@ -1393,7 +1391,7 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
           command: null,
           guideUrl: profile.guideUrl,
           message: profileBinding
-            ? `${profile.note} This login targets the scoped Claudexor profile "${profileBinding.profileId}" (INV-135); the default vendor store is never touched.`
+            ? `${profile.note} ${setupProfileBindingMessage(harness, profileBinding)}`
             : `${profile.note} The required same-harness smoke may consume quota; incremental billing is unknown.`,
           createdAt: iso(),
           startedAt: null,

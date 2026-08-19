@@ -104,7 +104,8 @@ It runs Node/schema checks, Swift build/test checks, and local (unsigned)
 app packaging. Public CI artifacts are fail-closed: all Apple signing and
 notary secrets must be present, and both the app and DMG are signed,
 notarized, stapled, and validated. App packaging also asserts that the separately bundled
-setup-login runner exists and can start under the bundled Node; a daemon-only
+setup-login runner exists and can start under the bundled Node, and that the
+Windows closure carries the adjacent ConPTY helper its bounded probe resolves; a daemon-only
 bundle is incomplete.
 
 The workflow has two explicit manual modes. `candidate` accepts only a full
@@ -427,6 +428,17 @@ positive promise instead of relying on a one-time documentation cleanup.
   readiness comes from doctor status, enabled intents, and smoke/conformance
   checks. Do not route, mark Auth UI ready, or select reviewers from source
   availability alone.
+- **CONCEPT-CHANGE(INV-067, INV-135):** credential/profile policy is evaluated
+  from the adapter declaration for the current platform. Keep transport,
+  identity scope, relocation, enabled-row cardinality, and cleanup in that one
+  policy owner. Create and enable limits belong inside the locked config
+  mutation; an over-cap legacy set stays loadable and fails targeted
+  routing/setup/quota loudly without probing or choosing a row.
+- Managed-login input class has one manifest-owned declaration. Public
+  `setupLogin` projection, setup admission, and the setup runner consume the
+  same async terminal resolver; a file-exists check or a second host-capability
+  projector is not readiness. Validate request/profile/cardinality before the
+  resolver so rejected setup creates make no helper/vendor call or mutation.
 - A native-login success assertion requires the journaled hash-bound vendor
   result, a fresh source-targeted probe, and an isolated same-harness capability
   smoke on the exact native route; process exit, browser confirmation, manifest
@@ -439,7 +451,10 @@ positive promise instead of relying on a one-time documentation cleanup.
   never the operator's ordinary Codex home or OS Keychain. Claude uses a
   Claudexor-owned `CLAUDE_CONFIG_DIR`; only its disposable child HOME bridges
   the macOS login Keychain so the vendor can read the item keyed by that dir.
-  Cursor uses its Keychain-backed state. Do not read or copy those credential
+  Cursor forces the vendor's file credential store inside the account row HOME;
+  the host Cursor Keychain is retired. Antigravity uses its profile HOME for
+  credentials on Darwin/Linux, while Windows retains the vendor credential at
+  OS-user scope and uses HOME only for relocatable state. Do not read or copy those credential
   files/tokens into Claudexor state or an envelope. API keys and the
   Claude setup-token are separate secret-store/env routes with separate typed
   source evidence.

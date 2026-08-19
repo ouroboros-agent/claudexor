@@ -494,7 +494,14 @@ cannot decide source presence is `unknown + not_run`; present but wrong or
 unusable source material is `available + failed`.
 Adapters declare the physical credential transport they support (`config_file`,
 `env_var`, `oauth_token_env`, `os_keychain`, `http_header`, or `none`) plus the
-containment strategy that keeps it honest. Native-session state remains owned by
+containment strategy that keeps it honest. A transport may be platform-scoped;
+the same auth declaration also carries the effective profile policy (identity
+scope, relocation owner, enabled-row cardinality, and cleanup owner) and the
+managed-login stdin class. Current capability producers project that declaration
+through vendor-binary readiness and the host terminal resolver as
+`setupLogin: null | {mode: in_app | external_terminal}` on both harness status
+and the agent capability catalog. An in-app terminal login is advertised only
+after the exact helper/backend probe succeeds. Native-session state remains owned by
 the vendor: Codex reads a Claudexor-dedicated `CODEX_HOME` with
 `cli_auth_credentials_store="file"`, never the operator's ordinary Codex profile
 or OS Keychain; Claude reads a Claudexor-owned config dir and its disposable
@@ -505,7 +512,10 @@ retired transport (INV-135 unified accounts): it is never probed, bridged, or
 claimed as a route, and a cursor native session is probed only in an env that
 explicitly selects the vendor file store. Claude exposes only its narrow
 host Keychain context; Codex keeps its separate vendor credential file outside
-every envelope. No route copies a vendor
+every envelope. Antigravity uses a config-file credential inside the named HOME
+on Darwin/Linux, but on Windows the credential is an OS-user-scoped vendor
+Keychain item: the named HOME scopes mutable vendor state without claiming an
+independent Google identity. No route copies a vendor
 credential file into an envelope. Separate fallback routes may materialize only
 their selected source: Codex API-key auth seeds a temporary scoped `auth.json`,
 Claude injects either the stored setup token or `ANTHROPIC_API_KEY`, and Cursor
@@ -535,13 +545,17 @@ at-risk Homebrew build, so a killable runtime never poisons the shell, and
 
 ### Credential profiles (INV-135, unified account model)
 
-Every credential identity of a harness is a named registry row:
+Every routable credential binding of a harness is a named registry row; the
+effective platform policy says whether that row represents a profile-isolated
+identity or an OS-user-scoped binding:
 `credential_profiles` in the global config holds durable NON-SECRET entries
 `{profile_id, harness_id, display_name, credential_kind, isolation_locator |
 secret_ref, enabled}`. There is no separate "default"/"CLI login" account
-type. `config_dir_login` rows point at a Claudexor-owned vendor login root
-(`CLAUDE_CONFIG_DIR` / `CODEX_HOME` / the Cursor file-store HOME, canonical
-absolute path). The Claudexor-owned LEGACY native dirs are legal locators —
+type. `config_dir_login` rows point at a Claudexor-owned scoped vendor-state
+root (`CLAUDE_CONFIG_DIR` / `CODEX_HOME` / the Cursor file-store HOME / the agy
+HOME, canonical absolute path); the effective platform policy may keep the
+physical credential at OS-user scope. The Claudexor-owned LEGACY native dirs
+are legal locators —
 the startup migration registers a detected claude/codex default-store login as
 the ordinary `claude-default`/`codex-default` row without moving bytes; the
 vendor's ordinary host stores (~/.claude, ~/.codex, the host Cursor Keychain)
@@ -551,12 +565,23 @@ secret-store name (`claude_oauth:work`, `anthropic:acc2`, …) — the namespace
 is REQUIRED (the schema refuses a bare engine-default slot like `anthropic`,
 which would silently alias the engine-default secret), and each adapter binds
 the ref's base to its own provider slot so one provider's key is never sent to
-another. Two rows can never share one `isolation_locator` (one dir = one
-credential). Readiness is the doctor's separate `CredentialProfileStatus`
+another. Two rows can never share one `isolation_locator`; that prevents two
+rows from sharing Claudexor-owned state, but does not claim that an external
+OS-user credential is independently relocatable. Readiness is the doctor's separate `CredentialProfileStatus`
 projection (`GET /v2/credential-profiles`, `claudexor profiles`), never
 durable config; every adapter's profile probe enforces the SAME slot binding
 as its run route, so a misconfigured profile reads `unavailable` instead of
 being admitted and refused mid-run.
+
+**CONCEPT-CHANGE(INV-067, INV-135):** a registry row is the uniform product
+account object, but its isolation and cleanup semantics are the adapter's
+effective platform policy. Windows Antigravity exposes one OS-user credential,
+so at most one row may be enabled. Create and enable enforce that bound inside
+the locked config mutation; disable always remains available. A legacy config
+with multiple enabled rows still loads, but targeted routing, setup, quota, and
+pool `next_up` return the typed `credential_profile_ambiguous` state without
+probing or choosing a row. Disabled rows stay visible as
+`unavailable + not_run` and are never vendor-probed.
 
 The startup migration is a crash-recoverable per-harness state machine
 persisted at `<config>/migration/accounts-unified.json` — deliberately outside
@@ -642,19 +667,25 @@ created under; resume never crosses rows — the engine boundary re-verifies
 every cached session against the RESOLVED account, so a pool switch starts a
 fresh vendor session with the thread's continuation packet instead of
 resuming a sibling's. `claudexor profiles login
-<harness> <id>` scopes the vendor login to the profile dir: codex rides the
-SAME durable device-code setup job as the default login (D-17); the other
-harnesses run the vendor command interactively in this terminal.
+<harness> <id>` runs the vendor login with the named binding's exact scoped
+environment: codex rides the SAME durable device-code setup job as the default
+login (D-17); the other harnesses run the vendor command interactively in this
+terminal. Credential custody remains an effective platform fact, so a scoped
+HOME may select Claudexor-owned vendor state without representing a separate
+OS-user credential.
 
 Removal is daemon-owned and mirrors registration: `DELETE
 /v2/credential-profiles/:harness/:id` (CLI `claudexor profiles remove`)
-deletes the row's OWN credential material FIRST — its confinement-checked
-scoped login dir (fenced to the `profiles/` tree PLUS exactly the migrated
+removes the binding's Claudexor-owned state or managed secret FIRST — its
+confinement-checked scoped login dir (fenced to the `profiles/` tree PLUS exactly the migrated
 row's recorded legacy native locator from the migration record, never a
 general native-tree class) or its namespaced secret, NEVER the vendor's
 ordinary host store — and only then takes the registry entry out through the
-same locked global-config owner. `removed: true` therefore means the row AND
-its material are provably gone (D-U4); a cleanup failure is a typed RETRYABLE
+same locked global-config owner. `removed: true` therefore means the binding is
+gone and its effective policy's Claudexor-owned state or managed secret has
+been removed when present (D-U4). When the credential is vendor-owned at OS-user scope, the receipt
+explicitly reports it `left_unchanged` while the Claudexor-owned HOME and row
+are removed; this is not a logout claim. A cleanup failure is a typed RETRYABLE
 error (`credential_cleanup_failed`, 503) that leaves the row registered for a
 clean retry — never a removed-with-warning receipt the startup
 auto-registration would resurrect (`cleanupWarning` survives in the schema as
@@ -1668,7 +1699,14 @@ fails. Answer delivery remains the same journal-first child endpoint above; no
 parent-side proxy or app-local interaction state is introduced.
 
 `/v2/setup/jobs` (create / status / snapshot / events / cancel / reconcile / extend)
-is the native-login setup surface for Codex, Claude, and Cursor. Readiness and
+is the native-login setup surface for Codex, Claude, Cursor, and Antigravity.
+The same effective setup-login projector feeds `/v2/harnesses`,
+`/v2/agent-capabilities`, and create admission. Its current producers always
+emit their own `setupLogin` property; omission remains a legacy-wire fact.
+`in_app` maps to daemon transport, while `external_terminal` maps to the
+existing `client_pty` attach path. Profile-required and platform-cardinality
+validation runs before any terminal capability probe or durable mutation.
+Readiness and
 secret writes remain in their existing doctor/auth-readiness and secret services;
 setup does not duplicate them as jobs. Jobs expose a required typed phase, coarse state (including
 `timed_out` and `interrupted_unknown`), deadline, and typed terminal outcome.
@@ -1683,7 +1721,9 @@ after the daemon proves the recorded process group empty. Unknown or nonempty
 state remains a typed refusal and cannot be bypassed by creating another job.
 
 Native login specs are a shared `{binary,args,displayCommand,loginMode}`
-contract. **Codex's primary flow is typed device-code over the official codex
+contract. The adapter manifest owns the only duplicate-prone input fact as
+`managed_login.stdin = none | pipe | terminal`; command argv, flow, and vendor
+window remain in the native-login registry. **Codex's primary flow is typed device-code over the official codex
 app-server, with NO Terminal (D-17):** the sealed manifest carries
 `loginMode: "device_code"` + `appServerFlow: "chatgptDeviceCode"` and the args
 `codex -c cli_auth_credentials_store=file app-server --stdio` in its dedicated
@@ -1696,7 +1736,10 @@ runs. The request `loginFlow` selects the secondary app-server
 `browser_callback` (`account/login/start {chatgptDeviceCode}` → `chatgpt`
 authUrl) or the legacy Terminal `browser_redirect` (localhost callback). Claude
 (`claude auth login`, the claude.ai subscription route with no version-varying
-flag) and Cursor (`cursor-agent login`) keep the Terminal flow.
+flag) and Cursor (`cursor-agent login`) use daemon-hosted URL disclosure; Claude
+accepts its one-shot completion input over the transient sidecar, while Cursor
+self-completes by vendor polling. Antigravity uses the same disclosure/input
+shape but declares terminal stdin because the vendor rejects a plain pipe.
 
 **Typed capability probe, no stdout regex:** if the installed app-server lacks
 the auth methods it answers a JSON-RPC method-not-found; the runner maps that to
@@ -1739,9 +1782,13 @@ scrubs provider credentials, and atomically records
 PID/kernel-start/process-group and result sidecars. A vendor that reads its
 pasted code only from a terminal (agy) is the one exception to a bare exec: the
 runner interposes the system terminal helper it probes for (`expect`, else
-util-linux `script`), whose argv is derived from the sealed words and whose
-exit status is the vendor's own; a host with neither refuses typed and names
-the CLI route. The vendor's OWN window, when shorter than the engine's, becomes
+util-linux `script`) on POSIX, or the adjacent probed ConPTY helper on Windows.
+The exact resolver requires a regular helper plus a bounded protocol probe,
+derives argv from the sealed words, and preserves the vendor exit status. An
+absent/unsupported helper refuses with typed 409 and names the external-terminal
+route; a failed helper probe is a retryable typed 503. The runner resolves the
+same backend again immediately before spawn, so a post-admission change becomes
+a durable typed transport failure rather than a false vendor exit. The vendor's OWN window, when shorter than the engine's, becomes
 the job deadline and cannot be extended — delivering the pasted code raises a
 bounded exchange floor so the clock cannot cancel a sign-in that succeeded. It never receives or
 persists a vendor token or credential file. Apart from the bounded, ANSI-stripped, secret-redacted diagnostic tail a
@@ -1791,7 +1838,11 @@ the PID, and emptiness is the LEADER's identity being gone afterwards — a
 leader-death proof, weaker than the POSIX group-ESRCH proof and recorded as
 such. The vendor binary is still executed without a shell: on win32 only an
 executable image (`.exe`/`.com`) resolves, so an npm `.cmd`/shell shim is
-refused with the install advisory rather than launched through `cmd.exe`. An ordinary daemon
+refused with the install advisory rather than launched through `cmd.exe`.
+Terminal-stdin setup wraps that exact image with the adjacent ConPTY helper
+only after its real `--probe` succeeds; doctor/quota print probes instead use
+their console-free non-detached runner and never inherit a console or input
+descriptor. An ordinary daemon
 stop/restart no longer terminates an awaiting-user login runner (that regression
 killed the operator's own pending login in the 2026-07-21 incident); explicit
 `setup jobs cancel` and the login deadline's timeout escalation are the only
@@ -3006,7 +3057,7 @@ code touching one of these areas must honor it or change it explicitly here.
 - A credential profile cannot bootstrap a raw-API instance whose own key is
   absent: raw-API discovery is key-gated (an instance without its configured
   key is not a route, so no manifest exists for the profile probe to
-  override). CLI harnesses (claude/codex/cursor/opencode) discover
+  override). CLI harnesses (agy/claude/codex/cursor/opencode) discover
   credential-neutrally, so their profile probes CAN admit a route past a
   logged-out default store; for raw-API, set the instance key (env or its
   managed slot) and use the profile for per-run key selection within the
@@ -3023,11 +3074,13 @@ code touching one of these areas must honor it or change it explicitly here.
   cross-kind candidates; rotate between accounts of the SAME transport only.
 - `claudexor profiles login` for non-codex harnesses deliberately spawns the
   vendor's own login command IN the operator's terminal (no daemon setup
-  job): vendor OAuth needs the user's TTY/browser interactively, the mutated
-  state is the VENDOR's own scoped config dir (never Claudexor-owned state,
-  so there is no Claudexor receipt to journal), and the post-exit doctor
-  probe against the profile dir is the verification truth (exit code
-  non-zero unless the probe passes). Codex profile login is the D-17
+  job): vendor OAuth needs the user's TTY/browser interactively, and the
+  binding's Claudexor-owned HOME/config root scopes vendor state. Credential
+  custody remains platform-defined and may be OS-user-owned; Claudexor neither
+  reads nor copies it. There is no daemon setup receipt to journal, and the
+  post-exit vendor doctor probe under the exact binding environment is the
+  verification truth (exit code non-zero unless the probe passes). Codex
+  profile login is the D-17
   exception: it rides the SAME durable app-server device-code setup job as
   the default codex login (restart-surviving runner, transient sidecar,
   in-app/inline code disclosure), because the app-server flow needs no TTY. The daemon-owned setup jobs remain the path for

@@ -7,6 +7,8 @@ import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  credentialProfilePolicyProblem,
+  credentialProfilePolicyState,
   parseProcessGroupHandle,
   type HarnessAdapter,
   type ProcessGroupHandle,
@@ -16,13 +18,17 @@ import { defaultNativeClaudeConfigDir } from "@claudexor/harness-claude";
 import { defaultNativeCodexHome } from "@claudexor/harness-codex";
 import {
   ControlHarnessSetupHarness,
+  ControlSetupJobCreateRequest,
   type ControlSetupJob,
+  type ControlSetupJobCreateRequest as ControlSetupJobCreateRequestValue,
   type CredentialProfileStatus,
+  type EffectiveCredentialProfilePolicy,
   harnessHasDefaultCredentialStore,
   harnessSupportsBootstrapLogin,
 } from "@claudexor/schema";
 import { noProjectRepoRoot } from "@claudexor/util";
 import { ensureBootstrapProfile } from "./profile-registration.js";
+import { buildRegistry } from "./registry.js";
 import {
   canonicalProfileLoginDir,
   configDirLoginHarnessList,
@@ -61,9 +67,15 @@ export const SETUP_PROFILES: Record<ControlHarnessSetupHarness, SetupProfile> = 
   },
   agy: {
     guideUrl: "https://antigravity.google/docs/cli/install",
-    note: "Antigravity sign-in always targets one named account folder: the CLI keeps its whole state under a home directory, so every Google account you add gets its own.",
+    note: "Antigravity sign-in always targets one named Claudexor binding. Credential custody depends on the host platform and is stated below.",
   },
 };
+
+export interface ResolvedSetupProfileBinding {
+  profileId: string;
+  configDir: string;
+  credentialPolicy: EffectiveCredentialProfilePolicy;
+}
 
 /**
  * Resolve an INV-135 profile-targeted login request to its canonical scoped
@@ -73,7 +85,16 @@ export const SETUP_PROFILES: Record<ControlHarnessSetupHarness, SetupProfile> = 
 export function resolveProfileBinding(
   harness: ControlHarnessSetupHarness,
   profileId: string | undefined,
-): { profileId: string; configDir: string } | null {
+  platform: NodeJS.Platform = process.platform,
+): ResolvedSetupProfileBinding | null {
+  const registry = loadConfig(NO_PROJECT_ROOT).global.credential_profiles;
+  const policyState = credentialProfilePolicyState({
+    adapter: buildRegistry({ includeFakes: false }).get(harness),
+    registry,
+    platform,
+  });
+  if (policyState.ambiguous)
+    throw credentialProfilePolicyProblem(policyState, "credential_profile_ambiguous");
   if (!profileId) return null;
   if (!isConfigDirLoginHarness(harness)) {
     throw Object.assign(
@@ -83,7 +104,7 @@ export function resolveProfileBinding(
       { status: 400 },
     );
   }
-  const profile = loadConfig(NO_PROJECT_ROOT).global.credential_profiles.find(
+  const profile = registry.find(
     (entry) => entry.harness_id === harness && entry.profile_id === profileId,
   );
   if (!profile) {
@@ -110,6 +131,7 @@ export function resolveProfileBinding(
   return {
     profileId,
     configDir: canonicalProfileLoginDir(harness, profile.isolation_locator ?? ""),
+    credentialPolicy: policyState.policy,
   };
 }
 
@@ -130,11 +152,12 @@ export function resolveLoginProfileBinding(
   harness: ControlHarnessSetupHarness,
   action: string,
   requestedProfileId: string | undefined,
-): { profileId: string; configDir: string } | null {
-  const explicit = resolveProfileBinding(harness, requestedProfileId);
+  platform: NodeJS.Platform = process.platform,
+): ResolvedSetupProfileBinding | null {
+  const explicit = resolveProfileBinding(harness, requestedProfileId, platform);
   if (explicit || action !== "login" || !harnessSupportsBootstrapLogin(harness)) return explicit;
   if (!harnessHasDefaultCredentialStore(harness)) {
-    return resolveProfileBinding(harness, ensureBootstrapProfile(harness).profile_id);
+    return resolveProfileBinding(harness, ensureBootstrapProfile(harness).profile_id, platform);
   }
   try {
     ensureBootstrapProfile(harness);
@@ -145,10 +168,11 @@ export function resolveLoginProfileBinding(
 }
 
 /**
- * A harness with no default credential store (agy — owner decision Л-4) can
- * only sign in INTO a named account. Refusing at CREATE time keeps the runner
- * from spawning a vendor login whose token would land in the daemon's own home
- * directory, and gives the caller a 400 instead of an opaque spawn failure.
+ * A harness with no default binding store (agy — owner decision Л-4) can only
+ * start login under a named binding. Refusing at CREATE time keeps the runner
+ * from targeting vendor state/login artifacts at the daemon's own HOME; the
+ * effective platform policy separately owns credential custody. The caller
+ * gets a 400 instead of an opaque spawn failure.
  */
 export function assertDefaultLoginAllowed(harness: string, hasProfile: boolean): void {
   if (hasProfile || harnessHasDefaultCredentialStore(harness)) return;
@@ -156,8 +180,48 @@ export function assertDefaultLoginAllowed(harness: string, hasProfile: boolean):
     new Error(
       `harness "${harness}" has no default credential store: sign in from a named account (add one first, then start the login from it)`,
     ),
-    { status: 400 },
+    {
+      status: 400,
+      code: "credential_profile_required",
+      retryable: false,
+      fieldErrors: {
+        "/profileId": ["A named credential profile is required for this harness."],
+      },
+      requiredActions: ["add_named_account"],
+    },
   );
+}
+
+/**
+ * Mutation-free setup admission. Request shape, named-profile binding,
+ * required-profile policy and the current cardinality invariant are resolved
+ * before any terminal helper probe or bootstrap-row creation. The durable
+ * manager repeats the binding while creating the single job; this first pass
+ * exists to keep rejected requests at zero probe and zero mutation.
+ */
+export function preflightSetupJobCreateRequest(
+  input: unknown,
+  platform: NodeJS.Platform = process.platform,
+): ControlSetupJobCreateRequestValue {
+  const request = ControlSetupJobCreateRequest.parse(input);
+  const explicitBinding = resolveProfileBinding(request.harness, request.profileId, platform);
+  const canBootstrap =
+    request.action === "login" &&
+    request.profileId === undefined &&
+    harnessSupportsBootstrapLogin(request.harness);
+  assertDefaultLoginAllowed(request.harness, explicitBinding !== null || canBootstrap);
+  return request;
+}
+
+/** Durable, user-facing custody statement for a profile-targeted setup job. */
+export function setupProfileBindingMessage(
+  harness: string,
+  binding: ResolvedSetupProfileBinding,
+): string {
+  if (binding.credentialPolicy.identity_scope === "os_user") {
+    return `This login targets the Claudexor binding "${binding.profileId}". Its folder scopes ${harness} state, while the vendor credential is shared by the current OS user; it is not a separate per-folder identity, and removing the binding does not sign out the vendor account.`;
+  }
+  return `This login targets the scoped Claudexor profile "${binding.profileId}"; the default vendor store is not touched.`;
 }
 
 /**

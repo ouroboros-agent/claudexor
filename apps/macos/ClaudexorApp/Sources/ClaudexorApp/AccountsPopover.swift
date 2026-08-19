@@ -201,16 +201,19 @@ struct AccountsPopover: View {
 struct AccountsActionNotice: Equatable {
     private(set) var generation: UInt64 = 0
     private(set) var message: String?
+    private(set) var isError = false
 
     mutating func begin() -> UInt64 {
         generation &+= 1
         message = nil
+        isError = false
         return generation
     }
 
-    mutating func settle(_ message: String?, generation: UInt64) {
+    mutating func settle(_ message: String?, isError: Bool = true, generation: UInt64) {
         guard generation == self.generation else { return }
         self.message = message
+        self.isError = isError
     }
 }
 
@@ -244,8 +247,8 @@ struct AccountsSurface: View {
     @State private var deleting = false
     @State private var actionNotice = AccountsActionNotice()
     @State private var quotaSubscription: AccountsQuotaSubscription?
-    /// The add form registers config_dir_login profiles using the same
-    /// harness set the daemon supports.
+    /// The add form registers agy/claude/codex/cursor config_dir_login
+    /// profiles using the same harness set the daemon supports.
     private var addHarness: String? {
         guard let family else { return addHarnessChoice }
         let id = family.setupHarnessId
@@ -285,7 +288,8 @@ struct AccountsSurface: View {
                     .font(.caption2).foregroundStyle(.secondary)
             }
             if let notice = actionNotice.message {
-                Text(notice).font(.caption2).foregroundStyle(Theme.status(.negative))
+                Text(notice).font(.caption2).foregroundStyle(
+                    actionNotice.isError ? Theme.status(.negative) : Color.secondary)
                     .textSelection(.enabled)
             }
             if addHarness != nil {
@@ -309,19 +313,19 @@ struct AccountsSurface: View {
             Task { await model.ensureCredentialProfilesLoaded(locationID: locationID) }
         }
         .confirmationDialog(
-            "Remove \(pendingDelete?.displayName ?? "account")?",
+            "Remove \(pendingDelete?.displayName ?? "account") from Claudexor?",
             isPresented: Binding(
                 get: { pendingDelete != nil },
                 set: { if !$0 { pendingDelete = nil } }
             ),
             titleVisibility: .visible
         ) {
-            Button("Remove Account", role: .destructive) {
+            Button("Remove from Claudexor", role: .destructive) {
                 if let row = pendingDelete { Task { await deleteAccount(row) } }
             }
             Button("Cancel", role: .cancel) { pendingDelete = nil }
         } message: {
-            Text("Deletes this account's registration and its own login/key from Claudexor. Your \(pendingDelete?.family.label ?? "vendor") account at the vendor survives — Sign in restores it.")
+            Text("Claudexor removes this binding and any Claudexor-owned state or managed secret. A vendor credential for this OS user may be left unchanged.")
         }
     }
 
@@ -539,12 +543,13 @@ struct AccountsSurface: View {
         deleting = true
         let generation = actionNotice.begin()
         defer { deleting = false; pendingDelete = nil }
-        // nil = removed provably (row AND material gone, D-U4); else the
-        // daemon's refusal — a 409 while a login job is active, or the typed
-        // RETRYABLE 503 `credential_cleanup_failed` that kept the row
+        // nil = the binding and any Claudexor-owned state or managed secret
+        // were removed (D-U4); a vendor OS-user credential may remain
+        // unchanged. Otherwise the daemon refused — a 409 while a login job is
+        // active, or the typed RETRYABLE 503 `credential_cleanup_failed` that kept the row
         // registered so Remove can simply be pressed again.
         let notice = await model.deleteCredentialProfile(
             harnessId: row.harnessId, profileId: row.profileId)
-        actionNotice.settle(notice, generation: generation)
+        actionNotice.settle(notice.message, isError: notice.isError, generation: generation)
     }
 }

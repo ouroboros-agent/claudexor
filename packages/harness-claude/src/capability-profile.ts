@@ -2,6 +2,9 @@ import type { HarnessCapabilityProfile } from "@claudexor/schema";
 import { HarnessCapabilityProfile as HarnessCapabilityProfileSchema } from "@claudexor/schema";
 import { CLAUDE_VENDOR_CLI_VERSION } from "./vendor-cli-version.js";
 
+/** One manifest-owned declaration of the managed login's stdin contract. */
+export const CLAUDE_MANAGED_LOGIN = { stdin: "pipe" } as const;
+
 /**
  * Manifest model truth source (strict model-truth validation: an explicit
  * model outside this list is refused, never forwarded to die as a native
@@ -61,6 +64,7 @@ export const CLAUDE_CAPABILITY_PROFILE: HarnessCapabilityProfile =
         { source: "oauth_token_env", kind: "oauth_token_env", relocatable_by: ["ENV"] },
         { source: "api_key_env", kind: "env_var", relocatable_by: ["ENV"] },
       ],
+      managed_login: CLAUDE_MANAGED_LOGIN,
     },
     access_control: { readonly_mechanism: "tool_allowlist" },
     isolation: {

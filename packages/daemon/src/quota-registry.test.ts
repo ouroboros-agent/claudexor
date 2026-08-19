@@ -582,7 +582,7 @@ describe("QuotaRegistry", () => {
         source: "codex_rollout",
         plan_label: null,
         // The vendor rollout record carries no subject of its own — the
-        // event's Claudexor profile stamp is the credential identity.
+        // event's Claudexor profile stamp is the binding key for attribution.
         subject_id: null,
         constraints: [
           {
@@ -1797,6 +1797,79 @@ describe("QuotaRegistry", () => {
     expect(replayed.read().snapshots).toEqual([]);
 
     journal.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("durably retires stale snapshots before projecting credential_profile_ambiguous and recomputes the reason after replay", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-quota-ambiguous-")));
+    const journalRoot = join(root, "journal");
+    const journal = new DurableJournal({ rootDir: journalRoot, partition: "global" });
+    let ambiguous = false;
+    const now = () => new Date("2026-08-19T00:00:01.000Z");
+    const subjects = ["agy-a", "agy-b"].map((subjectId) => ({
+      harness: "agy",
+      credential_route: "vendor_native" as const,
+      plan_label: null,
+      subject_id: subjectId,
+    }));
+    const ambiguityBatch = () => ({
+      snapshots: [],
+      absences: subjects.map((subject) => ({
+        subject,
+        reason: "credential_profile_ambiguous" as const,
+        detail: "disable extra profiles",
+        observed_at: now().toISOString(),
+      })),
+    });
+    const registry = new QuotaRegistry(
+      journal,
+      [
+        async () =>
+          ambiguous
+            ? ambiguityBatch()
+            : {
+                snapshots: subjects.map((subject) => ({
+                  ...quotaSnapshot("agy", subject.subject_id, 0.2),
+                  subject,
+                  source: "agy_command_usage" as const,
+                  observed_at: now().toISOString(),
+                })),
+                absences: [],
+              },
+      ],
+      now,
+      () => subjects,
+    );
+
+    expect((await registry.refresh()).snapshots).toHaveLength(2);
+    ambiguous = true;
+    const conflicted = await registry.refresh();
+    expect(conflicted.snapshots).toEqual([]);
+    expect(conflicted.absences).toHaveLength(2);
+    expect(
+      conflicted.absences.every((item) => item.reason === "credential_profile_ambiguous"),
+    ).toBe(true);
+    expect(
+      journal.records().filter((record) => record.type === "quota.subject.removed"),
+    ).toHaveLength(2);
+    journal.close();
+
+    const replayJournal = new DurableJournal({ rootDir: journalRoot, partition: "global" });
+    const replayed = new QuotaRegistry(
+      replayJournal,
+      [async () => ambiguityBatch()],
+      now,
+      () => subjects,
+    );
+    expect(replayed.read().snapshots).toEqual([]);
+    const replayRefresh = await replayed.refresh();
+    expect(replayRefresh.snapshots).toEqual([]);
+    expect(replayRefresh.absences.map((item) => item.reason)).toEqual([
+      "credential_profile_ambiguous",
+      "credential_profile_ambiguous",
+    ]);
+
+    replayJournal.close();
     rmSync(root, { recursive: true, force: true });
   });
 

@@ -379,7 +379,10 @@ invariant or owner decision before proceeding.
 - **INV-067** Credential transports are ENV-PORTABLE or honestly refused:
   every claimed auth route must actually authenticate in the exact scoped
   environment (cwd + env, including a scoped/throwaway HOME) its run will
-  spawn with — host-environment readiness never stands in for it. Where a
+  spawn with — host-environment readiness never stands in for it. Credential
+  transport, identity scope, relocation, profile cardinality, and cleanup are
+  effective host-platform facts, not properties inferred from a profile HOME.
+  Where a
   vendor's primary credential store is outside a generic scoped HOME, the
   adapter may expose only a declared MINIMAL vendor-specific bridge (Claude
   on macOS: a disposable Claude-only child HOME whose sole host bridge is
@@ -390,7 +393,13 @@ invariant or owner decision before proceeding.
   its file-only `CODEX_HOME` seed. Cursor accounts are portable through the
   vendor's own FILE credential store inside each row's Claudexor-owned HOME;
   the host OS-Keychain login is retired as a transport (INV-135) — it is
-  never probed, bridged, or claimed as a route. The doctor names the real cause and the
+  never probed, bridged, or claimed as a route. Antigravity profile HOME is a
+  relocatable credential store only where the vendor actually stores the
+  credential there. On Windows its login credential is an OS-user-scoped
+  vendor Keychain item: HOME still scopes mutable vendor state, but it does
+  not create independent Google identities, so the effective policy permits
+  only one enabled binding and deletion leaves the vendor credential unchanged
+  with an explicit disposition. The doctor names the real cause and the
   Claudexor-owned in-app Native setup remedy (never a bare vendor login command
   that targets the ordinary store, never a bare "not authenticated"), and reviews of auth/
   readiness changes check every lane class — read-only scoped HOME, isolated
@@ -824,6 +833,14 @@ invariant or owner decision before proceeding.
   stores (~/.claude, ~/.codex, the host Cursor Keychain login) are never
   read, probed, or mutated; cursor accounts live only in isolated
   file-store rows (owner decision D-U3: host CLI logins disappeared).
+  **CONCEPT-CHANGE(INV-067, INV-135):** registry rows remain the one account
+  model, while their effective identity isolation and cleanup policy is
+  platform-declared. A platform may cap enabled rows when the vendor exposes
+  only one OS-user credential (Windows Antigravity: one); create and enable
+  enforce that cap atomically. A pre-existing over-cap set stays loadable but
+  is typed `credential_profile_ambiguous`: targeted routing, setup, quota, and
+  `next_up` fail loudly without selecting, probing, disabling, or deleting a
+  row until the operator disables extras.
   ONE resolve owner (the orchestrator) resolves the per-harness EFFECTIVE
   account by the owner-locked order: (1) an explicit per-run/per-thread pin
   is STRICT — unknown/disabled/harness-mismatched ids refuse typed, a fresh
@@ -857,8 +874,10 @@ invariant or owner decision before proceeding.
   (the toggle) is the only routing control; there is NO user-settable
   "Active" account. Accounts are SYMMETRIC: every row carries the same
   Enabled toggle and the same Delete (removal is provable — success means
-  the row AND its credential material are gone; a partial cleanup is a
-  typed retryable error, never a removed-with-warning receipt). ONE server
+  the row and all material Claudexor owns under the effective cleanup policy
+  are gone; vendor-owned OS-user credentials may be deliberately left
+  unchanged only when the typed receipt says so; a partial required cleanup is
+  a typed retryable error, never a removed-with-warning receipt). ONE server
   projection — `accountPools` — owns the informational per-harness
   `next_up` verdict, computed by the same routing owner, so no surface
   re-derives it. Native-session resume never crosses rows (the engine

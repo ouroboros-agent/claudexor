@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "@claudexor/config";
 import { noProjectRepoRoot } from "@claudexor/util";
 import { parseArgs } from "./args.js";
-import { profilesCommand } from "./credential-commands.js";
+import { profilesCommand, profilesCommandWithDeps } from "./credential-commands.js";
 import { removeProfileFromRegistry } from "./profile-registration.js";
 
 // `profiles add` is the ONLY subcommand that does not talk to the daemon —
@@ -76,6 +76,26 @@ describe("claudexor profiles add (INV-135)", () => {
 describe("claudexor profiles login machine output", () => {
   afterEach(() => vi.restoreAllMocks());
 
+  const row = (harness: string, id: string) => ({
+    profile: {
+      profile_id: id,
+      harness_id: harness,
+      display_name: id,
+      credential_kind: "config_dir_login",
+      isolation_locator: `/tmp/${harness}-${id}`,
+      secret_ref: null,
+      enabled: true,
+      created_at: null,
+    },
+    status: {
+      profile_id: id,
+      harness_id: harness,
+      availability: "unknown",
+      verification: "not_run",
+    },
+    identity: null,
+  });
+
   it("refuses an interactive Claude login as one JSON object before vendor output", async () => {
     let stdout = "";
     const write = vi.spyOn(process.stdout, "write").mockImplementation(((chunk: unknown) => {
@@ -83,9 +103,16 @@ describe("claudexor profiles login machine output", () => {
       return true;
     }) as never);
 
-    const code = await profilesCommand(
+    const code = await profilesCommandWithDeps(
       parseArgs(["profiles", "login", "claude", "work", "--json"]),
       true,
+      {
+        daemonGet: async () => ({
+          profiles: [row("claude", "work")],
+          harnessAccounts: [],
+          accountPools: [],
+        }),
+      },
     );
 
     expect(code).toBe(2);
@@ -96,6 +123,53 @@ describe("claudexor profiles login machine output", () => {
       code: "invalid_argument",
     });
   });
+
+  it.each([true, false])(
+    "returns the typed ambiguous policy before output/spawn (json=%s)",
+    async (json) => {
+      let stdout = "";
+      let stderr = "";
+      vi.spyOn(process.stdout, "write").mockImplementation(((chunk: unknown) => {
+        stdout += String(chunk);
+        return true;
+      }) as never);
+      vi.spyOn(process.stderr, "write").mockImplementation(((chunk: unknown) => {
+        stderr += String(chunk);
+        return true;
+      }) as never);
+      const spawnVendor = vi.fn();
+      const listing = {
+        profiles: [row("agy", "one"), row("agy", "two")],
+        harnessAccounts: [],
+        accountPools: [],
+      };
+      const code = await profilesCommandWithDeps(
+        parseArgs(["profiles", "login", "agy", "one", ...(json ? ["--json"] : [])]),
+        json,
+        { daemonGet: async () => listing, spawnSync: spawnVendor as never, platform: "win32" },
+      );
+
+      expect(code).toBe(1);
+      expect(spawnVendor).not.toHaveBeenCalled();
+      if (json) {
+        expect(stderr).toBe("");
+        expect(JSON.parse(stdout)).toMatchObject({
+          ok: false,
+          code: "credential_profile_ambiguous",
+          requiredActions: ["disable_extra_profiles"],
+          context: {
+            harnessId: "agy",
+            platform: "win32",
+            maxEnabledProfiles: 1,
+            enabledProfileCount: 2,
+          },
+        });
+      } else {
+        expect(stdout).toBe("");
+        expect(stderr).toContain("disable extra profiles before continuing");
+      }
+    },
+  );
 });
 
 describe("removeProfileFromRegistry (INV-135 removal owner)", () => {

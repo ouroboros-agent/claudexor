@@ -4,11 +4,7 @@ import { realpathSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  WINDOWS_RUNTIME_ENV_KEYS,
-  pickAllowlistedEnv,
-  processGroupServiceWithWindowsSupport,
-} from "@claudexor/core";
+import { processGroupServiceWithWindowsSupport } from "@claudexor/core";
 import {
   startCodexDeviceLogin,
   type CodexAppServerConnection,
@@ -27,13 +23,19 @@ export { createOAuthUrlDetector, extractOAuthUrl } from "./setup-login-url.js";
 import { boundedTail, createTailBuffer, watchLoginInput } from "./setup-login-io.js";
 import { waitForSetupLoginPermit } from "./setup-login-permit.js";
 import {
+  persistRunnerCommandFailure as persistCommandFailure,
+  persistRunnerFailure as persistFailure,
+  persistRunnerResult as persistResult,
+  runnerBootstrapEnv,
+  waitForRunnerExit as waitForExit,
+} from "./setup-login-runner-support.js";
+import {
   SETUP_LOGIN_PROTOCOL_VERSION,
   atomicPrivateJson,
   readLoginManifest,
   verifyExecutableEvidence,
   type SetupLoginManifest,
   type SetupLoginPermit,
-  type SetupLoginRunnerResult,
   type SetupLoginRunnerState,
 } from "./setup-login-protocol.js";
 
@@ -229,7 +231,8 @@ export async function runSetupLoginWorker(
       const spawnOptions: SpawnOptions = {
         cwd: manifest.cwd,
         // A sealed profileConfigDir (INV-135) scopes the vendor login to the
-        // profile's own store; absent = the default vendor store as before.
+        // binding's exact environment/state root. Credential custody remains
+        // platform-defined; absent = the harness default route as before.
         env: nativeLoginEnv(manifest.harness, process.env, manifest.profileConfigDir),
         ...(terminal?.backend === "windows_conpty" ? { windowsHide: true } : {}),
         detached: false,
@@ -502,99 +505,6 @@ function probeLoginHelp(
     }, 10_000);
     timer.unref?.();
   });
-}
-
-function persistResult(
-  manifest: SetupLoginManifest,
-  result: Omit<
-    SetupLoginRunnerResult,
-    "version" | "jobId" | "executionId" | "commandDigest" | "manifestDigest"
-  >,
-): void {
-  atomicPrivateJson(manifest.resultPath, {
-    version: SETUP_LOGIN_PROTOCOL_VERSION,
-    jobId: manifest.jobId,
-    executionId: manifest.executionId,
-    commandDigest: manifest.commandDigest,
-    manifestDigest: manifest.manifestDigest,
-    ...result,
-  } satisfies SetupLoginRunnerResult);
-}
-
-/** Every not-started outcome writes the same receipt: no exit code, no signal.
- * Eight call sites spelled it out; one shape means the next field lands once. */
-function persistFailure(
-  manifest: SetupLoginManifest,
-  now: () => Date,
-  permitIssuedAt: string | null,
-  errorCode: NonNullable<SetupLoginRunnerResult["errorCode"]>,
-  outputTail?: string,
-): void {
-  persistCommandFailure(manifest, now, permitIssuedAt, errorCode, false, outputTail);
-}
-
-/** Transport control can fail after the helper proved that the vendor
- * started. Keep that distinction in the durable receipt without copying the
- * helper's numeric control frame or raw stderr into any durable surface. */
-function persistCommandFailure(
-  manifest: SetupLoginManifest,
-  now: () => Date,
-  permitIssuedAt: string | null,
-  errorCode: NonNullable<SetupLoginRunnerResult["errorCode"]>,
-  commandStarted: boolean,
-  outputTail?: string,
-): void {
-  persistResult(manifest, {
-    permitIssuedAt,
-    commandStarted,
-    errorCode,
-    exitCode: null,
-    signal: null,
-    finishedAt: now().toISOString(),
-    ...(outputTail === undefined ? {} : { outputTail }),
-  });
-}
-
-function waitForExit(
-  child: ReturnType<typeof spawn>,
-): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
-  // `close` fires after the stdio streams drain (wave-1 finding: `exit` can
-  // race the final piped data chunks, truncating the captured tail); children
-  // with fully-inherited stdio emit `close` immediately after `exit` too.
-  return new Promise((resolveExit, reject) => {
-    child.once("error", reject);
-    child.once("close", (code, signal) => resolveExit({ code, signal }));
-  });
-}
-
-/** The bootstrap itself never needs model/provider credentials. */
-function runnerBootstrapEnv(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  return pickAllowlistedEnv(source, [
-    "PATH",
-    "HOME",
-    "TMPDIR",
-    "LANG",
-    "LC_ALL",
-    "USER",
-    "LOGNAME",
-    // Without the daemon's config root the worker re-roots onto the GLOBAL default (2026-08-04).
-    "CLAUDEXOR_CONFIG_DIR",
-    "CLAUDEXOR_CODEX_NATIVE_HOME",
-    "CLAUDEXOR_CLAUDE_NATIVE_DIR",
-    // Proxy/CA pass-through: without it a corporate-proxy machine cannot
-    // reach the vendor and the device-code login dies opaquely. Never set.
-    "HTTP_PROXY",
-    "HTTPS_PROXY",
-    "NO_PROXY",
-    "ALL_PROXY",
-    "http_proxy",
-    "https_proxy",
-    "no_proxy",
-    "SSL_CERT_FILE",
-    "SSL_CERT_DIR",
-    "NODE_EXTRA_CA_CERTS",
-    ...WINDOWS_RUNTIME_ENV_KEYS,
-  ]);
 }
 
 function isDirectEntrypoint(): boolean {

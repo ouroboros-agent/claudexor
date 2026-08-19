@@ -25,10 +25,14 @@ It is strict: skipping a step is how the 2026-07-21 incident happened.
    host. Generated files carry Claudexor ownership markers, so repair is safe
    and idempotent; deleting them by hand only turns a repairable state into a
    spawn failure.
-4. **Log in ONLY through Claudexor.** `claudexor auth login <harness>` is the
-   one supported path — it runs the vendor CLI's own login under a
-   Claudexor-owned scoped store. For codex the default is device-auth: a URL
-   and a one-time code print in the Terminal window. Complete the link in a
+4. **Log in ONLY through Claudexor.** Use `claudexor auth login <harness>` for
+   a supported default/bootstrap account, or
+   `claudexor profiles login <harness> <profile-id>` when the harness requires
+   a named binding (Antigravity does). Claudexor runs the vendor CLI's own
+   login under the effective platform policy; a profile HOME is not a promise
+   of separate credential custody on every OS. For codex the default is
+   device-auth: the app/CLI shows a URL and one-time code without a Terminal.
+   Complete the link in a
    **private browser window, or a browser profile signed into no other OpenAI
    account** — an in-browser account switch during OAuth can revoke your other
    OpenAI sessions server-side within seconds, including the ChatGPT desktop
@@ -36,9 +40,12 @@ It is strict: skipping a step is how the 2026-07-21 incident happened.
    default + this isolation instruction) but cannot prevent it.
    `claudexor auth login codex --browser-redirect` is the explicit opt-in for
    the older localhost-callback flow. **NEVER run a bare `codex login`,
-   `claude auth login`, or `cursor-agent login`** — those write the vendor's
-   default store, not the Claudexor-scoped one Claudexor's runs and doctor
-   read (Bible INV-067).
+   `claude auth login`, `cursor-agent login`, or interactive `agy`** — Claudexor
+   cannot bind or verify a requested profile around that process, and an
+   OS-user-scoped vendor transport may change the credential for the whole OS
+   user (Bible INV-067). To remove a row, use `claudexor profiles remove`;
+   that removes the binding and data Claudexor owns, while a typed receipt
+   tells you when a vendor-owned OS-user credential was left unchanged.
 5. **Wait for verified readiness — process exit is not readiness.** A login is
    done only when `claudexor auth status` (or `claudexor doctor`) reports that
    harness ready; a zero vendor exit code is provisional until the targeted
@@ -64,7 +71,10 @@ It is strict: skipping a step is how the 2026-07-21 incident happened.
 3. **Learn what works RIGHT NOW.** `claudexor capabilities --json` — the
    derived AgentCapabilityCatalog: per-harness doctor status and intents,
    model truth, the mutability matrix, run-control keys, MCP tool names, and
-   the run-apply-state vocabulary (runApplyStates). The same catalog is served at
+   the run-apply-state vocabulary (runApplyStates), including each current
+   harness's effective `setupLogin` mode. Use `in_app` as daemon transport and
+   `external_terminal` as `client_pty`; do not infer a harness-specific
+   mechanism from the global setup operation. The same catalog is served at
    `GET /v2/agent-capabilities` on the daemon and by the MCP
    `claudexor_capabilities` tool.
 4. **Check harness health.** `claudexor doctor` (human) or

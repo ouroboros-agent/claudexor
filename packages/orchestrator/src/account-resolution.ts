@@ -6,6 +6,7 @@ import type {
   QuotaSnapshot,
 } from "@claudexor/schema";
 import { accountPoolRows, selectFromAccountPool } from "./account-pool.js";
+import { credentialProfilePolicyProblem, type CredentialProfilePolicyState } from "@claudexor/core";
 import {
   credentialPoolExhausted,
   liveUnusableFor,
@@ -71,6 +72,8 @@ export interface AccountResolutionContext {
   harnessId: string;
   registry: readonly CredentialProfile[];
   policy: ProfilePolicy;
+  /** Static platform cardinality, resolved without vendor discovery/probes. */
+  profileCardinality?: CredentialProfilePolicyState;
   snapshots: readonly QuotaSnapshot[];
   quota: VendorQuotaObservations;
   /** Live typed `credential_unusable` observations (A7): a condemned row is
@@ -221,6 +224,12 @@ export async function resolveAccountForRun(
   ctx: AccountResolutionContext,
 ): Promise<CredentialProfile | null> {
   const { harnessId, registry, policy, snapshots, quota, model, emit } = ctx;
+  // D13: persisted over-limit rows are not candidates to rank or probe. Fail
+  // before the explicit pin, durable binding, paid preference, or pool can
+  // choose one identity and make an OS-user-scoped credential look isolated.
+  if (ctx.profileCardinality?.ambiguous) {
+    throw credentialProfilePolicyProblem(ctx.profileCardinality, "credential_profile_ambiguous");
+  }
   // A7-aware readiness (ONE composition point, `readyProfilesForRotation`):
   // probe wrapper + vendor overlay + admission predicate + the live
   // `credential_unusable` refusal.

@@ -297,10 +297,11 @@ export const GlobalConfig = z
       .default({})
       .describe("Disk retention policy for engine-owned runtime artifacts."),
     /**
-     * Durable NON-SECRET credential-profile registry (INV-135): additional
-     * credential identities per harness beyond the engine default. Uniqueness
-     * of (harness_id, profile_id) is enforced here; secret material lives in
-     * the vendor dir or the secret store, never in config.
+     * Durable NON-SECRET named-binding registry (INV-135): additional routing
+     * bindings per harness beyond the engine default. Uniqueness of
+     * (harness_id, profile_id) is enforced here; credential material may live
+     * in Claudexor-owned scoped state, a managed secret store, or a
+     * platform-declared vendor/OS-user store, never in config.
      */
     credential_profiles: z
       .array(CredentialProfile)
@@ -317,7 +318,7 @@ export const GlobalConfig = z
             });
           seen.add(key);
           // Locator uniqueness (unified account model): two rows sharing one
-          // config dir would be two names for ONE credential — deletion,
+          // config dir would be two names for ONE scoped state root — deletion,
           // routing, and quota attribution could not tell them apart.
           if (p.isolation_locator) {
             if (locators.has(p.isolation_locator))
@@ -330,7 +331,7 @@ export const GlobalConfig = z
         }
       })
       .describe(
-        "Durable non-secret credential-profile registry; secret material lives in the vendor dir or the secret store, never in config.",
+        "Durable non-secret named-binding registry; credential material may live in Claudexor-owned scoped state, a managed secret store, or a platform-declared vendor/OS-user store, never in config.",
       ),
     harnesses: z
       .record(

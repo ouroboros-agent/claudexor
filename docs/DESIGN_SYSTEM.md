@@ -509,13 +509,12 @@ frequency and volume are. The contracts:
     carries ONE compact accounts control (Claude-Code style, INV-135): a quiet
     single-line trigger — worst-readiness dot + the account name (or "N
     accounts") + worst quota % + chevron — that opens a popover to manage
-    accounts in-app — no commands to copy. Codex native login runs the official
-    codex app-server device-code flow in-app with NO Terminal (D-17 AuthSheet
-    story below); Claude, Cursor and Antigravity run the official vendor CLI
-    daemon-hosted with no Terminal either — the sign-in link is captured into
-    the card, and the two that need a pasted code take it there (the setup-job
-    handoff below). Each popover row is one account — a registered credential
-    row; there is no separate "CLI login" pseudo-row (unified account model:
+    accounts in-app — no commands to copy. The engine's setupLogin capability
+    selects the supported transport: an in-app setup job or an attached external
+    terminal. Codex device auth remains in-app; a harness that declares external
+    terminal login runs its official vendor CLI in that attached terminal (the
+    setup-job handoff below). Each popover row is one account — a registered
+    credential row; there is no separate "CLI login" pseudo-row (unified account model:
     a legacy default-store login appears as the ordinary `<harness>-default`
     row): a readiness dot (ready means that exact source is
     `available + passed`, never aggregate harness health), its name, ONE compact
@@ -526,11 +525,11 @@ frequency and volume are. The contracts:
     enabled ready accounts, an unpinned thread stays sticky on its own
     account, and `next-up` is the server-computed INFORMATIONAL pool verdict
     from `accountPools`, not an auto-default the user can set), and a
-    confirmed Remove (trash) on EVERY row that deletes the
-    registration plus the account's own local login/key
+    confirmed Remove (trash) on EVERY row that deletes the binding plus any
+    Claudexor-owned state or managed secret
     (`DELETE /v2/credential-profiles/:harness/:id`; success is provable —
-    a partial cleanup is a typed retryable error, never a half-deleted row;
-    the vendor-side account survives and "Sign in" restores it); delete also
+    a partial cleanup is a typed retryable error, never a half-deleted row; a
+    vendor credential for the OS user may be left unchanged); delete also
     clears matching thread pins,
     native-session caches, and quota rows. The popover adds accounts inline
     (harness + optional name → `POST /v2/credential-profiles`, then that
@@ -1237,14 +1236,16 @@ views in the shared design-system files; screens compose them.
   harness that is not installed, not authenticated, degraded without the required
   intent, or unable to enforce read-only is visible but disabled, with a hover
   reason and a path to Harness Doctor/Auth setup.
-- **Onboarding.** First run is native-first: explain Codex/Claude/Cursor native auth
+- **Onboarding.** First run is native-first: explain native auth for Codex,
+  Claude, Cursor, and Antigravity
   and expose daemon-owned native-login jobs, then offer API-key fallback
   that writes only to the local secret store. Claudexor does not broker SaaS OAuth itself: Codex native login runs the
-  official app-server device-code flow fully in-app (D-17); Claude, Cursor and
-  Antigravity run their official CLI daemon-hosted, with the sign-in link
-  surfaced in the card rather than a Terminal window. Either way Claudexor
-  verifies the native session without receiving/copying/storing vendor
-  session tokens or credential files. Native
+  official app-server device-code flow fully in-app (D-17); every other
+  official vendor CLI follows the engine-projected `setupLogin` capability,
+  either surfacing the sign-in exchange in the card or using an attached
+  external terminal. Either way Claudexor verifies the native session without
+  receiving, copying, or storing vendor session tokens or credential files.
+  Native
   readiness is distinct from overall/API-key readiness: absent means unavailable/not-run,
   an indeterminate probe remains unknown/not-run, and present-but-unusable is available/failed.
   Login/Manage Login is driven by that native source, never aggregate harness health. The

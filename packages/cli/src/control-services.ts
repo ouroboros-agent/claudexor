@@ -46,7 +46,11 @@ import {
 } from "./credential-status-invalidation.js";
 import { createSetupJobManager } from "./setup-jobs.js";
 import { SetupJobStore } from "./setup-job-store.js";
-import { activeProfileLoginJob } from "./setup-job-support.js";
+import { activeProfileLoginJob, preflightSetupJobCreateRequest } from "./setup-job-support.js";
+import {
+  assertSetupLoginAdmission,
+  projectSetupLoginCapability,
+} from "./setup-login-capability.js";
 import { SetupLifecycleBinding } from "./setup-lifecycle-binding.js";
 import { createRunRequirementsPreflight } from "./request-preflight.js";
 import { threadRunStartRequiresGit } from "./thread-execution-workspace.js";
@@ -322,11 +326,24 @@ export function controlServices(
     agentCapabilities: async () => buildAgentCapabilityCatalog(),
     runApplicability: async (input: { repoRoot: string }) =>
       projectRunApplicability(input.repoRoot),
-    createSetupJob: async (input: { request: unknown; idempotencyKey: string; clientId: string }) =>
-      setupJobs().create(input.request, {
+    createSetupJob: async (input: {
+      request: unknown;
+      idempotencyKey: string;
+      clientId: string;
+    }) => {
+      // No helper/vendor probe and no bootstrap/durable mutation can precede
+      // request, named-profile, required-profile, and D13 validation.
+      const request = preflightSetupJobCreateRequest(input.request);
+      const capability = await projectSetupLoginCapability(request.harness, {
+        transport: request.transport,
+        loginFlow: request.loginFlow,
+      });
+      assertSetupLoginAdmission(capability);
+      return setupJobs().create(request, {
         key: input.idempotencyKey,
         client: input.clientId,
-      }),
+      });
+    },
     listSetupJobs: async (input?: unknown) => {
       const jobs = setupJobs();
       return { jobs: jobs.list(input as Parameters<typeof jobs.list>[0]) };

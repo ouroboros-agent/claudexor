@@ -9,7 +9,12 @@
 import { existsSync, rmSync } from "node:fs";
 import { join, sep } from "node:path";
 import { loadConfig, updateGlobalConfig } from "@claudexor/config";
-import { canonicalIsolationLocator, normalizeThroughExistingAncestor } from "@claudexor/core";
+import {
+  canonicalIsolationLocator,
+  credentialProfilePolicyProblem,
+  credentialProfilePolicyState,
+  normalizeThroughExistingAncestor,
+} from "@claudexor/core";
 import type { SecretStore } from "@claudexor/secrets";
 import type { ControlSetupJob, CredentialProfile } from "@claudexor/schema";
 import { claudexorOwnedRoot, noProjectRepoRoot } from "@claudexor/util";
@@ -24,6 +29,7 @@ import { profileDoctorStatus } from "./accounts-projection.js";
 import { canonicalProfileLoginDir, isConfigDirLoginHarness } from "./config-dir-login-harnesses.js";
 import { assertCredentialProfileRegistered } from "./profile-compatibility.js";
 import { removeProfileFromRegistry } from "./profile-registration.js";
+import { buildRegistry } from "./registry.js";
 
 const NO_PROJECT_ROOT = noProjectRepoRoot();
 
@@ -41,6 +47,8 @@ export interface CredentialProfileMutationDeps {
    * unusable-ledger clearing to exactly the credential this mutation touched. */
   bustStatusCaches: (subject?: { harnessId: string; profileId: string }) => void;
   activeLoginJob: (harnessId: string, profileId: string) => ControlSetupJob | undefined;
+  /** Deterministic platform-policy tests; production uses process.platform. */
+  platform?: NodeJS.Platform;
 }
 
 export function credentialProfileMutations(deps: CredentialProfileMutationDeps) {
@@ -60,40 +68,63 @@ export function credentialProfileMutations(deps: CredentialProfileMutationDeps) 
           status: 400,
         });
       }
-      const registry = loadConfig(NO_PROJECT_ROOT).global.credential_profiles;
-      assertCredentialProfileRegistered(registry, harnessId, profileId);
       // The downgrade-window mirror keys on the STRUCTURAL rule (the row's
       // locator IS the harness default store), not on migration-record
       // presence alone: a bootstrap row (ensureBootstrapProfile) sits at the
       // native dir before any record exists, and a silent mirror divergence
       // would re-enable that account after a downgrade — or let the legacy
       // default-subject ladder route back into a disabled row's store.
-      const registryRow = registry.find(
-        (row) => row.harness_id === harnessId && row.profile_id === profileId,
-      );
-      const mirrorsNativeKey =
-        readAccountsMigrationFile()[harnessId]?.row_id === profileId ||
-        locatorIsDefaultNativeStore(harnessId, registryRow?.isolation_locator ?? null);
+      const migrationRowId = readAccountsMigrationFile()[harnessId]?.row_id;
       let updated: CredentialProfile | undefined;
-      updateGlobalConfig((config) => ({
-        ...config,
-        ...(mirrorsNativeKey
-          ? {
-              harnesses: {
-                ...config.harnesses,
-                [harnessId]: {
-                  ...config.harnesses[harnessId],
-                  native_credentials_enabled: enabled,
+      updateGlobalConfig((config) => {
+        assertCredentialProfileRegistered(config.credential_profiles, harnessId, profileId);
+        const registryRow = config.credential_profiles.find(
+          (row) => row.harness_id === harnessId && row.profile_id === profileId,
+        )!;
+        if (enabled) {
+          const state = credentialProfilePolicyState({
+            adapter: buildRegistry({ includeFakes: false }).get(harnessId),
+            registry: config.credential_profiles,
+            platform: deps.platform,
+          });
+          if (state.ambiguous)
+            throw credentialProfilePolicyProblem(state, "credential_profile_ambiguous");
+          if (
+            !registryRow.enabled &&
+            state.policy.max_enabled_profiles !== null &&
+            state.enabledProfileCount >= state.policy.max_enabled_profiles
+          ) {
+            throw credentialProfilePolicyProblem(
+              state,
+              "credential_profile_limit_exceeded",
+              "/enabled",
+            );
+          }
+        }
+        const mirrorsNativeKey =
+          migrationRowId === profileId ||
+          locatorIsDefaultNativeStore(harnessId, registryRow.isolation_locator ?? null);
+        return {
+          ...config,
+          ...(mirrorsNativeKey
+            ? {
+                harnesses: {
+                  ...config.harnesses,
+                  [harnessId]: {
+                    ...config.harnesses[harnessId],
+                    native_credentials_enabled: enabled,
+                  },
                 },
-              },
-            }
-          : {}),
-        credential_profiles: config.credential_profiles.map((profile) => {
-          if (profile.harness_id !== harnessId || profile.profile_id !== profileId) return profile;
-          updated = { ...profile, enabled };
-          return updated;
-        }),
-      }));
+              }
+            : {}),
+          credential_profiles: config.credential_profiles.map((profile) => {
+            if (profile.harness_id !== harnessId || profile.profile_id !== profileId)
+              return profile;
+            updated = { ...profile, enabled };
+            return updated;
+          }),
+        };
+      });
       if (!updated) {
         throw Object.assign(new Error("profile update did not persist"), { status: 500 });
       }
@@ -149,6 +180,11 @@ export function credentialProfileMutations(deps: CredentialProfileMutationDeps) 
       const registryEntry = loadConfig(NO_PROJECT_ROOT).global.credential_profiles.find(
         (row) => row.harness_id === harnessId && row.profile_id === profileId,
       );
+      const profilePolicy = credentialProfilePolicyState({
+        adapter: buildRegistry({ includeFakes: false }).get(harnessId),
+        registry: registryEntry ? [registryEntry] : [],
+        platform: deps.platform,
+      }).policy;
       const migratedRow = migrationRecord?.row_id === profileId;
       if (migrationRecord && migratedRow) {
         // The record's OWN alias list drives the retirement — the schema's
@@ -160,12 +196,13 @@ export function credentialProfileMutations(deps: CredentialProfileMutationDeps) 
           for (const root of laneRoots) purgeProfileLanes(root, harnessId, alias ?? "default");
         }
       }
-      // D-U4 failure contract: `removed: true` ONLY when the row AND its
-      // credential material are provably gone. Material cleanup therefore runs
-      // BEFORE registry removal: a cleanup failure is a typed RETRYABLE error
-      // that leaves the row registered (a retry finishes the job) — never a
+      // D-U4 failure contract: `removed: true` ONLY when the binding and any
+      // Claudexor-owned state or managed secret are provably gone. Owned cleanup
+      // therefore runs BEFORE registry removal: a cleanup failure is a typed
+      // RETRYABLE error that leaves the row registered (a retry finishes the job) — never a
       // `removed: true` with a warning, which the startup auto-registration
-      // would resurrect from the surviving material on the next start.
+      // would resurrect from surviving owned state on the next start. A vendor
+      // OS-user credential is outside this cleanup and may remain unchanged.
       let credentialCleanup: "config_dir_removed" | "secret_deleted" | "none" = "none";
       try {
         if (
@@ -229,6 +266,15 @@ export function credentialProfileMutations(deps: CredentialProfileMutationDeps) 
         profile: entry,
         removed: true,
         credentialCleanup,
+        ...(profilePolicy.cleanup_owner === "vendor"
+          ? {
+              vendorCredentialDisposition: {
+                owner: "vendor" as const,
+                state: "left_unchanged" as const,
+                scope: profilePolicy.identity_scope,
+              },
+            }
+          : {}),
       };
     },
   };

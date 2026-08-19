@@ -6,45 +6,77 @@ import ClaudexorKit
 /// Batch-6 item b: the auto-switch toggle targets harnesses with a SECOND account
 /// and reports on/off/mixed/unavailable honestly.
 @Suite struct AccountsAutoBalanceTests {
+    @MainActor @Test func vendorOwnedDeleteReceiptProducesSuccessfulInformationalCopy() throws {
+        let receipt = try JSONDecoder().decode(
+            DeleteCredentialProfileReceipt.self,
+            from: Data(#"{"removed":true,"credentialCleanup":"none","vendorCredentialDisposition":{"owner":"vendor","state":"left_unchanged","scope":"os_user"}}"#.utf8))
+        let message = AppModel.deletionSuccessMessage(for: receipt)
+        #expect(message.contains("Removed from Claudexor"))
+        #expect(message.contains("Claudexor-owned state or managed secret"))
+        #expect(message.contains("did not change any vendor credential for this OS user"))
+        #expect(!message.localizedCaseInsensitiveContains("logged out"))
+        #expect(!message.localizedCaseInsensitiveContains("restore"))
+    }
+
     @Test func eligibleRequiresASecondEnabledAccountRow() {
         // Unified account model: every identity is a registry row, so ONE row
         // has nothing to rotate to and two ENABLED rows make the harness
         // eligible. Rotation only draws from the enabled pool: two rows with
         // one disabled leave nothing to switch to, so the toggle stays off.
         #expect(AccountsAutoBalance.eligibleHarnessIds(
-            profiles: [("claude", true)]).isEmpty)
+            profiles: [("claude", true)],
+            serverEligibleHarnessIds: ["claude"]).isEmpty)
         #expect(AccountsAutoBalance.eligibleHarnessIds(
-            profiles: [("claude", true), ("claude", true)]) == ["claude"])
+            profiles: [("claude", true), ("claude", true)],
+            serverEligibleHarnessIds: ["claude"]) == ["claude"])
         #expect(AccountsAutoBalance.eligibleHarnessIds(
-            profiles: [("claude", true), ("claude", false)]).isEmpty)
+            profiles: [("claude", true), ("claude", false)],
+            serverEligibleHarnessIds: ["claude"]).isEmpty)
         // An absent `enabled` fails open (the same rule as everywhere else).
         #expect(AccountsAutoBalance.eligibleHarnessIds(
-            profiles: [("claude", nil), ("claude", true)]) == ["claude"])
+            profiles: [("claude", nil), ("claude", true)],
+            serverEligibleHarnessIds: ["claude"]) == ["claude"])
     }
 
-    @Test func capableHarnessesAreEligibleInCanonicalOrder() {
+    @Test func serverEligibleHarnessesAreSortedWithoutAClientCapableSet() {
         let ids = AccountsAutoBalance.eligibleHarnessIds(profiles: [
             ("cursor", true), ("cursor", true), ("codex", true),
             ("claude", true), ("claude", true), ("codex", true),
-        ])
-        #expect(ids == ["claude", "codex"])
+        ], serverEligibleHarnessIds: ["cursor", "codex", "claude"])
+        #expect(ids == ["claude", "codex", "cursor"])
     }
 
     @Test func agyFollowsTheSameTwoRowRule() {
-        #expect(AccountsAutoBalance.eligibleHarnessIds(profiles: [("agy", true)]).isEmpty)
         #expect(AccountsAutoBalance.eligibleHarnessIds(
-            profiles: [("agy", true), ("agy", true)]) == ["agy"])
+            profiles: [("agy", true)], serverEligibleHarnessIds: ["agy"]).isEmpty)
+        #expect(AccountsAutoBalance.eligibleHarnessIds(
+            profiles: [("agy", true), ("agy", true)],
+            serverEligibleHarnessIds: ["agy"]) == ["agy"])
     }
 
-    @Test func nonCapableHarnessProfilesAreIgnored() {
-        // Only config_dir_login families in the capable-set are targeted:
-        // cursor rotates reactively under the engine's `auto` default, but it
-        // has no proactive quota source yet, so the app control has not
-        // admitted it — cursor stays engine-driven with no app-side knob.
+    @Test func profilesWithoutServerPoolEligibilityAreIgnored() {
         #expect(AccountsAutoBalance.eligibleHarnessIds(
-            profiles: [("opencode", true), ("opencode", true)]).isEmpty)
+            profiles: [("opencode", true), ("opencode", true)],
+            serverEligibleHarnessIds: []).isEmpty)
         #expect(AccountsAutoBalance.eligibleHarnessIds(
-            profiles: [("cursor", true), ("cursor", true)]).isEmpty)
+            profiles: [("cursor", true), ("cursor", true)],
+            serverEligibleHarnessIds: []).isEmpty)
+    }
+
+    @Test func serverPoolTruthExcludesAmbiguousOrUnavailableFamiliesGenerically() {
+        let profiles: [(harnessId: String, enabled: Bool?)] = [
+            ("agy", true), ("agy", true),
+            ("claude", true), ("claude", true),
+            ("cursor", true), ("cursor", true),
+        ]
+        #expect(AccountsAutoBalance.eligibleHarnessIds(
+            profiles: profiles,
+            serverEligibleHarnessIds: ["claude", "cursor"]
+        ) == ["claude", "cursor"])
+        #expect(AccountsAutoBalance.eligibleHarnessIds(
+            profiles: profiles,
+            serverEligibleHarnessIds: []
+        ).isEmpty)
     }
 
     @Test func stateAggregates() {

@@ -74,7 +74,7 @@ struct AuthSheet: View {
     }
     private var newSetupDisabled: Bool {
         controller == nil || actionInFlight || hasActiveJob || activeStateUnknown
-            || job?.blocksReplacement == true
+            || job?.blocksReplacement == true || currentInfo?.setupLogin == .unavailable
     }
     private var storeKeyAvailability: AuthSheetPresentation.StoreKeyAvailability {
         .init(gatewayAvailable: model.gateway(for: model.activeExecutionLocation) != nil,
@@ -252,8 +252,8 @@ struct AuthSheet: View {
             targetVerified: targetVerified,
             newSetupDisabled: newSetupDisabled,
             actionInFlight: actionInFlight,
-            profileId: profileId,
-            family: family,
+            profileId: profileId, family: family,
+            setupLogin: currentInfo?.setupLogin ?? .legacyAbsent,
             showTerminalCaveat: $showTerminalCaveat,
             runLogin: { Task { await runLogin() } },
             recheck: { Task { await recheck() } }

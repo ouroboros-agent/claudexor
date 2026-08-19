@@ -1,40 +1,24 @@
-import { statSync } from "node:fs";
 import { join } from "node:path";
-import { canonicalIsolationLocator, providerScrubEnv, runCapture } from "@claudexor/core";
+import { canonicalIsolationLocator, providerScrubEnv } from "@claudexor/core";
 import type { CredentialProfile, CredentialProfileStatus } from "@claudexor/schema";
 import { CredentialProfileStatus as CredentialProfileStatusSchema } from "@claudexor/schema";
 import { nowIso, redactSecrets } from "@claudexor/util";
+import { classifyAgyPrintResult, runAgyPrintCommand } from "./print-command.js";
 
 type EnvMap = Record<string, string | null | undefined>;
 
 export const AGY_BIN = () => process.env.CLAUDEXOR_AGY_BIN || "agy";
 
-/** Canonical, Claudexor-owned HOME for one named Antigravity identity. */
+/** Canonical, Claudexor-owned HOME for one named Antigravity binding. */
 export function canonicalAgyProfileHome(locator: string): string {
   return canonicalIsolationLocator(locator, "credential profile Antigravity HOME");
 }
 
-/**
- * The vendor's file-based OAuth token inside a profile HOME. agy lands on
- * file storage because its keyring lookup FAILS in a scoped HOME (macOS: no
- * login keychain in `$HOME/Library/Keychains` → `falling back to file`); the
- * profile mechanism therefore REQUIRES that no keychain ever be created
- * inside the profile HOME. Live-proven on three separate Google accounts
- * (PLAN §1.2a-1.2c); re-proven per AGY_VENDOR_CLI_VERSION bump because the
- * fallback is a vendor error path, not a documented mode (R-2').
- */
+/** Diagnostic-only path for stale-file precedence fixtures. Credential
+ * readiness and routing never infer auth from this file: the effective
+ * transport is platform/version dependent and only the vendor probe proves it. */
 export function agyTokenPath(profileHome: string): string {
   return join(profileHome, ".gemini", "antigravity-cli", "antigravity-oauth-token");
-}
-
-/** The token must be a regular FILE: a directory at that path is a malformed
- * profile, not a login, and must refuse rather than route (Ф0 review #11). */
-export function agyTokenFilePresent(profileHome: string): boolean {
-  try {
-    return statSync(agyTokenPath(profileHome)).isFile();
-  } catch {
-    return false;
-  }
 }
 
 /**
@@ -73,10 +57,10 @@ export function agyProfileRunEnv(profileHome: string, specEnv: EnvMap = {}): Env
 export type AgyResolvedProfileRoute = { home: string; env: EnvMap } | { refusal: string };
 
 /**
- * INV-135 strict profile routing: an agy profile is exactly its
- * `config_dir_login` HOME with a present vendor token file, or a typed
- * refusal. There is NO engine-default agy credential (owner decision Л-4),
- * so no fallback ladder exists to fall into.
+ * INV-135 route construction only: validate the named binding and build the
+ * exact scoped environment. Credential evidence belongs exclusively to the
+ * vendor probe; this resolver never treats a fallback token file (or its
+ * absence) as an auth oracle.
  */
 export function resolveAgyProfileRoute(
   profile: Pick<CredentialProfile, "profile_id" | "credential_kind" | "isolation_locator">,
@@ -88,10 +72,6 @@ export function resolveAgyProfileRoute(
     };
   try {
     const home = canonicalAgyProfileHome(profile.isolation_locator ?? "");
-    if (!agyTokenFilePresent(home))
-      return {
-        refusal: `credential profile "${profile.profile_id}" has no Antigravity login in its profile HOME (run \`claudexor profiles login agy ${profile.profile_id}\` first)`,
-      };
     return { home, env: agyProfileRunEnv(home, specEnv) };
   } catch (err) {
     return { refusal: err instanceof Error ? err.message : String(err) };
@@ -111,7 +91,7 @@ export type AgyModelProbe =
 /**
  * Quota-free liveness probe: `agy -p "/model" --output-format json` answers
  * from the CLI without spending a turn (vendor 1.1.11+ print-mode
- * slash-commands). SUCCESS proves the profile's token authenticates in the
+ * slash-commands). SUCCESS proves the named binding authenticates in the
  * exact env its runs will spawn with (INV-067); an auth error is an honest
  * logged-out/revoked verdict, and a spawn/parse failure stays `unknown`.
  */
@@ -120,22 +100,24 @@ export async function defaultAgyModelProbe(
   abortSignal?: AbortSignal,
 ): Promise<AgyModelProbe> {
   try {
-    const r = await runCapture(AGY_BIN(), ["-p", "/model", "--output-format", "json"], {
-      timeoutMs: 30_000,
-      env,
-      abortSignal,
-      cancelSignal: "SIGTERM",
-    });
-    const parsed = JSON.parse(r.stdout.trim() || "{}");
-    if (parsed?.status === "SUCCESS")
-      return {
-        kind: "authenticated",
-        modelId: typeof parsed?.command?.data?.id === "string" ? parsed.command.data.id : null,
-      };
-    return {
-      kind: "unauthenticated",
-      detail: redactSecrets(String(parsed?.error ?? "authentication required")).slice(0, 300),
-    };
+    const classified = classifyAgyPrintResult(
+      await runAgyPrintCommand(AGY_BIN(), "/model", env, { abortSignal }),
+    );
+    if (classified.kind === "unauthenticated") return classified;
+    if (classified.kind === "probe_failed") return classified;
+    const command = classified.envelope["command"];
+    const data =
+      command && typeof command === "object" && !Array.isArray(command)
+        ? (command as Record<string, unknown>)["data"]
+        : null;
+    const id =
+      data && typeof data === "object" && !Array.isArray(data)
+        ? (data as Record<string, unknown>)["id"]
+        : null;
+    if (typeof id !== "string" || !id.trim()) {
+      return { kind: "probe_failed", detail: "agy model envelope carried no model id" };
+    }
+    return { kind: "authenticated", modelId: id };
   } catch (err) {
     return {
       kind: "probe_failed",
@@ -170,7 +152,8 @@ export async function probeAgyCredentialProfile(
       ...base,
       availability: "available",
       verification: "passed",
-      detail: `Antigravity login verified in the profile HOME${probe.modelId ? ` (model ${probe.modelId})` : ""}`,
+      verification_source: "vendor",
+      detail: `Antigravity accepted the named binding${probe.modelId ? ` (model ${probe.modelId})` : ""}; whether the credential is backed by a keyring or file is not inferred`,
       last_verified_at: nowIso(),
     });
   if (probe.kind === "unauthenticated")
@@ -178,7 +161,8 @@ export async function probeAgyCredentialProfile(
       ...base,
       availability: "unavailable",
       verification: "failed",
-      detail: `Antigravity token present but not accepted: ${probe.detail}`,
+      verification_source: "vendor",
+      detail: `Antigravity rejected the named binding credential: ${probe.detail}`,
     });
   return CredentialProfileStatusSchema.parse({
     ...base,

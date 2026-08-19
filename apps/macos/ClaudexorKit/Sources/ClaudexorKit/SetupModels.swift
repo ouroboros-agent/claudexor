@@ -347,8 +347,9 @@ public struct SetupJob: Codable, Sendable, Equatable {
             }
         }
         // DEFAULT-store logins prove success with the exact-route capability
-        // receipt. PROFILE jobs (INV-135) succeed on the profile's own doctor
-        // probe with the smoke honestly skipped (authCapability stays
+        // receipt. PROFILE jobs (INV-135) succeed on a vendor doctor probe under
+        // the exact binding environment and effective platform credential
+        // policy, with the smoke honestly skipped (authCapability stays
         // "disclosed") — mirrors the engine schema's profileId-scoped invariant.
         if state == .succeeded && profileId == nil {
             guard let receipt = authCapability?.receipt,
