@@ -61,7 +61,15 @@ describe.skipIf(process.platform !== "win32")("Win32 ConPTY helper integration",
   it("relays fragmented URL output and terminal input while preserving the vendor exit", async () => {
     requireFixtures();
     const child = spawnHelper(["--interactive"]);
+    let startupOutput = "";
+    const inputReady = new Promise<void>((resolveReady) => {
+      child.stdout.on("data", (chunk: Buffer) => {
+        startupOutput += chunk.toString("utf8");
+        if (startupOutput.includes("https://accounts.google.com/o/oauth2/auth")) resolveReady();
+      });
+    });
     const finished = collect(child);
+    await withTimeout(inputReady, 5_000, "interactive helper startup");
     child.stdin.write(encodeWindowsConptyLine("one-shot-code-42"));
     const result = await finished;
     expect(result.code).toBe(0);

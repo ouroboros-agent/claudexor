@@ -66,13 +66,6 @@ typedef struct WideBuffer {
   size_t capacity;
 } WideBuffer;
 
-typedef struct InputPump {
-  HANDLE source;
-  HANDLE conpty_input;
-  HANDLE transport_broken;
-  DWORD error;
-} InputPump;
-
 typedef struct OutputPump {
   HANDLE conpty_output;
   HANDLE destination;
@@ -235,37 +228,6 @@ failure:
   return NULL;
 }
 
-static DWORD WINAPI input_pump_main(LPVOID opaque) {
-  InputPump *pump = (InputPump *)opaque;
-  BYTE buffer[16 * 1024];
-  for (;;) {
-    DWORD received = 0;
-    if (!ReadFile(pump->source, buffer, sizeof(buffer), &received, NULL)) {
-      DWORD error = GetLastError();
-      if (error != ERROR_BROKEN_PIPE && error != ERROR_HANDLE_EOF &&
-          error != ERROR_OPERATION_ABORTED) {
-        pump->error = error;
-        SetEvent(pump->transport_broken);
-      }
-      break;
-    }
-    if (received == 0) break;
-    if (!write_all(pump->conpty_input, buffer, received)) {
-      DWORD error = GetLastError();
-      if (error != ERROR_BROKEN_PIPE && error != ERROR_NO_DATA) {
-        pump->error = error;
-        SetEvent(pump->transport_broken);
-      }
-      break;
-    }
-  }
-  if (pump->conpty_input != NULL && pump->conpty_input != INVALID_HANDLE_VALUE) {
-    CloseHandle(pump->conpty_input);
-    pump->conpty_input = INVALID_HANDLE_VALUE;
-  }
-  return 0;
-}
-
 static DWORD WINAPI output_pump_main(LPVOID opaque) {
   OutputPump *pump = (OutputPump *)opaque;
   BYTE buffer[16 * 1024];
@@ -293,21 +255,6 @@ static DWORD WINAPI output_pump_main(LPVOID opaque) {
     pump->conpty_output = INVALID_HANDLE_VALUE;
   }
   return 0;
-}
-
-static void cancel_and_join_input(HANDLE thread, InputPump *pump) {
-  if (thread == NULL) return;
-  /* CancelSynchronousIo can race just before the pump enters ReadFile. Retry
-   * until the thread observes a cancellation or finishes; a one-shot cancel
-   * followed by an infinite wait can strand helper shutdown forever. */
-  while (WaitForSingleObject(thread, 10) == WAIT_TIMEOUT) {
-    (void)CancelSynchronousIo(thread);
-  }
-  CloseHandle(thread);
-  if (pump->conpty_input != INVALID_HANDLE_VALUE && pump->conpty_input != NULL) {
-    CloseHandle(pump->conpty_input);
-    pump->conpty_input = INVALID_HANDLE_VALUE;
-  }
 }
 
 static void close_and_join_output(HANDLE thread, OutputPump *pump) {
@@ -428,8 +375,7 @@ failure:
 }
 
 static int run_child(const ConPtyApi *api, int argc, wchar_t **argv) {
-  HANDLE input_read = INVALID_HANDLE_VALUE;
-  HANDLE input_write = INVALID_HANDLE_VALUE;
+  HANDLE conpty_input = INVALID_HANDLE_VALUE;
   HANDLE output_read = INVALID_HANDLE_VALUE;
   HANDLE output_write = INVALID_HANDLE_VALUE;
   CLAUDEXOR_HPCON hpc = NULL;
@@ -437,9 +383,7 @@ static int run_child(const ConPtyApi *api, int argc, wchar_t **argv) {
   PROCESS_INFORMATION process;
   SIZE_T attribute_bytes = 0;
   wchar_t *command_line = NULL;
-  InputPump input_pump;
   OutputPump output_pump;
-  HANDLE input_thread = NULL;
   HANDLE output_thread = NULL;
   HANDLE transport_broken = NULL;
   DWORD child_exit = 1;
@@ -448,26 +392,30 @@ static int run_child(const ConPtyApi *api, int argc, wchar_t **argv) {
 
   ZeroMemory(&startup, sizeof(startup));
   ZeroMemory(&process, sizeof(process));
-  ZeroMemory(&input_pump, sizeof(input_pump));
   ZeroMemory(&output_pump, sizeof(output_pump));
   startup.StartupInfo.cb = sizeof(startup);
 
-  if (!CreatePipe(&input_read, &input_write, NULL, 0) ||
-      !CreatePipe(&output_read, &output_write, NULL, 0)) {
+  conpty_input = GetStdHandle(STD_INPUT_HANDLE);
+  if (conpty_input == NULL || conpty_input == INVALID_HANDLE_VALUE) {
+    control_error(HELPER_PHASE_PIPE_CREATE, ERROR_INVALID_HANDLE);
+    goto cleanup;
+  }
+  if (!CreatePipe(&output_read, &output_write, NULL, 0)) {
     control_error(HELPER_PHASE_PIPE_CREATE, GetLastError());
     goto cleanup;
   }
 
+  /* The helper is launched with a pipe for stdin. Feed that pipe directly to
+   * ConPTY, matching Microsoft's sample topology: a second buffering thread
+   * adds no ownership and can delay or strand the terminal input stream. */
   COORD size = {120, 40};
-  HRESULT create_result = api->create(size, input_read, output_write, 0, &hpc);
+  HRESULT create_result = api->create(size, conpty_input, output_write, 0, &hpc);
   if (FAILED(create_result)) {
     control_error(HELPER_PHASE_CONPTY_CREATE, (DWORD)create_result);
     goto cleanup;
   }
 
   /* ConPTY owns the session-side references after successful creation. */
-  CloseHandle(input_read);
-  input_read = INVALID_HANDLE_VALUE;
   CloseHandle(output_write);
   output_write = INVALID_HANDLE_VALUE;
 
@@ -515,10 +463,6 @@ static int run_child(const ConPtyApi *api, int argc, wchar_t **argv) {
     goto cleanup;
   }
 
-  input_pump.source = GetStdHandle(STD_INPUT_HANDLE);
-  input_pump.conpty_input = input_write;
-  input_pump.transport_broken = transport_broken;
-  input_write = INVALID_HANDLE_VALUE;
   output_pump.conpty_output = output_read;
   output_read = INVALID_HANDLE_VALUE;
   output_pump.destination = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -529,12 +473,6 @@ static int run_child(const ConPtyApi *api, int argc, wchar_t **argv) {
     control_error(HELPER_PHASE_OUTPUT_PUMP, GetLastError());
     goto cleanup;
   }
-  input_thread = CreateThread(NULL, 0, input_pump_main, &input_pump, 0, NULL);
-  if (input_thread == NULL) {
-    control_error(HELPER_PHASE_INPUT_PUMP, GetLastError());
-    goto cleanup;
-  }
-
   HANDLE wait_handles[2] = {process.hProcess, transport_broken};
   DWORD waited = WaitForMultipleObjects(2, wait_handles, FALSE, INFINITE);
   if (waited == WAIT_OBJECT_0 + 1) {
@@ -546,8 +484,6 @@ static int run_child(const ConPtyApi *api, int argc, wchar_t **argv) {
     goto cleanup;
   }
 
-  cancel_and_join_input(input_thread, &input_pump);
-  input_thread = NULL;
   if (waited == WAIT_OBJECT_0 + 1)
     stop_child_after_transport_failure(process.hProcess);
   api->close(hpc);
@@ -556,19 +492,11 @@ static int run_child(const ConPtyApi *api, int argc, wchar_t **argv) {
   output_thread = NULL;
 
   if (waited == WAIT_OBJECT_0 + 1) {
-    if (input_pump.error != 0) {
-      control_error(HELPER_PHASE_INPUT_PUMP, input_pump.error);
-    } else {
-      control_error(HELPER_PHASE_OUTPUT_PUMP,
-                    output_pump.read_error != 0
-                        ? output_pump.read_error
-                        : (output_pump.write_error == 0 ? ERROR_BROKEN_PIPE
-                                                       : output_pump.write_error));
-    }
-    goto cleanup;
-  }
-  if (input_pump.error != 0) {
-    control_error(HELPER_PHASE_INPUT_PUMP, input_pump.error);
+    control_error(HELPER_PHASE_OUTPUT_PUMP,
+                  output_pump.read_error != 0
+                      ? output_pump.read_error
+                      : (output_pump.write_error == 0 ? ERROR_BROKEN_PIPE
+                                                     : output_pump.write_error));
     goto cleanup;
   }
   if (output_pump.read_error != 0 || output_pump.write_error != 0) {
@@ -584,16 +512,6 @@ static int run_child(const ConPtyApi *api, int argc, wchar_t **argv) {
   helper_exit = (int)child_exit;
 
 cleanup:
-  if (input_thread != NULL) cancel_and_join_input(input_thread, &input_pump);
-  else if (input_pump.conpty_input != NULL &&
-           input_pump.conpty_input != INVALID_HANDLE_VALUE) {
-    CloseHandle(input_pump.conpty_input);
-    input_pump.conpty_input = INVALID_HANDLE_VALUE;
-  }
-  if (input_thread == NULL && input_write != INVALID_HANDLE_VALUE) {
-    CloseHandle(input_write);
-    input_write = INVALID_HANDLE_VALUE;
-  }
   if (output_thread == NULL && output_pump.conpty_output != NULL &&
       output_pump.conpty_output != INVALID_HANDLE_VALUE) {
     /* No thread can drain this handle. Break the pipe before closing HPCON so
@@ -623,8 +541,6 @@ cleanup:
   }
   free(command_line);
   if (transport_broken != NULL) CloseHandle(transport_broken);
-  if (input_read != INVALID_HANDLE_VALUE) CloseHandle(input_read);
-  if (input_write != INVALID_HANDLE_VALUE) CloseHandle(input_write);
   if (output_read != INVALID_HANDLE_VALUE) CloseHandle(output_read);
   if (output_write != INVALID_HANDLE_VALUE) CloseHandle(output_write);
   return helper_exit;
