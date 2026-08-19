@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   dumpbinDependencyBasenames,
@@ -6,6 +7,14 @@ import {
 } from "./win32-msvc-runtime.mjs";
 
 describe("Win32 MSVC runtime build contract", () => {
+  it("passes the MSVC include and library search paths through Turbo builds", () => {
+    const turboConfig = JSON.parse(
+      readFileSync(new URL("../../turbo.json", import.meta.url), "utf8"),
+    );
+
+    expect(turboConfig.tasks.build.passThroughEnv).toEqual(["INCLUDE", "LIB", "LIBPATH"]);
+  });
+
   it("removes inherited compiler flag channels case-insensitively", () => {
     expect(
       sanitizedMsvcEnvironment({
