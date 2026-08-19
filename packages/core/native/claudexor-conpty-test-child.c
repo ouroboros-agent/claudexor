@@ -196,6 +196,11 @@ static int console_control(void) {
 static int console_host(int argc, wchar_t **argv) {
   if (argc < 4) return 76;
   HANDLE captured_output = GetStdHandle(STD_OUTPUT_HANDLE);
+  /* Hosted runners may start us in an inherited or CREATE_NO_WINDOW console.
+   * Normalize the test host before allocating the classic console that the
+   * worker and its client_pty child must inherit. FreeConsole preserves the
+   * captured stdout pipe. */
+  (void)FreeConsole();
   print_console_state(captured_output, "HOST_BEFORE");
   if (GetConsoleCP() != 0 || conin_available()) return 77;
   if (!AllocConsole()) return 78;

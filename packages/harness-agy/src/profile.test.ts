@@ -158,7 +158,7 @@ fi
 
   it("uses the exact console-free Windows spawn shape", () => {
     expect(agyPrintSpawnOptions("win32", {})).toMatchObject({
-      detached: false,
+      detached: true,
       windowsHide: true,
       shell: false,
     });

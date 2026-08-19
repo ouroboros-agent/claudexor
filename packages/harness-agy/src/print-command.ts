@@ -70,8 +70,11 @@ export function agyPrintSpawnOptions(
   return {
     env,
     shell: false,
-    detached: platform !== "win32",
+    detached: true,
     windowsHide: platform === "win32",
+    // On Windows CREATE_NO_WINDOW still exposes a windowless CONIN$. A real
+    // DETACHED_PROCESS prevents console inheritance; ignored stdin gives print
+    // mode immediate EOF without exposing an input descriptor.
   };
 }
 
@@ -144,10 +147,10 @@ function delay(ms: number): Promise<void> {
 
 /**
  * Bounded print-mode owner for `/model` and `/quota`. The child has no stdin
- * and no controlling terminal: POSIX starts a new session; Windows runs the
- * exact executable non-detached under CREATE_NO_WINDOW-compatible spawn
- * options (`windowsHide`, no shell, no inherited descriptors). Child exit is
- * completion authority; descendant-held pipes receive only a bounded drain.
+ * and no controlling terminal: POSIX starts a new session; Windows uses
+ * DETACHED_PROCESS because CREATE_NO_WINDOW still exposes a windowless
+ * CONIN$. Child exit is completion authority; descendant-held pipes receive
+ * only a bounded drain.
  */
 export async function runAgyPrintCommand(
   bin: string,

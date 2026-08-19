@@ -1,11 +1,12 @@
 import {
   spawn,
   spawnSync,
+  type ChildProcessByStdio,
   type ChildProcessWithoutNullStreams,
-  type SpawnSyncOptionsWithStringEncoding,
 } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import type { Readable, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { killWindowsProcessTree } from "./process-tree.js";
@@ -60,8 +61,9 @@ describe.skipIf(process.platform !== "win32")("Win32 ConPTY helper integration",
   it("relays fragmented URL output and terminal input while preserving the vendor exit", async () => {
     requireFixtures();
     const child = spawnHelper(["--interactive"]);
-    child.stdin.end("one-shot-code-42\r\n");
-    const result = await collect(child);
+    const finished = collect(child);
+    child.stdin.write("one-shot-code-42\n");
+    const result = await finished;
     expect(result.code).toBe(0);
     expect(result.stdout).toContain("https://accounts.google.com/o/oauth2/auth");
     expect(result.stdout).toContain("CODE:one-shot-code-42");
@@ -73,17 +75,15 @@ describe.skipIf(process.platform !== "win32")("Win32 ConPTY helper integration",
 
   it("proves the console control before enforcing no-console and invisible-ConPTY states", async () => {
     requireFixtures();
-    const control = spawnSync(fixture, ["--console-control"], productionNoConsoleOptions());
-    expect(control.error).toBeUndefined();
-    expect(control.status).toBe(0);
+    const control = await runDetachedFixture(["--console-control"]);
+    expect(control.code).toBe(0);
     expect(control.stderr).toBe("");
     const controlState = parseConsoleState(control.stdout, "CONTROL");
     expect(controlState.consoleCodePage).toBeGreaterThan(0);
     expect(controlState.coninAvailable).toBe(true);
 
-    const noConsole = spawnSync(fixture, ["--console-state"], productionNoConsoleOptions());
-    expect(noConsole.error).toBeUndefined();
-    expect(noConsole.status).toBe(0);
+    const noConsole = await runDetachedFixture(["--console-state"]);
+    expect(noConsole.code).toBe(0);
     expect(parseConsoleState(noConsole.stdout, "CONSOLE")).toEqual({
       consoleCodePage: 0,
       windowPresent: false,
@@ -121,7 +121,7 @@ describe.skipIf(process.platform !== "win32")("Win32 ConPTY helper integration",
     expect(preStart.stdout).toBe("");
     expect(preStart.stderr).toMatch(new RegExp(`^${protocol}\\terror\\t6\\t[0-9]+\\r?\\n$`));
 
-    const child = spawnHelper(["--ignore-close-stream-descendant"]);
+    const child = spawnHelper(["--stream-descendant"]);
     const observedPids = observeVendorPids(child);
     const finished = collect(child);
     if (!child.pid) throw new Error("helper PID was not assigned");
@@ -188,7 +188,7 @@ function spawnWorkerTree(): ChildProcessWithoutNullStreams {
   const source = [
     `const { spawn } = require("node:child_process");`,
     `const child = spawn(${JSON.stringify(helper)}, ["--", ${JSON.stringify(fixture)}, "--spawn-descendant"], {`,
-    `  windowsHide: true, shell: false, detached: false, stdio: ["ignore", "pipe", "pipe"]`,
+    `  windowsHide: true, shell: false, detached: false, stdio: ["pipe", "pipe", "pipe"]`,
     `});`,
     `process.stdout.write("WORKER\\t" + process.pid + "\\t" + child.pid + "\\n");`,
     `child.stdout.pipe(process.stdout);`,
@@ -204,20 +204,18 @@ function spawnWorkerTree(): ChildProcessWithoutNullStreams {
   });
 }
 
-function productionNoConsoleOptions(): SpawnSyncOptionsWithStringEncoding {
-  return {
-    encoding: "utf8" as const,
+async function runDetachedFixture(args: string[]): Promise<CollectedChild> {
+  const child = spawn(fixture, args, {
     windowsHide: true,
     shell: false,
-    timeout: 5_000,
-    maxBuffer: 4_096,
+    detached: true,
     stdio: ["ignore", "pipe", "pipe"],
-  };
+  });
+  return await withTimeout(collect(child), 5_000, "detached fixture");
 }
 
 async function runHelper(args: string[]): Promise<CollectedChild> {
   const child = spawnHelper(args);
-  child.stdin.end();
   return await collect(child);
 }
 
@@ -228,7 +226,9 @@ interface CollectedChild {
   stderr: string;
 }
 
-async function collect(child: ChildProcessWithoutNullStreams): Promise<CollectedChild> {
+async function collect(
+  child: ChildProcessByStdio<Writable | null, Readable, Readable>,
+): Promise<CollectedChild> {
   let stdout = "";
   let stderr = "";
   child.stdout.on("data", (chunk: Buffer) => {

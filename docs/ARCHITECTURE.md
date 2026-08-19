@@ -1848,8 +1848,9 @@ executable image (`.exe`/`.com`) resolves, so an npm `.cmd`/shell shim is
 refused with the install advisory rather than launched through `cmd.exe`.
 Terminal-stdin setup wraps that exact image with the adjacent ConPTY helper
 only after its real `--probe` succeeds; doctor/quota print probes instead use
-their console-free non-detached runner and never inherit a console or input
-descriptor. An ordinary daemon
+a detached, console-free runner with ignored stdin. Their bounded reaper
+and passive registry retain normal cancellation and unconfirmed-child custody.
+An ordinary daemon
 stop/restart no longer terminates an awaiting-user login runner (that regression
 killed the operator's own pending login in the 2026-07-21 incident); explicit
 `setup jobs cancel` and the login deadline's timeout escalation are the only
