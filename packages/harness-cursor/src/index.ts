@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type {
   AuthPreference,
   ConformanceReport,
+  CredentialProfile,
   HarnessCapabilityProfile,
   HarnessEvent,
   HarnessManifest,
@@ -12,7 +13,7 @@ import {
   HarnessCapabilityProfile as HarnessCapabilityProfileSchema,
   HarnessManifest as HarnessManifestSchema,
 } from "@claudexor/schema";
-import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
+import type { DoctorSpec, HarnessAdapter, HarnessModelSpec } from "@claudexor/core";
 import {
   abortSignalFromSpec,
   HarnessUnavailableError,
@@ -244,10 +245,47 @@ async function resolveCursorAuthRoute(
   return { route, env, key, nativeAuthed, scopedHome };
 }
 
+/**
+ * A PINNED profile owns its own inventory. `resolveCursorAuthRoute` below is
+ * the engine-default ladder, which under D-U3 can only ever find the API-key
+ * route — so asking it about a named native account returns an empty list and
+ * the strict model gate then refuses a model the account really offers. The run
+ * path resolves a pinned profile through `resolveCursorRunRoute`; enumeration
+ * must go through the SAME seam, or preflight and spawn are asking two
+ * different accounts.
+ */
+async function listCursorModelsForProfile(
+  deps: CursorRuntimeDeps,
+  spec: HarnessModelSpec & { credentialProfile: CredentialProfile },
+): Promise<HarnessModel[]> {
+  const resolved = await resolveCursorRunRoute(
+    {
+      credential_profile: spec.credentialProfile,
+      env: spec.env ?? {},
+      auth_preference: spec.authPreference ?? "auto",
+    },
+    deps,
+    ({ cursorApiKey, ...input }) =>
+      resolveCursorAuthRoute(cursorApiKey ? { ...deps, cursorApiKey } : deps, input),
+    spec.abortSignal,
+  );
+  if ("refusal" in resolved) return [];
+  if (resolved.route === "local_session")
+    return deps.listCursorModels({ ...resolved.env, CURSOR_API_KEY: null }, spec.cwd);
+  if (resolved.route === "api_key" && resolved.key)
+    return deps.listCursorModels({ ...resolved.env, CURSOR_API_KEY: resolved.key }, spec.cwd);
+  return [];
+}
+
 async function listCursorModelsFromReadyRoute(
   deps: CursorRuntimeDeps,
-  spec?: DoctorSpec,
+  spec?: HarnessModelSpec,
 ): Promise<HarnessModel[]> {
+  if (spec?.credentialProfile)
+    return listCursorModelsForProfile(deps, {
+      ...spec,
+      credentialProfile: spec.credentialProfile,
+    });
   // ONE seam for every enumeration below: the inventory must run in the same
   // working directory the eventual run will use, because cursor-agent resolves
   // account/workspace state relative to it.
@@ -394,7 +432,7 @@ export function createCursorAdapter(deps: Partial<CursorRuntimeDeps> = {}): Harn
       return runCursor(spec, runtime);
     },
 
-    async models(spec?: DoctorSpec): Promise<HarnessModel[]> {
+    async models(spec?: HarnessModelSpec): Promise<HarnessModel[]> {
       return listCursorModelsFromReadyRoute(runtime, spec);
     },
 
