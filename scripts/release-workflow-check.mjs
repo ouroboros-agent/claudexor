@@ -42,6 +42,10 @@ for (const file of files) {
 
 const ci = readFileSync(".github/workflows/ci.yml", "utf8");
 const release = readFileSync(".github/workflows/release.yml", "utf8");
+const win32ConptyBuild = readFileSync(
+  "packages/core/scripts/build-win32-conpty-helper.mjs",
+  "utf8",
+);
 const publishMcp = readFileSync(".github/workflows/publish-mcp.yml", "utf8");
 const prepareJob = jobBody(release, "prepare");
 const packageMacosJob = jobBody(release, "package-macos");
@@ -49,6 +53,7 @@ const publishNpmJob = jobBody(release, "publish-npm");
 const publishReleaseJob = jobBody(release, "publish-release");
 errors.push(...windowsPrLegFindings(ci));
 errors.push(...windowsConptyCustodyFindings(release));
+errors.push(...windowsConptyBuildFindings(win32ConptyBuild));
 const staleAttestationSchemaPattern = /schema-v[2345]/;
 const exactPromotionPairedNeedles = [
   [
@@ -474,9 +479,30 @@ for (const [label, mutated] of [
       "      - run: pnpm --filter @claudexor/core build\n      - name: Verify packed native helper custody",
     ),
   ],
+  [
+    "POSIX-only URL disclosure suite re-added to assembled Windows smoke",
+    release.replace(
+      "          packages/cli/src/setup-login-runner-transport.test.ts\n",
+      "          packages/cli/src/setup-login-runner-transport.test.ts\n          packages/cli/src/setup-login-url-disclosure.test.ts\n",
+    ),
+  ],
 ]) {
   if (mutated === release || windowsConptyCustodyFindings(mutated).length === 0) {
     errors.push(`release-workflow-check self-test: failed to reject ${label}`);
+  }
+}
+for (const [label, mutated] of [
+  ["the common /MT static CRT freeze", win32ConptyBuild.replace('      "/MT",\n', "")],
+  [
+    "the post-link static CRT dependency assertion",
+    win32ConptyBuild.replace(
+      "  const dependencyError = verifyStaticCrtDependencies(temporary, buildEnvironment);\n",
+      "  const dependencyError = null;\n",
+    ),
+  ],
+]) {
+  if (mutated === win32ConptyBuild || windowsConptyBuildFindings(mutated).length === 0) {
+    errors.push(`release-workflow-check self-test: failed to reject removal of ${label}`);
   }
 }
 for (const [label, mutated] of [
@@ -1040,6 +1066,11 @@ function windowsConptyCustodyFindings(workflow) {
     /win32-conpty-helper\.test\.ts[\s\S]*?setup-login-pty\.test\.ts[\s\S]*?setup-login-runner-transport\.test\.ts/,
     assembledSmoke,
   );
+  if (/setup-login-url-disclosure\.test\.ts/.test(assembledSmoke)) {
+    findings.push(
+      "release.yml: assembled Windows smoke must not run the POSIX-only setup-login-url-disclosure suite",
+    );
+  }
   requirePattern(
     "assembled Windows daemon must pass probe, protocol handshake, and identity-bound stop",
     /--probe[\s\S]*?\/v2\/handshake[\s\S]*?--stop \$env:VERSION \$env:PREPARED_SHA[\s\S]*?WaitForExit\(15000\)/,
@@ -1079,6 +1110,51 @@ function windowsConptyCustodyFindings(workflow) {
   if (/signtool|Authenticode/i.test(workflow)) {
     findings.push(
       "release.yml: Windows helper custody must not claim or introduce Authenticode in this plan",
+    );
+  }
+  return findings;
+}
+
+function windowsConptyBuildFindings(source) {
+  const findings = [];
+  const compileStart = source.indexOf("function compile(");
+  const verifyStart = source.indexOf("function verifyStaticCrtDependencies(");
+  const verifyProbeStart = source.indexOf("function verifyProbe(");
+  const compile =
+    compileStart >= 0 && verifyStart > compileStart ? source.slice(compileStart, verifyStart) : "";
+  const verifier =
+    verifyStart >= 0 && verifyProbeStart > verifyStart
+      ? source.slice(verifyStart, verifyProbeStart)
+      : "";
+
+  if (!/["']\/MT["']/.test(compile)) {
+    findings.push("build-win32-conpty-helper.mjs: common MSVC compile path must freeze /MT");
+  }
+  if (!/sanitizedMsvcEnvironment\(process\.env\)/.test(compile)) {
+    findings.push(
+      "build-win32-conpty-helper.mjs: common MSVC compile path must scrub inherited CL and _CL_",
+    );
+  }
+  if (!/spawnSync\([\s\S]*?["']cl\.exe["'][\s\S]*?env:\s*buildEnvironment/.test(compile)) {
+    findings.push(
+      "build-win32-conpty-helper.mjs: cl.exe must receive the scrubbed build environment",
+    );
+  }
+  const assertion = compile.indexOf("verifyStaticCrtDependencies(temporary, buildEnvironment)");
+  const publish = compile.indexOf("renameSync(temporary, output)");
+  if (!(assertion >= 0 && publish > assertion)) {
+    findings.push(
+      "build-win32-conpty-helper.mjs: every linked PE must pass the CRT dependency assertion before publication",
+    );
+  }
+  if (
+    !/spawnSync\([\s\S]*?["']dumpbin\.exe["'][\s\S]*?["']\/DEPENDENTS["']/.test(verifier) ||
+    !/dumpbinDependencyBasenames/.test(verifier) ||
+    !/dynamicCrtDependencies/.test(verifier) ||
+    !/dependencies\.length === 0/.test(verifier)
+  ) {
+    findings.push(
+      "build-win32-conpty-helper.mjs: build must fail closed on dumpbin dependency basenames and dynamic VC/UCRT imports",
     );
   }
   return findings;

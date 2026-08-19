@@ -828,7 +828,6 @@ jobs:
           packages/core/src/win32-conpty-helper.test.ts
           packages/cli/src/setup-login-pty.test.ts
           packages/cli/src/setup-login-runner-transport.test.ts
-          packages/cli/src/setup-login-url-disclosure.test.ts
 
       - name: Probe, handshake and gracefully stop the assembled daemon closure
         shell: pwsh

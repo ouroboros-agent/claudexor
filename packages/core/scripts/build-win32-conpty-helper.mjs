@@ -5,6 +5,11 @@ import { mkdirSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { verifyWin32ConptyHelperCustody } from "../../../scripts/lib/win32-conpty-artifact.mjs";
+import {
+  dumpbinDependencyBasenames,
+  dynamicCrtDependencies,
+  sanitizedMsvcEnvironment,
+} from "../../../scripts/lib/win32-msvc-runtime.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const options = parseArgs(process.argv.slice(2));
@@ -71,6 +76,7 @@ function parseArgs(argv) {
 
 function compile(source, output, libraries) {
   mkdirSync(dirname(output), { recursive: true });
+  const buildEnvironment = sanitizedMsvcEnvironment(process.env);
   const suffix = `${process.pid}-${Date.now()}`;
   const temporary = resolve(dirname(output), `.${output.split(/[\\/]/).at(-1)}.${suffix}.tmp.exe`);
   const object = resolve(dirname(output), `.claudexor-conpty-${suffix}.obj`);
@@ -84,6 +90,7 @@ function compile(source, output, libraries) {
       "/std:c11",
       "/utf-8",
       "/O1",
+      "/MT",
       "/Oi",
       "/Gy",
       "/Gw",
@@ -107,7 +114,7 @@ function compile(source, output, libraries) {
       "/CETCOMPAT",
       ...libraries,
     ],
-    { encoding: "utf8", windowsHide: true },
+    { encoding: "utf8", windowsHide: true, env: buildEnvironment },
   );
   rmSync(object, { force: true });
   if (result.status !== 0) {
@@ -118,7 +125,35 @@ function compile(source, output, libraries) {
     rmSync(temporary, { force: true });
     fail(`MSVC produced no regular executable for ${source}`);
   }
+  const dependencyError = verifyStaticCrtDependencies(temporary, buildEnvironment);
+  if (dependencyError) {
+    rmSync(temporary, { force: true });
+    fail(dependencyError);
+  }
   renameSync(temporary, output);
+}
+
+function verifyStaticCrtDependencies(path, environment) {
+  const result = spawnSync("dumpbin.exe", ["/nologo", "/DEPENDENTS", path], {
+    encoding: "utf8",
+    windowsHide: true,
+    env: environment,
+    timeout: 10_000,
+    maxBuffer: 64 * 1024,
+  });
+  if (result.error) return `dumpbin /DEPENDENTS failed for ${path}: ${result.error.message}`;
+  if (result.status !== 0 || result.signal !== null) {
+    return `dumpbin /DEPENDENTS failed for ${path} with status ${String(result.status)}`;
+  }
+  const dependencies = dumpbinDependencyBasenames(result.stdout ?? "");
+  if (dependencies.length === 0) {
+    return `dumpbin /DEPENDENTS reported no dependency basenames for ${path}`;
+  }
+  const dynamicCrt = dynamicCrtDependencies(dependencies);
+  if (dynamicCrt.length > 0) {
+    return `dynamic VC/UCRT dependency is forbidden for ${path}: ${dynamicCrt.join(", ")}`;
+  }
+  return null;
 }
 
 function verifyProbe(path) {
