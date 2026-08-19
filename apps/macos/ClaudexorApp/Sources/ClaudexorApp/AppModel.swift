@@ -1333,9 +1333,9 @@ final class AppModel {
         // Until Clean / Max Attempts are SINGLE-candidate repair strategies — the
         // engine routes them to convergence (ignoring n), so they only make sense
         // for a plain agent turn, never for Best-of. access/web/budget are per-turn.
-        let writeMode = !mode.isReadOnly
         let repair = composerRepairWire(
             mode: mode,
+            access: options.access.flatMap(AccessProfile.init(wire:)) ?? .workspaceWrite,
             requestedAttempts: options.maxAttempts,
             requestedUntilClean: options.untilClean)
         let result: RunStartResult
@@ -1374,7 +1374,7 @@ final class AppModel {
                 // Harness-scoped map: specific beats the scalar and defaults.
                 models: normalizedTurnModels(options.models),
                 reviewerPanel: options.reviewerPanel,
-                access: writeMode ? options.access : nil,
+                access: !mode.isReadOnly ? options.access : nil,
                 web: options.web,
                 browser: options.browser ? true : nil,
                 planRunId: planRunId,

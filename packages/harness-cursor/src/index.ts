@@ -411,16 +411,7 @@ export function createCursorAdapter(deps: Partial<CursorRuntimeDeps> = {}): Harn
           ...(nativeAuthed ? ["local_session" as const] : []),
           ...(apiKey ? ["api_key" as const] : []),
         ],
-        // external_sandbox_full: cursor's own sandbox stands down (--force
-        // --sandbox disabled), mirroring codex/claude; the engine applies its
-        // own OS boundary only on delegated runs. Bare `full` stays
-        // undeclared/refused (no boundary, not proven).
-        access_profiles_supported: [
-          "readonly",
-          "workspace_write",
-          "external_sandbox_full",
-          "inherit_native",
-        ],
+        access_profiles_supported: ["readonly", "workspace_write", "full", "inherit_native"],
       });
     },
 
@@ -456,23 +447,6 @@ async function* runCursor(
   spec: HarnessRunSpec,
   deps: CursorRuntimeDeps,
 ): AsyncIterable<HarnessEvent> {
-  // Bare `full` claims NO boundary at all and stays refused (unproven).
-  // `external_sandbox_full` stands cursor's weaker sandbox down (`--force
-  // --sandbox disabled` via accessArgs) — the same mapping codex
-  // (danger-full-access) and claude (bypassPermissions) implement. The engine
-  // applies its OWN OS boundary only on delegated runs; requested directly,
-  // this profile runs unrestricted (and is not behind the trust allow).
-  if (spec.access === "full") {
-    yield {
-      type: "error",
-      session_id: spec.session_id,
-      ts: nowIso(),
-      error:
-        "cursor full access is not conformance-proven; use workspace_write, or external_sandbox_full (cursor's sandbox stands down; the engine applies its own boundary only on delegated runs — otherwise unrestricted)",
-    };
-    yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
-    return;
-  }
   const args = ["-p", "--output-format", "stream-json", ...accessArgs(spec)];
   // Native Plan's createPlan schema cannot carry D-16 WorkReport; native read-only
   // Ask preserves prompt-owned plan intent and the model-authored final report.

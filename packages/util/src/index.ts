@@ -286,10 +286,10 @@ export function defaultUserConfigDir(): string {
 }
 
 /**
- * The ONE Claudexor-owned confinement root (round-22 DRY): under an explicit
+ * The ONE Claudexor-owned state root (round-22 DRY): under an explicit
  * CLAUDEXOR_CONFIG_DIR override, that override IS the complete relocatable
  * root; without it the owned tree is ~/.claudexor. Credential-profile
- * locators and the isolation-locator confinement both derive from here —
+ * locators and isolation-locator authority both derive from here —
  * never re-derive this ternary inline.
  */
 export function claudexorOwnedRoot(): string {
@@ -303,9 +303,8 @@ export function claudexorOwnedRoot(): string {
  *
  * Each adapter owns the layout below its own vendor directory, but the root is
  * shared: it is where a subscription lane's credential actually lives, which
- * makes it the one part of the runtime tree a confined harness process must
- * still be able to open. Spelled once so the confinement carve-out and the
- * adapters cannot drift apart.
+ * makes it the one part of the runtime tree each selected native profile must
+ * be able to open. Spelled once so adapters cannot drift apart.
  */
 export function nativeHarnessStateRoot(): string {
   return join(userConfigDir(), "native");

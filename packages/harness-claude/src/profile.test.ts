@@ -48,7 +48,7 @@ function profile(over: Partial<CredentialProfile> = {}): CredentialProfile {
   } as CredentialProfile;
 }
 
-// The round-11 confinement requires locators under the Claudexor-owned tree;
+// The profile-storage rule requires locators under the Claudexor-owned tree;
 // under the vitest CLAUDEXOR_CONFIG_DIR sandbox that override IS the root
 // (round-18 #4) — tests exercise the REAL discipline, not a bypass.
 const ownedTmp = join(process.env.CLAUDEXOR_CONFIG_DIR as string, "test-tmp");
@@ -65,8 +65,8 @@ describe("canonicalProfileConfigDir (INV-135)", () => {
   });
 
   it("refuses any dir outside the owned tree (ordinary ~/.claude above all)", () => {
-    // ~/.claude is outside the Claudexor-owned tree: the confinement fires
-    // first (also covering arbitrary user/repo dirs).
+    // ~/.claude is outside the Claudexor-owned profile tree, as are arbitrary
+    // user and repository directories.
     expect(() => canonicalProfileConfigDir(join(homedir(), ".claude"))).toThrow(/must live under/);
     expect(() => canonicalProfileConfigDir("/tmp/anywhere")).toThrow(/must live under/);
   });

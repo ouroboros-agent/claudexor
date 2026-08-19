@@ -220,7 +220,6 @@
             "readonly",
             "workspace_write",
             "full",
-            "external_sandbox_full",
             "inherit_native"
           ],
           "description": "Requested access profile; effective access is derived by the engine and never client-supplied."

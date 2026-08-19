@@ -207,7 +207,6 @@ export class AuthCapabilityVerifier {
           browser: null,
           // The auth smoke is not a delegated run and gets no boundary; stated
           // rather than defaulted, so a new spec site cannot omit it silently.
-          confinement: null,
           extra_mcp_servers: [],
           stream_deltas: false,
           extra: request.abortSignal ? { abortSignal: request.abortSignal } : {},

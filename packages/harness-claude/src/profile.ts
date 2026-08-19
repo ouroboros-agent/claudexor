@@ -12,7 +12,7 @@ import { claudeNativeEnv, BIN, type ClaudeProfileRuntimeDeps } from "./index.js"
  * locator — the exact dir the startup migration auto-registers as
  * `claude-default` (bytes never move; Claude Code keys its Keychain item by
  * this exact path). Ordinary ~/.claude stays outside the owned root and is
- * still refused by the shared confinement check.
+ * still refused by the shared isolation-locator authority check.
  */
 export function canonicalProfileConfigDir(locator: string): string {
   return canonicalIsolationLocator(locator, "credential profile config dir");

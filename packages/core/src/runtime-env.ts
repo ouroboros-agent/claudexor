@@ -62,10 +62,8 @@ function dirIsGroupOrWorldWritable(dir: string): boolean {
  * The managed toolchain root under `home`: the notarized Node distribution
  * Claudexor installs plus the pinned vendor CLI shims (`<home>/.claudexor/node`
  * — `bin/codex`, `bin/claude`, the `node` that runs them, and their
- * `lib/node_modules` payloads). ONE spelling, shared by the harness PATH
- * producer below and the delegated confinement's exec carve-out
- * (`packages/core/src/confinement.ts`): the launcher resolving a binary from
- * here and the sandbox profile allowing its exec must never drift apart.
+ * `lib/node_modules` payloads). ONE spelling shared by every harness PATH
+ * producer.
  * Deliberately HOME-anchored, not config-dir-anchored — a
  * `CLAUDEXOR_CONFIG_DIR` override relocates the runtime root, never the
  * installed toolchain.

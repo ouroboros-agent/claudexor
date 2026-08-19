@@ -141,10 +141,12 @@ export function controlServices(
   const runStartRequiresGit = (request: ControlRunStartRequest): boolean => {
     const root = request.scope.kind === "project" ? request.scope.root : NO_PROJECT_ROOT;
     const thread = request.threadId ? threads.getThread(request.threadId) : undefined;
+    const config = loadConfig(root);
     return threadRunStartRequiresGit(
       request,
       thread,
-      loadConfig(root).project.constraints.protected_paths,
+      config.project.constraints.protected_paths,
+      config.trust.access_default,
     );
   };
   const preflightRunRequirements = createRunRequirementsPreflight(lazyResources, NO_PROJECT_ROOT, {

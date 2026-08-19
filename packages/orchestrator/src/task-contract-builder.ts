@@ -1,5 +1,6 @@
 import type {
   AccessProfile,
+  ActiveTaskContract,
   AuthPreference,
   EffortHint,
   ExternalContextPolicy,
@@ -7,11 +8,11 @@ import type {
   PaidBudget,
   ProtectedPathApproval,
   RoutingGoal,
-  TaskContract,
   TestCommandInvocation,
 } from "@claudexor/schema";
 import {
-  FrozenTaskContractArtifact as TaskContractSchema,
+  ActiveTaskContract as TaskContractSchema,
+  resolveRunAccess,
   SCHEMA_VERSION,
   TRUST_FULL_ACCESS_CODE,
 } from "@claudexor/schema";
@@ -57,15 +58,13 @@ export function buildTaskContract(
   taskId: string,
   mode: ModeKind,
   defaults: TaskContractDefaults,
-): TaskContract {
+): ActiveTaskContract {
   const resolvedCfg = loadConfig(input.repoRoot);
   const cfg = resolvedCfg.project;
-  const readOnlyMode = mode === "ask" || mode === "plan";
-  const requestedAccess =
-    input.access ?? (readOnlyMode ? "readonly" : resolvedCfg.trust.access_default);
-  // Effective access is COMPUTED by the engine, never echoed from a client:
-  // read-only modes clamp to readonly regardless of the request.
-  const effectiveAccess: AccessProfile = readOnlyMode ? "readonly" : requestedAccess;
+  const access = resolveRunAccess(input, resolvedCfg.trust.access_default);
+  const requestedAccess = access.requested;
+  // Effective access is COMPUTED by the engine, never echoed from a client.
+  const effectiveAccess: AccessProfile = access.effective;
   // TrustConfig is USER-LEVEL only (versioned repo config must never
   // self-grant sensitive powers): unsandboxed full access requires an
   // explicit allow in ~/.claudexor trust settings — loud error, no downgrade.

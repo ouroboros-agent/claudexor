@@ -401,13 +401,39 @@ Tests and local smokes must never touch real user state:
   loads the resulting dist modules and records the launched daemon entry digest
   beside its exact version/SHA/entry handshake. The
   lane refuses a pre-existing daemon, stops only the identity-bound daemon it
-  started, keeps `config.yaml` byte- and mode-identical, and revokes its
-  temporary disposable-repo full-access grant. Every Codex and
+  started, and snapshots both `config.yaml` and
+  `migration/accounts-unified.json` bytes and modes before startup. An
+  already-migrated fixture must remain identical immediately. A pre-migration
+  fixture may change once only by appending receipt-matched
+  `<harness>-default` credential rows and completed migration records whose
+  row id, locator, and backup reference agree. The ordered backup chain starts
+  byte-identical to the pre-start config and each later backup contains exactly
+  the preceding appended rows at the same private mode; every other config
+  delta fails. After identity-bound shutdown the
+  lane starts and stops the same exact candidate again, and both state files
+  must then remain byte- and mode-identical. The receipt records both startup
+  snapshots, its classification, and every validated row.
+
+  The native-access phase gives each required row a stable registered/trusted
+  project plus a separate delegated live `execution.workspaceRoot`. It proves
+  a real edit and test only in the execution clone, requested/effective native
+  access, requested/observed model, exact named profile without fallback,
+  relevant Codex/Cursor/Agy vendor state, the deliberate no-outer-boundary
+  receipt, and no `sandbox-exec` invocation. Codex, Claude, and Cursor each run
+  default and named `workspace_write` rows; Agy is named-only. Cursor also runs
+  trusted `full`; Claude/Codex Browser and Delegate rows retain their native
+  per-adapter access requirements. OpenCode `workspace_write` must refuse
+  before spawn, while its trusted-Full smoke is recorded as a conditional
+  omission when the binary/route is unavailable, not as a required PASS or
+  SKIP. The lane revokes every temporary disposable-repo full-access grant.
+  Every Codex and
   Claude task attempt in the daemon's complete new-job inventory must disclose
   `local_session` from `native_session`; an API fallback or undisclosed route
   fails this VM acceptance, while Cursor retains its declared credential
-  transport. The lane is strict: FAIL, ENV, or SKIP greater than zero, a phase
-  filter, or omission of Codex, Claude, or Cursor makes the acceptance run fail.
+  transport. The lane is strict: FAIL, ENV, or required SKIP greater than zero,
+  a phase filter, or omission of Codex, Claude, Cursor, or Agy makes the
+  acceptance run fail. A typed OpenCode conditional omission is counted
+  separately.
   The single-family convergence refusal probe matches its canonical top-level
   failed status/message; nested RunFacts fields or incidental prose cannot
   satisfy that assertion.
@@ -433,6 +459,30 @@ routing, review, or delivery must start in `packages/schema`.
 5. Update README, Architecture, Integrations, Design System, or app docs when
    behavior changes.
 6. Add or update focused tests for the behavior.
+
+For a deletion-class access change, keep that order concrete: split active
+ingress types from bounded recorded-artifact decoders first; delete the core
+mechanism and rewrites next; update every adapter and public surface from the
+active schema; migrate retry/thread/UI consumers together; then regenerate
+schemas, run focused TypeScript/Swift checks, and run the exact-candidate
+native-access battery. Historical readability is tested, never implemented as
+a path that can start a new retired-mode process.
+
+### Restriction design
+
+1. Before adding or tightening a sandbox, deny/allow list, permission gate,
+   reduced mode or validation fence, identify the concrete reachable marginal
+   harm and why existing native policy, review, provenance, custody, trust,
+   rollback and disclosure do not cover it.
+2. Choose the smallest design, preferring deletion or simplification over a
+   growing exception system.
+3. Define and run a positive production-shaped acceptance path for every
+   affected supported configuration before treating a denial test as success.
+4. If the ordinary path breaks, the restriction is the defect and must be
+   removed or simplified unless an explicit human decision accepts that exact
+   lost outcome.
+5. Use the existing plan, tests and review evidence; do not create a new
+   restriction ledger, reviewer, approval gate or documentation authority.
 
 Do not fork contracts in UI code, CLI parsing, adapter output, or docs. Run
 `pnpm docs:check` in the same change: its small retired-contract inventory is a
@@ -471,11 +521,12 @@ positive promise instead of relying on a one-time documentation cleanup.
   never the operator's ordinary Codex home or OS Keychain. Claude uses a
   Claudexor-owned `CLAUDE_CONFIG_DIR`; only its disposable child HOME bridges
   the macOS login Keychain so the vendor can read the item keyed by that dir.
-  Cursor forces the vendor's file credential store inside the account row HOME;
-  the host Cursor Keychain is retired. Antigravity uses its profile HOME for
-  credentials on Darwin/Linux, while Windows retains the vendor credential at
-  OS-user scope and uses HOME only for relocatable state. Do not read or copy those credential
-  files/tokens into Claudexor state or an envelope. API keys and the
+  Cursor uses the vendor's file credential and SQLite state inside its selected
+  Claudexor-owned profile HOME; the ordinary host Keychain login is not a
+  route. Antigravity uses its profile HOME for credentials on Darwin/Linux,
+  while Windows retains the vendor credential at OS-user scope and uses HOME
+  only for relocatable state. Do not read or copy those credential files/tokens
+  into Claudexor state or an envelope. API keys and the
   Claude setup-token are separate secret-store/env routes with separate typed
   source evidence.
 - Browser MCP is an exact production dependency of `@claudexor/core`. App

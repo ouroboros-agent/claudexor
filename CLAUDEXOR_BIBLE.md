@@ -18,17 +18,17 @@ process below. Never paper over the conflict.
   wish, not an invariant.
 - Changing this file is constitutional: the commit message MUST carry a
   `CONCEPT-CHANGE(INV-NNN[, INV-MMM…])` marker naming every invariant added,
-  edited, or retired, and the marker is added only when the owner explicitly
+  edited, or retired, and the marker is added only when the operator explicitly
   approved that change (CI enforces the marker; `scripts/concept-gate.mjs`).
 - Change is not deletion. Wording may be clarified, but if removing the new
   wording leaves the original principle unrecognizable, that is a deletion in
-  disguise — forbidden without an explicit owner-approved retirement. An
+  disguise — forbidden without an explicit operator-approved retirement. An
   invariant whose content moves elsewhere keeps its id as an absorbed pointer.
 - Canary golden stories (`packages/canary`) pin a growing subset of these
   invariants as executable user stories tagged `[INV-NNN:…]`. When a canary
   fails, the product regressed: fix the product, never the story, unless the
-  owner approved a `CONCEPT-CHANGE` for that invariant.
-- Some invariants below encode locked owner decisions; their `verify:` notes
+  operator approved a `CONCEPT-CHANGE` for that invariant.
+- Some invariants below encode locked operator decisions; their `verify:` notes
   name the enforcement. They are constitution first, implementation second —
   code converges to them, never the reverse.
 - Documentation is a hierarchy with one home per fact: this Bible
@@ -39,7 +39,7 @@ process below. Never paper over the conflict.
   (process gates; the sole home of the release protocol) →
   `docs/DEVELOPMENT.md` (contributor commands; links instead of restating) →
   `docs/INTEGRATIONS.md` (external surfaces) → `docs/FEATURES.md`
-  (non-solid ledger) → `docs/BACKLOG.md` (deferred with owner decision) →
+  (non-solid ledger) → `docs/BACKLOG.md` (deferred with operator decision) →
   `docs/AGENT_ONBOARDING.md` (agent orientation). A fact lives in exactly ONE
   of these; every other mention is a link. Mantras worth repeating live only
   here. Two prose docs describing the same behavior differently is a
@@ -50,7 +50,7 @@ process below. Never paper over the conflict.
 Orientation for every contributor and reviewer. The numbered invariants are
 the enforceable law; this list is the spirit they serve. When a proposed
 change pulls against one of these lines, stop and find the governing
-invariant or owner decision before proceeding.
+invariant or operator decision before proceeding.
 
 1. Simple beats complex; compact beats exhaustive. (INV-120)
 2. Explicit beats implicit; self-explanatory beats clever.
@@ -441,17 +441,22 @@ invariant or owner decision before proceeding.
 - **INV-073** Chat thread WRITE turns run IN-PLACE in the thread's
   explicit execution tree — the live project for an `in_place` thread, or
   the thread's persistent worktree for an `isolated` thread — and the
-  surface must disclose which applies. verify: thread schema defaults;
-  in-place orchestrator tests.
+  surface must disclose which applies. A read-only turn reuses an existing
+  isolated worktree, but before the first write turn it reads the stable
+  project directly and does not materialize Git state. verify: thread schema
+  defaults; in-place and lazy isolated-workspace tests.
 - **INV-074** Absolute host paths such as `/tmp/...` are not project diffs
   and do not prove project success. Project tmp requests default to
   project-local `tmp/...` or run artifacts unless the user explicitly
   selects a verified host-side-effect mode. verify: tmp-semantics telemetry
   tests.
-- **INV-075** Git-backed run shapes need a Git boundary. A non-git project
-  folder is initialized automatically (`git init` + a deterministic baseline
-  commit) when the user selects an isolated Ask, Plan, or Agent workspace, or
-  another Git-backed envelope path. The mutation is announced via a typed
+- **INV-075** Git-backed mutating run shapes need a Git boundary. A non-git
+  project folder is initialized automatically (`git init` + a deterministic
+  baseline commit) when the first mutating isolated turn or another Git-backed
+  write envelope needs it. Selecting an isolated workspace does not itself
+  authorize mutation: read-only Ask, Plan, and Agent turns reuse an existing
+  worktree or read the stable project without creating one. Initialization is
+  announced via a typed
   `project.git.initialized` event — never silent. Exception: a root equal to
   the user home directory or a filesystem root — or one that cannot be
   classified (no safe home resolves, or the root itself does not physically
@@ -461,7 +466,7 @@ invariant or owner decision before proceeding.
   Supported in-place paths that do not cross a Git boundary remain available
   without initialization. Claudexor never creates or edits the project's
   `.gitignore`; repo `.claudexor/` is user-owned state and runtime stays
-  external. verify: git-init, boundary-root refusal, isolated-thread,
+  external. verify: git-init, boundary-root refusal, lazy isolated-thread,
   run-applicability, and gitignore non-interference workspace tests.
 
 ## 8. Plan-Driven Work Is First-Class
@@ -552,7 +557,7 @@ invariant or owner decision before proceeding.
   primary — never to the pool (ambiguous scalars are rejected). verify:
   schema (no `routing.default_model`); canaries
   `[INV-103:scalar-model-primary-only]` and `[INV-103:no-global-model]`;
-  routing tests. Locked owner decision.
+  routing tests. Locked operator decision.
 - **INV-104** A model outside the harness's model truth source (live
   inventory or manifest known-good list) is refused at settings-write, run
   preflight (typed failure WITH artifacts before any CLI spawns), and both
@@ -563,7 +568,7 @@ invariant or owner decision before proceeding.
   model-hints-freshness gate. verify: canaries
   `[INV-104:model-truth-refusal]`, `[INV-104:models-manifest-fallback]`,
   `[INV-104:settings-write-strict]`; settings-service tests;
-  modelGovernance preflight tests. Locked owner decision: strict
+  modelGovernance preflight tests. Locked operator decision: strict
   everywhere.
 - **INV-105** Per-harness knobs a manifest does not support are disclosed as
   `ignored_settings` on `harness.started` — never silently dropped. This
@@ -620,7 +625,7 @@ invariant or owner decision before proceeding.
   unlisted mutation path is a release blocker. verify: mutation-path
   inventory in ARCHITECTURE; delivered-prefix and active-turn thread-apply
   tests; claude-bridge exclusive-create/no-follow/race/idempotency tests +
-  envelope-bridge patch-cleanliness test (locked owner decision).
+  envelope-bridge patch-cleanliness test (locked operator decision).
 - **INV-114** Apply/adoption captures and rechecks the exact target preimage
   immediately around the mutation; stale or conflicting targets are refused
   without destructive rollback. `adopted:false`/`not_applied` means the tree
@@ -640,7 +645,7 @@ invariant or owner decision before proceeding.
   green work. Deterministic gates must be hermetic to the checkout for the
   verify re-run to be meaningful.
   verify: FinalVerifier tests + the final_verify apply-gate consumer tests
-  (locked owner decision).
+  (locked operator decision).
 - **INV-116** CONCEPT-CHANGE(INV-116): the run's TERMINAL truth is the D8
   independent axes — a lifecycle (`succeeded|failed|cancelled|interrupted`)
   that says how far the PROCESS got, plus the orthogonal outcome FACTS
@@ -676,19 +681,29 @@ invariant or owner decision before proceeding.
   abstractions. Add an abstraction only when it removes real duplication or
   captures an established boundary. Avoid overengineering, hidden state,
   silent fallback, and broad refactors unrelated to the user-visible
-  problem. verify: review protocol scope checks.
+  problem. A new restriction bears the burden of proof: identify the
+  demonstrated marginal danger and common path it affects, then prove the
+  promised capability still works in a production-shaped positive E2E. A
+  denial-only or policy-shape test cannot certify a restriction; capability
+  loss blocks it. verify: review protocol scope checks; affected-path battery.
 - **INV-121** Meta-solutions over patches: data-drive from declared
   capabilities, single producers with translational consumers, typed
   contracts over hardcoded enums-in-logic — so future
   values/harnesses/modes work without re-patching. Before closing any bug,
   ask the class question: "if this fix had existed earlier, could the same
   failure class have reached us through another surface?" If yes, fix the
-  class. verify: review protocol; reference example: the effort-ladder
-  normalizer.
+  class. Generalize only from multiple reachable surfaces or a broken
+  contract/SSOT boundary; a theoretical adjacent edge case is not evidence
+  for a broader mechanism. verify: review protocol; reference example: the
+  effort-ladder normalizer.
 - **INV-122** SSOT/DRY/SOLID as pragmatic constraints: one owner per
   contract, no duplicated business rules across surfaces, no config path
-  that lets a project self-grant sensitive powers. verify: review; trust
-  gating tests.
+  that lets a project self-grant sensitive powers. Existing trust, provenance,
+  review, custody, rescue, and rollback controls count when judging marginal
+  risk; do not duplicate them with a weaker second boundary. Prefer the broad
+  capability plus explicit residual disclosure unless evidence shows those
+  controls are insufficient. verify: review; trust gating tests; positive
+  capability-preservation tests.
 - **INV-123** Dead code is deleted, not allowlisted (justified, dated
   baseline entries tied to a locked decision are the only exception). Docs
   claims about endpoints, mode ids, and CLI flags are checked against
@@ -703,28 +718,28 @@ invariant or owner decision before proceeding.
   `scripts/complexity-ratchet.mjs` in CI.
 - **INV-125** Release tags additionally pass the owner-review gate: ONE
   parallel full-context wave on the frozen candidate SHA with EXACTLY two
-  required reviewers — the fable slot on one slug from the owner-approved
+  required reviewers — the fable slot on one slug from the operator-approved
   tier set {`claude-fable-5-thinking-max`, `claude-fable-5-thinking-medium`,
   `claude-fable-5-thinking-high`}
   and the sol slot on one slug from {`gpt-5.6-sol-xhigh`,
   `gpt-5.6-sol-max`, `gpt-5.6-sol-high`, `gpt-5.6-sol-medium`},
   both executed as the Cursor operator's
   own subagents (protocol `cursor-operator-fable-sol-v1`). Decision trail:
-  owner decision 2026-08-04, verbatim: «зачем тебе кодекс? Ревьюй курсором и
+  operator decision 2026-08-04, verbatim: «зачем тебе кодекс? Ревьюй курсором и
   клод кодом» — the sol slot moved from the codex harness to cursor. Second
-  owner decision 2026-08-04 (session transcript
+  operator decision 2026-08-04 (session transcript
   5349be54-a1d2-46bb-a6ef-52a2e43b91ee.jsonl line 1824) allowed the native
   sol lane to review the sealed delta after a completed full-context pass.
-  Owner decision 2026-08-06 (takeover session), verbatim: «не надо вообще
+  Operator decision 2026-08-06 (takeover session), verbatim: «не надо вообще
   codex использовать, я же сказал. Используй своих субагентов, ты же можешь
   у себя разные модели вызывать так как ты cursor» — the whole panel moved
   from vendor-native harness sessions to Cursor operator subagents; the
   native-lane mechanics (route/effort observation, the sol delta scope)
   retired with that transport, and both slots now review the full context.
-  Operator decision 2026-08-06 ~08:29 MSK, under the owner authorization of
+  Operator decision 2026-08-06 ~08:29 MSK, under the operator authorization of
   08:04 MSK the same day («меня удовлетворяют модели fable-5 и gpt-5.6-sol»,
   given after the sol max tier disappeared from the subagent model catalog):
-  the panel moved from one hard-pinned slug per slot to the owner-approved
+  the panel moved from one hard-pinned slug per slot to the operator-approved
   tier sets above. Motive: two subagent-model catalog flaps within one hour
   (sol max, then fable max); a hard single-tier pin would have blocked the
   formal pair on the frozen SHA, and a new SHA re-runs every gate. The
@@ -733,11 +748,11 @@ invariant or owner decision before proceeding.
   Operator addendum 2026-08-07: the same-family `xhigh` Sol tier is admitted
   after the live subagent catalog exposed only that tier; it restores the
   original high-assurance Sol level without permitting another model family.
-  Operator addendum 2026-08-10, owner-ratified the same day: the same-family
+  Operator addendum 2026-08-10, operator-ratified the same day: the same-family
   `high` Fable tier is admitted after the live subagent catalog exposed only
   that Fable tier; the ratification is recorded verbatim in the CHECKLISTS
   protocol decision trail and the 3.3.15 release evidence.
-  Operator addendum 2026-08-16, owner-ratified the same day: the same-family
+  Operator addendum 2026-08-16, operator-ratified the same day: the same-family
   `high` Sol tier is admitted after the live subagent catalog exposed only
   that Sol tier; it sits above the already-approved `medium`, so the
   assurance floor does not drop. The ratification is recorded in the
@@ -747,14 +762,14 @@ invariant or owner decision before proceeding.
   `review_scope: "full"`, report SHA-256 — sealed against the packet; real
   execution overlap stays mandatory; the two reports must be distinct.
   Each reviewer receives the same complete Git-visible candidate,
-  complete diff, sealed evidence, user dialogue and owner decisions, test and
+  complete diff, sealed evidence, user dialogue and operator decisions, test and
   gate receipts, and internet access;
   packet splitting and substitute models cannot satisfy the gate. Then: ONE adjudication under INV-139; ONE batched
   correction commit; ONE parallel confirmation wave in the same full context,
   focused on the correction delta. Any tracked mutation re-freezes the
   candidate. A blocking, missing, malformed, or incomplete
   required verdict cannot be sealed. Rounds beyond confirmation require an
-  explicit owner decision. The signed schema-v6 owner-review attestation binds
+  explicit operator decision. The signed schema-v6 operator-review attestation binds
   the candidate SHA/tree/version, exact full-gate receipt, sealed evidence
   manifest, diff and wave, and both reviewers' model slugs, execution
   intervals, review scopes, report and metadata digests, and non-blocking
@@ -776,12 +791,12 @@ invariant or owner decision before proceeding.
   defect class as a staged field. verify: generated-catalog diff gates;
   review question "what declaration produces this list?".
 - **INV-139** Review finds defects; it does not author concept. A blocking
-  finding must cite a violated invariant or owner-accepted criterion, carry
+  finding must cite a violated invariant or operator-approved criterion, carry
   reproducible evidence, and be reachable in the default configuration;
   reviewer `proposed_fix` text is advisory; consensus without evidence
   blocks nothing; later waves cannot open blockers on unchanged code
-  without new evidence. Owner decisions and this Bible outrank reviewer
-  preference — a finding that re-litigates a recorded owner decision is
+  without new evidence. Operator decisions and this Bible outrank reviewer
+  preference — a finding that re-litigates a recorded operator decision is
   adjudicated out-of-scope and ledgered, never silently fixed. verify:
   review packet template (BLOCKER_FILTER, DECLINED_FINDINGS); adjudication
   ledger; CHECKLISTS Review Protocol.
@@ -832,7 +847,7 @@ invariant or owner decision before proceeding.
   the bootstrap row has no routing privilege. The vendor's ordinary host
   stores (~/.claude, ~/.codex, the host Cursor Keychain login) are never
   read, probed, or mutated; cursor accounts live only in isolated
-  file-store rows (owner decision D-U3: host CLI logins disappeared).
+  file-store rows (operator decision D-U3: host CLI logins disappeared).
   **CONCEPT-CHANGE(INV-067, INV-135):** registry rows remain the one account
   model, while their effective identity isolation and cleanup policy is
   platform-declared. A platform may cap enabled rows when the vendor exposes
@@ -842,7 +857,7 @@ invariant or owner decision before proceeding.
   `next_up` fail loudly without selecting, probing, disabling, or deleting a
   row until the operator disables extras.
   ONE resolve owner (the orchestrator) resolves the per-harness EFFECTIVE
-  account by the owner-locked order: (1) an explicit per-run/per-thread pin
+  account by the operator-locked order: (1) an explicit per-run/per-thread pin
   is STRICT — unknown/disabled/harness-mismatched ids refuse typed, a fresh
   exhausted window refuses typed (`subscription_window_exhausted` + reset
   time), and a pin never silently rotates; (2) an unpinned THREAD turn stays

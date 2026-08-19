@@ -164,9 +164,11 @@
                             "credential_pool_exhausted",
                             "delegated_home_unavailable",
                             "delegated_confinement_unavailable",
-                            "delegated_evidence_incomplete"
+                            "delegated_evidence_incomplete",
+                            "access_profile_incompatible",
+                            "retired_access_profile"
                           ],
-                          "description": "Machine-readable failure sub-code within a RunFailure category (budget-denial reasons, Delegate child-drain timeout, a spent subscription quota window whose reopen time is RunFailure.resetsAt, an exhausted credential rotation pool whose EARLIEST known member reset is RunFailure.resetsAt, and the delegated-run confinement refusals: missing scoped home, no OS-enforced boundary on this host, incomplete applied evidence)."
+                          "description": "Machine-readable failure sub-code within a RunFailure category, including historical delegated-run failures and active access-profile refusals."
                         },
                         {
                           "type": "null"
@@ -648,8 +650,8 @@
                 "readonly",
                 "workspace_write",
                 "full",
-                "external_sandbox_full",
-                "inherit_native"
+                "inherit_native",
+                "external_sandbox_full"
               ],
               "description": "Access profile of the run: the effective profile when known, else the requested one (prefer requestedAccess/effectiveAccess)."
             },
@@ -3138,7 +3140,7 @@
                     "properties": {
                       "proven": {
                         "type": "boolean",
-                        "description": "Whether a boundary was actually enforced for this attempt: a named mechanism AND the path it was proven to deny. The only field a consumer should branch on."
+                        "description": "Whether a historical outer boundary was proven by a named mechanism, digest, and denied path; false for current native-access attempts."
                       },
                       "mechanism": {
                         "type": [
@@ -3159,7 +3161,7 @@
                           "string",
                           "null"
                         ],
-                        "description": "Why this attempt ran with NO boundary; null when one was applied. Present exactly when proven is false for a run that asked for a boundary."
+                        "description": "Why no additional outer boundary was applied; current delegated attempts carry the schema-owned deliberate-absence reason."
                       }
                     },
                     "required": [
@@ -3169,13 +3171,13 @@
                       "unavailableReason"
                     ],
                     "additionalProperties": false,
-                    "description": "Applied OS filesystem boundary for one attempt, or the stated reason there was none."
+                    "description": "Historical outer-boundary proof for one attempt, or the deliberate reason current native-access execution applied none."
                   },
                   {
                     "type": "null"
                   }
                 ],
-                "description": "Applied OS boundary for this attempt; null when the run never asked for one (every non-delegated run).",
+                "description": "Historical outer-boundary evidence or current deliberate-absence evidence; null when the attempt has neither.",
                 "default": null
               }
             },

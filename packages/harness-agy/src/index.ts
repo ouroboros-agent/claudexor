@@ -48,7 +48,6 @@ function accessArgs(access: AccessProfile): string[] {
     case "workspace_write":
       return ["--mode", "accept-edits"];
     case "full":
-    case "external_sandbox_full":
       return ["--dangerously-skip-permissions"];
     case "inherit_native":
       return [];
@@ -224,13 +223,7 @@ export function createAgyAdapter(): HarnessAdapter {
         },
         capability_profile: AGY_CAPABILITY_PROFILE,
         auth_modes: ["local_session"],
-        access_profiles_supported: [
-          "readonly",
-          "workspace_write",
-          "full",
-          "external_sandbox_full",
-          "inherit_native",
-        ],
+        access_profiles_supported: ["readonly", "workspace_write", "full", "inherit_native"],
       });
     },
 

@@ -153,7 +153,8 @@ at every wire boundary.
   real worktree file); they are explicit-`--harness` only and never enter
   auto/reviewer pools.
 - `packages/workspace`: disposable candidates use private shared-clone Git
-  authority while persistent threads use git worktrees; scoped harness homes/
+  authority while persistent threads materialize git worktrees on their first
+  mutating turn (read-only turns reuse one if present); scoped harness homes/
   config dirs for write envelopes and read-only routes via `readOnlyHomeEnv` keep
   relocatable, route-local state outside both the worktree and the operator's
   home. An in-place run normally keeps the native environment so its vendor
@@ -219,6 +220,42 @@ Host integrations are generated translational artifacts: Claude Code, Codex,
 Cursor, and OpenCode files point at the local CLI/MCP server and carry ownership
 markers for safe repair/uninstall. They do not route work or duplicate
 orchestration logic.
+
+### External-orchestrator workspaces and native access
+
+`execution.delegated` marks a run whose external caller owns the mutable
+workspace; it is independent of the `agent --delegate` belt. For a
+project-scoped delegated Agent with `execution.isolation: live`, `scope.root`
+is the stable project identity used for registration, configuration, trust,
+TaskContract, artifacts, and history. `execution.workspaceRoot` is the
+one-shot absolute existing directory used as the `executionRoot` field on
+`RunInput`, so the
+harness cwd and native Git operations happen only there. Every new mutating
+delegated-live request must supply it and never falls back to `scope.root`.
+Read-only requests may omit it. Exact Retry revalidates a frozen new-shape
+workspace; the bounded legacy no-field replay retains its historical
+`scope.root` execution semantics.
+
+The active access profiles are `readonly`, `workspace_write`, `full`, and
+`inherit_native`. Each adapter translates that request to its own native
+permission mode; the generic run loop invokes the adapter command directly.
+Claudexor adds no outer Seatbelt or other OS filesystem boundary. A scoped
+`HOME` or named vendor profile selects credentials and keeps vendor-written
+state separate, but it is not containment and does not prevent same-user host
+access. New delegated attempt and candidate evidence records this deliberate
+absence with null mechanism/proof fields. Historical proven Seatbelt evidence
+and the retired `external_sandbox_full` literal remain decoder-only so old
+runs stay inspectable.
+
+An exact idempotency replay is resolved before current access or filesystem
+admission: if the daemon already accepted the historical command, the same
+handle is returned. Only an absent replay may refuse retired
+`external_sandbox_full` with `retired_access_profile`. Run Again removes that
+value and requires an explicit active replacement; a historical sticky thread
+likewise requires an active PATCH or turn override. Browser and Delegate use
+the selected adapter's existing native MCP-injection access requirement:
+Claude can host Browser or the belt under `workspace_write`, while Codex needs
+explicit trusted `full`; no access rewrite hides that difference.
 
 ## 4. Routing
 
@@ -947,6 +984,13 @@ run: the harness works in an isolated workspace, Claudexor captures the git diff
 emits artifacts, and live project mutation happens only through explicit
 delivery/apply.
 
+An Agent whose effective access is `readonly` is the answer-producing narrowing
+of that path: it skips Git/worktree preparation, snapshots, patch capture,
+synthesis, delivery, and patch WorkProduct emission, while preserving the answer,
+summary, telemetry, and native session. Patch-convergence controls (`attempts` or
+`untilClean`) are incompatible with readonly and refuse typed before provider or
+workspace work; they are never ignored or silently redirected.
+
 Envelope semantics are strict. Project runs execute under
 `~/.claudexor/v3/projects/<project-sha256>/workspaces/<task>/<attempt>/tree`, and
 the harness `cwd` is the envelope worktree. Proven work product is the git diff in that worktree, a
@@ -958,10 +1002,10 @@ Git admission follows the semantic run shape, not a blanket mode rule.
 `GET /v2/run-applicability` (with the absolute `repoRoot` query) returns the
 live Git capability plus the engine-owned `in_place | isolated` × `read_only |
 agent_convergence | agent_other` matrix computed by the same predicate the run
-preflight uses. Every explicitly isolated thread needs a persistent Git
-worktree, so selecting Isolated authorizes a NON-GIT project folder to be
-initialized for Ask, Plan, or Agent before the worktree materializes. Git-backed
-Agent envelopes use the same idempotent initializer: `git init` plus a
+preflight uses. An isolated thread materializes its persistent Git worktree on
+the first mutating turn. Read-only Ask, Plan, and Agent turns reuse that worktree
+when it already exists; before then they read the stable project directly and do
+not initialize Git. Git-backed Agent write envelopes use the same idempotent initializer: `git init` plus a
 deterministic baseline commit (author `Claudexor`) make worktree diffs honest
 from the first run. Claudexor never creates or edits the project's `.gitignore`;
 repo `.claudexor/` is user-owned config and runtime stays external. The action
@@ -993,7 +1037,7 @@ then runs the same preflight in the durable daemon job immediately before
 provider execution, so its typed problem survives reload and Exact Retry can
 replay the unchanged target and options after Git becomes available.
 
-Read-only turns provision a scoped harness HOME (no worktree) so native state —
+Read-only turns provision a scoped harness HOME (and no new worktree) so native state —
 plan files, session rollouts, transcripts — never lands in the operator's real
 home. A one-shot ask/plan gets a DISPOSABLE throwaway home deleted after the
 run. A read-only turn of a THREAD instead gets a DURABLE per-lane home under
@@ -1009,10 +1053,12 @@ is reserved for explicit stateful external adapters, such as Terminal-Bench
 containers where runtime state is the deliverable and cannot be merged from a
 patch. It is not surfaced in the macOS app and is not the default mutation path.
 
-Chat thread turns run IN-PLACE: an agent turn executes directly in the
+Chat thread turns run IN-PLACE: a mutating Agent turn executes directly in the
 execution tree (the live project for an `in_place` thread, or the thread's
 persistent worktree for an `isolated` thread — the orchestrator's internal
-run-input carries this as `executionRoot`), so the
+run-input carries this as `executionRoot`). A read-only turn uses an existing
+isolated worktree directly, or the stable project until the first mutating turn
+materializes that worktree. Thus the
 routed harness resumes its own native CLI session and the next turn sees the
 work — no continuation packet for these (the native session already holds the
 delta). A best-of-N race still runs candidates in
@@ -1196,13 +1242,15 @@ Endpoint semantics beyond the inventory:
 - Threads are the chat/session-first conversation SSOT (run lineage + native
   harness sessions). A thread declares a `workspace.mode`: `in_place` (default)
   mutates the live project tree; `isolated` keeps a persistent git worktree per
-  thread. It also carries sticky routing — `primaryHarness` and
+  thread once a mutating turn materializes it. It also carries sticky routing — `primaryHarness` and
   `eligibleHarnesses` — that its turns inherit; `PATCH /v2/threads/:id` renames /
   archives a thread (title + open/closed state) and switches the sticky
   routing.
 - `POST /v2/threads/:id/turns` enqueues a follow-up run anchored to the thread.
-  Agent turns run IN-PLACE in the execution tree — the live project for an
-  in-place thread, or the thread's worktree for an isolated thread — so the
+  Mutating Agent turns run IN-PLACE in the execution tree — the live project for
+  an in-place thread, or the thread's worktree for an isolated thread. Read-only
+  turns reuse an existing isolated worktree or read the stable project without
+  materializing one — so the
   routed harness resumes its own native CLI session and the next turn sees the
   work. A best-of-N race runs candidates in isolated envelopes and auto-applies
   the winner to the execution tree. When a turn runs on a lane that has not seen
@@ -2027,9 +2075,10 @@ fence (Bible INV-113); an unlisted mutation path is a release blocker:
    verifier and exact target preimage. Success advances the persistent thread
    branch and watermark with journaled thread state.
 5. **Automatic git init** — a NON-GIT project folder is initialized before a
-   Git-backed run shape crosses its boundary (`git init`, deterministic baseline
-   commit). This includes an explicitly isolated Ask, Plan, or Agent thread and
-   Agent envelope paths; supported non-Git in-place shapes do not initialize.
+   Git-backed mutating run shape crosses its boundary (`git init`, deterministic
+   baseline commit). This includes the first mutating isolated-thread turn and
+   Agent write-envelope paths; read-only and supported non-Git in-place shapes do
+   not initialize.
    Fence: the mutation is announced via a typed `project.git.initialized` run
    event — never silent. A partial non-transactional failure emits the same
    event with its failed stage and proven progress before terminalizing.
@@ -2462,7 +2511,7 @@ arbitration/synthesis.yaml
 final/run_facts.yaml
 final/telemetry.yaml
 final/patch.diff?
-final/work_product.yaml
+final/work_product.yaml?
 final/summary.md
 final/failure.yaml?
 final/answer.md?
@@ -2610,16 +2659,19 @@ macOS UI/UX SSOT. This section keeps only the engine-facing facts.
   A selection-generation lease prevents late picker/capture completion, including
   A→B→A, from publishing private file context into another conversation.
 - The agent-driven browser is an engine capability the app merely arms. The
-  composer preserves user-selected access and web policy separately from the
-  effective request: Browser derives Full access and upgrades selected `off` to
-  effective `auto`; disarming it restores the selections, and only selected
-  values may persist as sticky thread preferences. The
+  composer sends user-selected access and web policy unchanged: Browser never
+  widens either axis. `browser: true` plus selected `off` stays `web: off` on the
+  wire and reaches the engine's existing typed preflight refusal; disarming
+  Browser leaves the selections untouched. Only selected values may persist as
+  sticky thread preferences. The
   adapter injects the exact lockfile-pinned Microsoft Playwright MCP (codex via stateless
   `-c mcp_servers.browser.*` overrides, claude via `--mcp-config` inline JSON —
   the agent gets the Playwright navigate / screenshot / snapshot browser
   tools) only when the run opted in, the harness declares
-  `browser_tool`, web policy is not `off`, and the run has **full access**
-  (codex's workspace-write sandbox cancels the navigation — live-verified).
+  `browser_tool`, web policy is not `off`, and the adapter's existing native MCP
+  policy admits the selected access. Claude admits Browser at native
+  `workspace_write`; Codex requires explicit trusted `full` and returns a typed
+  pre-spawn remediation for Browser at `workspace_write`.
   `RequestRequirementsResolver` records `{eligible, requested, effective,
   reason, evidenceRefs}` for every selected lane. A mixed pool keeps an
   incapable lane participating without Browser (`effective=false`); zero
@@ -3110,10 +3162,11 @@ code touching one of these areas must honor it or change it explicitly here.
 - Web use is optional under `auto`, `cached`, and `live`; no
   did-this-task-NEED-web resolver or mandatory evidence gate is inferred from
   those policies. `off` remains the only strict external-context policy.
-- In-place READ-ONLY flows on non-git folders get a best-effort copied baseline
-  for diffing. An explicitly isolated read-only thread initializes the Git
-  boundary first, while Git-backed write envelopes initialize per INV-075 and
-  the implemented live Agent convergence path keeps its non-Git copied baseline.
+- Read-only flows never materialize a Git boundary, capture a patch, or emit a
+  patch WorkProduct. An isolated thread reuses its worktree only after a mutating
+  turn has already materialized it; otherwise it reads the stable project.
+  Git-backed write envelopes initialize per INV-075 and the implemented live
+  Agent convergence path keeps its non-Git copied baseline.
   A root equal to the user home directory or a filesystem root — or one that
   cannot be classified — is refused with the typed `git_boundary_root_refused`
   error before any mutation instead of being initialized (INV-075 exception);

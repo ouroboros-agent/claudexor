@@ -609,14 +609,6 @@ From the 3.6.0 formal INV-125 wave (ledger rows in
 `docs/reference/review-ledger.md`, 3.6.0 block). The first is the binding
 fix-forward follow-up to the owner's VM-acceptance waiver for this release.
 
-- **VM existing-default battery amendment (fable F1, owner-waived A-1).**
-  `scripts/real-harness-battery.mjs` still hard-asserts flat byte-identity of
-  `config.yaml`; amend it to the CHECKLISTS receipt-backed one-migration
-  contract (auto-registered `<harness>-default` rows plus the migration phase
-  file are the only allowed first-start mutations; the second and later
-  starts must be byte-identical) and update `docs/DEVELOPMENT.md`'s lane text
-  to the same contract so the two docs stop stating different contracts for
-  one lane.
 - **Daemon-launch flake disclosure row (fable F2).** The full-suite
   machine-load flake in `packages/cli/src/daemon-launch.test.ts` (3/3 green
   solo) is disclosed only in operator evidence; add one durable disclosure

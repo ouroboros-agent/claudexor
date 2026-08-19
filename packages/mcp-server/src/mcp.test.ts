@@ -264,13 +264,7 @@ describe("Claudexor MCP server (SDK v2)", () => {
         writeModes: ["agent"],
         isolationKinds: ["envelope", "live"],
         workspaceModes: ["in_place", "isolated"],
-        accessProfiles: [
-          "readonly",
-          "workspace_write",
-          "full",
-          "external_sandbox_full",
-          "inherit_native",
-        ],
+        accessProfiles: ["readonly", "workspace_write", "full", "inherit_native"],
         applyModes: ["apply", "commit", "branch", "pr"],
       },
       cliCommands: [{ id: "ask", mutability: "read", stability: "stable", recovery: false }],
@@ -748,6 +742,7 @@ describe("Claudexor MCP server (SDK v2)", () => {
     expect(schema?.properties?.tests?.type).toBe("array");
     expect(schema?.properties?.paidBudget?.anyOf).toHaveLength(2);
     expect(schema?.properties?.access?.enum).toContain("workspace_write");
+    expect(schema?.properties?.access?.enum).not.toContain("external_sandbox_full");
     expect(schema?.properties?.protectedPathApprovals?.items?.required).toEqual(["path"]);
 
     await runTool?.handler(

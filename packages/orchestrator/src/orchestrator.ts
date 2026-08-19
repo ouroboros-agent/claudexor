@@ -19,8 +19,8 @@ import { processAttemptUsage } from "./attemptUsage.js";
 import {
   appliedAttemptFacts,
   assertDelegatedEvidence,
-  confinementNotice,
-  externallyConfinedLane,
+  isMutatingAccess,
+  outerBoundaryNotice,
   scopedHarnessHome,
   type ScopedHarnessHome,
 } from "./delegatedHome.js";
@@ -67,7 +67,7 @@ import type {
   RunEvent,
   RunLifecycle,
   RunOutcomeFacts,
-  TaskContract,
+  ActiveTaskContract,
   TestCommandInvocation,
   ProviderFamily,
   AuthPreference,
@@ -98,7 +98,6 @@ import {
   QuotaSnapshot as QuotaSnapshotSchema,
   isBlocking,
   makeOutcomeFacts,
-  normalizeUserOutputSchema,
   strictifyOutputSchema,
   estimateEffectiveAuthRoute,
 } from "@claudexor/schema";
@@ -106,6 +105,7 @@ import { globalConfigDir, loadConfig } from "@claudexor/config";
 import type { AdapterRegistry, HarnessAdapter, InteractionChannel } from "@claudexor/core";
 import {
   acceptedTryOutput,
+  AccessProfileIncompatibleError,
   AnswerAssembly,
   CLAUDEXOR_BROWSER_ARTIFACT_SUBDIR,
   countsAsAgentProgress,
@@ -137,7 +137,8 @@ import {
   writeFailure,
 } from "./runTerminals.js";
 import { type BudgetDenial, budgetFailureRecord, classifyBudgetFailure } from "./budgetFailure.js";
-import { assertOutputSchemaCompiles, finalizeStructuredOutput } from "./structuredOutput.js";
+import { finalizeStructuredOutput } from "./structuredOutput.js";
+import { admitRun } from "./runAdmission.js";
 import {
   dropDeltaPastBudget,
   emitPlanProgress,
@@ -227,7 +228,6 @@ import { buildTaskContract } from "./task-contract-builder.js";
 import { ArtifactStore, type RunPaths } from "@claudexor/artifact-store";
 import type { EventLog } from "@claudexor/event-log";
 import {
-  assertMandatoryContext,
   buildContextPack,
   rawContextForEnvelope,
   preflightEvidence,
@@ -289,7 +289,6 @@ import {
   userConfigDir,
   writeText,
 } from "@claudexor/util";
-import { assertWriteIsolation } from "./write-isolation.js";
 
 export interface OrchestratorDeps {
   registry: AdapterRegistry;
@@ -353,6 +352,9 @@ export interface RunInput {
    * Defaults to `repoRoot` (in-place threads and ordinary runs).
    */
   executionRoot?: string;
+  /** Frozen control-plane retry provenance. Historical Exact Retry may replay
+   * the pre-workspaceRoot shape; fresh delegated writes may not omit it. */
+  retryOf?: string | null;
   /** Project Git initialization that had to happen before an isolated thread
    * worktree could be materialized. Announced immediately after run.created. */
   projectGitInitialization?: EnsureGitRepositoryResult | null;
@@ -510,9 +512,9 @@ export interface RunInput {
   inPlace?: boolean;
   /**
    * `execution.delegated`: this run is driven by an EXTERNAL orchestrator that
-   * owns the workspace. Every attempt is then confined to a scoped harness HOME
-   * even in-place, trading native-session resume for confinement (see
-   * `scopedHarnessHome`), and refusing rather than degrading when it cannot be.
+   * owns the workspace. Every attempt then uses a scoped harness HOME even
+   * in-place (see `scopedHarnessHome`) so the selected profile and writable
+   * vendor state stay explicit. The scoped HOME is not an OS boundary.
    */
   delegated?: boolean;
   /**
@@ -724,50 +726,12 @@ export class Orchestrator {
         delegationParentRunId: runId,
       };
     }
-    const projectProtectedPaths =
-      mode === "agent" ? this.projectConfig(resolved.repoRoot).constraints.protected_paths : [];
-    assertWriteIsolation({
-      mode,
-      protectedPaths: projectProtectedPaths,
-      denyPaths: resolved.denyPaths,
-      inPlace: resolved.inPlace,
-      repoRoot: resolved.repoRoot,
-      executionRoot: this.execRootOf(resolved),
+    resolved.outputSchema = admitRun(resolved, mode, {
+      accessDefault: this.config(resolved.repoRoot).trust.access_default,
+      projectProtectedPaths: () =>
+        this.projectConfig(resolved.repoRoot).constraints.protected_paths,
+      mandatoryFiles: () => this.projectConfig(resolved.repoRoot).context.mandatory_files,
     });
-    // outputSchema constrains the run's final ANSWER. It is honored exactly
-    // where a final answer is delivered (agent race incl. synthesis, and ask);
-    // every other strategy refuses loudly rather than carrying a contract the
-    // engine would not validate (INV-023). The schema itself is normalized for
-    // the native structured-output routes here at the boundary — unsupported
-    // shapes (external/cyclic $ref, non-object root) are a typed refusal, not a mid-run 400.
-    if (resolved.outputSchema !== undefined && resolved.outputSchema !== null) {
-      if (mode !== "agent" && mode !== "ask") {
-        throw new Error(
-          `outputSchema constrains the final answer and applies to agent/ask runs (got mode=${mode}); drop the schema or switch modes`,
-        );
-      }
-      if (resolved.untilClean || (resolved.attempts !== undefined && resolved.attempts !== null)) {
-        throw new Error(
-          "outputSchema is not supported with convergence flags (--until-clean/--attempts): convergence delivers a gated patch, not a structured answer; drop the schema or the convergence flags",
-        );
-      }
-      // Shape-refuse unsupported schemas, then PROVE it compiles under the same
-      // ajv the engine validator uses — a malformed schema is a preflight
-      // refusal here (before any run dir), never a mid-run validator crash. The
-      // contract keeps the ORIGINAL (conformance authority); local-ref inlining
-      // and strictification are transport-only transforms in harnessSpecKnobs.
-      resolved.outputSchema = normalizeUserOutputSchema(resolved.outputSchema);
-      assertOutputSchemaCompiles(resolved.outputSchema);
-    }
-    // P1: a versioned `mandatory_files` contract is enforced UNIFORMLY here, for
-    // every mode, so the same repo state can't pass `run`/`ask` while failing
-    // `audit`. No-op when the list is empty (the default) or for no-project runs.
-    if (resolved.repoRoot !== NO_PROJECT_ROOT) {
-      assertMandatoryContext(
-        resolved.repoRoot,
-        this.projectConfig(resolved.repoRoot).context.mandatory_files,
-      );
-    }
     // Reviewer panels are validated only inside Agent strategies that actually
     // review (race/convergence; Plan Council is the plan critique path) — AFTER run-dir
     // creation, so a doomed explicit panel yields typed failure ARTIFACTS
@@ -1189,8 +1153,7 @@ export class Orchestrator {
     const policy = input.web ?? input.externalContextPolicy ?? "auto";
     const pool: RoutedAdapter[] = [];
     const dropped: string[] = [];
-    // Structured requested-vs-effective route receipt (QA-043): every auto-pool
-    // drop is recorded with its typed STAGE so the disclosure preserves the
+    // Every auto-pool drop is recorded with its typed STAGE so the disclosure preserves the
     // real cause instead of collapsing to one reason.
     const droppedLanes: { harnessId: string; stage: RouteDropStage; detail: string }[] = [];
     // The ONE explicit-lane admission gate shared by every drop site (QA-043 /
@@ -1199,7 +1162,10 @@ export class Orchestrator {
     // substitution or self-race duplication; an AUTO lane is dropped with a
     // typed omission recorded for the degradation receipt.
     const dropLane = (harnessId: string, stage: RouteDropStage, detail: string): void => {
-      if (explicitPool) throw new HarnessUnavailableError(detail);
+      if (explicitPool) {
+        if (stage === "access") throw new AccessProfileIncompatibleError(detail);
+        throw new HarnessUnavailableError(detail);
+      }
       dropped.push(detail);
       droppedLanes.push({ harnessId, stage, detail });
     };
@@ -1365,7 +1331,6 @@ export class Orchestrator {
         readOnlyIntent
           ? "readonly"
           : (input.access ?? this.config(input.repoRoot).trust.access_default),
-        externallyConfinedLane(input.delegated === true),
       );
       const accessSupported =
         !requiredAccess || manifest.access_profiles_supported.includes(requiredAccess);
@@ -1407,6 +1372,7 @@ export class Orchestrator {
             harnessId: id,
             requested: input.browser === true,
             manifestCapable: manifest.capabilities.browser_tool,
+            requiresFullAccess: manifest.capability_profile.mcp_injection_requires_full_access,
             webPolicy: routePolicy,
             access: requiredAccess,
           }),
@@ -1469,6 +1435,11 @@ export class Orchestrator {
       }
     }
     if (pool.length === 0) {
+      if (droppedLanes.length > 0 && droppedLanes.every((lane) => lane.stage === "access")) {
+        throw new AccessProfileIncompatibleError(
+          `no harness can enforce the requested access profile (${droppedLanes.map((lane) => lane.detail).join(", ")})`,
+        );
+      }
       throw new HarnessUnavailableError(
         `no harness can perform '${intent}' for this mode${dropped.length ? ` (skipped: ${dropped.join(", ")})` : ""}`,
       );
@@ -1838,7 +1809,7 @@ export class Orchestrator {
    */
   private async lazyContextSection(
     input: RunInput,
-    contract: TaskContract,
+    contract: ActiveTaskContract,
     store: ArtifactStore,
     paths: ReturnType<ArtifactStore["runPaths"]>,
     log: EventLog,
@@ -1923,7 +1894,7 @@ export class Orchestrator {
     return this.config(repoRoot).project;
   }
 
-  private buildContract(input: RunInput, taskId: string, mode: ModeKind): TaskContract {
+  private buildContract(input: RunInput, taskId: string, mode: ModeKind): ActiveTaskContract {
     return buildTaskContract(input, taskId, mode, {
       paidBudget: this.deps.paidBudget,
       routingGoal: this.deps.routingGoal,
@@ -1989,7 +1960,7 @@ export class Orchestrator {
   }
 
   private harnessSpecKnobs(
-    contract: TaskContract,
+    contract: ActiveTaskContract,
     knobs: {
       webPolicy: ExternalContextPolicy;
       toolsAllow: string[];
@@ -2039,7 +2010,7 @@ export class Orchestrator {
    */
   private workReportEnvelopeFor(
     routed: RoutedAdapter,
-    contract: TaskContract,
+    contract: ActiveTaskContract,
     interactive: boolean,
   ): ResolvedWorkReportEnvelope {
     return resolveWorkReportEnvelope({
@@ -2075,7 +2046,7 @@ export class Orchestrator {
 
   private routeSpecKnobs(
     routed: RoutedAdapter,
-    contract: TaskContract,
+    contract: ActiveTaskContract,
     overrideModel?: string,
     effortHint?: EffortHint,
   ): {
@@ -2289,7 +2260,7 @@ export class Orchestrator {
     envelope: WorkspaceEnvelope,
     attemptId: string,
     label: string,
-    contract: TaskContract,
+    contract: ActiveTaskContract,
     prompt: string,
     store: ArtifactStore,
     paths: ReturnType<ArtifactStore["runPaths"]>,
@@ -2315,8 +2286,8 @@ export class Orchestrator {
     /** Decided by `harnessHomeFor` in the CALLER, so the per-attempt applied
      * facts exist in the caller's catch too: an attempt that ran and then threw
      * must record what it ran under, not just why it stopped. REQUIRED (no
-     * default): a silent fallback here would spawn a delegated child on the
-     * operator's real home while the record still claimed confinement. */
+     * default): a silent fallback here would spawn a delegated attempt on the
+     * operator's real home while the record still claimed scoped state. */
     harnessHome: ScopedHarnessHome,
   ): Promise<CandidateRun> {
     const adapter = routed.adapter;
@@ -2363,8 +2334,8 @@ export class Orchestrator {
       // Engine-derived read-only prompt constraints: protected/auto-protected
       // paths PLUS the exact typed gate argv the run will execute (QA-022 FIX B).
       prompt: promptWithEngineConstraints(
-        // A child running without an OS boundary is TOLD so (disclosure 2 of 3).
-        [prompt, confinementNotice(harnessHome), laneContinuity?.pointerLine, continuationPointer]
+        // The child is told that Claudexor adds no outer OS boundary (disclosure 2 of 3).
+        [prompt, outerBoundaryNotice(harnessHome), laneContinuity?.pointerLine, continuationPointer]
           .filter((s): s is string => typeof s === "string" && s.length > 0)
           .join("\n\n"),
         contract.constraints.protected_paths,
@@ -2403,11 +2374,8 @@ export class Orchestrator {
       // Scoped harness home for isolated envelopes AND for every delegated run;
       // an ordinary in-place run keeps the native environment so the resumed
       // vendor session is reachable. See scopedHarnessHome for the cost a
-      // delegated in-place attempt pays for that confinement.
+      // delegated in-place attempt pays for that scoped state.
       ...(harnessHome.env ? { env: harnessHome.env } : {}),
-      // The OS boundary itself. The shared CLI run loop wraps the argv with it;
-      // no adapter opts in, so no adapter can forget.
-      confinement: harnessHome.confinement,
       raw_context_packet: rawContextPacket,
       stream_deltas: streamDeltas,
     });
@@ -2833,8 +2801,8 @@ export class Orchestrator {
             ...(secretDiffRefusal ? { secret_diff_refusal: secretDiffRefusal } : {}),
             gates: gates.map((g) => ({ id: g.id, status: g.status })),
             branch: envelope.branch_name,
-            // Applied facts, not promises: the caller of a delegated run
-            // verifies the confinement it asked for instead of trusting it.
+            // Applied facts, not promises: historical proofs stay readable and
+            // current delegated runs state deliberate outer-boundary absence.
             // Built by the SAME shape the failure path writes.
             ...applied,
           },
@@ -2944,6 +2912,7 @@ export class Orchestrator {
     // announced: a refused run must fail the request loudly, not 200 a runId
     // and leave an orphaned run dir without a terminal event.
     const contract = this.buildContract(input, taskId, mode);
+    const mutatingRun = isMutatingAccess(contract.access.effective_profile);
     const planBrief = verifiedPlanBrief(input);
     const quotaSnapshots = this.quotaSnapshotPreflight();
     const { store, paths, log, ledger } = beginAnnouncedRun(
@@ -2979,35 +2948,39 @@ export class Orchestrator {
     // directory, a filesystem root, or one that cannot be classified), which
     // gets a typed refusal BEFORE any mutation (INV-075). For an isolated
     // thread the execution root is already a git worktree: a no-op there.
-    const gitPreconditionError = await ensureWriteModeGitBoundary(
-      execRoot,
-      log,
-      store,
-      paths,
-      runId,
-      mode,
-    );
-    if (gitPreconditionError) {
-      return {
+    if (mutatingRun) {
+      const gitPreconditionError = await ensureWriteModeGitBoundary(
+        execRoot,
+        log,
+        store,
+        paths,
         runId,
-        taskId,
         mode,
-        lifecycle: "failed",
-        facts: makeOutcomeFacts("failed", { reason: gitPreconditionError.reason }),
-        winner: null,
-        runDir: paths.root,
-        summary: gitPreconditionError.message,
-        candidates: [],
-      };
+      );
+      if (gitPreconditionError) {
+        return {
+          runId,
+          taskId,
+          mode,
+          lifecycle: "failed",
+          facts: makeOutcomeFacts("failed", { reason: gitPreconditionError.reason }),
+          winner: null,
+          runDir: paths.root,
+          summary: gitPreconditionError.message,
+          candidates: [],
+        };
+      }
     }
     // Same run-prep stage as the git boundary: if the PROJECT root uses AGENTS.md
     // with no CLAUDE.md, bridge it so a Claude Code candidate reads it (INV-113).
-    this.ensureClaudeBridgeForRun(input.repoRoot, input.inPlace === true, log);
+    if (mutatingRun) {
+      this.ensureClaudeBridgeForRun(input.repoRoot, input.inPlace === true, log);
+    }
     // Pre-turn snapshot of the live tree for in-place runs: the revert restore
     // target (server-owned revertInPlace). A snapshot failure must never fail the
     // run — revert is simply unavailable then.
     let preTurnSha: string | null = null;
-    if (input.inPlace === true) {
+    if (mutatingRun && input.inPlace === true) {
       try {
         preTurnSha = await snapshotTree(execRoot);
       } catch {
@@ -3223,9 +3196,10 @@ export class Orchestrator {
           // Direct-workspace singletons run in place. Races and patch-envelope
           // transports stay isolated and adopt through the delivery service.
           inPlace:
-            input.inPlace === true &&
-            requestedSingleCandidate &&
-            slot.routed.implementationTransport !== "git_patch_envelope",
+            !mutatingRun ||
+            (input.inPlace === true &&
+              requestedSingleCandidate &&
+              slot.routed.implementationTransport !== "git_patch_envelope"),
         });
         harnessHome = this.harnessHomeFor(wsm, envelope, slot.routed, input);
         const run = await this.runCandidateInEnvelope(
@@ -3518,8 +3492,8 @@ export class Orchestrator {
     };
     await runBounded(slots, Math.min(slots.length, MAX_PARALLEL_CANDIDATES), runSlot);
     const runs: CandidateRun[] = runsBySlot.filter((r): r is CandidateRun => r !== undefined);
-    // Fail-closed terminal: a delegated mutating run whose attempts cannot state
-    // their applied confinement refuses instead of passing.
+    // Fail-closed terminal: a delegated mutating run whose attempts state
+    // neither historical proof nor deliberate absence refuses instead of passing.
     assertDelegatedEvidence(input.delegated === true, candidateAccess, runs);
     const cancelledCandidates = () =>
       runs.map((r) => ({
@@ -3561,7 +3535,12 @@ export class Orchestrator {
     // arbitration (as the race-adoption path does) would fold those user edits
     // into the revert target and let a later revert clobber them.
     let earlyPostTurnSha: string | null = null;
-    if (input.inPlace && requestedSingleCandidate && runs.every((run) => !run.secretDiffRefusal)) {
+    if (
+      mutatingRun &&
+      input.inPlace &&
+      requestedSingleCandidate &&
+      runs.every((run) => !run.secretDiffRefusal)
+    ) {
       try {
         earlyPostTurnSha = await snapshotTree(execRoot);
       } catch {
@@ -3578,13 +3557,15 @@ export class Orchestrator {
     if (failedDelegation) {
       const failure = delegateFailure.candidateFailureTerminal(failedDelegation, "race");
       await disposeReviewEnvelopes();
-      await delegateFailure.persistFailedInPlaceWorkProduct({
-        ...{ store, log, paths, execRoot, preTurnSha, taskId, mode },
-        live: input.inPlace === true && failedDelegation.reviewCwd === execRoot,
-        run: failedDelegation,
-        postTurnSha: earlyPostTurnSha,
-        kind: input.create === true ? "new_repo" : "patch",
-      });
+      if (mutatingRun) {
+        await delegateFailure.persistFailedInPlaceWorkProduct({
+          ...{ store, log, paths, execRoot, preTurnSha, taskId, mode },
+          live: input.inPlace === true && failedDelegation.reviewCwd === execRoot,
+          run: failedDelegation,
+          postTurnSha: earlyPostTurnSha,
+          kind: input.create === true ? "new_repo" : "patch",
+        });
+      }
       this.writeRunTelemetry(
         store,
         paths,
@@ -3819,7 +3800,13 @@ export class Orchestrator {
     }
 
     // Synthesis: if worthwhile, run a synthesizer as a NEW, re-checked candidate.
-    const synth = decideSynthesis(evidences, input.synthesis ?? "auto");
+    const synth = mutatingRun
+      ? decideSynthesis(evidences, input.synthesis ?? "auto")
+      : {
+          synthesize: false,
+          reason: "readonly access has no write-backed synthesis lifecycle",
+          sources: evidences.map((evidence) => evidence.attemptId),
+        };
     store.writeYaml(join(paths.arbitrationDir, "synthesis.yaml"), synth);
     log.emit("synthesis.started", { synthesize: synth.synthesize, reason: synth.reason });
     if (synth.synthesize && !budgetStopped) {
@@ -4049,6 +4036,7 @@ export class Orchestrator {
     const inPlaceWinner = winnerRun?.reviewCwd === execRoot;
     const deferredRaceVerify = input.inPlace === true && !inPlaceWinner;
     if (
+      mutatingRun &&
       winnerRun &&
       !inPlaceWinner &&
       !deferredRaceVerify &&
@@ -4089,17 +4077,7 @@ export class Orchestrator {
       })) {
         log.emit("output.ready", { kind: "artifact", path });
       }
-      secretDiff.assertNoSecretLikeTokens("final patch diff", winnerRun.diff);
-      const patchSha256 = sha256(winnerRun.diff);
-      store.writeText(join(paths.finalDir, "patch.diff"), winnerRun.diff);
-      const wstats = diffStats(winnerRun.diff);
-      const hasDiff = winnerRun.diff.trim().length > 0;
-      const blockers = winnerEvidence
-        ? winnerEvidence.findings.filter((f) => isBlocking(f)).length
-        : 0;
-      // Prose from an empty-diff winner is an answer, never a patch.
       const winnerAnswer = winnerRun.answerText ?? "";
-      const resultKind = hasDiff ? "patch" : winnerAnswer.length > 0 ? "answer" : "none";
       // The winner's final MESSAGE is the human-facing answer and materializes
       // for diff-ful runs too: the chat renders final/answer.md (the projection
       // prefers it), never the arbitration summary — "Run … Winner: a01 …" is
@@ -4120,112 +4098,125 @@ export class Orchestrator {
           answerText: winnerAnswer,
         });
       }
-      // Only a fully verified, applyable success may auto-adopt; a not-verified
-      // or needs-decision terminal remains an inspectable artifact.
-      const adoptable =
-        facts.lifecycle === "succeeded" && facts.review === "approved" && facts.checks !== "failed";
-      let adopted: boolean | null = null;
-      let applyState: "not_applied" | "applied" | "applied_review_blocked" | "reverted" =
-        "not_applied";
-      let postTurnSha: string | null = null;
-      let revertAnchorId: string | null = null;
-      if (input.inPlace === true && hasDiff) {
-        if (inPlaceWinner) {
-          // Already live: the candidate ran in-place and wrote the tree itself.
-          adopted = true;
-          applyState = adoptable ? "applied" : "applied_review_blocked";
-          // The pre-review fence excludes later user edits from the target.
-          postTurnSha = earlyPostTurnSha;
-        } else if (adoptable) {
-          // Protected apply preserves the live tree or reports tree_mutated.
-          const applied = await verifyAndDeliver(
-            execRoot,
-            winnerRun.diff,
-            { mode: "apply", protectedApply: true },
-            gateSpecsFromContract(contract),
-            (freshVerify) => {
-              finalVerify = freshVerify;
-              return finalVerifyBlocks(freshVerify)
-                ? (freshVerify.reason ?? "final verify failed before race adoption")
-                : null;
-            },
-            log,
-          );
-          raceDeliveryReceipt = applied;
-          store.writeYaml(join(paths.finalDir, "delivery_receipt.yaml"), applied);
-          finalVerify = applied.finalVerify;
-          if (applied.applied) {
+      if (mutatingRun) {
+        secretDiff.assertNoSecretLikeTokens("final patch diff", winnerRun.diff);
+        const patchSha256 = sha256(winnerRun.diff);
+        store.writeText(join(paths.finalDir, "patch.diff"), winnerRun.diff);
+        const wstats = diffStats(winnerRun.diff);
+        const hasDiff = winnerRun.diff.trim().length > 0;
+        const blockers = winnerEvidence
+          ? winnerEvidence.findings.filter((f) => isBlocking(f)).length
+          : 0;
+        const resultKind = hasDiff ? "patch" : winnerAnswer.length > 0 ? "answer" : "none";
+        // Only a fully verified, applyable success may auto-adopt; a not-verified
+        // or needs-decision terminal remains an inspectable artifact.
+        const adoptable =
+          facts.lifecycle === "succeeded" &&
+          facts.review === "approved" &&
+          facts.checks !== "failed";
+        let adopted: boolean | null = null;
+        let applyState: "not_applied" | "applied" | "applied_review_blocked" | "reverted" =
+          "not_applied";
+        let postTurnSha: string | null = null;
+        let revertAnchorId: string | null = null;
+        if (input.inPlace === true && hasDiff) {
+          if (inPlaceWinner) {
+            // Already live: the candidate ran in-place and wrote the tree itself.
             adopted = true;
-            applyState = "applied";
-            log.emit("work_product.adopted", {
-              applied: true,
-              patch_sha256: patchSha256,
-              winner: winnerRun.attemptId,
-            });
-            try {
-              postTurnSha = await snapshotTree(execRoot);
-            } catch {
-              postTurnSha = null;
+            applyState = adoptable ? "applied" : "applied_review_blocked";
+            // The pre-review fence excludes later user edits from the target.
+            postTurnSha = earlyPostTurnSha;
+          } else if (adoptable) {
+            // Protected apply preserves the live tree or reports tree_mutated.
+            const applied = await verifyAndDeliver(
+              execRoot,
+              winnerRun.diff,
+              { mode: "apply", protectedApply: true },
+              gateSpecsFromContract(contract),
+              (freshVerify) => {
+                finalVerify = freshVerify;
+                return finalVerifyBlocks(freshVerify)
+                  ? (freshVerify.reason ?? "final verify failed before race adoption")
+                  : null;
+              },
+              log,
+            );
+            raceDeliveryReceipt = applied;
+            store.writeYaml(join(paths.finalDir, "delivery_receipt.yaml"), applied);
+            finalVerify = applied.finalVerify;
+            if (applied.applied) {
+              adopted = true;
+              applyState = "applied";
+              log.emit("work_product.adopted", {
+                applied: true,
+                patch_sha256: patchSha256,
+                winner: winnerRun.attemptId,
+              });
+              try {
+                postTurnSha = await snapshotTree(execRoot);
+              } catch {
+                postTurnSha = null;
+              }
+              revertAnchorId = createRevertAnchorFromPatchOrNull(execRoot, winnerRun.diff);
+            } else {
+              adopted = false;
+              applyState = "not_applied";
+              deliveryFailureReason = applied.detail ?? "race adoption delivery was refused";
+              facts = { ...facts, checks: "failed", reason: "checks_failed" };
+              if (finalVerifyBlocks(finalVerify)) finalVerifyFailed = true;
+              log.emit("work_product.adopted", {
+                applied: false,
+                patch_sha256: patchSha256,
+                detail: redactSecrets(applied.detail ?? "apply failed"),
+                tree_mutated: applied.treeMutated,
+              });
             }
-            revertAnchorId = createRevertAnchorFromPatchOrNull(execRoot, winnerRun.diff);
-          } else {
-            adopted = false;
-            applyState = "not_applied";
-            deliveryFailureReason = applied.detail ?? "race adoption delivery was refused";
-            facts = { ...facts, checks: "failed", reason: "checks_failed" };
-            if (finalVerifyBlocks(finalVerify)) finalVerifyFailed = true;
-            log.emit("work_product.adopted", {
-              applied: false,
-              patch_sha256: patchSha256,
-              detail: redactSecrets(applied.detail ?? "apply failed"),
-              tree_mutated: applied.treeMutated,
-            });
           }
         }
-      }
-      writeRaceDeliveryDecision(store, decisionPath, {
-        decision: result.decision,
-        facts,
-        reviewVerified: actualReviewVerified,
-        finalVerify,
-        deliveryFailureReason,
-        deliveryReceiptPath: raceDeliveryReceipt ? "final/delivery_receipt.yaml" : null,
-      });
-      if (inPlaceWinner && requestedSingleCandidate && adopted === true) {
-        revertAnchorId = await createRevertAnchorOrNull(execRoot, preTurnSha, postTurnSha);
-      }
-      store.writeYaml(join(paths.finalDir, "work_product.yaml"), {
-        id: newId("wp"),
-        kind: input.create === true ? "new_repo" : "patch",
-        source_task_id: taskId,
-        producer_attempt_id: winnerRun.attemptId,
-        ...(raceDeliveryReceipt
-          ? { files: { delivery_receipt: "final/delivery_receipt.yaml" } }
-          : {}),
-        meta: {
-          harness_id: winnerRun.harnessId,
-          synthesis: synth,
-          mode,
-          // Artifact-only apply reads the same terminal axes as the daemon (D8).
-          lifecycle: facts.lifecycle,
-          outcome_facts: facts,
-          review_verified: actualReviewVerified,
-          budget_stopped: budgetStopped,
-          patch_sha256: patchSha256,
-          result_kind: resultKind,
-          diffstat: {
-            files: wstats.paths.length,
-            additions: wstats.additions,
-            deletions: wstats.deletions,
+        writeRaceDeliveryDecision(store, decisionPath, {
+          decision: result.decision,
+          facts,
+          reviewVerified: actualReviewVerified,
+          finalVerify,
+          deliveryFailureReason,
+          deliveryReceiptPath: raceDeliveryReceipt ? "final/delivery_receipt.yaml" : null,
+        });
+        if (inPlaceWinner && requestedSingleCandidate && adopted === true) {
+          revertAnchorId = await createRevertAnchorOrNull(execRoot, preTurnSha, postTurnSha);
+        }
+        store.writeYaml(join(paths.finalDir, "work_product.yaml"), {
+          id: newId("wp"),
+          kind: input.create === true ? "new_repo" : "patch",
+          source_task_id: taskId,
+          producer_attempt_id: winnerRun.attemptId,
+          ...(raceDeliveryReceipt
+            ? { files: { delivery_receipt: "final/delivery_receipt.yaml" } }
+            : {}),
+          meta: {
+            harness_id: winnerRun.harnessId,
+            synthesis: synth,
+            mode,
+            // Artifact-only apply reads the same terminal axes as the daemon (D8).
+            lifecycle: facts.lifecycle,
+            outcome_facts: facts,
+            review_verified: actualReviewVerified,
+            budget_stopped: budgetStopped,
+            patch_sha256: patchSha256,
+            result_kind: resultKind,
+            diffstat: {
+              files: wstats.paths.length,
+              additions: wstats.additions,
+              deletions: wstats.deletions,
+            },
+            blockers,
+            adopted,
+            apply_state: applyState,
+            pre_turn_sha: preTurnSha,
+            post_turn_sha: postTurnSha,
+            revert_anchor_id: revertAnchorId,
           },
-          blockers,
-          adopted,
-          apply_state: applyState,
-          pre_turn_sha: preTurnSha,
-          post_turn_sha: postTurnSha,
-          revert_anchor_id: revertAnchorId,
-        },
-      });
+        });
+      }
       store.writeText(
         join(paths.finalDir, "summary.md"),
         renderSummary(
@@ -4352,7 +4343,9 @@ export class Orchestrator {
       }
     }
 
-    log.emit("work_product.emitted", { winner: result.decision.winner });
+    if (mutatingRun && winnerRun) {
+      log.emit("work_product.emitted", { winner: result.decision.winner });
+    }
     if (!isFailureTerminal) {
       log.emit("run.completed", { lifecycle: facts.lifecycle, facts, reason: facts.reason });
     } else if (facts.lifecycle === "succeeded") {
@@ -4403,7 +4396,7 @@ export class Orchestrator {
   private writeRunTelemetry(
     store: ArtifactStore,
     paths: ReturnType<ArtifactStore["runPaths"]>,
-    contract: TaskContract,
+    contract: ActiveTaskContract,
     runId: string,
     taskId: string,
     mode: ModeKind,
@@ -4461,7 +4454,7 @@ export class Orchestrator {
     reviewVerified: boolean,
     reviewDir: string,
     cwd: string,
-    contract: TaskContract,
+    contract: ActiveTaskContract,
     store: ArtifactStore,
     paths: ReturnType<ArtifactStore["runPaths"]>,
     log: EventLog,
@@ -6238,7 +6231,7 @@ export class Orchestrator {
    */
   private deepScanReducerDeps(
     input: RunInput,
-    contract: TaskContract,
+    contract: ActiveTaskContract,
     log: EventLog,
   ): DeepScanReducerDeps {
     return {

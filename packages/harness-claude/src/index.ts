@@ -92,7 +92,6 @@ function permissionArgs(access: AccessProfile): string[] {
     case "workspace_write":
       return ["--permission-mode", "acceptEdits"];
     case "full":
-    case "external_sandbox_full":
       return ["--permission-mode", "bypassPermissions"];
     case "inherit_native":
       return [];
@@ -431,10 +430,9 @@ export function createClaudeAdapter(deps: Partial<ClaudeRuntimeDeps> = {}): Harn
           },
         },
         auth_modes: authModes,
-        // external_sandbox_full: bypassPermissions; engine boundary exists only on delegated runs — direct requests are unrestricted.
         access_profiles_supported: [
           ...(readonlyProfile.supported ? ["readonly" as const] : []),
-          ...(["workspace_write", "full", "external_sandbox_full", "inherit_native"] as const),
+          ...(["workspace_write", "full", "inherit_native"] as const),
         ],
       });
     },

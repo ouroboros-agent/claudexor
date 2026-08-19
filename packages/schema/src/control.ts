@@ -8,6 +8,7 @@ import {
   NonBlankString,
   OutputReadyState,
   ProviderFamily,
+  RecordedAccessProfile,
 } from "./primitives.js";
 import {
   PaidBudget,
@@ -25,29 +26,13 @@ import { RequestRequirementResolution } from "./request-requirements.js";
 import { ProtectedPathApproval, TestCommandInvocation } from "./task.js";
 import { RunScope } from "./control-run-scope.js";
 import { RunFailure } from "./control-run-failure.js";
+import { RunExecution } from "./control-run-execution.js";
 import { makeControlRunRetrySchemas } from "./control-run-retry.js";
 import { ControlAuthRoute } from "./control-auth-route.js";
 import { DelegatedChildRunIds, RunDelegationInfo } from "./delegation.js";
 import { HARNESS_INACTIVITY_TIMEOUT_DEFAULT_MS, InteractionTimeoutValue } from "./config.js";
 
-export const RunExecution = z
-  .object({
-    isolation: z
-      .enum(["envelope", "live"])
-      .default("envelope")
-      .describe(
-        "Run isolation: envelope (isolated worktree in the external per-project runtime namespace, the default) or live (the project tree itself).",
-      ),
-    delegated: z
-      .boolean()
-      .default(false)
-      .describe(
-        "Marks a run driven by an EXTERNAL orchestrator that owns the workspace, not by the operator at a surface. Such a run is confined to a scoped harness HOME even under isolation='live' (an in-place delegated attempt therefore cannot resume a native vendor session stored under the real HOME). Unrelated to the `delegate` belt flag and to `delegatedFromRunId` (belt-child provenance).",
-      ),
-  })
-  .strict()
-  .describe("Execution isolation and delegation settings for a run.");
-export type RunExecution = z.infer<typeof RunExecution>;
+export { RunExecution } from "./control-run-execution.js";
 
 export const ControlReviewerPanelEntry = z
   .object({
@@ -346,6 +331,15 @@ export const ControlRunStartRequest = z
     "Request body for POST /runs: prompt, mode, scope, routing, strategy flags, budget, policies, and thread linkage.",
   );
 export type ControlRunStartRequest = z.infer<typeof ControlRunStartRequest>;
+
+/** Bounded decoder for immutable accepted request bodies. Active ingress must
+ * continue to parse with ControlRunStartRequest. */
+export const RecordedControlRunStartRequest = ControlRunStartRequest.extend({
+  access: RecordedAccessProfile.optional().describe(
+    "Historically accepted access profile; retired values are decoder-only.",
+  ),
+}).strict();
+export type RecordedControlRunStartRequest = z.infer<typeof RecordedControlRunStartRequest>;
 
 const RunRetrySchemas = makeControlRunRetrySchemas(ControlRunStartRequest);
 export const ControlRunStartInfo = RunRetrySchemas.startInfo;
@@ -680,11 +674,13 @@ export const ControlRunSummary = z
       .describe(
         "Auth route receipt (requested/effective/source/reason + disclosing attempt), projected verbatim from telemetry; null when unavailable.",
       ),
-    access: AccessProfile.optional().describe(
+    access: RecordedAccessProfile.optional().describe(
       "Access profile of the run: the effective profile when known, else the requested one (prefer requestedAccess/effectiveAccess).",
     ),
-    requestedAccess: AccessProfile.optional().describe("Access profile the caller requested."),
-    effectiveAccess: AccessProfile.optional().describe(
+    requestedAccess: RecordedAccessProfile.optional().describe(
+      "Access profile the caller requested.",
+    ),
+    effectiveAccess: RecordedAccessProfile.optional().describe(
       "Access profile actually enforced by the engine.",
     ),
     externalContextPolicy: ExternalContextPolicy.optional().describe(
@@ -1085,7 +1081,7 @@ export const ControlThread = z
         "Sticky credential profile for the thread; per-turn selection wins, null = engine-default credentials.",
       ),
     /** Sticky write scope for write turns (D26); null = repo trust default. */
-    access: AccessProfile.nullable()
+    access: RecordedAccessProfile.nullable()
       .default(null)
       .describe("Sticky write scope for write turns; null = the repo trust default."),
     state: ThreadState.default("active"),

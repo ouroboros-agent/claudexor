@@ -329,7 +329,7 @@ struct TurnOptions: Equatable {
     /// Plan council (D31); plan-only. Sent as `council`; `councilN` sets width.
     var council: Bool = false
     var councilN: Int? = nil
-    var browser: Bool = false          // arm the agent-driven browser (full access)
+    var browser: Bool = false          // arm the agent-driven browser; access stays independent
     /// Harness-scoped per-turn models (harness id -> model id). Built by the
     /// composer's per-harness pickers; empty entries are dropped before send.
     var models: [String: String] = [:]

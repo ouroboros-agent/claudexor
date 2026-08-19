@@ -25,16 +25,18 @@ export const RunFailureCode = z
      * the EARLIEST known release inside the pool — the first instant any
      * member reopens — or null when any member's reset is unknown. */
     "credential_pool_exhausted",
-    /* A delegated run's confinement preconditions. Each is thrown as a typed
-     * error deep in the attempt loop, so it must be listed here or
-     * `declaredFailure` drops it to `code: null` and the terminal states less
+    /* Active scoped-HOME/evidence refusals plus the historical confinement
+     * decoder code. Attempt-loop failures must be listed here or
+     * `declaredFailure` drops them to `code: null` and the terminal states less
      * than the thrower knew. See docs/DELEGATED_CONFINEMENT.md. */
     "delegated_home_unavailable",
     "delegated_confinement_unavailable",
     "delegated_evidence_incomplete",
+    "access_profile_incompatible",
+    "retired_access_profile",
   ])
   .describe(
-    "Machine-readable failure sub-code within a RunFailure category (budget-denial reasons, Delegate child-drain timeout, a spent subscription quota window whose reopen time is RunFailure.resetsAt, an exhausted credential rotation pool whose EARLIEST known member reset is RunFailure.resetsAt, and the delegated-run confinement refusals: missing scoped home, no OS-enforced boundary on this host, incomplete applied evidence).",
+    "Machine-readable failure sub-code within a RunFailure category, including historical delegated-run failures and active access-profile refusals.",
   );
 export type RunFailureCode = z.infer<typeof RunFailureCode>;
 

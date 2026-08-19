@@ -54,6 +54,20 @@ What Claudexor already does, so you can calibrate reports:
   they are user-invoked except the app's update check, which runs only on app
   foreground (there is no background update timer). Local files named
   `telemetry` contain only on-device run evidence and are never transmitted.
+- Harness processes run as the signed-in OS user under each vendor CLI's
+  native access mode. Claudexor does not add an outer Seatbelt, container, or
+  other OS filesystem boundary. Scoped `HOME` and named profile directories
+  select the intended account and separate vendor-written state; they do not
+  stop the process from reaching other same-user host paths. In particular,
+  trusted `full` can read or mutate out-of-project state, and those effects are
+  outside Claudexor's patch capture, review, revert, and rollback custody.
+- Repository trust gates authorization to request native `full`; it is not a
+  containment claim. `workspace_write` and `readonly` mean the selected
+  adapter's native policy, whose exact enforcement differs by vendor. For an
+  externally orchestrated mutating run, the registered/trusted project stays
+  `scope.root` while the harness executes in the caller-supplied
+  `execution.workspaceRoot`; neither path relationship nor a second trust
+  store is implied.
 
 In scope: the CLI, daemon, control API, MCP/ACP servers, the macOS app, and
 the host-integration plugin writers. Out of scope: vulnerabilities in the

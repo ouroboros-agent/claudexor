@@ -1,6 +1,6 @@
 import { z } from "zod/v3";
 import {
-  AccessProfile,
+  RecordedAccessProfile,
   ContentHash,
   ExternalContextPolicy,
   Id,
@@ -501,8 +501,8 @@ export const RunTelemetry = z
     run_id: Id.describe("Run the telemetry belongs to."),
     task_id: Id.describe("Task the run belongs to."),
     mode: ModeKind,
-    requested_access: AccessProfile.describe("Access profile the caller requested."),
-    effective_access: AccessProfile.describe("Access profile actually enforced by the engine."),
+    requested_access: RecordedAccessProfile.describe("Access profile the caller requested."),
+    effective_access: RecordedAccessProfile.describe("Access profile enforced by the engine."),
     external_context_policy: ExternalContextPolicy.describe("Requested web policy for the run."),
     effective_web_mode: ExternalContextPolicy.describe(
       "Web policy actually executed by the selected route.",

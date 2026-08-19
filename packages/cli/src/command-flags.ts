@@ -4,7 +4,7 @@
  * line — the single source the arg parser, help, and MCP/CLI parity gate
  * read.
  */
-import { EFFORT_HINT_HELP } from "@claudexor/schema";
+import { AccessProfile, EFFORT_HINT_HELP } from "@claudexor/schema";
 
 export type CliFlagKind = "boolean" | "value";
 
@@ -191,11 +191,7 @@ export const CLI_FLAGS: readonly CliFlagSpec[] = [
     'Per-family reviewer model, e.g. "openai=gpt-4o-mini,anthropic=claude-haiku"',
   ),
   valueFlag("reviewer-effort", "<map>", 'Per-family reviewer effort, e.g. "anthropic=max"'),
-  valueFlag(
-    "access",
-    "<profile>",
-    "Access profile: readonly|workspace_write|full|external_sandbox_full|inherit_native",
-  ),
+  valueFlag("access", "<profile>", `Access profile: ${AccessProfile.options.join("|")}`),
   valueFlag("web", "<mode>", "External web/search policy: off|auto|cached|live"),
   valueFlag("model", "<id>", "Model hint forwarded to the selected harness route"),
   valueFlag("effort", "<level>", `Reasoning effort hint: ${EFFORT_HINT_HELP}`),

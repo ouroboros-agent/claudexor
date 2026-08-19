@@ -1,11 +1,11 @@
 import { join } from "node:path";
 import {
   PlanQuestionsArtifact,
+  type ActiveTaskContract,
   derivePlanReadiness,
   makeOutcomeFacts,
   type CouncilProjection,
   type ModeKind,
-  type TaskContract,
 } from "@claudexor/schema";
 import { newId, redactSecrets } from "@claudexor/util";
 import { ArtifactStore, type RunPaths } from "@claudexor/artifact-store";
@@ -42,7 +42,7 @@ export interface PlanRunDeps {
   writeRunTelemetry(
     store: ArtifactStore,
     paths: RunPaths,
-    contract: TaskContract,
+    contract: ActiveTaskContract,
     runId: string,
     taskId: string,
     mode: ModeKind,
@@ -71,7 +71,7 @@ export async function runCouncilPlan(
   deps: PlanRunDeps,
   args: {
     input: RunInput;
-    contract: TaskContract;
+    contract: ActiveTaskContract;
     taskId: string;
     runId: string;
     store: ArtifactStore;
@@ -346,7 +346,7 @@ export function finalizePlanRun(
   deps: PlanRunDeps,
   args: {
     input: RunInput;
-    contract: TaskContract;
+    contract: ActiveTaskContract;
     taskId: string;
     runId: string;
     store: ArtifactStore;
@@ -479,7 +479,7 @@ export function finalizePlanRun(
 export function writePlanHarnessFailure(
   deps: PlanRunDeps,
   ctx: {
-    contract: TaskContract;
+    contract: ActiveTaskContract;
     taskId: string;
     runId: string;
     store: ArtifactStore;

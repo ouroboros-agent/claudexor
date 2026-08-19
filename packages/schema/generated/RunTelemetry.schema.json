@@ -34,8 +34,8 @@
             "readonly",
             "workspace_write",
             "full",
-            "external_sandbox_full",
-            "inherit_native"
+            "inherit_native",
+            "external_sandbox_full"
           ],
           "description": "Access profile the caller requested."
         },
@@ -45,10 +45,10 @@
             "readonly",
             "workspace_write",
             "full",
-            "external_sandbox_full",
-            "inherit_native"
+            "inherit_native",
+            "external_sandbox_full"
           ],
-          "description": "Access profile actually enforced by the engine."
+          "description": "Access profile enforced by the engine."
         },
         "external_context_policy": {
           "type": "string",

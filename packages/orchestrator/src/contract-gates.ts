@@ -1,8 +1,8 @@
 import type {
   AccessProfile,
+  ActiveTaskContract,
   GateResult,
   ProjectConfig,
-  TaskContract,
   TestCommandGrant,
   TestCommandInvocation,
 } from "@claudexor/schema";
@@ -10,7 +10,7 @@ import { canonicalProjectRoot, containsSecretLikeToken, hashJson, sha256 } from 
 import { gateProtectedPaths } from "./runSupport.js";
 import type { GateSpec } from "@claudexor/review";
 
-type GateCommands = TaskContract["tests"]["commands"];
+type GateCommands = ActiveTaskContract["tests"]["commands"];
 
 /** Merge the command authorities once and attach external grants only
  * to versioned project commands. Operator commands are explicit input. */
@@ -69,7 +69,7 @@ export function resolveContractGates(input: {
   };
 }
 
-export function gateSpecsFromContract(contract: TaskContract): GateSpec[] {
+export function gateSpecsFromContract(contract: ActiveTaskContract): GateSpec[] {
   return contract.tests.commands.map((command) => ({
     id: command.id,
     program: command.program,
@@ -84,7 +84,7 @@ export function gateSpecsFromContract(contract: TaskContract): GateSpec[] {
   }));
 }
 
-export function renderTestsEvidence(contract: TaskContract, gates?: GateResult[]): string {
+export function renderTestsEvidence(contract: ActiveTaskContract, gates?: GateResult[]): string {
   const specs = gateSpecsFromContract(contract);
   if (gates === undefined || gates.length === 0) {
     if (specs.length === 0) return "(no test commands configured)";

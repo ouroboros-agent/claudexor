@@ -1,5 +1,94 @@
 import { describe, expect, it } from "vitest";
-import { runControlApplicability, runStartStrategyViolations } from "./run-strategy.js";
+import {
+  resolveRunAccess,
+  runAccessStrategyViolation,
+  runControlApplicability,
+  runExecutionWorkspaceViolation,
+  runStartRequiresGit,
+  runStartStrategyViolations,
+} from "./run-strategy.js";
+
+describe("run access and strategy", () => {
+  it("resolves explicit and configured Agent access while clamping Ask and Plan", () => {
+    expect(resolveRunAccess({ mode: "agent", access: "readonly" }, "full")).toEqual({
+      requested: "readonly",
+      effective: "readonly",
+    });
+    expect(resolveRunAccess({ mode: "agent" }, "full")).toEqual({
+      requested: "full",
+      effective: "full",
+    });
+    expect(resolveRunAccess({ mode: "ask", access: "full" }, "workspace_write")).toEqual({
+      requested: "full",
+      effective: "readonly",
+    });
+    expect(resolveRunAccess({ mode: "plan" }, "workspace_write")).toEqual({
+      requested: "readonly",
+      effective: "readonly",
+    });
+  });
+
+  it("refuses patch convergence only when effective access is readonly", () => {
+    expect(runAccessStrategyViolation({ attempts: 3 }, "readonly")).toMatchObject({
+      code: "strategy_access_incompatible",
+      message: expect.stringMatching(/readonly/),
+      retryable: false,
+    });
+    expect(runAccessStrategyViolation({ untilClean: true }, "readonly")).toMatchObject({
+      code: "strategy_access_incompatible",
+      message: expect.stringMatching(/readonly/),
+      retryable: false,
+    });
+    expect(runAccessStrategyViolation({}, "readonly")).toBeNull();
+    expect(runAccessStrategyViolation({ attempts: 3 }, "workspace_write")).toBeNull();
+    expect(runAccessStrategyViolation({ untilClean: true }, "full")).toBeNull();
+  });
+
+  it("never requires Git for explicit or configured readonly access", () => {
+    expect(
+      runStartRequiresGit(
+        { mode: "agent", access: "readonly", execution: { isolation: "envelope" } },
+        { effectiveWorkspaceRequiresGit: true },
+      ),
+    ).toBe(false);
+    expect(
+      runStartRequiresGit(
+        { mode: "agent", execution: { isolation: "envelope" } },
+        { accessDefault: "readonly", effectiveWorkspaceRequiresGit: true },
+      ),
+    ).toBe(false);
+    expect(
+      runStartRequiresGit(
+        { mode: "agent", execution: { isolation: "envelope" } },
+        { accessDefault: "workspace_write" },
+      ),
+    ).toBe(true);
+  });
+
+  it("requires an execution tree only for fresh delegated live writes", () => {
+    const delegatedLive = {
+      mode: "agent" as const,
+      execution: { isolation: "live" as const, delegated: true },
+    };
+    expect(runExecutionWorkspaceViolation(delegatedLive, "workspace_write")).toMatchObject({
+      code: "execution_workspace_required",
+      retryable: false,
+    });
+    expect(runExecutionWorkspaceViolation(delegatedLive, "full")).toMatchObject({
+      code: "execution_workspace_required",
+    });
+    expect(runExecutionWorkspaceViolation(delegatedLive, "readonly")).toBeNull();
+    expect(
+      runExecutionWorkspaceViolation(
+        { ...delegatedLive, execution: { ...delegatedLive.execution, workspaceRoot: "/snapshot" } },
+        "workspace_write",
+      ),
+    ).toBeNull();
+    expect(
+      runExecutionWorkspaceViolation({ ...delegatedLive, retryOf: "run-old" }, "workspace_write"),
+    ).toBeNull();
+  });
+});
 
 describe("run-control applicability", () => {
   it.each(["ask", "plan"] as const)(
