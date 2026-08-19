@@ -801,7 +801,9 @@ describe("gates", () => {
 
   it("revokes a package-manager command when package.json changes", async () => {
     const cwd = reapMk(join(tmpdir(), "claudexor-gate-package-script-"));
-    const invocation = { program: "pnpm", args: ["test"], envAllowlist: [] };
+    // Use the package manager shipped with Node so the trust test does not ask
+    // an unpinned Corepack shim to select a host-global pnpm release.
+    const invocation = { program: "npm", args: ["test"], envAllowlist: [] };
     writeFileSync(
       join(cwd, "package.json"),
       JSON.stringify({ scripts: { test: 'node -e "process.exit(0)"' } }),

@@ -405,6 +405,7 @@ describe("JournalManager", () => {
 
     const outside = join(root, "outside-secret");
     writeFileSync(outside, "secret-sentinel", { mode: 0o640 });
+    const outsideMode = statSync(outside).mode & 0o777;
     symlinkSync(outside, join(manager.partitionDir, "unknown-link"));
     linkSync(outside, join(manager.partitionDir, "unknown-hardlink"));
     const exported = manager.exportRecovery();
@@ -414,7 +415,7 @@ describe("JournalManager", () => {
     expect(manifest.entries.find((row) => row.name === "unknown-link")?.copiedAs).toBeNull();
     expect(manifest.entries.find((row) => row.name === "unknown-hardlink")?.copiedAs).toBeNull();
     expect(readFileSync(outside, "utf8")).toBe("secret-sentinel");
-    expect(statSync(outside).mode & 0o777).toBe(0o640);
+    expect(statSync(outside).mode & 0o777).toBe(outsideMode);
     expect(readFileSync(journalPath)).toEqual(corruptBytes);
     expect(statSync(journalPath).mode & 0o777).toBe(mode);
     manager.close();
