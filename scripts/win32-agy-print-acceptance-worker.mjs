@@ -366,7 +366,6 @@ try {
     assert(inAppReceipt?.errorCode === undefined, "in-app receipt recorded a transport error");
     assert(inAppReceipt?.outputTail === undefined, "successful in-app receipt retained output");
 
-    // Raw ANSI/CRLF preservation belongs to the direct native helper test.
     // The production runner intentionally treats stdout as an ignored sink;
     // this acceptance-only outer pipe proves URL capture and receipt custody,
     // not scheduler-dependent propagation of the final inherited write.

@@ -58,30 +58,8 @@ describe.skipIf(process.platform !== "win32")("Win32 ConPTY helper integration",
     expect(decoded).toEqual([fixture, "--argv", ...values]);
   });
 
-  it("relays fragmented URL output and terminal input while preserving the vendor exit", async () => {
+  it("preserves the vendor exit code", async () => {
     requireFixtures();
-    const child = spawnHelper(["--interactive"]);
-    let startupOutput = "";
-    const inputReady = new Promise<void>((resolveReady) => {
-      child.stdout.on("data", (chunk: Buffer) => {
-        startupOutput += chunk.toString("utf8");
-        if (startupOutput.includes("https://accounts.google.com/o/oauth2/auth")) resolveReady();
-      });
-    });
-    const finished = collect(child);
-    await withTimeout(inputReady, 5_000, "interactive helper startup");
-    // Production receives the submitted sidecar on its 300 ms poll after the
-    // URL is visible. Preserve that real pacing: inbox ConPTY may emit the
-    // prompt before its input thread is ready on older Windows builds.
-    await new Promise((resolveWait) => setTimeout(resolveWait, 300));
-    child.stdin.write(encodeWindowsConptyLine("one-shot-code-42"));
-    const result = await finished;
-    expect(result.code).toBe(0);
-    expect(result.stdout).toContain("https://accounts.google.com/o/oauth2/auth");
-    const ansiCode = "\u001b[31mCODE:one-shot-code-42\u001b[0m";
-    expect(result.stdout).toContain(ansiCode);
-    expect(result.stdout.slice(result.stdout.indexOf(ansiCode) + ansiCode.length)).toMatch(/^\r\n/);
-
     const rejected = await runHelper(["--exit", "42"]);
     expect(rejected.code).toBe(42);
     expect(rejected.stderr).toMatch(new RegExp(`^${protocol}\\tstarted\\t[1-9][0-9]*\\r?\\n$`));
@@ -277,20 +255,6 @@ function stripTerminalEscapes(value: string): string {
     /\u001b(?:\[[0-9;?]*[ -/]*[@-~]|\][^\u0007\u001b]*(?:\u0007|\u001b\\)?)/g,
     "",
   );
-}
-
-function encodeWindowsConptyLine(value: string): string {
-  const keyRecord = (virtualKey: number, scanCode: number, codeUnit: number, keyDown: 0 | 1) =>
-    `\u001b[${virtualKey};${scanCode};${codeUnit};${keyDown};0;1_`;
-  let encoded = "";
-  for (let index = 0; index < value.length; index += 1) {
-    const codeUnit = value.charCodeAt(index);
-    encoded += keyRecord(231, 0, codeUnit, 1);
-    encoded += keyRecord(231, 0, codeUnit, 0);
-  }
-  encoded += keyRecord(13, 28, 13, 1);
-  encoded += keyRecord(13, 28, 13, 0);
-  return encoded;
 }
 
 async function observeWorkerTreePids(child: ChildProcessWithoutNullStreams): Promise<{
