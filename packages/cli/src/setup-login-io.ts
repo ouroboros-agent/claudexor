@@ -43,7 +43,10 @@ export function watchLoginInput(
    * (ptyStdin) is ECHOED by the terminal line discipline, so the pasted code
    * comes straight back out on the tee'd output — the tail must forget it
    * before any failure receipt is written (INV-062). */
-  onDelivered?: (value: string) => void,
+  options: {
+    onDelivered?: (value: string) => void;
+    windowsConpty?: boolean;
+  } = {},
 ): () => void {
   let delivered = false;
   const timer = setInterval(() => {
@@ -51,12 +54,14 @@ export function watchLoginInput(
     const input = readRunnerLoginInput(manifest.inputPath, manifest.jobId, manifest.executionId);
     if (!input) return;
     delivered = true;
-    onDelivered?.(input.value);
+    options.onDelivered?.(input.value);
     try {
-      // A PTY line is submitted as CRLF. Plain-pipe logins keep their
-      // historical LF delimiter; a bare LF or CR can remain pending in a
-      // Windows ConPTY line buffer.
-      child.stdin.write(`${input.value}${manifest.ptyStdin ? "\r\n" : "\n"}`);
+      // Win32 console applications enable ConPTY's win32-input-mode and read
+      // KEY_EVENT_RECORDs. A terminal therefore sends the frozen CSI record
+      // form, not raw CR/LF text. POSIX helpers and plain pipes retain LF.
+      child.stdin.write(
+        options.windowsConpty ? encodeWindowsConptyLine(input.value) : `${input.value}\n`,
+      );
       // The secret has been handed to the vendor; what stays on disk is a
       // non-secret consumed marker, so the one-shot conflict check still
       // refuses a second submission while the code itself stops existing.
@@ -75,6 +80,20 @@ export function watchLoginInput(
   timer.unref?.();
   void now;
   return () => clearInterval(timer);
+}
+
+function encodeWindowsConptyLine(value: string): string {
+  const keyRecord = (virtualKey: number, scanCode: number, codeUnit: number, keyDown: 0 | 1) =>
+    `\u001b[${virtualKey};${scanCode};${codeUnit};${keyDown};0;1_`;
+  let encoded = "";
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    encoded += keyRecord(0, 0, codeUnit, 1);
+    encoded += keyRecord(0, 0, codeUnit, 0);
+  }
+  encoded += keyRecord(13, 28, 13, 1);
+  encoded += keyRecord(13, 28, 13, 0);
+  return encoded;
 }
 
 /** Ring buffer of the last OUTPUT_TAIL_BYTES of tee'd vendor output. */

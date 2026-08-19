@@ -297,16 +297,11 @@ static DWORD WINAPI output_pump_main(LPVOID opaque) {
 
 static void cancel_and_join_input(HANDLE thread, InputPump *pump) {
   if (thread == NULL) return;
-  /* The source is an inherited pipe. CancelIoEx targets the pending operation
-   * on that handle directly; CancelSynchronousIo remains the race-safe thread
-   * fallback when the pump has not entered ReadFile yet. */
-  (void)CancelIoEx(pump->source, NULL);
   /* CancelSynchronousIo can race just before the pump enters ReadFile. Retry
    * until the thread observes a cancellation or finishes; a one-shot cancel
    * followed by an infinite wait can strand helper shutdown forever. */
   while (WaitForSingleObject(thread, 10) == WAIT_TIMEOUT) {
     (void)CancelSynchronousIo(thread);
-    (void)CancelIoEx(pump->source, NULL);
   }
   CloseHandle(thread);
   if (pump->conpty_input != INVALID_HANDLE_VALUE && pump->conpty_input != NULL) {

@@ -257,7 +257,10 @@ export async function runSetupLoginWorker(
       if (helperControl) child.stderr?.on("data", (chunk: Buffer) => helperControl.push(chunk));
       if (withInput && manifest.inputPath) {
         // A tty echoes what we write, so the code would otherwise ride the tail.
-        stopInputWatch = watchLoginInput(manifest, child, now, (value) => tail.forget(value));
+        stopInputWatch = watchLoginInput(manifest, child, now, {
+          onDelivered: (value) => tail.forget(value),
+          windowsConpty: terminal?.backend === "windows_conpty",
+        });
       }
       result = await waitForExit(child);
     } catch {

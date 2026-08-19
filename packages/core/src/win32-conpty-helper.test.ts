@@ -62,7 +62,7 @@ describe.skipIf(process.platform !== "win32")("Win32 ConPTY helper integration",
     requireFixtures();
     const child = spawnHelper(["--interactive"]);
     const finished = collect(child);
-    child.stdin.write("one-shot-code-42\r\n");
+    child.stdin.write(encodeWindowsConptyLine("one-shot-code-42"));
     const result = await finished;
     expect(result.code).toBe(0);
     expect(result.stdout).toContain("https://accounts.google.com/o/oauth2/auth");
@@ -257,6 +257,20 @@ function stripTerminalEscapes(value: string): string {
     /\u001b(?:\[[0-9;?]*[ -/]*[@-~]|\][^\u0007\u001b]*(?:\u0007|\u001b\\)?)/g,
     "",
   );
+}
+
+function encodeWindowsConptyLine(value: string): string {
+  const keyRecord = (virtualKey: number, scanCode: number, codeUnit: number, keyDown: 0 | 1) =>
+    `\u001b[${virtualKey};${scanCode};${codeUnit};${keyDown};0;1_`;
+  let encoded = "";
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    encoded += keyRecord(0, 0, codeUnit, 1);
+    encoded += keyRecord(0, 0, codeUnit, 0);
+  }
+  encoded += keyRecord(13, 28, 13, 1);
+  encoded += keyRecord(13, 28, 13, 0);
+  return encoded;
 }
 
 async function observeWorkerTreePids(child: ChildProcessWithoutNullStreams): Promise<{
