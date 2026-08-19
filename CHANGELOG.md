@@ -8,8 +8,11 @@ Release history for Claudexor. The current version is declared in the root
   explicit `--target local`, which installs into the managed toolchain root
   (`~/.claudexor/node`) that local binary resolution and confinement already
   read, instead of the SSH-host prefix the historical `remote` target owns.
-  The watched remote flow is unchanged in every respect. What the unattended
-  local path has instead of a human at the terminal is proof: concurrent
+  The watched remote flow keeps its prefix, its disclosure and its exit-code
+  contract, and neither the install lease nor the post-install proof applies to
+  it — the one deliberate difference is that a refused install no longer
+  creates an empty vendor root before refusing. What the unattended local path
+  has instead of a human at the terminal is proof: concurrent
   installs into one prefix serialize on a cross-process lease (a lease whose
   owner died fails closed with a typed `install_lock_stale` and its exact
   cleanup path, never an ABA-prone auto-reclaim), and success requires

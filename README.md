@@ -124,7 +124,9 @@ the JSON receipt records the downloaded installer's SHA-256 and byte length.
 Every successful executed receipt also records the absolute installed launcher
 and its verified version; a zero-exit installer without that postcondition is a
 typed failure.
-Omitting `--target` preserves the disclosed remote-host flow and prefix.
+Omitting `--target` preserves the disclosed remote-host flow, its prefix and
+its exit-code contract; the install lease and the post-install proof are part
+of the unattended local contract and do not apply there.
 
 ## Remote SSH
 

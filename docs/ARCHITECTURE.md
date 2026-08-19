@@ -418,9 +418,13 @@ the harness's model truth source (live `models()` inventory, else manifest
 `known_models`; a harness with neither refuses explicit models): enforced at
 settings write (400), run preflight (typed failure with artifacts before any
 CLI spawns), immediately before each routed spawn against that attempt's exact
-profile, state, cwd, and auth preference, and both reviewer-panel paths. For a
-profile-less automatic Cursor route, admission freezes the concrete native/API
-preference used by both inventory and spawn; an undecidable route refuses.
+profile, state, cwd, and auth preference, and both reviewer-panel paths. A pinned
+profile answers its OWN inventory through the same route resolver the run path
+uses, so preflight and spawn always name one account. A profile-less automatic
+route is enumerated with the same `auto` the adapter will resolve and the spec
+reaches the adapter unrewritten: the gate reads the run's identity, it never
+decides it, and an undecidable route is the vendor's refusal to make, not the
+gate's.
 Thread ask/plan readiness and inventory use the same durable lane HOME as the
 eventual spawn, while non-thread read-only runs retain disposable state.
 `/harnesses/:id/models` reports

@@ -196,7 +196,9 @@ export function runHarnessInstaller(
   const resolutionSource = {
     ...(options.sourceEnv ?? process.env),
     HOME: home,
-    CLAUDEXOR_REMOTE_RUNTIME: target === "remote" ? "1" : "0",
+    // Local resolution must not read the SSH-runtime vendor prefix; the remote
+    // flow keeps whatever its own runtime already exported.
+    ...(target === "local" ? { CLAUDEXOR_REMOTE_RUNTIME: "0" } : {}),
   };
   const environment = {
     ...composeBaseEnv("clean", resolutionSource, runnerNodePath, platform),
@@ -246,7 +248,11 @@ export function runHarnessInstaller(
 
   let lease: HarnessInstallLease | undefined;
   try {
-    if (options.lock !== false) {
+    // Serialization belongs to the same contract as the proof: a machine caller
+    // can race itself, while the remote flow is one operator watching one
+    // terminal. Taking the lease there would add a 120s block and a manual
+    // cleanup step to a path this release promises to leave alone.
+    if (proofRequired && options.lock !== false) {
       try {
         lease = acquireHarnessInstallLease(
           home,

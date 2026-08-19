@@ -544,6 +544,38 @@ describe("harness install --target local", () => {
     }
   });
 
+  it("leaves the watched remote flow outside the lease and the proof entirely", () => {
+    // The unattended local contract must not reach the SSH-host flow: a lease
+    // there would add a 120s block plus a manual cleanup step to a path this
+    // release promises to leave alone, and a proof would turn its historical
+    // exit-code contract into a stricter one.
+    const home = mkdtempSync(join(tmpdir(), "claudexor-remote-untouched-"));
+    const lock = join(home, ".claudexor", "harness-install.lock");
+    mkdirSync(lock, { recursive: true });
+    writeFileSync(
+      join(lock, "owner.json"),
+      `${JSON.stringify({ pid: process.pid, token: "held" })}\n`,
+    );
+    // No fixture is materialized, so a proof would refuse this install.
+    const spawn = vi.fn((_binary: string, _argv: readonly string[]) => ({ status: 0 }) as never);
+    try {
+      const result = runHarnessInstaller("codex", {
+        home,
+        nodePath: "/runtime/node/bin/node",
+        exists: () => true,
+        spawn: spawn as never,
+        lockTimeoutMs: 0,
+      });
+      expect(result).toEqual({ exitCode: 0 });
+      expect(spawn).toHaveBeenCalledOnce();
+      const argv = spawn.mock.calls[0]![1] as string[];
+      expect(argv).toContain("--prefix");
+      expect(argv[argv.indexOf("--prefix") + 1]).toBe(join(home, ".claudexor", "remote", "vendor"));
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it("fails closed without mutating a lease whose recorded owner has exited", () => {
     const home = mkdtempSync(join(tmpdir(), "claudexor-harness-stale-lock-"));
     const lock = join(home, ".claudexor", "harness-install.lock");
