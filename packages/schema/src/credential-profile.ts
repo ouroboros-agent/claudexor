@@ -3,6 +3,22 @@ import { namespacedSecretRefBase } from "@claudexor/util";
 import { Id, IsoTimestamp } from "./primitives.js";
 import { AuthAvailability, AuthVerification } from "./auth.js";
 
+/** Exact profile-policy problem vocabulary shared by mutation and admission
+ * surfaces. ControlProblem remains open for unrelated domain errors. */
+export const CredentialProfileProblemCode = z.enum([
+  "credential_profile_required",
+  "credential_profile_exists",
+  "credential_profile_limit_exceeded",
+  "credential_profile_ambiguous",
+]);
+export type CredentialProfileProblemCode = z.infer<typeof CredentialProfileProblemCode>;
+
+export const CredentialProfileRequiredAction = z.enum([
+  "add_named_account",
+  "disable_extra_profiles",
+]);
+export type CredentialProfileRequiredAction = z.infer<typeof CredentialProfileRequiredAction>;
+
 /**
  * The credential transport a profile isolates (INV-135, unified account
  * model). `config_dir_login` is a vendor-owned login living in a
@@ -442,6 +458,17 @@ export const ControlCredentialProfileDeleteResponse = z
       .optional()
       .describe(
         "DEPRECATED (wire-compat only): a unified-model engine never emits it — partial cleanup is a typed retryable error instead of a removed-with-warning receipt.",
+      ),
+    vendorCredentialDisposition: z
+      .object({
+        owner: z.literal("vendor"),
+        state: z.literal("left_unchanged"),
+        scope: z.literal("os_user"),
+      })
+      .strict()
+      .optional()
+      .describe(
+        "Exact disclosure that profile binding removal left a vendor-owned OS-user credential unchanged; absence preserves legacy receipts.",
       ),
   })
   .strict()

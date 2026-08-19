@@ -195,6 +195,9 @@ export const QuotaAbsenceReason = z
      * network) and from `not_logged_in` (there IS a stored login): the local
      * store looks healthy while the token behind it is no longer honored. */
     "auth_revoked",
+    /** The current platform policy allows only one enabled binding, but the
+     * persisted registry contains several. No row was selected or probed. */
+    "credential_profile_ambiguous",
   ])
   .describe("Why a registered subject has no quota snapshot, in the source's own vocabulary.");
 export type QuotaAbsenceReason = z.infer<typeof QuotaAbsenceReason>;

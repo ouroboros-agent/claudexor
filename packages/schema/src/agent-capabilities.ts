@@ -6,6 +6,7 @@ import { AttachmentInputClass } from "./attachment.js";
 import { OutputSchemaDialect } from "./output-schema-dialect.js";
 import { DelegationCapability } from "./delegation.js";
 import { GitCapability } from "./git-capability.js";
+import { SetupLoginCapability } from "./readiness.js";
 
 /**
  * AgentCapabilityCatalog — the machine-readable answer to "what can this
@@ -130,6 +131,11 @@ export const CatalogHarness = z
     delegation: DelegationCapability.describe(
       "Whether this installed runtime can offer Delegate through this harness.",
     ),
+    setupLogin: SetupLoginCapability.nullable()
+      .optional()
+      .describe(
+        "Effective setup-login flow for this harness on the current host; current producers emit null or an object, while omission identifies a legacy catalog row.",
+      ),
   })
   .describe("Per-harness live capability row (manifest + doctor + model truth).");
 export type CatalogHarness = z.infer<typeof CatalogHarness>;

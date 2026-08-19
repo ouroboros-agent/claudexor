@@ -101,6 +101,28 @@ export const SetupCommandAuthorization = z
   .strict();
 export type SetupCommandAuthorization = z.infer<typeof SetupCommandAuthorization>;
 
+export const SETUP_TERMINAL_TRANSPORT_ERROR_CODES = [
+  "terminal_transport_unavailable",
+  "terminal_transport_unsupported",
+  "terminal_transport_probe_failed",
+  "terminal_transport_failed",
+] as const;
+
+/** Exact terminal-backend failures shared by setup admission, the PTY resolver,
+ * the detached runner receipt, and strict client decoders. */
+export const SetupTerminalTransportErrorCode = z
+  .enum(SETUP_TERMINAL_TRANSPORT_ERROR_CODES)
+  .describe("Typed setup-login terminal transport failure.");
+export type SetupTerminalTransportErrorCode = z.infer<typeof SetupTerminalTransportErrorCode>;
+
+export const SetupNativeCommandErrorCode = z.enum([
+  "permit_timeout",
+  "spawn_failed",
+  "device_auth_unsupported",
+  ...SETUP_TERMINAL_TRANSPORT_ERROR_CODES,
+]);
+export type SetupNativeCommandErrorCode = z.infer<typeof SetupNativeCommandErrorCode>;
+
 export const SetupNativeCommandReceiptShape = {
   executionId: z.string().regex(/^[A-Za-z0-9-]+$/),
   commandDigest: Sha256Hex,
@@ -109,7 +131,7 @@ export const SetupNativeCommandReceiptShape = {
   commandStarted: z.boolean(),
   exitCode: z.number().int().nonnegative().nullable(),
   signal: z.string().nullable(),
-  errorCode: z.enum(["permit_timeout", "spawn_failed", "device_auth_unsupported"]).optional(),
+  errorCode: SetupNativeCommandErrorCode.optional(),
   finishedAt: SetupTimestamp,
 };
 
@@ -133,6 +155,18 @@ export const SetupNativeCommandReceipt = z
       deny(["errorCode"], "spawn_failed cannot claim that the command started");
     if (value.errorCode === "device_auth_unsupported" && value.commandStarted)
       deny(["errorCode"], "device_auth_unsupported means the vendor command was never started");
+    if (
+      [
+        "terminal_transport_unavailable",
+        "terminal_transport_unsupported",
+        "terminal_transport_probe_failed",
+      ].includes(value.errorCode ?? "") &&
+      value.commandStarted
+    )
+      deny(
+        ["errorCode"],
+        `${value.errorCode} means the authorized vendor command was never started`,
+      );
   })
   .describe("Durable, hash-bound result of the allowlisted native setup command.");
 export type SetupNativeCommandReceipt = z.infer<typeof SetupNativeCommandReceipt>;
