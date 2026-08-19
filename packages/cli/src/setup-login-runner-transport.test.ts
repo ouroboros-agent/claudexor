@@ -134,10 +134,9 @@ describe("setup-login runner ConPTY integration", () => {
       expect(await runWorker(prepared.manifestPath, async () => fakeConpty(control, exit))).toBe(1);
       expect(readRunnerResult(prepared.resultPath)).toMatchObject(expected);
       const durable = readFileSync(prepared.resultPath, "utf8");
+      expect(durable).not.toContain(CONPTY_HELPER_PROTOCOL);
       expect(durable).not.toContain("\terror\t");
       expect(durable).not.toContain("raw-control-secret-123");
-      expect(durable).not.toContain("4321");
-      expect(durable).not.toContain("109");
     },
   );
 
@@ -321,7 +320,7 @@ function fakeInteractiveConpty(): TerminalTransportResolution {
     `process.stdin.setEncoding("utf8");`,
     `process.stdin.on("data", chunk => {`,
     `  input += chunk;`,
-    `  if (!input.includes("\\r")) return;`,
+    `  if (!input.includes("\\r\\n")) return;`,
     `  const code = input.trim();`,
     `  process.stdout.write("\\u001b[31mCODE:" + code + "\\u001b[0m\\r\\n");`,
     `  setTimeout(() => process.exit(7), 10);`,

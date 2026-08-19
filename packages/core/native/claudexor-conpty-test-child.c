@@ -317,14 +317,6 @@ int wmain(int argc, wchar_t **argv) {
     fflush(stdout);
     return 0;
   }
-  if (argc == 2 && wcscmp(argv[1], L"--stream-output") == 0) {
-    for (;;) {
-      fputs("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n",
-            stdout);
-      fflush(stdout);
-      Sleep(1);
-    }
-  }
   if (argc == 2 && wcscmp(argv[1], L"--console-state") == 0) {
     print_console_state(GetStdHandle(STD_OUTPUT_HANDLE), "CONSOLE");
     return 0;

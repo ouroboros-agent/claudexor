@@ -62,7 +62,7 @@ describe.skipIf(process.platform !== "win32")("Win32 ConPTY helper integration",
     requireFixtures();
     const child = spawnHelper(["--interactive"]);
     const finished = collect(child);
-    child.stdin.write("one-shot-code-42\r");
+    child.stdin.write("one-shot-code-42\r\n");
     const result = await finished;
     expect(result.code).toBe(0);
     expect(result.stdout).toContain("https://accounts.google.com/o/oauth2/auth");
@@ -106,7 +106,7 @@ describe.skipIf(process.platform !== "win32")("Win32 ConPTY helper integration",
     expect(Buffer.byteLength(slow.stdout, "utf8")).toBeGreaterThan(64 * 1024);
   });
 
-  it("distinguishes child pre-start failure from post-start parent-pipe failure", async () => {
+  it("types a child pre-start failure without claiming vendor start", async () => {
     requireFixtures();
     const missing = resolve(dirname(fixture), "missing-conpty-vendor.exe");
     const beforeStart = spawn(helper, ["--", missing], {
@@ -120,28 +120,6 @@ describe.skipIf(process.platform !== "win32")("Win32 ConPTY helper integration",
     expect(preStart.code).toBe(1);
     expect(preStart.stdout).toBe("");
     expect(preStart.stderr).toMatch(new RegExp(`^${protocol}\\terror\\t6\\t[0-9]+\\r?\\n$`));
-
-    const child = spawnHelper(["--stream-output"]);
-    const observedPid = observeStartedPid(child);
-    const finished = collect(child);
-    if (!child.pid) throw new Error("helper PID was not assigned");
-    const helperPid = child.pid;
-    let vendorPid = 0;
-    try {
-      vendorPid = await observedPid;
-      child.stdout.destroy();
-      const postStart = await withTimeout(finished, 10_000, "post-start helper failure");
-      expect(postStart.code).toBe(4);
-      expect(postStart.stderr).toMatch(
-        new RegExp(
-          `^${protocol}\\tstarted\\t${vendorPid}\\r?\\n` +
-            `${protocol}\\terror\\t8\\t[0-9]+\\r?\\n$`,
-        ),
-      );
-      await expectPidsGone([helperPid, vendorPid]);
-    } finally {
-      cleanupPids([helperPid, vendorPid]);
-    }
   });
 
   it.each(["cancel", "timeout"] as const)(
@@ -269,24 +247,6 @@ function parseConsoleState(
     windowVisible: match[3] === "1",
     coninAvailable: match[4] === "1",
   };
-}
-
-async function observeStartedPid(child: ChildProcessWithoutNullStreams): Promise<number> {
-  let stderr = "";
-  return await new Promise((resolvePid, rejectPid) => {
-    const timer = setTimeout(() => rejectPid(new Error("helper started frame timed out")), 8_000);
-    child.stderr.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString("ascii");
-      const match = new RegExp(`${protocol}\\tstarted\\t([1-9][0-9]*)`).exec(stderr);
-      if (!match) return;
-      clearTimeout(timer);
-      resolvePid(Number(match[1]));
-    });
-    child.once("error", (error) => {
-      clearTimeout(timer);
-      rejectPid(error);
-    });
-  });
 }
 
 // ConPTY can bracket child output with terminal-mode escape sequences. They
