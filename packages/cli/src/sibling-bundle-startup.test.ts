@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -9,6 +10,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { build } from "esbuild";
 import { afterEach, describe, expect, it } from "vitest";
@@ -25,6 +27,61 @@ function sha256(path: string): string {
 }
 
 describe("self-contained sibling CLI/daemon bundle startup", () => {
+  it("bundles the setup_attach role and rejects malformed setup before daemon startup", async () => {
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "cx-attach-bundle-"));
+    roots.push(root);
+    const daemon = join(root, "claudexord.mjs");
+    const configDir = join(root, "config-must-stay-absent");
+    const banner =
+      "import { createRequire as __cxCreateRequire } from 'node:module';\n" +
+      "import { fileURLToPath as __cxFileURLToPath } from 'node:url';\n" +
+      "import { dirname as __cxDirname } from 'node:path';\n" +
+      "const require = __cxCreateRequire(import.meta.url);\n" +
+      "const __filename = __cxFileURLToPath(import.meta.url);\n" +
+      "const __dirname = __cxDirname(__filename);";
+    await build({
+      entryPoints: [join(repoRoot, "packages", "cli", "dist", "claudexord.js")],
+      outfile: daemon,
+      bundle: true,
+      platform: "node",
+      format: "esm",
+      target: "node20",
+      banner: { js: banner },
+      logLevel: "silent",
+    });
+    const env = {
+      ...process.env,
+      CLAUDEXOR_CONFIG_DIR: configDir,
+      CLAUDEXOR_BUILD_SHA: "abcdef0123456789abcdef0123456789abcdef01",
+    };
+
+    const probe = spawnSync(process.execPath, [daemon, "--probe"], {
+      env,
+      encoding: "utf8",
+      timeout: 20_000,
+    });
+    expect(probe.status, `${probe.stdout}\n${probe.stderr}`).toBe(0);
+    expect(JSON.parse(probe.stdout)).toMatchObject({ roles: ["setup_attach"] });
+
+    const malformedProbe = spawnSync(process.execPath, [daemon, "--probe", "setup"], {
+      env,
+      encoding: "utf8",
+      timeout: 20_000,
+    });
+    expect(malformedProbe.status, `${malformedProbe.stdout}\n${malformedProbe.stderr}`).toBe(2);
+    expect(malformedProbe.stderr).toContain("usage: claudexord --probe");
+    expect(existsSync(configDir)).toBe(false);
+
+    const malformed = spawnSync(process.execPath, [daemon, "setup", "invalid"], {
+      env,
+      encoding: "utf8",
+      timeout: 20_000,
+    });
+    expect(malformed.status, `${malformed.stdout}\n${malformed.stderr}`).toBe(2);
+    expect(malformed.stderr).toContain("usage: claudexor setup attach <jobId>");
+    expect(existsSync(configDir)).toBe(false);
+  });
+
   it.skipIf(process.platform === "win32")(
     "starts, handshakes, tails logs, and stops from an isolated sibling bundle",
     async () => {

@@ -13,11 +13,10 @@ import { describe, expect, it, vi } from "vitest";
 import { type DaemonWriterLeaseStatus } from "@claudexor/daemon";
 import {
   assertRemoteEngineIdentity,
-  claimSetupAttachment,
-  setupAttachRunnerInvocation,
   stopRemoteDaemonForRuntimeReplacement,
   switchRemoteRuntimePointer,
 } from "./remote-command.js";
+import { claimSetupAttachment, setupAttachRunnerInvocation } from "./setup-attach-command.js";
 
 const STALE_LEASE = {
   status: "owned",

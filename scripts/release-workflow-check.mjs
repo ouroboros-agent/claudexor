@@ -543,13 +543,6 @@ for (const [label, mutated] of [
   ],
   ["Windows agy acceptance ordered before native fixture build", delayedWindowsFixtureCi],
   [
-    "blocking Brepro comparison",
-    ci.replace(
-      'Write-Warning "/Brepro output differed on this hosted image; exact candidate byte custody remains the blocking contract."',
-      'throw "/Brepro output differed"',
-    ),
-  ],
-  [
     "Windows matrix removed from required aggregate",
     ci.replace("    needs: [build-test, windows-test]", "    needs: [build-test]"),
   ],
@@ -986,10 +979,6 @@ function windowsPrLegFindings(workflow) {
   requirePattern(
     "Windows PR legs must build the native ConPTY fixture",
     /pnpm --filter @claudexor\/core build:win32-fixtures/,
-  );
-  requirePattern(
-    "Windows PR legs must record a non-blocking two-directory Brepro observation",
-    /conpty-brepro-first[\s\S]*?conpty-brepro-second[\s\S]*?Write-Warning "\/Brepro output differed[\s\S]*?exact candidate byte custody remains the blocking contract/,
   );
   requirePattern(
     "Windows PR legs must run helper, resolver, and runner transport tests",

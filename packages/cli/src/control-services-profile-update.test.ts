@@ -361,9 +361,9 @@ describe("updateCredentialProfile (INV-135 Enabled toggle) + accounts projection
     );
   });
 
-  it("never vendor-probes disabled profile rows during Accounts projection", async () => {
-    registerConfigDirProfile({ harnessId: "agy", profileId: "enabled", platform: "darwin" });
-    registerConfigDirProfile({ harnessId: "agy", profileId: "disabled", platform: "darwin" });
+  it("readiness-probes disabled profile-isolated rows without making them routable", async () => {
+    registerConfigDirProfile({ harnessId: "claude", profileId: "enabled" });
+    registerConfigDirProfile({ harnessId: "claude", profileId: "disabled" });
     updateGlobalConfig((config) => ({
       ...config,
       credential_profiles: config.credential_profiles.map((profile) =>
@@ -374,10 +374,14 @@ describe("updateCredentialProfile (INV-135 Enabled toggle) + accounts projection
     const listing = ControlCredentialProfilesResponse.parse(await services().credentialProfiles());
     expect(listing.profiles).toHaveLength(2);
     expect(gatewayMock.profileProbeCalls).toContain("enabled");
-    expect(gatewayMock.profileProbeCalls).not.toContain("disabled");
+    expect(gatewayMock.profileProbeCalls).toContain("disabled");
     expect(
       listing.profiles.find((entry) => entry.profile.profile_id === "disabled")?.status,
-    ).toMatchObject({ availability: "unavailable", verification: "not_run" });
+    ).toMatchObject({ availability: "available", verification: "passed" });
+    expect(listing.accountPools.find((pool) => pool.harness_id === "claude")?.next_up).toEqual({
+      kind: "profile",
+      profileId: "enabled",
+    });
   });
 
   it("projects none when no account row exists, regardless of default-store doctor truth", async () => {

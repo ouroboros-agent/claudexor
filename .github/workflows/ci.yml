@@ -252,21 +252,6 @@ jobs:
       - name: Build native ConPTY fixture
         run: pnpm --filter @claudexor/core build:win32-fixtures
 
-      - name: Observe two-directory /Brepro helper hashes
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $first = Join-Path $env:RUNNER_TEMP "conpty-brepro-first\claudexor-conpty-helper.exe"
-          $second = Join-Path $env:RUNNER_TEMP "conpty-brepro-second\claudexor-conpty-helper.exe"
-          node packages/core/scripts/build-win32-conpty-helper.mjs --require --out $first
-          node packages/core/scripts/build-win32-conpty-helper.mjs --require --out $second
-          $firstHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $first).Hash.ToLowerInvariant()
-          $secondHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $second).Hash.ToLowerInvariant()
-          Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value "ConPTY /Brepro observation: first=$firstHash second=$secondHash" -Encoding utf8
-          if ($firstHash -ne $secondHash) {
-            Write-Warning "/Brepro output differed on this hosted image; exact candidate byte custody remains the blocking contract."
-          }
-
       # The Windows-shaped surfaces, and only suites whose fixtures are
       # portable: the absolute-path contract, win32 process identity and
       # termination, and the journal walker whose separator bug reproduces

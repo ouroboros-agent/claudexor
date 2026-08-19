@@ -251,8 +251,10 @@ pnpm test
   Windows Antigravity permits one enabled OS-user-scoped binding: create and
   enable enforce the bound atomically, disable remains the recovery action,
   over-cap legacy state fails routing/setup/quota with
-  `credential_profile_ambiguous` and zero probes, and disabled rows are never
-  probed. Deletion removes Claudexor-owned state while the receipt explicitly
+  `credential_profile_ambiguous` and zero probes, and disabled rows sharing
+  that OS-user credential are never probed. Disabled rows backed by
+  profile-isolated credentials remain non-routable but retain readiness probes.
+  Deletion removes Claudexor-owned state while the receipt explicitly
   reports the vendor OS-user credential left unchanged.
 - Versioned repo config must never self-grant sensitive powers.
 - Run a targeted search for token-like values when touching auth, secrets,

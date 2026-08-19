@@ -52,9 +52,13 @@ export function profileAccountIdentity(profile: CredentialProfile): AccountIdent
  */
 export async function profileDoctorStatus(
   profile: CredentialProfile,
+  platform: NodeJS.Platform = process.platform,
 ): Promise<CredentialProfileStatus> {
-  if (!profile.enabled) return inactiveProfileStatus(profile, "This profile is disabled.");
   const adapter = buildRegistry().get(profile.harness_id);
+  const policy = credentialProfilePolicyState({ adapter, registry: [profile], platform });
+  if (!profile.enabled && disabledProfileSharesOsUserCredential(policy)) {
+    return inactiveProfileStatus(profile, "This profile is disabled and was not probed.");
+  }
   return probeCredentialProfileStatus(profile, adapter?.probeCredentialProfile?.bind(adapter));
 }
 
@@ -73,6 +77,12 @@ function inactiveProfileStatus(
   };
 }
 
+export function disabledProfileSharesOsUserCredential(
+  state: ReturnType<typeof credentialProfilePolicyState>,
+): boolean {
+  return state.policy.identity_scope === "os_user";
+}
+
 /**
  * Accounts projection for one named profile. A rich adapter owns readiness and
  * identity in ONE call; adapters without it keep the existing doctor + owned-
@@ -89,15 +99,15 @@ export async function profileAccountProjection(
   identity: AccountIdentity | null;
 }> {
   const adapter = buildRegistry().get(profile.harness_id);
-  if (!profile.enabled) {
+  const cardinality = credentialProfilePolicyState({ adapter, registry, platform });
+  if (!profile.enabled && disabledProfileSharesOsUserCredential(cardinality)) {
     return {
       profile,
       status: inactiveProfileStatus(profile, "This profile is disabled and was not probed."),
       identity: profileAccountIdentity(profile),
     };
   }
-  const cardinality = credentialProfilePolicyState({ adapter, registry, platform });
-  if (cardinality.ambiguous) {
+  if (profile.enabled && cardinality.ambiguous) {
     return {
       profile,
       status: inactiveProfileStatus(

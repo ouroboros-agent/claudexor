@@ -13,12 +13,6 @@ export const CredentialProfileProblemCode = z.enum([
 ]);
 export type CredentialProfileProblemCode = z.infer<typeof CredentialProfileProblemCode>;
 
-export const CredentialProfileProblemAction = z.enum([
-  "add_named_account",
-  "disable_extra_profiles",
-]);
-export type CredentialProfileProblemAction = z.infer<typeof CredentialProfileProblemAction>;
-
 /**
  * The binding kind a profile uses (INV-135, unified account model).
  * `config_dir_login` owns Claudexor-scoped vendor state in a config dir or HOME

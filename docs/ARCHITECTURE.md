@@ -580,8 +580,12 @@ so at most one row may be enabled. Create and enable enforce that bound inside
 the locked config mutation; disable always remains available. A legacy config
 with multiple enabled rows still loads, but targeted routing, setup, quota, and
 pool `next_up` return the typed `credential_profile_ambiguous` state without
-probing or choosing a row. Disabled rows stay visible as
-`unavailable + not_run` and are never vendor-probed.
+probing or choosing a row. Disabled rows whose effective policy binds one
+shared OS-user credential stay visible as `unavailable + not_run` and are never
+vendor-probed, so one shared credential cannot paint several rows as distinct
+live accounts. Disabled rows with profile-isolated credentials remain outside
+routing but retain their live readiness probe, so Accounts can show whether a
+stored login is still usable before it is re-enabled.
 
 The startup migration is a crash-recoverable per-harness state machine
 persisted at `<config>/migration/accounts-unified.json` — deliberately outside
@@ -1704,8 +1708,11 @@ The same effective setup-login projector feeds `/v2/harnesses`,
 `/v2/agent-capabilities`, and create admission. Its current producers always
 emit their own `setupLogin` property; omission remains a legacy-wire fact.
 `in_app` maps to daemon transport, while `external_terminal` maps to the
-existing `client_pty` attach path. Profile-required and platform-cardinality
-validation runs before any terminal capability probe or durable mutation.
+existing `client_pty` attach path. The full CLI and packaged daemon bundle
+share that exact attach owner: the latter reserves only `setup attach <jobId>`
+as an alternate role, and malformed `setup` input exits with usage status 2
+before daemon startup. Profile-required and platform-cardinality validation
+runs before any terminal capability probe or durable mutation.
 Readiness and
 secret writes remain in their existing doctor/auth-readiness and secret services;
 setup does not duplicate them as jobs. Jobs expose a required typed phase, coarse state (including
@@ -2763,8 +2770,9 @@ existing signed manifest remains its upstream publication authority. There is
 no embed-only payload, manifest, updater authority, or runtime npm install. The
 portable archive root is fixed:
 `claudexord.bundle.cjs`, `setup-login-runner.cjs`,
-`browser-mcp-runtime/`, and `native/claudexor-process-identity`. It deliberately
-contains neither Node nor the CLI. A host owns the install directory, config
+`browser-mcp-runtime/`, `native/claudexor-process-identity`, and
+`native/claudexor-conpty-helper.exe`. It deliberately contains neither Node nor
+the CLI. A host owns the install directory, config
 root, process, rollback, and exact reviewed pin. Its Node binary is the exact
 version proven by that pin's closure smoke; the root package's
 `engines.node >=20.19.0` promise covers the npm distribution and does not by
@@ -2781,7 +2789,10 @@ or follows `latest` without review.
 The lifecycle handshake is intentionally tiny. Before activation, run
 `node claudexord.bundle.cjs --probe` and require the single JSON line's exact
 `version` and 40-character `buildSha` to match the publication identity in the
-manifest or its derived host pin.
+manifest or its derived host pin. Current probes additionally advertise the
+additive `roles:["setup_attach"]` marker; its absence remains readable as an
+older closure without packaged external-terminal recovery, while unknown roles
+are ignored.
 Before replacing a live closure, run the SERVING closure as
 `node claudexord.bundle.cjs --stop <observed-version> <observed-buildSha>` and
 require its typed stopped receipt; busy or unknown refuses the swap. The daemon

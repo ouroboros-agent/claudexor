@@ -134,7 +134,7 @@ export function credentialProfileMutations(deps: CredentialProfileMutationDeps) 
         // Same vendor overlay the listing applies: a single-profile response
         // must not re-declare a revoked credential `passed` (INV-135 honesty).
         status: vendorVerifiedProfileStatus(
-          await profileDoctorStatus(updated),
+          await profileDoctorStatus(updated, deps.platform),
           deps.quotaRegistry().read(),
         ),
       };

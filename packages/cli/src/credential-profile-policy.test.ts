@@ -13,7 +13,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "@claudexor/config";
 import { noProjectRepoRoot } from "@claudexor/util";
 import { credentialProfileMutations } from "./credential-profile-mutations.js";
-import { profileAccountProjection } from "./accounts-projection.js";
+import {
+  disabledProfileSharesOsUserCredential,
+  profileAccountProjection,
+} from "./accounts-projection.js";
 import { registerConfigDirProfile } from "./profile-registration.js";
 import {
   assertDefaultLoginAllowed,
@@ -71,6 +74,27 @@ describe("platform credential-profile cardinality", () => {
     );
     expect(existsSync(secondHome)).toBe(false);
     expect(loadConfig(noProjectRepoRoot()).global.credential_profiles).toHaveLength(1);
+  });
+
+  it("keys disabled-probe suppression on OS-user scope, not a finite cardinality", () => {
+    const state = {
+      harnessId: "future-shared-harness",
+      platform: "win32" as const,
+      policy: {
+        identity_scope: "os_user" as const,
+        max_enabled_profiles: null,
+        cleanup_owner: "vendor" as const,
+      },
+      enabledProfileCount: 0,
+      ambiguous: false,
+    };
+    expect(disabledProfileSharesOsUserCredential(state)).toBe(true);
+    expect(
+      disabledProfileSharesOsUserCredential({
+        ...state,
+        policy: { ...state.policy, identity_scope: "profile" },
+      }),
+    ).toBe(false);
   });
 
   it("reports an exact duplicate before the platform limit", () => {
@@ -261,6 +285,46 @@ describe("platform credential-profile cardinality", () => {
         ["unavailable", "not_run"],
         ["unavailable", "not_run"],
       ]);
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      if (previousBin === undefined) delete process.env.CLAUDEXOR_AGY_BIN;
+      else process.env.CLAUDEXOR_AGY_BIN = previousBin;
+    }
+  });
+
+  it("probes disabled isolated bindings but keeps disabled OS-user bindings dormant", async () => {
+    const marker = join(root, "vendor-called");
+    const bin = join(root, "fake-agy");
+    writeFileSync(
+      bin,
+      `#!/bin/sh\ntouch '${marker}'\nprintf '%s\\n' '{"status":"SUCCESS","command":{"data":{"id":"gemini-3.7-flash-high"}}}'\n`,
+    );
+    chmodSync(bin, 0o755);
+    const previousBin = process.env.CLAUDEXOR_AGY_BIN;
+    process.env.CLAUDEXOR_AGY_BIN = bin;
+    try {
+      const created = registerConfigDirProfile({
+        harnessId: "agy",
+        profileId: "disabled",
+        platform: "darwin",
+      });
+      const disabled = { ...created.profile, enabled: false };
+
+      const isolated = await profileAccountProjection(disabled, [disabled], "darwin");
+      expect(isolated.status).toMatchObject({
+        availability: "available",
+        verification: "passed",
+        verification_source: "vendor",
+      });
+      expect(existsSync(marker)).toBe(true);
+
+      rmSync(marker, { force: true });
+      const shared = await profileAccountProjection(disabled, [disabled], "win32");
+      expect(shared.status).toMatchObject({
+        availability: "unavailable",
+        verification: "not_run",
+      });
+      expect(shared.status.detail).toContain("disabled and was not probed");
       expect(existsSync(marker)).toBe(false);
     } finally {
       if (previousBin === undefined) delete process.env.CLAUDEXOR_AGY_BIN;

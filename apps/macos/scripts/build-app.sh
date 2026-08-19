@@ -338,6 +338,36 @@ if [ "${CLAUDEXOR_NO_ENGINE_BUNDLE:-0}" != "1" ]; then
   rm -f "$APP/Contents/Resources/setup-runner-smoke.out"
   echo "    bundled setup-login runner launches"
 
+  # The engine closure intentionally omits the full CLI. Prove the exact
+  # packaged daemon bundle advertises and owns the narrow external-terminal
+  # recovery role, and that malformed setup input cannot fall through into
+  # daemon startup or create runtime state.
+  BUNDLED_ENGINE_PROBE="$("$APP/Contents/Resources/node" "$ENGINE_JS" --probe)"
+  "$APP/Contents/Resources/node" -e '
+    const probe = JSON.parse(process.argv[1]);
+    if (!Array.isArray(probe.roles) || !probe.roles.includes("setup_attach")) {
+      throw new Error(`packaged daemon probe lacks setup_attach: ${JSON.stringify(probe)}`);
+    }
+  ' "$BUNDLED_ENGINE_PROBE"
+  BUNDLED_SETUP_SMOKE_ROOT="$(mktemp -d)"
+  set +e
+  env -i HOME="$BUNDLED_SETUP_SMOKE_ROOT/home" PATH="/usr/bin:/bin" \
+    CLAUDEXOR_CONFIG_DIR="$BUNDLED_SETUP_SMOKE_ROOT/config" \
+    "$APP/Contents/Resources/node" "$ENGINE_JS" setup invalid \
+    >"$BUNDLED_SETUP_SMOKE_ROOT/stdout" 2>"$BUNDLED_SETUP_SMOKE_ROOT/stderr"
+  BUNDLED_SETUP_STATUS=$?
+  set -e
+  if [ "$BUNDLED_SETUP_STATUS" -ne 2 ] \
+    || ! grep -q "usage: claudexor setup attach <jobId>" "$BUNDLED_SETUP_SMOKE_ROOT/stderr" \
+    || [ -e "$BUNDLED_SETUP_SMOKE_ROOT/config" ]; then
+    echo "ERROR: packaged daemon setup role did not fail malformed input before daemon startup" >&2
+    cat "$BUNDLED_SETUP_SMOKE_ROOT/stdout" "$BUNDLED_SETUP_SMOKE_ROOT/stderr" >&2
+    rm -rf "$BUNDLED_SETUP_SMOKE_ROOT"
+    exit 1
+  fi
+  rm -rf "$BUNDLED_SETUP_SMOKE_ROOT"
+  echo "    bundled daemon setup attach role launches without the full CLI"
+
   # No network/package-manager access participates in the packaged Browser MCP.
   BROWSER_SMOKE_HOME="$(mktemp -d)"
   env -i HOME="$BROWSER_SMOKE_HOME" PATH="/usr/bin:/bin" \
@@ -492,7 +522,8 @@ if [ -n "${SIGN_IDENTITY:-}" ]; then
   SIGNED_PROBE="$("$APP/Contents/Resources/node" "$ENGINE_JS" --probe)"
   "$APP/Contents/Resources/node" -e '
     const probe = JSON.parse(process.argv[1]);
-    if (probe.version !== process.argv[2] || probe.buildSha !== process.argv[3]) {
+    if (probe.version !== process.argv[2] || probe.buildSha !== process.argv[3]
+      || !Array.isArray(probe.roles) || !probe.roles.includes("setup_attach")) {
       throw new Error(`signed app probe mismatch: ${JSON.stringify(probe)}`);
     }
   ' "$SIGNED_PROBE" "$VERSION" "$BUILD_SHA"
