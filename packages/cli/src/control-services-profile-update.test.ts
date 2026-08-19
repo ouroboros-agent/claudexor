@@ -251,16 +251,27 @@ describe("updateCredentialProfile (INV-135 Enabled toggle) + accounts projection
   });
 
   it("emits an own setupLogin property from both current capability producers", async () => {
-    const svc = services();
-    const harnesses = await svc.harnesses({ fresh: true });
-    expect(harnesses.harnesses).toHaveLength(1);
-    expect(Object.hasOwn(harnesses.harnesses[0]!, "setupLogin")).toBe(true);
-    expect(harnesses.harnesses[0]!.setupLogin).toEqual({ mode: "in_app" });
+    const previousCodexBin = process.env.CLAUDEXOR_CODEX_BIN;
+    process.env.CLAUDEXOR_CODEX_BIN = process.execPath;
+    gatewayMock.statuses[0] = {
+      ...(gatewayMock.statuses[0] as Record<string, unknown>),
+      id: "codex",
+    };
+    try {
+      const svc = services();
+      const harnesses = await svc.harnesses({ fresh: true });
+      expect(harnesses.harnesses).toHaveLength(1);
+      expect(Object.hasOwn(harnesses.harnesses[0]!, "setupLogin")).toBe(true);
+      expect(harnesses.harnesses[0]!.setupLogin).toEqual({ mode: "in_app" });
 
-    const catalog = await svc.agentCapabilities();
-    expect(catalog.harnesses).toHaveLength(1);
-    expect(Object.hasOwn(catalog.harnesses[0]!, "setupLogin")).toBe(true);
-    expect(catalog.harnesses[0]!.setupLogin).toEqual({ mode: "in_app" });
+      const catalog = await svc.agentCapabilities();
+      expect(catalog.harnesses).toHaveLength(1);
+      expect(Object.hasOwn(catalog.harnesses[0]!, "setupLogin")).toBe(true);
+      expect(catalog.harnesses[0]!.setupLogin).toEqual({ mode: "in_app" });
+    } finally {
+      if (previousCodexBin === undefined) delete process.env.CLAUDEXOR_CODEX_BIN;
+      else process.env.CLAUDEXOR_CODEX_BIN = previousCodexBin;
+    }
   });
 
   it("mirrors native_credentials_enabled for ANY row at the harness default store — migration record or not", async () => {

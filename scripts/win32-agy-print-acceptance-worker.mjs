@@ -46,7 +46,7 @@ try {
     printCommand,
     quota,
     protocol,
-    remoteCommand,
+    setupAttachCommand,
     setupJobSupport,
   ] = await Promise.all([
     importFromRepo("packages/core/dist/index.js"),
@@ -55,7 +55,7 @@ try {
     importFromRepo("packages/harness-agy/dist/print-command.js"),
     importFromRepo("packages/cli/dist/agy-quota-source.js"),
     importFromRepo("packages/cli/dist/setup-login-protocol.js"),
-    importFromRepo("packages/cli/dist/remote-command.js"),
+    importFromRepo("packages/cli/dist/setup-attach-command.js"),
     importFromRepo("packages/cli/dist/setup-job-support.js"),
   ]);
 
@@ -161,7 +161,7 @@ try {
   });
   protocol.atomicPrivateJson(manifestPath, manifest);
   const runnerPath = setupJobSupport.resolveSetupLoginRunnerPath();
-  const invocation = remoteCommand.setupAttachRunnerInvocation({
+  const invocation = setupAttachCommand.setupAttachRunnerInvocation({
     platform: process.platform,
     nodePath: process.execPath,
     runnerPath,
