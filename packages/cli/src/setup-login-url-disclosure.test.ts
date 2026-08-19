@@ -19,7 +19,7 @@ import {
   extractOAuthUrl,
   runSetupLoginWorker,
 } from "./setup-login-runner.js";
-import { ptyWrappedCommand } from "./setup-login-pty.js";
+import { resolvePtyWrappedCommand } from "./setup-login-pty.js";
 import { createDeviceCodeDisclosureWatcher } from "./setup-device-code-disclosure.js";
 import {
   SETUP_LOGIN_PROTOCOL_VERSION,
@@ -516,11 +516,22 @@ describe("daemon-hosted no-Terminal login modes (owner directive 2026-08-04)", (
  * the tty ever stops being allocated.
  */
 describe("pty-stdin login transport (agy)", () => {
-  it("prefers the tool that actually works, quotes for Tcl, and refuses when neither exists", () => {
+  it("prefers the tool that actually works, quotes for Tcl, and types unavailable hosts", async () => {
+    const inspectExpect = async (path: string) =>
+      path === "/usr/bin/expect" ? ("regular_executable" as const) : ("missing" as const);
     // expect present (every macOS, and a Linux box that installed it).
-    const wrapped = ptyWrappedCommand("/bin/a gy", [], (p) => p === "/usr/bin/expect");
-    expect(wrapped).toMatchObject({ binary: "/usr/bin/expect" });
-    const script = (wrapped as { args: string[] }).args[1]!;
+    const wrapped = await resolvePtyWrappedCommand("/bin/a gy", [], {
+      platform: "darwin",
+      inspectExecutable: inspectExpect,
+    });
+    expect(wrapped).toMatchObject({
+      status: "ready",
+      backend: "expect",
+      command: { binary: "/usr/bin/expect" },
+      helperControlStderr: false,
+    });
+    if (wrapped.status !== "ready") throw new Error("expect transport did not resolve");
+    const script = wrapped.command.args[1]!;
     expect(script).toContain("spawn -noecho {/bin/a gy}");
     // `interact` returns EXPECT's status, not the vendor's, so the script must
     // wait on the child and exit with what it exited with — otherwise a login
@@ -529,12 +540,24 @@ describe("pty-stdin login transport (agy)", () => {
     expect(script).toContain("exit [lindex $r 3]");
     // A word Tcl braces cannot carry is REFUSED, never escaped into a
     // different command than the manifest digest sealed.
-    expect(ptyWrappedCommand("/bin/a{gy", [], (p) => p === "/usr/bin/expect")).toMatchObject({
-      refusal: expect.stringContaining("cannot carry unchanged"),
+    expect(
+      await resolvePtyWrappedCommand("/bin/a{gy", [], {
+        platform: "darwin",
+        inspectExecutable: inspectExpect,
+      }),
+    ).toMatchObject({
+      status: "unsupported",
+      errorCode: "terminal_transport_unsupported",
     });
     // No tty helper at all: a typed refusal, never a login that cannot finish.
-    expect(ptyWrappedCommand("/bin/agy", [], () => false)).toMatchObject({
-      refusal: expect.stringContaining("no terminal helper"),
+    expect(
+      await resolvePtyWrappedCommand("/bin/agy", [], {
+        platform: "darwin",
+        inspectExecutable: async () => "missing",
+      }),
+    ).toMatchObject({
+      status: "unavailable",
+      errorCode: "terminal_transport_unavailable",
     });
   });
 
@@ -545,8 +568,11 @@ describe("pty-stdin login transport (agy)", () => {
     mkdirSync(root, { recursive: true });
     writeFileSync(probe, "#!/bin/bash\n[ -t 0 ] || exit 3\nexit ${1:-0}\n", { mode: 0o700 });
     const run = async (code: string): Promise<number | null> => {
-      const wrapped = ptyWrappedCommand(probe, [code]) as { binary: string; args: string[] };
-      const child = spawn(wrapped.binary, wrapped.args, { stdio: ["pipe", "pipe", "pipe"] });
+      const wrapped = await resolvePtyWrappedCommand(probe, [code]);
+      if (wrapped.status !== "ready") throw new Error("host expect transport unavailable");
+      const child = spawn(wrapped.command.binary, wrapped.command.args, {
+        stdio: ["pipe", "pipe", "pipe"],
+      });
       child.stdout.resume();
       child.stderr.resume();
       return new Promise((resolve) => child.once("exit", resolve));

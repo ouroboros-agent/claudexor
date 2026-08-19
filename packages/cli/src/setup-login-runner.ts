@@ -17,7 +17,11 @@ import {
 import { terminateAppServerChild } from "./setup-login-child-lifecycle.js";
 export { terminateAppServerChild } from "./setup-login-child-lifecycle.js";
 import { nativeLoginEnv } from "./native-login.js";
-import { ptyWrappedCommand } from "./setup-login-pty.js";
+import {
+  createConptyControlParser,
+  resolvePtyWrappedCommand,
+  type TerminalTransportResolution,
+} from "./setup-login-pty.js";
 import { createOAuthUrlDetector } from "./setup-login-url.js";
 export { createOAuthUrlDetector, extractOAuthUrl } from "./setup-login-url.js";
 import { boundedTail, createTailBuffer, watchLoginInput } from "./setup-login-io.js";
@@ -40,6 +44,7 @@ export interface SetupLoginRunnerOptions {
   processGroupService?: ReturnType<typeof processGroupServiceWithWindowsSupport>;
   selfPid?: number;
   runnerPath?: string;
+  resolvePtyCommand?: typeof resolvePtyWrappedCommand;
 }
 
 /**
@@ -57,7 +62,9 @@ export async function runSetupLogin(
   const worker = spawnProcess(process.execPath, [runnerPath, "--worker", resolve(manifestPath)], {
     cwd: manifest.cwd,
     env: runnerBootstrapEnv(),
-    // A detached child opens its own console on Windows unless hidden.
+    // libuv maps detached:true to DETACHED_PROCESS on Windows, so this
+    // durable custody leader starts without an attached console. Keep the
+    // window suppression explicit for the direct executable launch too.
     windowsHide: true,
     detached: true,
     stdio: "inherit",
@@ -75,6 +82,7 @@ export async function runSetupLoginWorker(
   const now = options.now ?? (() => new Date());
   const sleep = options.sleep ?? ((ms) => new Promise<void>((done) => setTimeout(done, ms)));
   const spawnProcess = options.spawnProcess ?? spawn;
+  const resolvePtyCommand = options.resolvePtyCommand ?? resolvePtyWrappedCommand;
   const processGroups = options.processGroupService ?? processGroupServiceWithWindowsSupport();
   const captured = processGroups.captureLeader(options.selfPid ?? process.pid);
   if (captured.status !== "known") {
@@ -144,8 +152,6 @@ export async function runSetupLoginWorker(
   // and escalate stubborn descendants with KILL; the vendor child receives
   // the same group signal directly.
   const holdLeaderForEscalation = () => undefined;
-  process.on("SIGTERM", holdLeaderForEscalation);
-  process.on("SIGINT", holdLeaderForEscalation);
   // Daemon-hosted no-Terminal modes (owner directive 2026-08-04): the runner
   // is detached, so nothing may inherit a TTY. with_input additionally pipes
   // stdin so the daemon-delivered one-shot input can reach the vendor CLI.
@@ -184,66 +190,131 @@ export async function runSetupLoginWorker(
   // A vendor that reads its code only from a terminal is wrapped here; the
   // wrapper is transport, so the evidence verified above still covers the
   // VENDOR binary and its sealed argv (setup-login-pty.ts).
-  const command = manifest.ptyStdin
-    ? ptyWrappedCommand(manifest.binary, manifest.args)
-    : { binary: manifest.binary, args: manifest.args };
-  if ("refusal" in command) {
-    persistFailure(manifest, now, permit.issuedAt, "spawn_failed", command.refusal);
-    return 1;
-  }
-
-  // A spawn throw and a wait rejection wrote the SAME receipt, so they share
-  // one catch; de-registering the hold handlers is every exit's finally.
-  let result: { code: number | null; signal: NodeJS.Signals | null };
+  // Install the custody hold before the resolver can spawn its bounded probe.
+  // A daemon cancellation during that await must leave this captured leader
+  // alive for the existing PID-rooted tree escalation.
+  process.on("SIGTERM", holdLeaderForEscalation);
+  process.on("SIGINT", holdLeaderForEscalation);
   let stopInputWatch: (() => void) | undefined;
   try {
-    const spawnOptions: SpawnOptions = {
-      cwd: manifest.cwd,
-      // A sealed profileConfigDir (INV-135) scopes the vendor login to the
-      // profile's own store; absent = the default vendor store as before.
-      env: nativeLoginEnv(manifest.harness, process.env, manifest.profileConfigDir),
-      detached: false,
-      stdio: urlDisclosure
-        ? [withInput ? "pipe" : "ignore", "pipe", "pipe"]
-        : teeOutput
-          ? ["inherit", "pipe", "pipe"]
-          : "inherit",
-    };
-    const child = spawnProcess(command.binary, command.args, spawnOptions);
-    if (teeOutput) {
-      const tee = (sink: NodeJS.WriteStream) => (chunk: Buffer) => {
-        sink.write(chunk);
-        tail.push(chunk);
-        discloseOAuthUrl(chunk);
+    let terminal: Extract<TerminalTransportResolution, { status: "ready" }> | null = null;
+    if (manifest.ptyStdin) {
+      let resolution: TerminalTransportResolution;
+      try {
+        resolution = await resolvePtyCommand(manifest.binary, manifest.args);
+      } catch {
+        persistFailure(
+          manifest,
+          now,
+          permit.issuedAt,
+          "terminal_transport_probe_failed",
+          "terminal transport capability probe failed",
+        );
+        return 1;
+      }
+      if (resolution.status !== "ready") {
+        persistFailure(manifest, now, permit.issuedAt, resolution.errorCode, resolution.detail);
+        return 1;
+      }
+      terminal = resolution;
+    }
+    const command = terminal?.command ?? { binary: manifest.binary, args: manifest.args };
+
+    // A spawn throw and a wait rejection write the SAME receipt, so they share
+    // one catch. The outer finally releases both input and signal handlers on
+    // resolver, spawn, wait, and result-classification exits.
+    let result: { code: number | null; signal: NodeJS.Signals | null };
+    const helperControl = terminal?.helperControlStderr ? createConptyControlParser() : null;
+    try {
+      const spawnOptions: SpawnOptions = {
+        cwd: manifest.cwd,
+        // A sealed profileConfigDir (INV-135) scopes the vendor login to the
+        // profile's own store; absent = the default vendor store as before.
+        env: nativeLoginEnv(manifest.harness, process.env, manifest.profileConfigDir),
+        ...(terminal?.backend === "windows_conpty" ? { windowsHide: true } : {}),
+        detached: false,
+        stdio: urlDisclosure
+          ? [withInput ? "pipe" : "ignore", "pipe", "pipe"]
+          : terminal?.helperControlStderr
+            ? [withInput ? "pipe" : "inherit", "inherit", "pipe"]
+            : teeOutput
+              ? ["inherit", "pipe", "pipe"]
+              : "inherit",
       };
-      child.stdout?.on("data", tee(process.stdout));
-      child.stderr?.on("data", tee(process.stderr));
+      const child = spawnProcess(command.binary, command.args, spawnOptions);
+      if (teeOutput) {
+        const tee = (sink: NodeJS.WriteStream) => (chunk: Buffer) => {
+          sink.write(chunk);
+          tail.push(chunk);
+          discloseOAuthUrl(chunk);
+        };
+        child.stdout?.on("data", tee(process.stdout));
+        if (!helperControl) child.stderr?.on("data", tee(process.stderr));
+      }
+      if (helperControl) child.stderr?.on("data", (chunk: Buffer) => helperControl.push(chunk));
+      if (withInput && manifest.inputPath) {
+        // A tty echoes what we write, so the code would otherwise ride the tail.
+        stopInputWatch = watchLoginInput(manifest, child, now, (value) => tail.forget(value));
+      }
+      result = await waitForExit(child);
+    } catch {
+      if (!terminal) {
+        persistFailure(manifest, now, permit.issuedAt, "spawn_failed");
+        return 1;
+      }
+      const control = helperControl?.finish();
+      if (control?.started) {
+        persistCommandFailure(manifest, now, permit.issuedAt, "terminal_transport_failed", true);
+        return 1;
+      }
+      let refreshed: TerminalTransportResolution | null = null;
+      try {
+        refreshed = await resolvePtyCommand(manifest.binary, manifest.args);
+      } catch {
+        // A resolver must normally return a typed result. If its own I/O fails,
+        // the already-probed transport still has the narrow post-probe code.
+      }
+      if (refreshed && refreshed.status !== "ready") {
+        persistFailure(manifest, now, permit.issuedAt, refreshed.errorCode, refreshed.detail);
+      } else {
+        persistCommandFailure(manifest, now, permit.issuedAt, "terminal_transport_failed", false);
+      }
+      return 1;
     }
-    if (withInput && manifest.inputPath) {
-      // A tty echoes what we write, so the code would otherwise ride the tail.
-      stopInputWatch = watchLoginInput(manifest, child, now, (value) => tail.forget(value));
+    if (helperControl) {
+      const control = helperControl.finish();
+      if (!control.malformed && !control.started && control.error?.phase === 6) {
+        persistFailure(manifest, now, permit.issuedAt, "spawn_failed");
+        return 1;
+      }
+      if (control.malformed || control.error !== null || !control.started) {
+        persistCommandFailure(
+          manifest,
+          now,
+          permit.issuedAt,
+          "terminal_transport_failed",
+          control.started,
+        );
+        return 1;
+      }
     }
-    result = await waitForExit(child);
-  } catch {
-    persistFailure(manifest, now, permit.issuedAt, "spawn_failed");
-    return 1;
+    const capturedTail = tail.text();
+    persistResult(manifest, {
+      permitIssuedAt: permit.issuedAt,
+      commandStarted: true,
+      exitCode: result.code,
+      signal: result.signal,
+      finishedAt: now().toISOString(),
+      ...(capturedTail && (result.code !== 0 || result.signal !== null)
+        ? { outputTail: capturedTail }
+        : {}),
+    });
+    return result.code === 0 && result.signal === null ? 0 : 1;
   } finally {
     stopInputWatch?.();
     process.off("SIGTERM", holdLeaderForEscalation);
     process.off("SIGINT", holdLeaderForEscalation);
   }
-  const capturedTail = tail.text();
-  persistResult(manifest, {
-    permitIssuedAt: permit.issuedAt,
-    commandStarted: true,
-    exitCode: result.code,
-    signal: result.signal,
-    finishedAt: now().toISOString(),
-    ...(capturedTail && (result.code !== 0 || result.signal !== null)
-      ? { outputTail: capturedTail }
-      : {}),
-  });
-  return result.code === 0 && result.signal === null ? 0 : 1;
 }
 
 /**
@@ -459,9 +530,23 @@ function persistFailure(
   errorCode: NonNullable<SetupLoginRunnerResult["errorCode"]>,
   outputTail?: string,
 ): void {
+  persistCommandFailure(manifest, now, permitIssuedAt, errorCode, false, outputTail);
+}
+
+/** Transport control can fail after the helper proved that the vendor
+ * started. Keep that distinction in the durable receipt without copying the
+ * helper's numeric control frame or raw stderr into any durable surface. */
+function persistCommandFailure(
+  manifest: SetupLoginManifest,
+  now: () => Date,
+  permitIssuedAt: string | null,
+  errorCode: NonNullable<SetupLoginRunnerResult["errorCode"]>,
+  commandStarted: boolean,
+  outputTail?: string,
+): void {
   persistResult(manifest, {
     permitIssuedAt,
-    commandStarted: false,
+    commandStarted,
     errorCode,
     exitCode: null,
     signal: null,
