@@ -1,5 +1,42 @@
 # @claudexor/cli
 
+## 3.7.0
+
+### Minor Changes
+
+- `claudexor harness install` gains an explicit `--target local`: the vendor CLI
+  is installed into the managed toolchain root that local binary resolution and
+  confinement already read, serialized by a cross-process install lease, and
+  proved afterwards by resolving the launcher and executing its `--version`. The
+  watched remote flow is unchanged. The signed runtime closure now also carries
+  `claudexor.bundle.cjs`, so an embedding host can invoke that exact reviewed CLI.
+
+### Patch Changes
+
+- @claudexor/acp-server@3.7.0
+- @claudexor/artifact-store@3.7.0
+- @claudexor/config@3.7.0
+- @claudexor/control-api@3.7.0
+- @claudexor/core@3.7.0
+- @claudexor/daemon@3.7.0
+- @claudexor/delivery@3.7.0
+- @claudexor/gateway@3.7.0
+- @claudexor/harness-agy@3.7.0
+- @claudexor/harness-claude@3.7.0
+- @claudexor/harness-codex@3.7.0
+- @claudexor/harness-cursor@3.7.0
+- @claudexor/harness-fake@3.7.0
+- @claudexor/harness-opencode@3.7.0
+- @claudexor/harness-raw-api@3.7.0
+- @claudexor/journal@3.7.0
+- @claudexor/mcp-server@3.7.0
+- @claudexor/orchestrator@3.7.0
+- @claudexor/review@3.7.0
+- @claudexor/schema@3.7.0
+- @claudexor/secrets@3.7.0
+- @claudexor/util@3.7.0
+- @claudexor/workspace@3.7.0
+
 ## 3.6.0
 
 ### Minor Changes

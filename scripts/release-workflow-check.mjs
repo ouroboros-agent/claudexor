@@ -120,6 +120,14 @@ for (const [label, pattern] of [
     /remote_runtime_manifest_b64:\s*\n\s*description:[^\n]*owner-signed four-target SSH runtime manifest/,
   ],
   [
+    "the v3.7.0 custom Ed25519 waiver is an explicit boolean defaulting false",
+    /skip_custom_ed25519:\s*\n\s*description:[^\n]*v3\.7\.0 publish only[^\n]*\n\s*required:\s*false\n\s*type:\s*boolean\n\s*default:\s*false/,
+  ],
+  [
+    "custom Ed25519 waiver input is projected into one shell-only environment variable",
+    /SKIP_CUSTOM_ED25519_INPUT:\s*\$\{\{\s*inputs\.skip_custom_ed25519\s*\}\}/,
+  ],
+  [
     "publish verifies the owner-signed remote runtime manifest",
     /verify-signed-remote-runtime-manifest\.mjs/,
   ],
@@ -425,6 +433,18 @@ if (!(uploadAssets >= 0 && uploadAssets < afterAssets && afterAssets < publishDr
 if (/gh\s+release\s+delete-asset/.test(publishReleaseJob)) {
   errors.push("release.yml: retry flow must never delete unexpected remote assets");
 }
+for (const [label, pattern] of [
+  [
+    "waived publish revalidates that all three custom Ed25519 documents are absent",
+    /if \[ "\$SKIP_CUSTOM_ED25519_INPUT" = true \]; then\n\s*for name in REVIEW_ATTESTATION\.json runtime-manifest\.json remote-runtime-manifest\.json; do\n\s*test ! -e "release-assets\/\$name"/,
+  ],
+  [
+    "normal publish still byte-compares the verified review attestation",
+    /else\n\s*cmp "\$RUNNER_TEMP\/expected-review-attestation\.json" release-assets\/REVIEW_ATTESTATION\.json\n\s*fi/,
+  ],
+]) {
+  if (!pattern.test(publishReleaseJob)) errors.push(`release.yml: ${label}`);
+}
 
 const coreManifest = JSON.parse(readFileSync("packages/core/package.json", "utf8"));
 if (
@@ -474,6 +494,27 @@ if (!/validateReleaseAttestation\(attestation, reviewAuthority/.test(verifier)) 
 }
 if (!/candidateVersion:\s*version/.test(verifier)) {
   errors.push("verify-release-input.mjs: review runtime version is not bound to package.json");
+}
+for (const [label, pattern] of [
+  [
+    "waiver rejects non-boolean environment values",
+    /skipCustomEd25519Input\s*!==\s*"true"\s*&&\s*skipCustomEd25519Input\s*!==\s*"false"/,
+  ],
+  ["waiver is publish-only", /skipCustomEd25519\s*&&\s*mode\s*!==\s*"publish"/],
+  [
+    "waiver requires all three custom Ed25519 inputs to be empty",
+    /skipCustomEd25519\s*&&\s*customEd25519Inputs\.some\(\(value\)\s*=>\s*value\s*!==\s*""\)/,
+  ],
+  [
+    "waiver is permanently pinned to package version 3.7.0",
+    /skipCustomEd25519\s*&&\s*version\s*!==\s*"3\.7\.0"/,
+  ],
+  [
+    "normal publish still verifies the signed schema-v6 review attestation",
+    /if\s*\(mode\s*===\s*"publish"\s*&&\s*!skipCustomEd25519\)/,
+  ],
+]) {
+  if (!pattern.test(verifier)) errors.push(`verify-release-input.mjs: ${label}`);
 }
 const fullGateRunner = readFileSync("scripts/run-full-gate-receipt.mjs", "utf8");
 if (
@@ -599,9 +640,9 @@ if (
 }
 
 const directInputs = [...release.matchAll(/\$\{\{\s*inputs\.[^}]+\}\}/g)].map((match) => match[0]);
-if (directInputs.length !== 6) {
+if (directInputs.length !== 7) {
   errors.push(
-    `release.yml: expected exactly six input projections into workflow env, got ${directInputs.length}`,
+    `release.yml: expected exactly seven input projections into workflow env, got ${directInputs.length}`,
   );
 }
 if (errors.length) {
@@ -707,8 +748,33 @@ function exactCandidateAppPromotionErrors(job) {
     );
   }
   requirePattern(
+    "normal publish must ship the engine manifest only after signed verification against the promoted closure",
+    /signed="\$RUNNER_TEMP\/runtime-manifest\.signed\.json"\n\s*printf '%s' "\$RUNTIME_MANIFEST_B64_INPUT" \| base64 -d > "\$signed"\n\s*node scripts\/verify-signed-runtime-manifest\.mjs \\\n\s*--signed "\$signed" \\\n\s*--unsigned "\$RUNNER_TEMP\/runtime-closure\/runtime-manifest\.json" \\\n\s*--tarball "\$RUNNER_TEMP\/runtime-closure\/claudexor-runtime-\$VERSION\.tar\.gz" \\\n\s*--version "\$VERSION" \\\n\s*--expected-build-sha "\$PREPARED_SHA"\n\s*cp "\$signed" "\$assets\/runtime-manifest\.json"/,
+    assembleStep,
+  );
+  requirePattern(
     "publish must ship the remote manifest only after unsigned-to-signed verification against promoted archives",
     /remote_signed="\$RUNNER_TEMP\/remote-runtime-manifest\.signed\.json"\n\s*printf '%s' "\$REMOTE_RUNTIME_MANIFEST_B64_INPUT" \| base64 -d > "\$remote_signed"\n\s*node scripts\/verify-signed-remote-runtime-manifest\.mjs \\\n\s*--signed "\$remote_signed" \\\n\s*--unsigned "\$RUNNER_TEMP\/remote-runtimes\/remote-runtime-manifest\.json" \\\n\s*--assets-dir "\$RUNNER_TEMP\/remote-runtimes" \\\n\s*--version "\$VERSION" \\\n\s*--expected-build-sha "\$PREPARED_SHA"\n\s*cp "\$remote_signed" "\$assets\/remote-runtime-manifest\.json"/,
+    assembleStep,
+  );
+  requirePattern(
+    "the v3.7.0 waiver must keep the unsigned engine manifest candidate-only",
+    /if \[ "\$RELEASE_MODE_INPUT" = publish \]; then\n\s*if \[ "\$SKIP_CUSTOM_ED25519_INPUT" != true \]; then[\s\S]*?cp "\$signed" "\$assets\/runtime-manifest\.json"\n\s*fi\n\s*else\n\s*cp "\$RUNNER_TEMP\/runtime-closure\/runtime-manifest\.json" "\$assets\/"/,
+    assembleStep,
+  );
+  requirePattern(
+    "the v3.7.0 waiver must keep the unsigned remote manifest candidate-only",
+    /if \[ "\$RELEASE_MODE_INPUT" = publish \]; then\n\s*if \[ "\$SKIP_CUSTOM_ED25519_INPUT" != true \]; then[\s\S]*?cp "\$remote_signed" "\$assets\/remote-runtime-manifest\.json"\n\s*fi\n\s*else\n\s*cp "\$RUNNER_TEMP\/remote-runtimes\/remote-runtime-manifest\.json" "\$assets\/"/,
+    assembleStep,
+  );
+  requirePattern(
+    "the v3.7.0 waiver must omit all three custom Ed25519 documents from final assets",
+    /if \[ "\$SKIP_CUSTOM_ED25519_INPUT" = true \]; then\n\s*for name in REVIEW_ATTESTATION\.json runtime-manifest\.json remote-runtime-manifest\.json; do\n\s*test ! -e "\$assets\/\$name"/,
+    assembleStep,
+  );
+  requirePattern(
+    "normal publish must still assemble the signed review attestation",
+    /if \[ "\$RELEASE_MODE_INPUT" = publish \] && \[ "\$SKIP_CUSTOM_ED25519_INPUT" != true \]; then\n\s*cp "\$RUNNER_TEMP\/review-attestation\.json" "\$assets\/REVIEW_ATTESTATION\.json"/,
     assembleStep,
   );
   requirePattern(

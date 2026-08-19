@@ -3,6 +3,35 @@
 Release history for Claudexor. The current version is declared in the root
 `package.json` (the version SSOT); tags `v*` correspond to GitHub Releases.
 
+- **v3.7.0** (2026-08-19): a host embedding Claudexor can finish `Connect` for
+  a vendor CLI that is not installed yet. `claudexor harness install` gains an
+  explicit `--target local`, which installs into the managed toolchain root
+  (`~/.claudexor/node`) that local binary resolution and confinement already
+  read, instead of the SSH-host prefix the historical `remote` target owns.
+  The watched remote flow is unchanged in every respect. What the unattended
+  local path has instead of a human at the terminal is proof: concurrent
+  installs into one prefix serialize on a cross-process lease (a lease whose
+  owner died fails closed with a typed `install_lock_stale` and its exact
+  cleanup path, never an ABA-prone auto-reclaim), and success requires
+  resolving the installed launcher and executing its `--version` — a child
+  exiting zero without that postcondition is a typed
+  `install_verification_failed`, so `ok:true` always carries `installedBinary`
+  and `installedVersion`. A script vendor installed this way is disclosed as
+  `unattended_unpinned` and records the downloaded installer's size and
+  sha256; it never claims the `human_observed` verification the watched path
+  earns. The signed runtime closure now also ships `claudexor.bundle.cjs`
+  stamped with the same build sha as the daemon, so the host invokes that
+  exact reviewed CLI rather than anything it found on PATH. Two model-gate
+  defects found by the release review are fixed with it: the pre-run gate no
+  longer replays an admitted credential route as an auth preference for every
+  adapter (a non-Cursor `auto` run was enumerated against an inventory its own
+  spawn would not use), and no spawned spec is rewritten any more, so Cursor's
+  `auth_switched`/`readiness_preferred` disclosure survives an explicit-model
+  `auto` run. The Cursor model inventory now also runs in the run's `cwd`.
+  This publish uses the owner-approved one-release `skip_custom_ed25519`
+  waiver: Apple codesigning/notarization, GitHub provenance and npm provenance
+  are unchanged, and the three custom Ed25519 documents are simply absent
+  rather than unsigned — no client signature check is weakened.
 - **v3.6.0** (2026-08-18): the unified account model (INV-135 rewrite,
   owner-approved). Every account is a named registry row; the separate
   "default"/"CLI login" account type is gone. A detected legacy claude/codex

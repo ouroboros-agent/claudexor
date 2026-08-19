@@ -417,7 +417,13 @@ explicit model — per-run, settings default, fallback, reviewer — must pass
 the harness's model truth source (live `models()` inventory, else manifest
 `known_models`; a harness with neither refuses explicit models): enforced at
 settings write (400), run preflight (typed failure with artifacts before any
-CLI spawns), and both reviewer-panel paths. `/harnesses/:id/models` reports
+CLI spawns), immediately before each routed spawn against that attempt's exact
+profile, state, cwd, and auth preference, and both reviewer-panel paths. For a
+profile-less automatic Cursor route, admission freezes the concrete native/API
+preference used by both inventory and spawn; an undecidable route refuses.
+Thread ask/plan readiness and inventory use the same durable lane HOME as the
+eventual spawn, while non-thread read-only runs retain disposable state.
+`/harnesses/:id/models` reports
 the truth source honestly (`source: api|manifest|none`, with the manifest's
 `verifiedAgainst` CLI-version freshness note), and the model-hints-freshness
 gate warns when the installed vendor CLI drifts from the verified version.
@@ -2578,6 +2584,15 @@ macOS UI/UX SSOT. This section keeps only the engine-facing facts.
 
 ### Remote SSH execution
 
+Release `3.3.16` is an owner-authorized one-release publication exception: its
+GitHub Release omits `runtime-manifest.json` and
+`remote-runtime-manifest.json` rather than shipping unsigned substitutes.
+Consequently, an existing app cannot update its engine in place to that
+version, and the app cannot perform a first-time remote bootstrap from it.
+Fresh signed/notarized app installs, npm packages, and reviewed exact-pin
+embedders remain usable; the normal signed-manifest design below stays
+fail-closed for non-exempt releases.
+
 The macOS app can bind a thread to a remote execution location. A location is
 either `local` or a stable app-owned connection UUID backed by one concrete
 alias from `~/.ssh/config`; a materialized thread is permanently identified in
@@ -2649,7 +2664,7 @@ its vendor script is downloaded in full (`curl --fail`, never piped to a
 shell), its size and SHA-256 are printed, and it executes in the visible
 embedded PTY where the operator watches it — the human is the verifier, the
 same principle as interactive SSH auth. Nothing installs without disclosure:
-the CLI prints the exact command and destination
+the CLI prints the exact package/version/destination install recipe
 (`~/.claudexor/remote/vendor/bin`, which the remote wrapper puts first on
 PATH) and requires a TTY confirmation or an explicit `--yes`, and the macOS
 confirmation dialog shows the remote CLI's own `--dry-run --json` disclosure
@@ -2661,6 +2676,40 @@ exit never reads as success, and Harness Doctor verifies the result
 afterward. Every npm, curl, and vendor-script child receives the shared minimal
 runtime environment, including proxy and trust settings but no provider
 credential variables.
+
+The installer recipe producer also accepts the explicit `local` target used by
+host integrations. Npm harnesses then install under the existing managed Node
+root (`~/.claudexor/node/bin`), which is already shared by local resolution and
+the confinement exec carve-out; Cursor keeps its vendor-selected destination,
+and normalized harness discovery covers both `~/.local/bin` and
+`~/.cursor/bin`. An explicit `--target local --yes` is suitable for an
+unattended Connect action that already carries the user's authorization. Cursor
+is still unpinned in that flow: the typed evidence class is
+`unattended_unpinned`, and the execute receipt records the exact downloaded
+script's SHA-256 and byte length rather than claiming human observation. Local
+installs take a user-scoped cross-process lease and recheck both the exact npm
+pin and its target-contained, non-empty launcher under that lease before
+mutating the shared prefix; a partial package without its shim is repaired.
+Before any success receipt, the absolute launcher must execute `--version` and
+prove the exact npm pin. Cursor similarly rechecks the supported `cursor-agent`
+name through the target-aware normalized harness PATH, permits the vendor's
+official launcher symlink layout, and records its bounded non-empty version
+line. Child exit zero without this proof is the typed
+`install_verification_failed` outcome. A live owner gets a bounded wait. A dead
+or old owner-less lock fails closed as `install_lock_stale` with the exact lock
+path and a verify/remove/retry remedy; waiters never rename an observed stale
+pathname because a new owner could have replaced it between observation and
+mutation. An unexpected filesystem or child-process exception is normalized by
+the canonical CLI projector as `harness_install_failed`; JSON mode still emits
+one object containing the full pre-execution disclosure.
+Local Windows installation is a typed `unsupported_platform` refusal before
+filesystem or child-process side effects. The omitted target remains `remote`,
+so the SSH installer's
+visible disclosure, confirmation, command, destination, and precedence
+contract are unchanged. After any successful local install, the embedding host
+must request the existing fresh doctor/status projection before retrying login;
+it must not trust a pre-install readiness cache, and this needs no new setup-job
+or daemon API.
 
 `claudexor remote bootstrap --json` starts or discovers the remote daemon and
 returns its loopback endpoint. The daemon remains bound to `127.0.0.1`; the app
@@ -2691,11 +2740,16 @@ continue.
 
 ### Engine runtime updater (M7, D22/D23)
 
+The mechanism below is the normal release contract. The version-specific
+`3.3.16` exception documented above deliberately has no signed manifest assets,
+so clients refuse rather than weaken this verifier.
+
 The app updates its **engine runtime closure** in place without a new DMG. The
 update unit is a `claudexor-runtime-<version>.tar.gz` containing the engine-owned
 resources: the bundled daemon, the setup-login runner, the Browser MCP
-deployment, and the native process-identity helper. App-owned Node, the CLI,
-UI, and icons stay outside the closure, so a Node bump ships a new signed DMG.
+deployment, the native process-identity helper, and the reviewed operator CLI
+used by embedding hosts. App-owned Node, UI, and icons stay outside the
+closure, so a Node bump ships a new signed DMG.
 Each release also publishes a **signed** `runtime-manifest.json` built straight
 from the signed app bundle by `scripts/build-runtime-closure.mjs`. The builder materializes
 internal package links into regular files/directories, rejects links escaping
@@ -2711,15 +2765,20 @@ app-vs-engine skew guard.
 existing signed manifest remains its upstream publication authority. There is
 no embed-only payload, manifest, updater authority, or runtime npm install. The
 portable archive root is fixed:
-`claudexord.bundle.cjs`, `setup-login-runner.cjs`,
-`browser-mcp-runtime/`, and `native/claudexor-process-identity`. It deliberately
-contains neither Node nor the CLI. A host owns the install directory, config
-root, process, rollback, and exact reviewed pin. Its Node binary is the exact
-version proven by that pin's closure smoke; the root package's
+`claudexord.bundle.cjs`, `claudexor.bundle.cjs`,
+`setup-login-runner.cjs`, `browser-mcp-runtime/`, and
+`native/claudexor-process-identity`. It deliberately contains no Node runtime.
+A host owns the install directory, config root, process, rollback, and exact
+reviewed pin. Its full Node toolchain is the exact version proven by that pin's
+closure smoke; POSIX consumers using local harness install must provide both
+`<node-root>/bin/node` and
+`<node-root>/lib/node_modules/npm/bin/npm-cli.js`, with no ambient-PATH npm
+fallback. The root package's
 `engines.node >=20.19.0` promise covers the npm distribution and does not by
 itself prove a release-built `--target=node22` closure on Node 20. The pin also
-carries protocol major 3, daemon entrypoint, expected archive size, and the
-accepted `{version,buildSha,sha256}`. The signed `runtime-manifest.json` is the
+carries protocol major 3, separate daemon and CLI entrypoints, expected archive
+size, and the accepted `{version,buildSha,sha256}`. The signed
+`runtime-manifest.json` is the
 upstream publication authority used to form that pin. A host MAY verify it
 directly against the runtime-update authority, or a review-bound consumer may
 ship only the exact URL/build SHA/SHA-256/size pin and verify the downloaded
@@ -2859,8 +2918,9 @@ the closure.
   `minAppVersion` → surface "Update available → vX.Y.Z" with an Install action.
   There is no background update timer.
 - **Build-sha stamping (QA-002).** `build-app.sh` stamps `CLAUDEXOR_BUILD_SHA`
-  into the esbuild daemon bundle via `--define`, and `build-runtime-closure.mjs`
-  embeds the SAME sha in the manifest and refuses to ship an unstamped bundle, so
+  into the esbuild daemon and CLI bundles via `--define`, and
+  `build-runtime-closure.mjs` embeds the SAME sha in the manifest and refuses to
+  ship either unstamped bundle, so
   the daemon handshake discloses a real `engine.sha` in packaged builds (bundled
   and downloaded closures are stamped identically) instead of "unknown".
 - **Engine side.** `claudexor release check` handshakes the running daemon for

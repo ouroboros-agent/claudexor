@@ -199,15 +199,21 @@ second embed archive or trust root: `scripts/build-runtime-closure.mjs`
 materializes contained package links from the already-gated app resources and
 emits a regular-file/directory-only tarball for extractors without POSIX
 symlink semantics. It rejects escaping links, special files, and `.node`
-addons. Embedders keep one exact tested Node version plus
-protocol/entrypoint/size in their reviewed pin; the npm `engines` range is not
-closure-smoke evidence. The existing signed manifest is the publication
+addons. The closure includes both top-level `claudexord.bundle.cjs` and
+`claudexor.bundle.cjs`, while Node remains host-owned. Embedders keep one exact
+tested full Node toolchain plus protocol/separate daemon-and-CLI
+entrypoints/size in their reviewed pin; POSIX local harness installation
+requires the adjacent `lib/node_modules/npm/bin/npm-cli.js` from that same
+toolchain and must never fall back to ambient PATH npm. The npm `engines` range
+is not closure-smoke evidence. The existing signed manifest is the publication
 authority used to form that pin; runtime consumers may verify it directly or
 rely on a review-bound exact URL/`buildSha`/SHA-256/size pin, without a second
 manifest or verifier. The focused builder test must cover an internal link's
 expected materialized bytes and an escaping-link refusal. A Windows claim also
 requires a native extract/exact-Node probe/isolated handshake/graceful-stop
-smoke; feature support must not be inferred from portable extraction alone.
+smoke; feature support must not be inferred from portable extraction alone,
+and local Windows harness installation remains typed-unsupported until its own
+bounded support contract exists.
 
 The `publish` mode carries a THIRD signed input, `remote_runtime_manifest_b64`:
 the OWNER-SIGNED four-target SSH runtime manifest, transported the same way.
@@ -245,6 +251,20 @@ signature, per-archive digest match against the promoted bytes, field equality
 with the candidate's unsigned manifest), regenerates the remote SBOM
 deterministically from the promoted unsigned manifest, `cmp`s it against the
 provenance-verified candidate SBOM, and ships the CANDIDATE bytes (A-5).
+
+Package version 3.7.0 has one owner-authorized release exception. A publish
+dispatch may set `skip_custom_ed25519: true` only for that exact version and
+only when `review_attestation_b64`, `runtime_manifest_b64`, and
+`remote_runtime_manifest_b64` are all empty. The candidate remains the exact
+twelve-asset, provenance-attested internal set above. The final GitHub Release
+then omits `REVIEW_ATTESTATION.json`, `runtime-manifest.json`, and
+`remote-runtime-manifest.json`; it must never copy either unsigned candidate
+manifest under the canonical release name. This leaves the existing app engine
+update and first-time remote bootstrap unavailable for 3.7.0 while their
+client verifiers stay fail-closed. DMG/ZIP signing and notarization, npm
+publication, SBOMs, GitHub artifact provenance, and npm provenance are
+unchanged. The verifier rejects this waiver for every other version, and the
+default `false` path retains the normal schema-v6 and signed-manifest gates.
 
 The review process itself (panel composition, sealed packet contents, the
 blocker contract, wave discipline) is defined ONCE, in `docs/CHECKLISTS.md`

@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -9,6 +9,65 @@ const verifier = resolve(repo, "scripts/verify-release-input.mjs");
 
 function head(): string {
   return execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim();
+}
+
+type PublishFixture = {
+  candidateSha: string;
+  fixture: string;
+  tag: string;
+};
+
+function withPublishFixture(version: string, run: (fixture: PublishFixture) => void): void {
+  const fixture = mkdtempSync(resolve(tmpdir(), "claudexor-release-input-"));
+  const git = (...args: string[]) =>
+    execFileSync("git", args, {
+      cwd: fixture,
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: "fixture",
+        GIT_AUTHOR_EMAIL: "fixture@example.invalid",
+        GIT_COMMITTER_NAME: "fixture",
+        GIT_COMMITTER_EMAIL: "fixture@example.invalid",
+      },
+    });
+  const tag = `v${version}`;
+  try {
+    git("init", "-q");
+    writeFileSync(resolve(fixture, "package.json"), `${JSON.stringify({ version })}\n`);
+    git("add", "package.json");
+    git("commit", "-qm", "fixture");
+    git("tag", "-a", tag, "-m", "fixture");
+    git("update-ref", "refs/remotes/origin/main", "HEAD");
+    const candidateSha = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: fixture,
+      encoding: "utf8",
+    }).trim();
+    run({ candidateSha, fixture, tag });
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+}
+
+function verifyPublish(
+  fixture: PublishFixture,
+  overrides: NodeJS.ProcessEnv = {},
+): ReturnType<typeof spawnSync> {
+  return spawnSync(process.execPath, [verifier], {
+    cwd: fixture.fixture,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      GITHUB_SHA: fixture.candidateSha,
+      GITHUB_REF: `refs/tags/${fixture.tag}`,
+      RELEASE_MODE_INPUT: "publish",
+      RELEASE_REF_INPUT: fixture.tag,
+      REVIEW_ATTESTATION_B64_INPUT: "",
+      RUNTIME_MANIFEST_B64_INPUT: "",
+      REMOTE_RUNTIME_MANIFEST_B64_INPUT: "",
+      SKIP_CUSTOM_ED25519_INPUT: "false",
+      ...overrides,
+    },
+  });
 }
 
 describe("candidate release input", () => {
@@ -134,5 +193,95 @@ describe("candidate release input", () => {
     } finally {
       rmSync(fixture, { recursive: true, force: true });
     }
+  });
+});
+
+describe("one-release custom Ed25519 waiver", () => {
+  it("rejects a non-boolean waiver value", () => {
+    withPublishFixture("3.7.0", (fixture) => {
+      const result = verifyPublish(fixture, { SKIP_CUSTOM_ED25519_INPUT: "1" });
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        "release input rejected: skip_custom_ed25519 must be a boolean workflow input",
+      );
+    });
+  });
+
+  it("accepts an exact v3.7.0 publish with all three custom inputs empty", () => {
+    withPublishFixture("3.7.0", (fixture) => {
+      const reviewPath = resolve(fixture.fixture, "review-attestation.json");
+      const result = verifyPublish(fixture, {
+        REVIEW_ATTESTATION_PATH: reviewPath,
+        SKIP_CUSTOM_ED25519_INPUT: "true",
+      });
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain(`release input OK: publish ${fixture.candidateSha}`);
+      expect(existsSync(reviewPath)).toBe(false);
+    });
+  });
+
+  it("keeps the normal publish path fail-closed when the review attestation is empty", () => {
+    withPublishFixture("3.7.0", (fixture) => {
+      const result = verifyPublish(fixture);
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        "release input rejected: publish mode requires a base64-encoded review attestation",
+      );
+    });
+  });
+
+  it("rejects the waiver for every package version except 3.7.0", () => {
+    withPublishFixture("3.3.17", (fixture) => {
+      const result = verifyPublish(fixture, { SKIP_CUSTOM_ED25519_INPUT: "true" });
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        "release input rejected: skip_custom_ed25519 is authorized only for package version 3.7.0",
+      );
+    });
+  });
+
+  it.each([
+    "REVIEW_ATTESTATION_B64_INPUT",
+    "RUNTIME_MANIFEST_B64_INPUT",
+    "REMOTE_RUNTIME_MANIFEST_B64_INPUT",
+  ])("rejects the waiver when %s is nonempty", (inputName) => {
+    withPublishFixture("3.7.0", (fixture) => {
+      const result = verifyPublish(fixture, {
+        [inputName]: "e30=",
+        SKIP_CUSTOM_ED25519_INPUT: "true",
+      });
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        "release input rejected: skip_custom_ed25519 requires review_attestation_b64, runtime_manifest_b64, and remote_runtime_manifest_b64 to all be empty",
+      );
+    });
+  });
+
+  it("rejects the waiver in candidate mode", () => {
+    const candidateSha = head();
+    const result = spawnSync(process.execPath, [verifier, "--syntax-only"], {
+      cwd: repo,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        GITHUB_SHA: candidateSha,
+        RELEASE_MODE_INPUT: "candidate",
+        RELEASE_REF_INPUT: candidateSha,
+        REVIEW_ATTESTATION_B64_INPUT: "",
+        RUNTIME_MANIFEST_B64_INPUT: "",
+        REMOTE_RUNTIME_MANIFEST_B64_INPUT: "",
+        SKIP_CUSTOM_ED25519_INPUT: "true",
+      },
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(
+      "release input rejected: skip_custom_ed25519 is allowed only in publish mode",
+    );
   });
 });

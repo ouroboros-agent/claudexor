@@ -308,18 +308,30 @@ pnpm test
   assembled in the publish run. The remote SBOM is regenerated
   from the promoted unsigned manifest and must `cmp` byte-identical to the
   candidate SBOM before the candidate bytes ship.
+- One-release exception for 3.7.0 only: the owner-authorized publish may set
+  `skip_custom_ed25519: true` with all three custom-Ed25519 inputs empty. Verify
+  that the final asset set omits `REVIEW_ATTESTATION.json`,
+  `runtime-manifest.json`, and `remote-runtime-manifest.json` and never promotes
+  the unsigned candidate manifests under those names. Record that the existing
+  app engine update and first-time remote bootstrap are unavailable for 3.7.0;
+  DMG/ZIP signing and notarization, npm publication, SBOMs, GitHub artifact
+  provenance, and npm provenance remain required. Every other version and the
+  default `false` path retain the normal schema-v6 and signed-manifest gates.
 - The shared engine closure remains one artifact and one signed authority for
   app updates and host embedding. Its archive entries are only regular files
   or directories; internal dependency links are materialized with their
   expected bytes, escaping links/special files/`.node` addons are refused, Node
-  and CLI are absent, and the daemon's `--probe` identity still matches the
+  is absent, the reviewed daemon and CLI bundles are present and stamped with
+  the same build SHA, and the daemon's `--probe` identity still matches the
   publication manifest or its derived reviewed host pin. Portable extraction
   is not evidence of feature parity for every harness/login path on that OS.
   Embedded start/handshake/stop use one exact config root/socket and one tested
-  Node version; a Windows support claim has a native
+  full Node toolchain; POSIX local harness installation additionally proves the
+  exact adjacent npm entrypoint without PATH fallback. A Windows support claim has a native
   extract/probe/handshake/graceful-stop smoke receipt.
-- The publish input is an annotated stable tag on exact `origin/main` plus a
-  signed schema-v6 attestation. It binds the candidate SHA/tree/version, exact
+- Except for the explicit 3.7.0 waiver above, the publish input is an annotated
+  stable tag on exact `origin/main` plus a signed schema-v6 attestation. It binds
+  the candidate SHA/tree/version, exact
   full-gate receipt, sealed evidence manifest/diff/wave, and the two required
   operator reviewer reports (digests + model slugs) with non-blocking verdicts
   (see the Release review protocol). Verify the Ed25519 signature against the
