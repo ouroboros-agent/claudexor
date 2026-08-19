@@ -40,6 +40,7 @@ try {
   if (process.platform !== "win32") throw new Error("Windows acceptance worker requires win32");
   const importFromRepo = (relative) => import(pathToFileURL(join(repoRoot, relative)).href);
   const [
+    core,
     { updateGlobalConfig },
     profile,
     printCommand,
@@ -48,6 +49,7 @@ try {
     remoteCommand,
     setupJobSupport,
   ] = await Promise.all([
+    importFromRepo("packages/core/dist/index.js"),
     importFromRepo("packages/config/dist/index.js"),
     importFromRepo("packages/harness-agy/dist/profile.js"),
     importFromRepo("packages/harness-agy/dist/print-command.js"),
@@ -203,6 +205,216 @@ try {
   const browserSentinelAfterClientPty = existsSync(browserSentinel);
   assert(browserSentinelAfterClientPty, "direct client_pty path did not expose CONIN$");
 
+  const interactiveArgs = ["--interactive"];
+  const expectedHelper = realpathSync(
+    join(repoRoot, "packages", "core", "dist", "native", "claudexor-conpty-helper.exe"),
+  );
+
+  const inAppJobDir = join(root, "in-app-job");
+  mkdirSync(inAppJobDir, { recursive: true });
+  const inAppExecutable = protocol.captureExecutableEvidence(fixture);
+  const inAppManifestPath = join(inAppJobDir, "runner-manifest.json");
+  const inAppManifest = protocol.sealLoginManifest({
+    version: protocol.SETUP_LOGIN_PROTOCOL_VERSION,
+    jobId: "setup-win32-agy-in-app",
+    executionId: "win32-agy-in-app-execution-1",
+    harness: "agy",
+    jobDir: inAppJobDir,
+    binary: fixture,
+    args: interactiveArgs,
+    cwd: inAppJobDir,
+    profileConfigDir: homeA,
+    loginMode: "url_disclosure_with_input",
+    ptyStdin: true,
+    deviceCodePath: join(inAppJobDir, "runner-devicecode.json"),
+    inputPath: join(inAppJobDir, "runner-input.json"),
+    statePath: join(inAppJobDir, "runner-state.json"),
+    resultPath: join(inAppJobDir, "runner-result.json"),
+    permitPath: join(inAppJobDir, "runner-permit.json"),
+    permitDeadlineAt: new Date(Date.now() + 60_000).toISOString(),
+    executable: inAppExecutable,
+    commandDigest: protocol.commandDigest(inAppExecutable, interactiveArgs),
+  });
+  protocol.atomicPrivateJson(inAppManifestPath, inAppManifest);
+
+  const inAppPids = new Set();
+  try {
+    const inAppRunner = spawn(process.execPath, [runnerPath, inAppManifestPath], {
+      cwd: inAppJobDir,
+      env: process.env,
+      shell: false,
+      // Production also launches this outer runner detached. Pipes are the one
+      // acceptance-only override: they let the test observe vendor output that
+      // the daemon intentionally ignores without replacing the production
+      // runner, worker, resolver, or helper; the observable sink differs.
+      detached: true,
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    if (!inAppRunner.pid) throw new Error("in-app runner PID was not assigned");
+    const inAppRunnerPid = inAppRunner.pid;
+    inAppPids.add(inAppRunnerPid);
+    observedPids.add(inAppRunnerPid);
+    const inAppFinished = collectChild(inAppRunner);
+    let awaitingPermit;
+    await Promise.race([
+      waitFor(
+        () => {
+          const state = protocol.readRunnerState(inAppManifest.statePath);
+          if (state?.stage !== "awaiting_permit") return false;
+          awaitingPermit = state;
+          return true;
+        },
+        10_000,
+        "in-app worker permit state",
+      ),
+      inAppFinished.then(({ code, signal }) => {
+        throw new Error(
+          `in-app runner exited before permit (code ${String(code)}; signal ${String(signal)})`,
+        );
+      }),
+    ]);
+    const inAppWorkerPid = awaitingPermit?.processGroup?.pgid ?? 0;
+    assert(inAppWorkerPid > 0, "in-app worker state omitted its exact PID");
+    assert(
+      awaitingPermit?.processGroup?.leader?.pid === inAppWorkerPid,
+      "in-app worker state contradicted its custody leader",
+    );
+    inAppPids.add(inAppWorkerPid);
+    observedPids.add(inAppWorkerPid);
+
+    protocol.atomicPrivateJson(inAppManifest.permitPath, {
+      version: protocol.SETUP_LOGIN_PROTOCOL_VERSION,
+      jobId: inAppManifest.jobId,
+      executionId: inAppManifest.executionId,
+      issuedAt: new Date().toISOString(),
+      commandDigest: inAppManifest.commandDigest,
+      manifestDigest: inAppManifest.manifestDigest,
+    });
+
+    const expectedVerificationUrl =
+      "https://accounts.google.com/o/oauth2/auth?state=claudexor-conpty-fixture";
+    let disclosure;
+    await Promise.race([
+      waitFor(
+        () => {
+          const candidate = protocol.readRunnerDeviceCode(inAppManifest.deviceCodePath);
+          if (
+            candidate?.flow !== "oauth_url_input" ||
+            candidate.verificationUrl !== expectedVerificationUrl ||
+            candidate.userCode !== ""
+          ) {
+            return false;
+          }
+          disclosure = candidate;
+          return true;
+        },
+        15_000,
+        "in-app OAuth URL disclosure",
+      ),
+      inAppFinished.then(({ code, signal }) => {
+        throw new Error(
+          `in-app runner exited before URL disclosure (code ${String(code)}; signal ${String(signal)})`,
+        );
+      }),
+    ]);
+    assert(disclosure?.flow === "oauth_url_input", "in-app disclosure used the wrong flow");
+    assert(
+      disclosure?.verificationUrl === expectedVerificationUrl,
+      "in-app disclosure did not reconstruct the fragmented OAuth URL",
+    );
+    assert(disclosure?.userCode === "", "in-app URL disclosure persisted an unexpected user code");
+
+    const processSnapshot = readWindowsProcessSnapshot();
+    if (processSnapshot.observerPid > 0) {
+      observedPids.add(processSnapshot.observerPid);
+    }
+    const helperProcess = exactChildProcess(
+      processSnapshot.rows,
+      inAppWorkerPid,
+      expectedHelper,
+      "ConPTY helper",
+    );
+    const vendorProcess = exactChildProcess(
+      processSnapshot.rows,
+      helperProcess.pid,
+      fixture,
+      "native vendor",
+    );
+    const inAppHelperPid = helperProcess.pid;
+    const inAppVendorPid = vendorProcess.pid;
+    for (const processRow of descendantProcesses(processSnapshot.rows, inAppWorkerPid)) {
+      inAppPids.add(processRow.pid);
+      observedPids.add(processRow.pid);
+    }
+
+    const oneShotInput = "one-shot-win32-code-77";
+    protocol.atomicPrivateJson(inAppManifest.inputPath, {
+      version: protocol.SETUP_LOGIN_PROTOCOL_VERSION,
+      jobId: inAppManifest.jobId,
+      executionId: inAppManifest.executionId,
+      value: oneShotInput,
+      submittedAt: new Date().toISOString(),
+    });
+    const inAppProcess = await inAppFinished;
+    const inAppReceipt = protocol.readRunnerResult(inAppManifest.resultPath);
+    assert(inAppProcess.code === 0, `in-app runner exited ${String(inAppProcess.code)}`);
+    assert(inAppProcess.signal === null, "in-app runner exited by signal");
+    assert(inAppReceipt?.commandStarted === true, "in-app receipt did not validate helper start");
+    assert(inAppReceipt?.exitCode === 0, "in-app receipt did not preserve native exit 0");
+    assert(inAppReceipt?.signal === null, "in-app receipt recorded a signal");
+    assert(inAppReceipt?.errorCode === undefined, "in-app receipt recorded a transport error");
+    assert(inAppReceipt?.outputTail === undefined, "successful in-app receipt retained output");
+
+    const ansiCode = `\u001b[31mCODE:${oneShotInput}\u001b[0m`;
+    assert(inAppProcess.stdout.includes(ansiCode), "native child did not echo input through ANSI");
+    assert(
+      inAppProcess.stdout
+        .slice(inAppProcess.stdout.indexOf(ansiCode) + ansiCode.length)
+        .startsWith("\r\n"),
+      "native child output did not preserve CRLF",
+    );
+    assert(
+      inAppProcess.stderr === "",
+      "helper control frames or diagnostics escaped the production parser",
+    );
+    const durableReceipt = readFileSync(inAppManifest.resultPath, "utf8");
+    assert(!durableReceipt.includes(oneShotInput), "in-app receipt persisted one-shot input");
+    assert(!durableReceipt.includes("accounts.google.com"), "in-app receipt persisted OAuth URL");
+    const consumedInput = readJsonIfPresent(inAppManifest.inputPath);
+    assert(consumedInput?.consumed === true, "in-app input sidecar was not consumed");
+    assert(
+      !Object.hasOwn(consumedInput ?? {}, "value"),
+      "consumed input sidecar retained the secret",
+    );
+
+    await expectExactPidsGone([...inAppPids], 5_000, "in-app ConPTY tree cleanup");
+
+    summary.inAppLogin = {
+      exit: inAppProcess.code,
+      signal: inAppProcess.signal,
+      runnerPid: inAppRunnerPid,
+      workerPid: inAppWorkerPid,
+      helperPid: inAppHelperPid,
+      vendorPid: inAppVendorPid,
+      helperPath: expectedHelper,
+      receipt: inAppReceipt,
+      disclosureFlow: disclosure.flow,
+    };
+  } finally {
+    const finalState = protocol.readRunnerState(inAppManifest.statePath);
+    const finalWorkerPid = finalState?.processGroup?.pgid ?? 0;
+    if (finalWorkerPid > 0) {
+      inAppPids.add(finalWorkerPid);
+      observedPids.add(finalWorkerPid);
+    }
+    for (const pid of [...inAppPids]) {
+      if (pid > 0 && pidAlive(pid)) core.killWindowsProcessTree(pid);
+    }
+    unlinkIfPresent(inAppManifest.deviceCodePath);
+    unlinkIfPresent(inAppManifest.inputPath);
+  }
+
   const controlEvidence = readEvidence(controlHome);
   const profileEvidence = readEvidence(homeA);
   for (const row of [...controlEvidence, ...profileEvidence]) observedPids.add(row.pid);
@@ -246,6 +458,7 @@ try {
       runnerPid: loginRunnerPid,
       receipt: loginReceipt,
     },
+    inAppLogin: summary.inAppLogin,
     evidence: profileEvidence,
   };
 } catch (error) {
@@ -306,6 +519,10 @@ function readJsonIfPresent(path) {
   }
 }
 
+function unlinkIfPresent(path) {
+  if (existsSync(path)) unlinkSync(path);
+}
+
 function readEvidence(home) {
   const path = join(home, EVIDENCE_FILE);
   if (!existsSync(path)) return [];
@@ -346,6 +563,83 @@ async function expectPidsGone(pids, timeoutMs) {
   );
 }
 
+async function expectExactPidsGone(pids, timeoutMs, label) {
+  const unique = [...new Set(pids.filter((pid) => pid > 0))];
+  await waitFor(() => unique.every((pid) => !pidAlive(pid)), timeoutMs, label);
+}
+
+function readWindowsProcessSnapshot() {
+  const systemRoot = process.env.SystemRoot || process.env.SYSTEMROOT || "C:\\Windows";
+  const powershell = join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    "$rows = @(Get-CimInstance Win32_Process | ForEach-Object {",
+    "  [pscustomobject]@{ pid = [int]$_.ProcessId; ppid = [int]$_.ParentProcessId; executablePath = [string]$_.ExecutablePath }",
+    "})",
+    "[Console]::Out.Write((ConvertTo-Json -InputObject $rows -Compress))",
+  ].join("; ");
+  const result = spawnSync(
+    powershell,
+    ["-NoProfile", "-NonInteractive", "-NoLogo", "-Command", script],
+    {
+      encoding: "utf8",
+      timeout: 30_000,
+      maxBuffer: 512 * 1024,
+      windowsHide: true,
+      shell: false,
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
+  assert(result.error === undefined, "Win32 process snapshot failed to spawn");
+  assert(result.status === 0, "Win32 process snapshot failed");
+  assert(result.signal === null, "Win32 process snapshot exited by signal");
+  const parsed = JSON.parse(result.stdout);
+  const rows = (Array.isArray(parsed) ? parsed : [parsed])
+    .map((row) => ({
+      pid: Number(row.pid),
+      ppid: Number(row.ppid),
+      executablePath: typeof row.executablePath === "string" ? row.executablePath : "",
+    }))
+    .filter((row) => row.pid > 0); // Win32_Process includes the idle pseudo-process at PID 0.
+  assert(
+    rows.every(
+      (row) =>
+        Number.isSafeInteger(row.pid) &&
+        row.pid > 0 &&
+        Number.isSafeInteger(row.ppid) &&
+        row.ppid >= 0,
+    ),
+    "Win32 process snapshot was malformed",
+  );
+  return { rows, observerPid: Number.isSafeInteger(result.pid) ? result.pid : 0 };
+}
+
+function exactChildProcess(rows, parentPid, expectedPath, label) {
+  const matches = rows.filter(
+    (row) => row.ppid === parentPid && sameWindowsPath(row.executablePath, expectedPath),
+  );
+  assert(matches.length === 1, `${label} process chain was not exact`);
+  return matches[0];
+}
+
+function descendantProcesses(rows, rootPid) {
+  const found = [];
+  const parents = new Set([rootPid]);
+  for (;;) {
+    const generation = rows.filter((row) => parents.has(row.ppid) && !parents.has(row.pid));
+    if (generation.length === 0) return found;
+    parents.clear();
+    for (const row of generation) {
+      found.push(row);
+      parents.add(row.pid);
+    }
+  }
+}
+
+function sameWindowsPath(actual, expected) {
+  return resolve(actual).toLowerCase() === resolve(expected).toLowerCase();
+}
+
 function pidAlive(pid) {
   try {
     process.kill(pid, 0);
@@ -367,5 +661,21 @@ function waitForChild(child) {
   return new Promise((resolveChild, rejectChild) => {
     child.once("error", rejectChild);
     child.once("close", (code, signal) => resolveChild({ code, signal }));
+  });
+}
+
+function collectChild(child) {
+  if (!child.stdout || !child.stderr) throw new Error("child output pipes were not created");
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => {
+    stdout += chunk.toString("utf8");
+  });
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk.toString("utf8");
+  });
+  return new Promise((resolveChild, rejectChild) => {
+    child.once("error", rejectChild);
+    child.once("close", (code, signal) => resolveChild({ code, signal, stdout, stderr }));
   });
 }

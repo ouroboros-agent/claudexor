@@ -72,11 +72,28 @@ interface AcceptanceSummary {
       errorCode?: string;
     } | null;
   };
+  inAppLogin: {
+    exit: number;
+    signal: NodeJS.Signals | null;
+    runnerPid: number;
+    workerPid: number;
+    helperPid: number;
+    vendorPid: number;
+    helperPath: string;
+    receipt: {
+      commandStarted: boolean;
+      exitCode: number | null;
+      signal: NodeJS.Signals | null;
+      errorCode?: string;
+      outputTail?: string;
+    } | null;
+    disclosureFlow: string;
+  };
   evidence: FakeEvidence[];
 }
 
-describe.skipIf(process.platform !== "win32")("Win32 agy print and client_pty acceptance", () => {
-  it("keeps production print probes console-free while direct client_pty inherits CONIN$", async () => {
+describe.skipIf(process.platform !== "win32")("Win32 agy acceptance", () => {
+  it("covers console-free print, client_pty, and daemon-hosted ConPTY", async () => {
     expect(existsSync(fixture), `missing native fixture: ${fixture}`).toBe(true);
     expect(existsSync(worker), `missing acceptance worker: ${worker}`).toBe(true);
     const root = mkdtempSync(join(tmpdir(), "claudexor-win32-agy-"));
@@ -108,7 +125,7 @@ describe.skipIf(process.platform !== "win32")("Win32 agy print and client_pty ac
     const hostPid = child.pid;
     let summary: AcceptanceSummary | null = null;
     try {
-      const completed = await withTimeout(collect(child), 45_000, "agy acceptance console host");
+      const completed = await withTimeout(collect(child), 75_000, "agy acceptance console host");
       if (existsSync(resultPath)) {
         summary = JSON.parse(readFileSync(resultPath, "utf8")) as AcceptanceSummary;
       }
@@ -201,6 +218,29 @@ describe.skipIf(process.platform !== "win32")("Win32 agy print and client_pty ac
         signal: null,
       });
       expect(summary.login.receipt).not.toHaveProperty("errorCode");
+      expect(summary.inAppLogin.helperPath).toBe(
+        resolve(repoRoot, "packages", "core", "dist", "native", "claudexor-conpty-helper.exe"),
+      );
+      expect(summary.inAppLogin).toMatchObject({
+        exit: 0,
+        signal: null,
+        disclosureFlow: "oauth_url_input",
+      });
+      expect(summary.inAppLogin.receipt).toMatchObject({
+        commandStarted: true,
+        exitCode: 0,
+        signal: null,
+      });
+      expect(summary.inAppLogin.receipt).not.toHaveProperty("errorCode");
+      expect(summary.inAppLogin.receipt).not.toHaveProperty("outputTail");
+      const inAppPids = [
+        summary.inAppLogin.runnerPid,
+        summary.inAppLogin.workerPid,
+        summary.inAppLogin.helperPid,
+        summary.inAppLogin.vendorPid,
+      ];
+      expect(inAppPids.every((pid) => pid > 0)).toBe(true);
+      expect(new Set(inAppPids).size).toBe(inAppPids.length);
       for (const row of [...summary.evidence, ...summary.control.evidence]) {
         expect(row.pid).toBeGreaterThan(0);
       }
@@ -211,6 +251,7 @@ describe.skipIf(process.platform !== "win32")("Win32 agy print and client_pty ac
         summary.timeout.pids.vendor,
         summary.timeout.pids.descendant,
         summary.login.runnerPid,
+        ...inAppPids,
         ...summary.observedPids,
         ...summary.evidence.map((row) => row.pid),
         ...summary.control.evidence.map((row) => row.pid),
@@ -225,6 +266,10 @@ describe.skipIf(process.platform !== "win32")("Win32 agy print and client_pty ac
         exactPids.add(summary.timeout?.pids.descendant ?? 0);
         for (const row of summary.evidence ?? []) exactPids.add(row.pid);
         for (const row of summary.control?.evidence ?? []) exactPids.add(row.pid);
+        exactPids.add(summary.inAppLogin?.runnerPid ?? 0);
+        exactPids.add(summary.inAppLogin?.workerPid ?? 0);
+        exactPids.add(summary.inAppLogin?.helperPid ?? 0);
+        exactPids.add(summary.inAppLogin?.vendorPid ?? 0);
       }
       for (const pid of exactPids) {
         if (pid > 0 && pidAlive(pid)) killWindowsProcessTree(pid);
@@ -235,7 +280,7 @@ describe.skipIf(process.platform !== "win32")("Win32 agy print and client_pty ac
         rmSync(root, { recursive: true, force: true });
       }
     }
-  }, 60_000);
+  }, 90_000);
 });
 
 interface CollectedChild {
