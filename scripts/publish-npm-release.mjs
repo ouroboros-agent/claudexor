@@ -30,9 +30,13 @@ async function main() {
   const repository = process.env.GITHUB_REPOSITORY ?? "";
   const ref = process.env.GITHUB_REF ?? "";
   const releaseVersion = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
+  const win32ConptySha256 = process.env.CLAUDEXOR_WIN32_CONPTY_SHA256 ?? "";
   if (!/^[0-9a-f]{40}$/.test(candidateSha)) fail("GITHUB_SHA must be an exact commit SHA");
   if (repository !== "razzant/claudexor") fail("GITHUB_REPOSITORY is not the release repository");
   if (ref !== `refs/tags/v${releaseVersion}`) fail("GITHUB_REF must be the exact release tag");
+  if (!/^[0-9a-f]{64}$/.test(win32ConptySha256)) {
+    fail("CLAUDEXOR_WIN32_CONPTY_SHA256 must bind the promoted candidate helper");
+  }
 
   rmSync(out, { recursive: true, force: true });
   mkdirSync(out, { recursive: true });
@@ -43,7 +47,13 @@ async function main() {
     if (pkg.name === "@claudexor/core") {
       run(
         process.execPath,
-        [resolve(root, "scripts/verify-npm-darwin-package.mjs"), "--tarball", tarball],
+        [
+          resolve(root, "scripts/verify-npm-darwin-package.mjs"),
+          "--tarball",
+          tarball,
+          "--win32-helper-sha256",
+          win32ConptySha256,
+        ],
         root,
       );
     }

@@ -58,6 +58,9 @@ BUILD="${CLAUDEXOR_BUILD:-$(date +%Y%m%d%H%M)}"
 BUILD_SHA="${CLAUDEXOR_BUILD_SHA:-$(cd "$REPO_ROOT" && git rev-parse HEAD 2>/dev/null || echo unknown)}"
 export CLAUDEXOR_BUILD_SHA="$BUILD_SHA"
 DEV_REMOTE_RUNTIME="${CLAUDEXOR_DEV_REMOTE_RUNTIME:-0}"
+WIN32_CONPTY_SOURCE="${CLAUDEXOR_WIN32_CONPTY_HELPER:-}"
+WIN32_CONPTY_EXPECTED_SHA256="${CLAUDEXOR_WIN32_CONPTY_SHA256:-}"
+REQUIRE_WIN32_CONPTY="${CLAUDEXOR_REQUIRE_WIN32_CONPTY_HELPER:-0}"
 if [ "$DEV_REMOTE_RUNTIME" = "1" ] && [ -n "${SIGN_IDENTITY:-}" ]; then
   echo "ERROR: CLAUDEXOR_DEV_REMOTE_RUNTIME is for unsigned local bundles only" >&2
   exit 1
@@ -276,6 +279,26 @@ if [ "${CLAUDEXOR_NO_ENGINE_BUNDLE:-0}" != "1" ]; then
     exit 1
   fi
   echo "    bundled universal process-identity helper"
+  WIN32_CONPTY_SHA256=""
+  if [ -n "$WIN32_CONPTY_SOURCE" ]; then
+    WIN32_CONPTY_HELPER="$APP/Contents/Resources/native/claudexor-conpty-helper.exe"
+    VERIFY_CONPTY_ARGS=(--file "$WIN32_CONPTY_SOURCE")
+    if [ -n "$WIN32_CONPTY_EXPECTED_SHA256" ]; then
+      VERIFY_CONPTY_ARGS+=(--expected-sha256 "$WIN32_CONPTY_EXPECTED_SHA256")
+    fi
+    node "$REPO_ROOT/scripts/verify-win32-conpty-helper.mjs" "${VERIFY_CONPTY_ARGS[@]}"
+    cp "$WIN32_CONPTY_SOURCE" "$WIN32_CONPTY_HELPER"
+    chmod 755 "$WIN32_CONPTY_HELPER"
+    WIN32_CONPTY_SHA256="$(shasum -a 256 "$WIN32_CONPTY_HELPER" | awk '{print $1}')"
+    node "$REPO_ROOT/scripts/verify-win32-conpty-helper.mjs" \
+      --file "$WIN32_CONPTY_SOURCE" \
+      --file "$WIN32_CONPTY_HELPER" \
+      --expected-sha256 "$WIN32_CONPTY_SHA256"
+    echo "    bundled Windows ConPTY helper (PE32+ x64, enclosing app resource seal only)"
+  elif [ "$REQUIRE_WIN32_CONPTY" = "1" ]; then
+    echo "ERROR: candidate build requires CLAUDEXOR_WIN32_CONPTY_HELPER from the authoritative Windows build" >&2
+    exit 1
+  fi
   # Prefer an explicit/notarized Node for the bundled engine. CI release builds
   # always set CLAUDEXOR_NODE_BIN (release.yml captures process.execPath from
   # actions/setup-node), so the PATH fallback below only ever applies to LOCAL
@@ -403,7 +426,15 @@ if [ "${CLAUDEXOR_NO_ENGINE_BUNDLE:-0}" != "1" ]; then
   # previously discovered a forbidden native addon only at release time.
   echo "==> Closure-buildability smoke (build-runtime-closure against the packaged app)"
   CLOSURE_SMOKE_DIR="$(mktemp -d)"
-  if node "$REPO_ROOT/scripts/build-runtime-closure.mjs"       --app-bundle "$APP"       --version "$VERSION"       --out "$CLOSURE_SMOKE_DIR" >/dev/null; then
+  CLOSURE_CONPTY_ARGS=()
+  if [ -n "$WIN32_CONPTY_SHA256" ]; then
+    CLOSURE_CONPTY_ARGS+=(--win32-conpty-sha256 "$WIN32_CONPTY_SHA256")
+  fi
+  if node "$REPO_ROOT/scripts/build-runtime-closure.mjs" \
+      --app-bundle "$APP" \
+      --version "$VERSION" \
+      --out "$CLOSURE_SMOKE_DIR" \
+      "${CLOSURE_CONPTY_ARGS[@]}" >/dev/null; then
     echo "    runtime closure builds from the packaged app"
     rm -rf "$CLOSURE_SMOKE_DIR"
   else

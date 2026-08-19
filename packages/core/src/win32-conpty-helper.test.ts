@@ -1,0 +1,356 @@
+import {
+  spawn,
+  spawnSync,
+  type ChildProcessWithoutNullStreams,
+  type SpawnSyncOptionsWithStringEncoding,
+} from "node:child_process";
+import { existsSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { describe, expect, it } from "vitest";
+import { killWindowsProcessTree } from "./process-tree.js";
+
+const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const helper = resolve(packageRoot, "dist", "native", "claudexor-conpty-helper.exe");
+const fixture = resolve(packageRoot, "dist", "native-test", "claudexor-conpty-test-child.exe");
+const protocol = "claudexor-conpty-helper-v1";
+
+describe.skipIf(process.platform !== "win32")("Win32 ConPTY helper integration", () => {
+  it("probes a real HPCON and reports the frozen x64 protocol", () => {
+    requireFixtures();
+    const result = spawnSync(helper, ["--probe"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+      timeout: 5_000,
+      maxBuffer: 4_096,
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(0);
+    expect(result.signal).toBeNull();
+    expect(result.stdout).toBe(`${protocol}\tx64\n`);
+    expect(result.stderr).toBe("");
+  });
+
+  it("round-trips the one native quote owner's spaces, quotes, slashes, empties, and Unicode", async () => {
+    requireFixtures();
+    const values = [
+      "",
+      "plain",
+      "space value",
+      'quote"value',
+      "trailing\\",
+      'slashes\\\\before"quote',
+      "Привет-世界-🙂",
+    ];
+    const result = await runHelper(["--argv", ...values]);
+    expect(result.code).toBe(0);
+    expect(result.signal).toBeNull();
+    expect(result.stderr).toMatch(new RegExp(`^${protocol}\\tstarted\\t[1-9][0-9]*\\r?\\n$`));
+    const decoded = result.stdout
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith("ARG\t"))
+      .map((line) => {
+        const fields = line.split("\t");
+        return decodeUtf16Hex(fields[3] ?? "");
+      });
+    expect(decoded).toEqual([fixture, "--argv", ...values]);
+  });
+
+  it("relays fragmented URL output and terminal input while preserving the vendor exit", async () => {
+    requireFixtures();
+    const child = spawnHelper(["--interactive"]);
+    child.stdin.end("one-shot-code-42\r\n");
+    const result = await collect(child);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("https://accounts.google.com/o/oauth2/auth");
+    expect(result.stdout).toContain("CODE:one-shot-code-42");
+
+    const rejected = await runHelper(["--exit", "42"]);
+    expect(rejected.code).toBe(42);
+    expect(rejected.stderr).toMatch(new RegExp(`^${protocol}\\tstarted\\t[1-9][0-9]*\\r?\\n$`));
+  });
+
+  it("proves the console control before enforcing no-console and invisible-ConPTY states", async () => {
+    requireFixtures();
+    const control = spawnSync(fixture, ["--console-control"], productionNoConsoleOptions());
+    expect(control.error).toBeUndefined();
+    expect(control.status).toBe(0);
+    expect(control.stderr).toBe("");
+    const controlState = parseConsoleState(control.stdout, "CONTROL");
+    expect(controlState.consoleCodePage).toBeGreaterThan(0);
+    expect(controlState.coninAvailable).toBe(true);
+
+    const noConsole = spawnSync(fixture, ["--console-state"], productionNoConsoleOptions());
+    expect(noConsole.error).toBeUndefined();
+    expect(noConsole.status).toBe(0);
+    expect(parseConsoleState(noConsole.stdout, "CONSOLE")).toEqual({
+      consoleCodePage: 0,
+      windowPresent: false,
+      windowVisible: false,
+      coninAvailable: false,
+    });
+
+    const conpty = await runHelper(["--console-state"]);
+    expect(conpty.code).toBe(0);
+    const conptyState = parseConsoleState(conpty.stdout, "CONSOLE");
+    expect(conptyState.consoleCodePage).toBeGreaterThan(0);
+    expect(conptyState.windowVisible).toBe(false);
+    expect(conptyState.coninAvailable).toBe(true);
+  });
+
+  it("drains synchronous output through immediate child exit", async () => {
+    requireFixtures();
+    const slow = await runHelper(["--slow-drain"]);
+    expect(slow.code).toBe(0);
+    expect(Buffer.byteLength(slow.stdout, "utf8")).toBeGreaterThan(64 * 1024);
+  });
+
+  it("distinguishes child pre-start failure from post-start parent-pipe failure", async () => {
+    requireFixtures();
+    const missing = resolve(dirname(fixture), "missing-conpty-vendor.exe");
+    const beforeStart = spawn(helper, ["--", missing], {
+      windowsHide: true,
+      shell: false,
+      detached: false,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    beforeStart.stdin.end();
+    const preStart = await withTimeout(collect(beforeStart), 10_000, "pre-start helper failure");
+    expect(preStart.code).toBe(1);
+    expect(preStart.stdout).toBe("");
+    expect(preStart.stderr).toMatch(new RegExp(`^${protocol}\\terror\\t6\\t[0-9]+\\r?\\n$`));
+
+    const child = spawnHelper(["--ignore-close-stream-descendant"]);
+    const observedPids = observeVendorPids(child);
+    const finished = collect(child);
+    if (!child.pid) throw new Error("helper PID was not assigned");
+    const helperPid = child.pid;
+    let vendorPid = 0;
+    let descendantPid = 0;
+    try {
+      ({ vendorPid, descendantPid } = await observedPids);
+      child.stdout.destroy();
+      const postStart = await withTimeout(finished, 10_000, "post-start helper failure");
+      expect(postStart.code).toBe(4);
+      expect(postStart.stderr).toMatch(
+        new RegExp(
+          `^${protocol}\\tstarted\\t${vendorPid}\\r?\\n` +
+            `${protocol}\\terror\\t8\\t[0-9]+\\r?\\n$`,
+        ),
+      );
+      await expectPidsGone([helperPid, vendorPid, descendantPid]);
+    } finally {
+      cleanupPids([helperPid, vendorPid, descendantPid]);
+    }
+  });
+
+  it.each(["cancel", "timeout"] as const)(
+    "the existing absolute taskkill %s path leaves no worker/helper/vendor/descendant",
+    async () => {
+      requireFixtures();
+      const worker = spawnWorkerTree();
+      const observedPids = observeWorkerTreePids(worker);
+      const finished = collect(worker);
+      if (!worker.pid) throw new Error("worker PID was not assigned");
+      const workerPid = worker.pid;
+      let helperPid = 0;
+      let vendorPid = 0;
+      let descendantPid = 0;
+
+      try {
+        ({ helperPid, vendorPid, descendantPid } = await observedPids);
+        expect(killWindowsProcessTree(workerPid)).toEqual({ status: "killed", pid: workerPid });
+        await withTimeout(finished, 10_000, "worker tree taskkill");
+        await expectPidsGone([workerPid, helperPid, vendorPid, descendantPid]);
+      } finally {
+        cleanupPids([workerPid, helperPid, vendorPid, descendantPid]);
+      }
+    },
+  );
+});
+
+function requireFixtures(): void {
+  expect(existsSync(helper), `missing helper: ${helper}`).toBe(true);
+  expect(existsSync(fixture), `missing fixture: ${fixture}`).toBe(true);
+}
+
+function spawnHelper(args: string[]): ChildProcessWithoutNullStreams {
+  return spawn(helper, ["--", fixture, ...args], {
+    windowsHide: true,
+    shell: false,
+    detached: false,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+}
+
+function spawnWorkerTree(): ChildProcessWithoutNullStreams {
+  const source = [
+    `const { spawn } = require("node:child_process");`,
+    `const child = spawn(${JSON.stringify(helper)}, ["--", ${JSON.stringify(fixture)}, "--spawn-descendant"], {`,
+    `  windowsHide: true, shell: false, detached: false, stdio: ["ignore", "pipe", "pipe"]`,
+    `});`,
+    `process.stdout.write("WORKER\\t" + process.pid + "\\t" + child.pid + "\\n");`,
+    `child.stdout.pipe(process.stdout);`,
+    `child.stderr.pipe(process.stderr);`,
+    `child.once("error", () => process.exit(91));`,
+    `child.once("exit", (code) => process.exit(code === 0 ? 0 : 92));`,
+  ].join("\n");
+  return spawn(process.execPath, ["-e", source], {
+    windowsHide: true,
+    shell: false,
+    detached: false,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+}
+
+function productionNoConsoleOptions(): SpawnSyncOptionsWithStringEncoding {
+  return {
+    encoding: "utf8" as const,
+    windowsHide: true,
+    shell: false,
+    timeout: 5_000,
+    maxBuffer: 4_096,
+    stdio: ["ignore", "pipe", "pipe"],
+  };
+}
+
+async function runHelper(args: string[]): Promise<CollectedChild> {
+  const child = spawnHelper(args);
+  child.stdin.end();
+  return await collect(child);
+}
+
+interface CollectedChild {
+  code: number | null;
+  signal: NodeJS.Signals | null;
+  stdout: string;
+  stderr: string;
+}
+
+async function collect(child: ChildProcessWithoutNullStreams): Promise<CollectedChild> {
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk: Buffer) => {
+    stdout += chunk.toString("utf8");
+  });
+  child.stderr.on("data", (chunk: Buffer) => {
+    stderr += chunk.toString("ascii");
+  });
+  return await new Promise<CollectedChild>((resolveChild, rejectChild) => {
+    child.once("error", rejectChild);
+    child.once("close", (code, signal) => resolveChild({ code, signal, stdout, stderr }));
+  });
+}
+
+function decodeUtf16Hex(hex: string): string {
+  let value = "";
+  for (let offset = 0; offset < hex.length; offset += 4) {
+    value += String.fromCharCode(Number.parseInt(hex.slice(offset, offset + 4), 16));
+  }
+  return value;
+}
+
+function parseConsoleState(
+  output: string,
+  label: string,
+): {
+  consoleCodePage: number;
+  windowPresent: boolean;
+  windowVisible: boolean;
+  coninAvailable: boolean;
+} {
+  const match = new RegExp(`^${label}\\t([0-9]+)\\t([01])\\t([01])\\t([01])\\r?\\n?$`).exec(output);
+  if (!match) throw new Error(`invalid ${label} console state`);
+  return {
+    consoleCodePage: Number(match[1]),
+    windowPresent: match[2] === "1",
+    windowVisible: match[3] === "1",
+    coninAvailable: match[4] === "1",
+  };
+}
+
+async function observeVendorPids(child: ChildProcessWithoutNullStreams): Promise<{
+  vendorPid: number;
+  descendantPid: number;
+}> {
+  let stdout = "";
+  return await new Promise((resolvePids, rejectPids) => {
+    const timer = setTimeout(() => rejectPids(new Error("fixture PID line timed out")), 8_000);
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString("utf8");
+      const match = /PIDS\t([1-9][0-9]*)\t([1-9][0-9]*)/.exec(stdout);
+      if (!match) return;
+      clearTimeout(timer);
+      resolvePids({ vendorPid: Number(match[1]), descendantPid: Number(match[2]) });
+    });
+    child.once("error", (error) => {
+      clearTimeout(timer);
+      rejectPids(error);
+    });
+  });
+}
+
+async function observeWorkerTreePids(child: ChildProcessWithoutNullStreams): Promise<{
+  helperPid: number;
+  vendorPid: number;
+  descendantPid: number;
+}> {
+  let stdout = "";
+  return await new Promise((resolvePids, rejectPids) => {
+    const timer = setTimeout(() => rejectPids(new Error("worker tree PID lines timed out")), 8_000);
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString("utf8");
+      const worker = /WORKER\t([1-9][0-9]*)\t([1-9][0-9]*)/.exec(stdout);
+      const vendor = /PIDS\t([1-9][0-9]*)\t([1-9][0-9]*)/.exec(stdout);
+      if (!worker || !vendor) return;
+      clearTimeout(timer);
+      resolvePids({
+        helperPid: Number(worker[2]),
+        vendorPid: Number(vendor[1]),
+        descendantPid: Number(vendor[2]),
+      });
+    });
+    child.once("error", (error) => {
+      clearTimeout(timer);
+      rejectPids(error);
+    });
+  });
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timed out`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function expectPidsGone(pids: number[]): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (pids.some(pidAlive)) {
+    if (Date.now() >= deadline) throw new Error(`processes survived taskkill: ${pids.join(",")}`);
+    await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+  }
+}
+
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
+function cleanupPids(pids: number[]): void {
+  for (const pid of pids) {
+    if (pid > 0 && pidAlive(pid)) killWindowsProcessTree(pid);
+  }
+}

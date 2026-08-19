@@ -94,9 +94,156 @@ jobs:
             echo "candidate_run_id=" >> "$GITHUB_OUTPUT"
           fi
 
+  windows-conpty-authority:
+    name: Build or promote authoritative Windows ConPTY bytes
+    needs: prepare
+    runs-on: windows-2022
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        if: needs.prepare.outputs.mode == 'candidate'
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 20.19.0
+
+      - name: Initialize pinned x64 MSVC environment
+        if: needs.prepare.outputs.mode == 'candidate'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) {
+            throw "vswhere.exe is unavailable on the hosted Windows image"
+          }
+          $installation = (& $vswhere -latest -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -property installationPath | Select-Object -First 1).Trim()
+          if (-not $installation) { throw "x64 MSVC build tools are unavailable" }
+          $devCmd = Join-Path $installation "Common7\Tools\VsDevCmd.bat"
+          if (-not (Test-Path -LiteralPath $devCmd -PathType Leaf)) {
+            throw "VsDevCmd.bat is unavailable at $devCmd"
+          }
+          $setup = Join-Path $env:RUNNER_TEMP "claudexor-msvc-env.cmd"
+          "@call `"$devCmd`" -no_logo -arch=x64 -host_arch=x64`r`n@set`r`n" |
+            Set-Content -LiteralPath $setup -Encoding ascii
+          $developer = @{}
+          & $env:ComSpec /d /s /c "`"$setup`"" | ForEach-Object {
+            $separator = $_.IndexOf("=")
+            if ($separator -gt 0) {
+              $developer[$_.Substring(0, $separator)] = $_.Substring($separator + 1)
+            }
+          }
+          foreach ($name in @("Path", "INCLUDE", "LIB", "LIBPATH", "VCToolsInstallDir", "WindowsSdkDir", "WindowsSDKVersion", "UCRTVersion")) {
+            if ($developer.ContainsKey($name)) {
+              Add-Content -LiteralPath $env:GITHUB_ENV -Value "$name=$($developer[$name])" -Encoding utf8
+            }
+          }
+
+      - name: Install candidate build dependencies
+        if: needs.prepare.outputs.mode == 'candidate'
+        run: pnpm install --frozen-lockfile
+
+      - name: Build authoritative helper and native fake child
+        if: needs.prepare.outputs.mode == 'candidate'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $authority = Join-Path $env:RUNNER_TEMP "windows-conpty-authority"
+          New-Item -ItemType Directory -Force -Path $authority | Out-Null
+          $helper = Join-Path $authority "claudexor-conpty-helper.exe"
+          $fixture = Join-Path $authority "claudexor-conpty-test-child.exe"
+          node packages/core/scripts/build-win32-conpty-helper.mjs `
+            --require --out $helper --fixture-out $fixture
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $helper).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText(
+            (Join-Path $authority "claudexor-conpty-helper.exe.sha256"),
+            "$hash  claudexor-conpty-helper.exe`n",
+            [Text.Encoding]::ASCII
+          )
+
+      - name: Download the candidate authority artifact for exact publish promotion
+        if: needs.prepare.outputs.mode == 'publish'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: Claudexor-${{ needs.prepare.outputs.version }}-windows-conpty-authority
+          path: ${{ runner.temp }}/windows-conpty-authority
+          run-id: ${{ needs.prepare.outputs.candidate_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Bind promoted authority to the successful candidate run
+        if: needs.prepare.outputs.mode == 'publish'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREPARED_SHA: ${{ needs.prepare.outputs.sha }}
+          CANDIDATE_RUN_ID: ${{ needs.prepare.outputs.candidate_run_id }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $metadata = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:CANDIDATE_RUN_ID" | ConvertFrom-Json
+          if ($metadata.path -ne ".github/workflows/release.yml") {
+            throw "candidate authority belongs to $($metadata.path), not release.yml"
+          }
+          if ($metadata.head_sha -ne $env:PREPARED_SHA) {
+            throw "candidate authority SHA $($metadata.head_sha) does not match $env:PREPARED_SHA"
+          }
+          if ($metadata.conclusion -ne "success") {
+            throw "candidate authority run conclusion is $($metadata.conclusion)"
+          }
+
+      - name: Verify the exact three-file internal authority set
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $authority = Join-Path $env:RUNNER_TEMP "windows-conpty-authority"
+          $expected = @(
+            "claudexor-conpty-helper.exe",
+            "claudexor-conpty-helper.exe.sha256",
+            "claudexor-conpty-test-child.exe"
+          ) | Sort-Object
+          $entries = @(Get-ChildItem -LiteralPath $authority -Force)
+          $actual = @($entries | ForEach-Object Name | Sort-Object)
+          if (Compare-Object -ReferenceObject $expected -DifferenceObject $actual) {
+            throw "unexpected Windows ConPTY authority set: $($actual -join ', ')"
+          }
+          foreach ($entry in $entries) {
+            if (-not $entry.PSIsContainer -and -not ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -and $entry.Length -gt 0) {
+              continue
+            }
+            throw "authority entry is not a nonempty regular file: $($entry.Name)"
+          }
+          $helper = Join-Path $authority "claudexor-conpty-helper.exe"
+          $fixture = Join-Path $authority "claudexor-conpty-test-child.exe"
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $helper).Hash.ToLowerInvariant()
+          $sidecar = [IO.File]::ReadAllText(
+            (Join-Path $authority "claudexor-conpty-helper.exe.sha256"),
+            [Text.Encoding]::ASCII
+          )
+          if ($sidecar -ne "$hash  claudexor-conpty-helper.exe`n") {
+            throw "Windows ConPTY authority SHA sidecar mismatch"
+          }
+          node scripts/verify-win32-conpty-helper.mjs --file $helper --expected-sha256 $hash
+          node scripts/verify-win32-conpty-helper.mjs --file $fixture
+
+      - name: Upload the internal Windows authority artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: Claudexor-${{ needs.prepare.outputs.version }}-windows-conpty-authority
+          path: ${{ runner.temp }}/windows-conpty-authority
+          if-no-files-found: error
+          retention-days: 14
+
   package-macos:
     name: Build signed, notarized and attested macOS artifacts
-    needs: prepare
+    needs: [prepare, windows-conpty-authority]
     runs-on: macos-26
     permissions:
       contents: read
@@ -109,6 +256,29 @@ jobs:
           ref: ${{ needs.prepare.outputs.sha }}
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Download authoritative Windows ConPTY bytes
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: Claudexor-${{ needs.prepare.outputs.version }}-windows-conpty-authority
+          path: ${{ runner.temp }}/windows-conpty-authority
+
+      - name: Verify and export authoritative Windows ConPTY custody
+        shell: bash
+        run: |
+          set -euo pipefail
+          authority="$RUNNER_TEMP/windows-conpty-authority"
+          helper="$authority/claudexor-conpty-helper.exe"
+          fixture="$authority/claudexor-conpty-test-child.exe"
+          sidecar="$authority/claudexor-conpty-helper.exe.sha256"
+          test "$(find "$authority" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d ' ')" = 3
+          (cd "$authority" && shasum -a 256 -c "$(basename "$sidecar")")
+          expected="$(awk '{print $1}' "$sidecar")"
+          node scripts/verify-win32-conpty-helper.mjs --file "$helper" --expected-sha256 "$expected"
+          node scripts/verify-win32-conpty-helper.mjs --file "$fixture"
+          echo "CLAUDEXOR_WIN32_CONPTY_HELPER=$helper" >> "$GITHUB_ENV"
+          echo "CLAUDEXOR_WIN32_CONPTY_SHA256=$expected" >> "$GITHUB_ENV"
+          echo "CLAUDEXOR_REQUIRE_WIN32_CONPTY_HELPER=1" >> "$GITHUB_ENV"
 
       - name: Revalidate reviewed release authority
         env:
@@ -252,6 +422,11 @@ jobs:
           test -s "$zipstage/Claudexor.app/Contents/Resources/claudexord.bundle.cjs"
           test -s "$zipstage/Claudexor.app/Contents/Resources/setup-login-runner.cjs"
           test -s "$zipstage/Claudexor.app/Contents/Resources/browser-mcp-runtime/dist/browser-mcp-launcher.js"
+          node scripts/verify-win32-conpty-helper.mjs \
+            --file "$CLAUDEXOR_WIN32_CONPTY_HELPER" \
+            --file "$app/Contents/Resources/native/claudexor-conpty-helper.exe" \
+            --file "$zipstage/Claudexor.app/Contents/Resources/native/claudexor-conpty-helper.exe" \
+            --expected-sha256 "$CLAUDEXOR_WIN32_CONPTY_SHA256"
           probe="$("$zipstage/Claudexor.app/Contents/Resources/node" \
             "$zipstage/Claudexor.app/Contents/Resources/claudexord.bundle.cjs" --probe)"
           node -e '
@@ -350,6 +525,10 @@ jobs:
           test -s "$promoted_app/Claudexor.app/Contents/Resources/claudexord.bundle.cjs"
           test -s "$promoted_app/Claudexor.app/Contents/Resources/setup-login-runner.cjs"
           test -s "$promoted_app/Claudexor.app/Contents/Resources/browser-mcp-runtime/dist/browser-mcp-launcher.js"
+          node scripts/verify-win32-conpty-helper.mjs \
+            --file "$CLAUDEXOR_WIN32_CONPTY_HELPER" \
+            --file "$promoted_app/Claudexor.app/Contents/Resources/native/claudexor-conpty-helper.exe" \
+            --expected-sha256 "$CLAUDEXOR_WIN32_CONPTY_SHA256"
           app_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
             "$promoted_app/Claudexor.app/Contents/Info.plist")"
           test "$app_version" = "$VERSION" || {
@@ -405,7 +584,8 @@ jobs:
             node scripts/build-runtime-closure.mjs \
               --app-bundle apps/macos/dist/bundle.noindex/Claudexor.app \
               --version "$VERSION" \
-              --out "$closure"
+              --out "$closure" \
+              --win32-conpty-sha256 "$CLAUDEXOR_WIN32_CONPTY_SHA256"
           fi
           test -s "$tarball" || { echo "::error::runtime closure tarball missing"; exit 1; }
           test -s "$manifest" || { echo "::error::runtime manifest missing"; exit 1; }
@@ -414,6 +594,14 @@ jobs:
           declared="$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).sha256)' "$manifest")"
           actual="$(shasum -a 256 "$tarball" | awk '{print $1}')"
           test "$declared" = "$actual" || { echo "::error::runtime manifest sha256 does not match the tarball"; exit 1; }
+          closure_extract="$RUNNER_TEMP/runtime-closure-extract"
+          rm -rf "$closure_extract"
+          mkdir -p "$closure_extract"
+          tar -xzf "$tarball" -C "$closure_extract"
+          node scripts/verify-win32-conpty-helper.mjs \
+            --file "$CLAUDEXOR_WIN32_CONPTY_HELPER" \
+            --file "$closure_extract/native/claudexor-conpty-helper.exe" \
+            --expected-sha256 "$CLAUDEXOR_WIN32_CONPTY_SHA256"
 
       - name: Build (candidate) or promote (publish) all SSH runtime targets
         shell: bash
@@ -567,6 +755,133 @@ jobs:
         with:
           subject-path: ${{ runner.temp }}/release-assets/*
 
+  windows-conpty-candidate-smoke:
+    name: Execute assembled Windows ConPTY bytes (Node 24.16)
+    needs: [prepare, windows-conpty-authority, package-macos]
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: Claudexor-${{ needs.prepare.outputs.version }}-release-assets
+          path: release-assets
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: Claudexor-${{ needs.prepare.outputs.version }}-windows-conpty-authority
+          path: windows-conpty-authority
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.16.0
+          cache: pnpm
+
+      - name: Install and build portable runtime code
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          pnpm install --frozen-lockfile
+          $env:CLAUDEXOR_SKIP_WIN32_CONPTY_BUILD = "1"
+          pnpm build
+
+      - name: Verify app, closure and authority carry identical PE-x64 bytes
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          node -e 'const {createHash}=require("node:crypto");const {readFileSync,readdirSync}=require("node:fs");const {join}=require("node:path");const root=process.argv[1];for(const line of readFileSync(join(root,"SHA256SUMS"),"utf8").trim().split(/\r?\n/)){const m=/^([0-9a-f]{64})  (.+)$/.exec(line);if(!m)throw new Error("malformed SHA256SUMS");const got=createHash("sha256").update(readFileSync(join(root,m[2]))).digest("hex");if(got!==m[1])throw new Error(`candidate checksum mismatch: ${m[2]}`)}' release-assets
+          $authority = (Resolve-Path "windows-conpty-authority/claudexor-conpty-helper.exe").Path
+          $sidecar = Get-Content -LiteralPath "windows-conpty-authority/claudexor-conpty-helper.exe.sha256" -Raw
+          $expected = ($sidecar -split "\s+")[0].ToLowerInvariant()
+          $appRoot = Join-Path $env:RUNNER_TEMP "candidate-app"
+          $closureRoot = Join-Path $env:RUNNER_TEMP "candidate-closure"
+          New-Item -ItemType Directory -Force -Path $appRoot | Out-Null
+          & tar -xf "release-assets/Claudexor-$env:VERSION.zip" -C $appRoot `
+            "Claudexor.app/Contents/Resources/native/claudexor-conpty-helper.exe"
+          if ($LASTEXITCODE -ne 0) { throw "candidate app helper extraction failed" }
+          New-Item -ItemType Directory -Force -Path $closureRoot | Out-Null
+          & tar -xzf "release-assets/claudexor-runtime-$env:VERSION.tar.gz" -C $closureRoot
+          if ($LASTEXITCODE -ne 0) { throw "runtime closure extraction failed" }
+          $appHelper = Join-Path $appRoot "Claudexor.app/Contents/Resources/native/claudexor-conpty-helper.exe"
+          $closureHelper = Join-Path $closureRoot "native/claudexor-conpty-helper.exe"
+          node scripts/verify-win32-conpty-helper.mjs `
+            --file $authority --file $appHelper --file $closureHelper `
+            --expected-sha256 $expected
+          New-Item -ItemType Directory -Force -Path "packages/core/dist/native" | Out-Null
+          New-Item -ItemType Directory -Force -Path "packages/core/dist/native-test" | Out-Null
+          Copy-Item -LiteralPath $authority -Destination "packages/core/dist/native/claudexor-conpty-helper.exe" -Force
+          Copy-Item -LiteralPath "windows-conpty-authority/claudexor-conpty-test-child.exe" `
+            -Destination "packages/core/dist/native-test/claudexor-conpty-test-child.exe" -Force
+
+      - name: Run helper, resolver and redaction contracts against assembled bytes
+        run: >
+          pnpm vitest run
+          packages/core/src/win32-conpty-helper.test.ts
+          packages/cli/src/setup-login-pty.test.ts
+          packages/cli/src/setup-login-runner-transport.test.ts
+          packages/cli/src/setup-login-url-disclosure.test.ts
+
+      - name: Probe, handshake and gracefully stop the assembled daemon closure
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          PREPARED_SHA: ${{ needs.prepare.outputs.sha }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $entry = Join-Path $env:RUNNER_TEMP "candidate-closure/claudexord.bundle.cjs"
+          $probe = (& node $entry --probe | ConvertFrom-Json)
+          if ($probe.version -ne $env:VERSION -or $probe.buildSha -ne $env:PREPARED_SHA) {
+            throw "assembled closure probe identity mismatch"
+          }
+          $home = Join-Path $env:RUNNER_TEMP "windows-candidate-home"
+          $config = Join-Path $env:RUNNER_TEMP "windows-candidate-config"
+          New-Item -ItemType Directory -Force -Path $home | Out-Null
+          Remove-Item -LiteralPath $config -Recurse -Force -ErrorAction SilentlyContinue
+          $env:HOME = $home
+          $env:CLAUDEXOR_CONFIG_DIR = $config
+          $stdout = Join-Path $env:RUNNER_TEMP "windows-candidate-daemon.stdout.log"
+          $stderr = Join-Path $env:RUNNER_TEMP "windows-candidate-daemon.stderr.log"
+          $daemon = Start-Process -FilePath (Get-Command node).Source -ArgumentList @($entry) `
+            -NoNewWindow -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
+          try {
+            $pointer = Join-Path $config "daemon/control-api.json"
+            $deadline = [DateTime]::UtcNow.AddSeconds(20)
+            while (-not (Test-Path -LiteralPath $pointer -PathType Leaf)) {
+              if ($daemon.HasExited) { throw "assembled daemon exited before handshake" }
+              if ([DateTime]::UtcNow -ge $deadline) { throw "assembled daemon handshake pointer timed out" }
+              Start-Sleep -Milliseconds 100
+            }
+            $control = Get-Content -LiteralPath $pointer -Raw | ConvertFrom-Json
+            $token = (Get-Content -LiteralPath $control.tokenPath -Raw).Trim()
+            $headers = @{
+              Authorization = "Bearer $token"
+              "X-Claudexor-Protocol-Major" = "3"
+            }
+            $body = @{ protocolMajor = 3; client = "windows-candidate-smoke" } | ConvertTo-Json
+            $handshake = Invoke-RestMethod -Method Post `
+              -Uri "http://$($control.host):$($control.port)/v2/handshake" `
+              -Headers $headers -ContentType "application/json" -Body $body
+            if (-not $handshake.compatible -or $handshake.engine.version -ne $env:VERSION -or $handshake.engine.sha -ne $env:PREPARED_SHA) {
+              throw "assembled daemon handshake identity mismatch"
+            }
+            $stop = (& node $entry --stop $env:VERSION $env:PREPARED_SHA | ConvertFrom-Json)
+            if ($LASTEXITCODE -ne 0 -or -not $stop.stopped) {
+              throw "assembled daemon graceful stop failed"
+            }
+            if (-not $daemon.WaitForExit(15000)) { throw "assembled daemon remained after graceful stop" }
+          } finally {
+            if (-not $daemon.HasExited) { Stop-Process -Id $daemon.Id -Force }
+          }
+
   remote-linux-ssh-smoke:
     name: Exercise the promoted Linux runtime over OpenSSH
     needs: [prepare, package-macos]
@@ -596,7 +911,7 @@ jobs:
 
   publish-npm:
     name: Publish npm packages with provenance
-    needs: [prepare, package-macos, remote-linux-ssh-smoke]
+    needs: [prepare, package-macos, remote-linux-ssh-smoke, windows-conpty-candidate-smoke]
     if: needs.prepare.outputs.mode == 'publish'
     runs-on: macos-26
     permissions:
@@ -608,6 +923,14 @@ jobs:
           ref: ${{ needs.prepare.outputs.sha }}
           fetch-depth: 0
           persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: Claudexor-${{ needs.prepare.outputs.version }}-release-assets
+          path: release-assets
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: Claudexor-${{ needs.prepare.outputs.version }}-windows-conpty-authority
+          path: windows-conpty-authority
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -621,7 +944,28 @@ jobs:
           node scripts/verify-release-input.mjs
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
-      - name: Verify packed Darwin process identity helper
+      - name: Stage the promoted closure's exact Windows helper for npm
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          closure="$RUNNER_TEMP/promoted-npm-closure"
+          rm -rf "$closure"
+          mkdir -p "$closure"
+          tar -xzf "release-assets/claudexor-runtime-$VERSION.tar.gz" -C "$closure"
+          authority="windows-conpty-authority/claudexor-conpty-helper.exe"
+          sidecar="windows-conpty-authority/claudexor-conpty-helper.exe.sha256"
+          expected="$(awk '{print $1}' "$sidecar")"
+          promoted="$closure/native/claudexor-conpty-helper.exe"
+          node scripts/verify-win32-conpty-helper.mjs \
+            --file "$authority" --file "$promoted" --expected-sha256 "$expected"
+          mkdir -p packages/core/dist/native
+          cp "$promoted" packages/core/dist/native/claudexor-conpty-helper.exe
+          chmod 755 packages/core/dist/native/claudexor-conpty-helper.exe
+          echo "CLAUDEXOR_WIN32_CONPTY_SHA256=$expected" >> "$GITHUB_ENV"
+          echo "CLAUDEXOR_REQUIRE_WIN32_CONPTY_HELPER=1" >> "$GITHUB_ENV"
+      - name: Verify packed native helper custody
         shell: bash
         run: |
           set -euo pipefail
@@ -633,7 +977,8 @@ jobs:
             echo "::error::Expected exactly one core npm tarball."
             exit 1
           }
-          node scripts/verify-npm-darwin-package.mjs --tarball "${tarballs[0]}"
+          node scripts/verify-npm-darwin-package.mjs --tarball "${tarballs[0]}" \
+            --win32-helper-sha256 "$CLAUDEXOR_WIN32_CONPTY_SHA256"
       - name: Publish only missing, byte-identical packages
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -654,6 +999,10 @@ jobs:
         with:
           ref: ${{ needs.prepare.outputs.sha }}
           persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: Claudexor-${{ needs.prepare.outputs.version }}-windows-conpty-authority
+          path: windows-conpty-authority
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ matrix.node-version }}
@@ -667,6 +1016,12 @@ jobs:
           cd "$root"
           npm init -y >/dev/null
           npm install --ignore-scripts "claudexor@$VERSION"
+          core_entry="$(node -p 'require.resolve("@claudexor/core")')"
+          packaged_conpty="$(dirname "$core_entry")/native/claudexor-conpty-helper.exe"
+          expected="$(awk '{print $1}' "$GITHUB_WORKSPACE/windows-conpty-authority/claudexor-conpty-helper.exe.sha256")"
+          node "$GITHUB_WORKSPACE/scripts/verify-win32-conpty-helper.mjs" \
+            --file "$GITHUB_WORKSPACE/windows-conpty-authority/claudexor-conpty-helper.exe" \
+            --file "$packaged_conpty" --expected-sha256 "$expected"
           test "$(./node_modules/.bin/claudexor --version)" = "$VERSION"
           ./node_modules/.bin/claudexor help --json > help.json
           node -e 'const x=require("./help.json"); if(!x.ok||!Array.isArray(x.commands)) process.exit(1)'

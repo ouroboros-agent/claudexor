@@ -187,8 +187,16 @@ jobs:
           fi
 
   windows-test:
-    name: Windows (Node 20)
-    runs-on: windows-latest
+    name: Windows ${{ matrix.runner }} (Node ${{ matrix.node-version }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2022
+            node-version: 20.19.0
+          - runner: windows-latest
+            node-version: 24.16.0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -200,8 +208,40 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 20.19.0
+          node-version: ${{ matrix.node-version }}
           cache: pnpm
+
+      - name: Initialize pinned x64 MSVC environment
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) {
+            throw "vswhere.exe is unavailable on the hosted Windows image"
+          }
+          $installation = (& $vswhere -latest -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -property installationPath | Select-Object -First 1).Trim()
+          if (-not $installation) { throw "x64 MSVC build tools are unavailable" }
+          $devCmd = Join-Path $installation "Common7\Tools\VsDevCmd.bat"
+          if (-not (Test-Path -LiteralPath $devCmd -PathType Leaf)) {
+            throw "VsDevCmd.bat is unavailable at $devCmd"
+          }
+          $setup = Join-Path $env:RUNNER_TEMP "claudexor-msvc-env.cmd"
+          "@call `"$devCmd`" -no_logo -arch=x64 -host_arch=x64`r`n@set`r`n" |
+            Set-Content -LiteralPath $setup -Encoding ascii
+          $developer = @{}
+          & $env:ComSpec /d /s /c "`"$setup`"" | ForEach-Object {
+            $separator = $_.IndexOf("=")
+            if ($separator -gt 0) {
+              $developer[$_.Substring(0, $separator)] = $_.Substring($separator + 1)
+            }
+          }
+          foreach ($name in @("Path", "INCLUDE", "LIB", "LIBPATH", "VCToolsInstallDir", "WindowsSdkDir", "WindowsSDKVersion", "UCRTVersion")) {
+            if ($developer.ContainsKey($name)) {
+              Add-Content -LiteralPath $env:GITHUB_ENV -Value "$name=$($developer[$name])" -Encoding utf8
+            }
+          }
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -209,17 +249,38 @@ jobs:
       - name: Build
         run: pnpm build
 
+      - name: Build native ConPTY fixture
+        run: pnpm --filter @claudexor/core build:win32-fixtures
+
+      - name: Observe two-directory /Brepro helper hashes
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $first = Join-Path $env:RUNNER_TEMP "conpty-brepro-first\claudexor-conpty-helper.exe"
+          $second = Join-Path $env:RUNNER_TEMP "conpty-brepro-second\claudexor-conpty-helper.exe"
+          node packages/core/scripts/build-win32-conpty-helper.mjs --require --out $first
+          node packages/core/scripts/build-win32-conpty-helper.mjs --require --out $second
+          $firstHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $first).Hash.ToLowerInvariant()
+          $secondHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $second).Hash.ToLowerInvariant()
+          Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value "ConPTY /Brepro observation: first=$firstHash second=$secondHash" -Encoding utf8
+          if ($firstHash -ne $secondHash) {
+            Write-Warning "/Brepro output differed on this hosted image; exact candidate byte custody remains the blocking contract."
+          }
+
       # The Windows-shaped surfaces, and only suites whose fixtures are
       # portable: the absolute-path contract, win32 process identity and
       # termination, and the journal walker whose separator bug reproduces
       # ONLY here. Suites built on POSIX mode bits, symlinks or `#!/bin/sh`
       # fixtures stay on the Linux/macOS legs; their win32 branches are
       # proven by injected-platform unit tests instead.
-      - name: Test (paths, process identity, journal)
+      - name: Test (paths, process identity, ConPTY, setup transport, journal)
         run: >
           pnpm vitest run packages/schema/src/schema.test.ts
           packages/core/src/process-identity.test.ts
           packages/core/src/process-tree.test.ts
+          packages/core/src/win32-conpty-helper.test.ts
+          packages/cli/src/setup-login-pty.test.ts
+          packages/cli/src/setup-login-runner-transport.test.ts
           packages/journal/src/index.test.ts
 
   swift:
