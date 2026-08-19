@@ -88,8 +88,8 @@ function encodeWindowsConptyLine(value: string): string {
   let encoded = "";
   for (let index = 0; index < value.length; index += 1) {
     const codeUnit = value.charCodeAt(index);
-    encoded += keyRecord(0, 0, codeUnit, 1);
-    encoded += keyRecord(0, 0, codeUnit, 0);
+    encoded += keyRecord(231, 0, codeUnit, 1);
+    encoded += keyRecord(231, 0, codeUnit, 0);
   }
   encoded += keyRecord(13, 28, 13, 1);
   encoded += keyRecord(13, 28, 13, 0);

@@ -321,7 +321,7 @@ function fakeInteractiveConpty(): TerminalTransportResolution {
     `process.stdin.on("data", chunk => {`,
     `  input += chunk;`,
     `  if (!input.includes("\\u001b[13;28;13;1;0;1_")) return;`,
-    `  const code = [...input.matchAll(/\\u001b\\[0;0;([0-9]+);1;0;1_/g)]`,
+    `  const code = [...input.matchAll(/\\u001b\\[231;0;([0-9]+);1;0;1_/g)]`,
     `    .map(match => String.fromCharCode(Number(match[1]))).join("");`,
     `  process.stdout.write("\\u001b[31mCODE:" + code + "\\u001b[0m\\r\\n");`,
     `  setTimeout(() => process.exit(7), 10);`,
