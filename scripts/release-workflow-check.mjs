@@ -390,6 +390,15 @@ if (!/^\s{4}runs-on:\s*macos-26\s*$/m.test(publishNpmJob)) {
 // The Linux SSH smoke is a publication gate: both publish jobs must depend on
 // it and it must really exercise the promoted archive (not a no-op).
 errors.push(...remoteSmokeGateFindings(release));
+const delayedWindowsFixtureCi = ci
+  .replace(
+    "      - name: Build native ConPTY fixture\n        run: pnpm --filter @claudexor/core build:win32-fixtures\n\n",
+    "",
+  )
+  .replace(
+    "          packages/journal/src/index.test.ts\n",
+    "          packages/journal/src/index.test.ts\n\n      - name: Build native ConPTY fixture\n        run: pnpm --filter @claudexor/core build:win32-fixtures\n",
+  );
 for (const [label, mutated] of [
   [
     "publish-npm without the SSH smoke gate",
@@ -524,6 +533,15 @@ for (const [label, mutated] of [
     "deleted native ConPTY PR test",
     ci.replace("          packages/core/src/win32-conpty-helper.test.ts\n", ""),
   ],
+  [
+    "deleted Windows agy print acceptance",
+    ci.replace("          packages/harness-agy/src/win32-print-acceptance.test.ts\n", ""),
+  ],
+  [
+    "deleted portable platform-auth declaration test",
+    ci.replace("          packages/schema/src/platform-auth-policy.test.ts\n", ""),
+  ],
+  ["Windows agy acceptance ordered before native fixture build", delayedWindowsFixtureCi],
   [
     "blocking Brepro comparison",
     ci.replace(
@@ -977,6 +995,22 @@ function windowsPrLegFindings(workflow) {
     "Windows PR legs must run helper, resolver, and runner transport tests",
     /win32-conpty-helper\.test\.ts[\s\S]*?setup-login-pty\.test\.ts[\s\S]*?setup-login-runner-transport\.test\.ts/,
   );
+  requirePattern(
+    "Windows PR legs must run the real agy print/client_pty acceptance",
+    /packages\/harness-agy\/src\/win32-print-acceptance\.test\.ts/,
+  );
+  requirePattern(
+    "Windows PR legs must run portable platform-auth declaration and consumer tests",
+    /platform-auth-policy\.test\.ts[\s\S]*?capabilities\.test\.ts[\s\S]*?harness-agy\/src\/conformance\.test\.ts[\s\S]*?setup-login-capability\.test\.ts/,
+  );
+  const build = windows.indexOf("      - name: Build\n        run: pnpm build");
+  const nativeFixture = windows.indexOf("pnpm --filter @claudexor/core build:win32-fixtures");
+  const agyAcceptance = windows.indexOf("packages/harness-agy/src/win32-print-acceptance.test.ts");
+  if (!(build >= 0 && build < nativeFixture && nativeFixture < agyAcceptance)) {
+    findings.push(
+      "ci.yml: Windows agy acceptance must run after pnpm build and the native fixture build",
+    );
+  }
   requirePattern(
     "required build-test aggregate must depend on and reject a failed Windows matrix",
     /needs:\s*\[build-test, windows-test\][\s\S]*?WINDOWS_RESULT:[\s\S]*?\[ "\$WINDOWS_RESULT" != "success" \]/,

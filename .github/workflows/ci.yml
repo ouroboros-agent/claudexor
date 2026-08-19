@@ -273,12 +273,17 @@ jobs:
       # ONLY here. Suites built on POSIX mode bits, symlinks or `#!/bin/sh`
       # fixtures stay on the Linux/macOS legs; their win32 branches are
       # proven by injected-platform unit tests instead.
-      - name: Test (paths, process identity, ConPTY, setup transport, journal)
+      - name: Test (platform auth, agy print, ConPTY, setup transport, journal)
         run: >
           pnpm vitest run packages/schema/src/schema.test.ts
+          packages/schema/src/platform-auth-policy.test.ts
           packages/core/src/process-identity.test.ts
           packages/core/src/process-tree.test.ts
+          packages/core/src/capabilities.test.ts
           packages/core/src/win32-conpty-helper.test.ts
+          packages/harness-agy/src/conformance.test.ts
+          packages/harness-agy/src/win32-print-acceptance.test.ts
+          packages/cli/src/setup-login-capability.test.ts
           packages/cli/src/setup-login-pty.test.ts
           packages/cli/src/setup-login-runner-transport.test.ts
           packages/journal/src/index.test.ts
