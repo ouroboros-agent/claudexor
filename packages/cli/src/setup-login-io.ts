@@ -53,7 +53,10 @@ export function watchLoginInput(
     delivered = true;
     onDelivered?.(input.value);
     try {
-      child.stdin.write(`${input.value}\n`);
+      // A terminal's Enter key is CR. Plain-pipe logins keep their historical
+      // LF delimiter, while PTY-backed vendors need the terminal byte or they
+      // continue waiting forever on Windows ConPTY.
+      child.stdin.write(`${input.value}${manifest.ptyStdin ? "\r" : "\n"}`);
       // The secret has been handed to the vendor; what stays on disk is a
       // non-secret consumed marker, so the one-shot conflict check still
       // refuses a second submission while the code itself stops existing.

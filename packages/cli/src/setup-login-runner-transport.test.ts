@@ -321,7 +321,7 @@ function fakeInteractiveConpty(): TerminalTransportResolution {
     `process.stdin.setEncoding("utf8");`,
     `process.stdin.on("data", chunk => {`,
     `  input += chunk;`,
-    `  if (!input.includes("\\n")) return;`,
+    `  if (!input.includes("\\r")) return;`,
     `  const code = input.trim();`,
     `  process.stdout.write("\\u001b[31mCODE:" + code + "\\u001b[0m\\r\\n");`,
     `  setTimeout(() => process.exit(7), 10);`,

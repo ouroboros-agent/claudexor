@@ -143,7 +143,7 @@ try {
   const manifestPath = join(jobDir, "runner-manifest.json");
   const manifest = protocol.sealLoginManifest({
     version: protocol.SETUP_LOGIN_PROTOCOL_VERSION,
-    jobId: "win32-agy-client-pty",
+    jobId: "setup-win32-agy-client-pty",
     executionId: "win32-agy-client-pty-execution-1",
     harness: "agy",
     jobDir,

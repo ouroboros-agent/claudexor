@@ -48,7 +48,7 @@ describe.skipIf(process.platform !== "win32")("Win32 ConPTY helper integration",
     expect(result.code).toBe(0);
     expect(result.signal).toBeNull();
     expect(result.stderr).toMatch(new RegExp(`^${protocol}\\tstarted\\t[1-9][0-9]*\\r?\\n$`));
-    const decoded = result.stdout
+    const decoded = stripTerminalEscapes(result.stdout)
       .split(/\r?\n/)
       .filter((line) => line.startsWith("ARG\t"))
       .map((line) => {
@@ -62,7 +62,7 @@ describe.skipIf(process.platform !== "win32")("Win32 ConPTY helper integration",
     requireFixtures();
     const child = spawnHelper(["--interactive"]);
     const finished = collect(child);
-    child.stdin.write("one-shot-code-42\n");
+    child.stdin.write("one-shot-code-42\r");
     const result = await finished;
     expect(result.code).toBe(0);
     expect(result.stdout).toContain("https://accounts.google.com/o/oauth2/auth");
@@ -121,15 +121,14 @@ describe.skipIf(process.platform !== "win32")("Win32 ConPTY helper integration",
     expect(preStart.stdout).toBe("");
     expect(preStart.stderr).toMatch(new RegExp(`^${protocol}\\terror\\t6\\t[0-9]+\\r?\\n$`));
 
-    const child = spawnHelper(["--stream-descendant"]);
-    const observedPids = observeVendorPids(child);
+    const child = spawnHelper(["--stream-output"]);
+    const observedPid = observeStartedPid(child);
     const finished = collect(child);
     if (!child.pid) throw new Error("helper PID was not assigned");
     const helperPid = child.pid;
     let vendorPid = 0;
-    let descendantPid = 0;
     try {
-      ({ vendorPid, descendantPid } = await observedPids);
+      vendorPid = await observedPid;
       child.stdout.destroy();
       const postStart = await withTimeout(finished, 10_000, "post-start helper failure");
       expect(postStart.code).toBe(4);
@@ -139,9 +138,9 @@ describe.skipIf(process.platform !== "win32")("Win32 ConPTY helper integration",
             `${protocol}\\terror\\t8\\t[0-9]+\\r?\\n$`,
         ),
       );
-      await expectPidsGone([helperPid, vendorPid, descendantPid]);
+      await expectPidsGone([helperPid, vendorPid]);
     } finally {
-      cleanupPids([helperPid, vendorPid, descendantPid]);
+      cleanupPids([helperPid, vendorPid]);
     }
   });
 
@@ -260,7 +259,9 @@ function parseConsoleState(
   windowVisible: boolean;
   coninAvailable: boolean;
 } {
-  const match = new RegExp(`^${label}\\t([0-9]+)\\t([01])\\t([01])\\t([01])\\r?\\n?$`).exec(output);
+  const match = new RegExp(`^${label}\\t([0-9]+)\\t([01])\\t([01])\\t([01])\\r?\\n?$`).exec(
+    stripTerminalEscapes(output),
+  );
   if (!match) throw new Error(`invalid ${label} console state`);
   return {
     consoleCodePage: Number(match[1]),
@@ -270,25 +271,32 @@ function parseConsoleState(
   };
 }
 
-async function observeVendorPids(child: ChildProcessWithoutNullStreams): Promise<{
-  vendorPid: number;
-  descendantPid: number;
-}> {
-  let stdout = "";
-  return await new Promise((resolvePids, rejectPids) => {
-    const timer = setTimeout(() => rejectPids(new Error("fixture PID line timed out")), 8_000);
-    child.stdout.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString("utf8");
-      const match = /PIDS\t([1-9][0-9]*)\t([1-9][0-9]*)/.exec(stdout);
+async function observeStartedPid(child: ChildProcessWithoutNullStreams): Promise<number> {
+  let stderr = "";
+  return await new Promise((resolvePid, rejectPid) => {
+    const timer = setTimeout(() => rejectPid(new Error("helper started frame timed out")), 8_000);
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("ascii");
+      const match = new RegExp(`${protocol}\\tstarted\\t([1-9][0-9]*)`).exec(stderr);
       if (!match) return;
       clearTimeout(timer);
-      resolvePids({ vendorPid: Number(match[1]), descendantPid: Number(match[2]) });
+      resolvePid(Number(match[1]));
     });
     child.once("error", (error) => {
       clearTimeout(timer);
-      rejectPids(error);
+      rejectPid(error);
     });
   });
+}
+
+// ConPTY can bracket child output with terminal-mode escape sequences. They
+// are transport noise, not part of the fixture's argv or console-state wire.
+function stripTerminalEscapes(value: string): string {
+  // eslint-disable-next-line no-control-regex
+  return value.replace(
+    /\u001b(?:\[[0-9;?]*[ -/]*[@-~]|\][^\u0007\u001b]*(?:\u0007|\u001b\\)?)/g,
+    "",
+  );
 }
 
 async function observeWorkerTreePids(child: ChildProcessWithoutNullStreams): Promise<{
