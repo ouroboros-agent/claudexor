@@ -34,6 +34,7 @@ import {
   toolWarnings,
 } from "./attemptTelemetry.js";
 import { settleGrantedAttemptLease } from "./attemptUsageCost.js";
+import { runModelGovernedRoute } from "./modelGovernance.js";
 
 /** The reducer runs under the fixed `synth` attempt id (roster/cost visible). */
 export const DEEP_SCAN_REDUCER_ATTEMPT_ID = "synth";
@@ -392,7 +393,7 @@ export async function runDeepScanReducer(
       attempt_id: attemptId,
       external_context_policy: built.webPolicy,
     });
-    const watched = withInactivityWatchdog(adapter.run(spec), {
+    const watched = withInactivityWatchdog(runModelGovernedRoute(args.routed, spec), {
       timeoutMs: deps.inactivityTimeoutMs,
       countsAsProgress: countsAsAgentProgress,
       onTimeout: () => {

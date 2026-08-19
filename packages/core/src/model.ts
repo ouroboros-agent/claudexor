@@ -33,7 +33,9 @@ export function validateModel(
       status: "rejected",
       message:
         `this harness cannot verify models (no ${source === "api" ? "live model inventory" : "manifest known_models"}); ` +
-        `use the harness default (omit the model) or add known_models to the manifest`,
+        (source === "api"
+          ? "repair the live account/auth route or use the harness default (omit the model)"
+          : "use the harness default (omit the model) or add known_models to the manifest"),
     };
   }
   if (known.includes(model)) return { status: "ok", message: null };

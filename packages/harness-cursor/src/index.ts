@@ -171,9 +171,16 @@ async function smokeCursorApiKey(
   return result;
 }
 
-async function listCursorModels(env: EnvMap = { ...providerScrubEnv() }): Promise<HarnessModel[]> {
+async function listCursorModels(
+  env: EnvMap = { ...providerScrubEnv() },
+  cwd?: string,
+): Promise<HarnessModel[]> {
   try {
-    const r = await runCapture(BIN, ["--list-models"], { env, timeoutMs: 30_000 });
+    const r = await runCapture(BIN, ["--list-models"], {
+      env,
+      ...(cwd ? { cwd } : {}),
+      timeoutMs: 30_000,
+    });
     if (r.code !== 0) return [];
     return parseCursorModelList(r.stdout);
   } catch {
@@ -241,13 +248,12 @@ async function listCursorModelsFromReadyRoute(
   deps: CursorRuntimeDeps,
   spec?: DoctorSpec,
 ): Promise<HarnessModel[]> {
-  const catalogOnly = () => {
-    const key = deps.cursorApiKey(spec?.env);
-    return deps.listCursorModels({
-      ...providerScrubEnv(),
-      CURSOR_API_KEY: key ?? null,
-    });
-  };
+  // ONE seam for every enumeration below: the inventory must run in the same
+  // working directory the eventual run will use, because cursor-agent resolves
+  // account/workspace state relative to it.
+  const modelsFrom = (env: EnvMap) => deps.listCursorModels(env, spec?.cwd);
+  const catalogOnly = () =>
+    modelsFrom({ ...providerScrubEnv(), CURSOR_API_KEY: deps.cursorApiKey(spec?.env) ?? null });
   if (spec?.env || spec?.authPreference || spec?.fresh) {
     const authPreference = spec.authPreference ?? "auto";
     const resolved = await resolveCursorAuthRoute(deps, {
@@ -257,12 +263,12 @@ async function listCursorModelsFromReadyRoute(
       abortSignal: spec?.abortSignal,
     });
     if (resolved.route === "local_session") {
-      const models = await deps.listCursorModels({ ...resolved.env, CURSOR_API_KEY: null });
+      const models = await modelsFrom({ ...resolved.env, CURSOR_API_KEY: null });
       if (models.length > 0) return models;
       if (authPreference === "subscription") return [];
     }
     if (resolved.route === "api_key" && resolved.key) {
-      const models = await deps.listCursorModels({ ...resolved.env, CURSOR_API_KEY: resolved.key });
+      const models = await modelsFrom({ ...resolved.env, CURSOR_API_KEY: resolved.key });
       if (models.length > 0) return models;
     }
     return [];
@@ -273,7 +279,7 @@ async function listCursorModelsFromReadyRoute(
   if (!key) return catalogOnly();
   const apiSmoke = await smokeCursorApiKey(deps, key, spec?.fresh === true);
   if (apiSmoke.ok) {
-    const models = await deps.listCursorModels({ ...providerScrubEnv(), CURSOR_API_KEY: key });
+    const models = await modelsFrom({ ...providerScrubEnv(), CURSOR_API_KEY: key });
     if (models.length > 0) return models;
   }
   return catalogOnly();

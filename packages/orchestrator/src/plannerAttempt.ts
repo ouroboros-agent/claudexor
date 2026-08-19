@@ -36,6 +36,7 @@ import {
 import { settleGrantedAttemptLease } from "./attemptUsageCost.js";
 import { observeNativeSessionEvent } from "./credential-profiles.js";
 import type { BudgetDenial } from "./budgetFailure.js";
+import { runModelGovernedRoute } from "./modelGovernance.js";
 import type { RoutedAdapter, RunInput } from "./orchestrator.js";
 import {
   harnessEventPayload,
@@ -217,7 +218,7 @@ export async function runPlannerAttempt(
       ...(knobs.ignored.length > 0 ? { ignored_settings: knobs.ignored } : {}),
     });
     if (!input.signal?.aborted) {
-      const watchedPlan = withInactivityWatchdog(adapter.run(spec), {
+      const watchedPlan = withInactivityWatchdog(runModelGovernedRoute(routed, spec), {
         timeoutMs: deps.inactivityTimeoutMs(input.repoRoot),
         countsAsProgress: countsAsAgentProgress,
         onTimeout: () => {
