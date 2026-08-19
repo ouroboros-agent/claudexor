@@ -24,8 +24,12 @@ Release history for Claudexor. The current version is declared in the root
   sha256; it never claims the `human_observed` verification the watched path
   earns. The signed runtime closure now also ships `claudexor.bundle.cjs`
   stamped with the same build sha as the daemon, so the host invokes that
-  exact reviewed CLI rather than anything it found on PATH. Two model-gate
-  defects found by the release review are fixed with it: the pre-run gate no
+  exact reviewed CLI rather than anything it found on PATH. Three model-gate
+  defects found by the release review are fixed with it: a cursor account
+  pinned by a credential profile now answers its OWN model inventory through
+  the same route resolver its run uses (previously the gate consulted the
+  engine-default ladder, got an empty list, and refused a model the pinned
+  account genuinely offers); the pre-run gate no
   longer replays an admitted credential route as an auth preference for every
   adapter (a non-Cursor `auto` run was enumerated against an inventory its own
   spawn would not use), and no spawned spec is rewritten any more, so Cursor's
