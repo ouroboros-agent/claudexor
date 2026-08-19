@@ -95,11 +95,29 @@ describe("pinned versions (issue #89: never @latest)", () => {
   it("discloses the exact command and destination", () => {
     expect(harnessInstallerDisclosure("claude")).toEqual({
       harness: "claude",
+      target: "remote",
       command: `npm install --global --prefix ~/.claudexor/remote/vendor @anthropic-ai/claude-code@${CLAUDE_VENDOR_CLI_VERSION}`,
       installLocation: "~/.claudexor/remote/vendor/bin",
       pinnedVersion: CLAUDE_VENDOR_CLI_VERSION,
       verification: "release_verified",
     });
+  });
+
+  it("the local target names the managed toolchain prefix, not the remote one", () => {
+    expect(harnessInstallerDisclosure("claude", "local")).toEqual({
+      harness: "claude",
+      target: "local",
+      command: `npm install --global --prefix ~/.claudexor/node @anthropic-ai/claude-code@${CLAUDE_VENDOR_CLI_VERSION}`,
+      installLocation: "~/.claudexor/node/bin",
+      pinnedVersion: CLAUDE_VENDOR_CLI_VERSION,
+      verification: "release_verified",
+    });
+  });
+
+  it("a script vendor installed unattended locally never claims human observation", () => {
+    expect(harnessInstallerDisclosure("cursor", "local").verification).toBe("unattended_unpinned");
+    expect(harnessInstallerDisclosure("agy", "local").verification).toBe("unattended_unpinned");
+    expect(harnessInstallerDisclosure("cursor", "remote").verification).toBe("human_observed");
   });
 
   it("agy takes the same honest unpinnable path as cursor (one branch, two rows)", () => {

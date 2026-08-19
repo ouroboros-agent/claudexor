@@ -178,6 +178,8 @@ const CLI_ONLY_EXEMPT = {
     "per-run credential profile (INV-135); embedder contract is CLI/HTTP-first, MCP exposure deferred with the other run knobs (DT2.1-1)",
   "prompt-file":
     "terminal input plumbing (file/stdin prompt sources); MCP callers pass the prompt inline",
+  target:
+    "harness-install destination; operator/embedder provisioning surface, while MCP exposes no harness-install tool",
   thread:
     "thread continuation is a CLI/HTTP embedder handle routed through POST /threads/:id/turns (D10); MCP one-shot tools still have no thread surface (deferred with DT2.1-1)",
   mode: "MCP encodes the mode in the TOOL NAME (claudexor_ask/plan/run/best_of/...)",

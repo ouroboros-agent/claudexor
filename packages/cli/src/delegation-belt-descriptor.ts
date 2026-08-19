@@ -38,7 +38,8 @@ export function beltDaemonDiscoveryEnv(): Record<string, string> {
  * dispatches `mcp serve-belt` before daemon initialization, so the same path
  * works for direct dev/npm `claudexord.js`, the npm bin wrapper, and the
  * packaged single-file `claudexord.bundle.cjs`. There is no adjacent-file
- * guess and no second CLI copy in the app closure.
+ * guess: even when the reviewed operator CLI is present in the closure, the
+ * belt deliberately re-enters the exact daemon entry already serving it.
  */
 export function resolveDaemonEntry(
   argv1: string | undefined = process.argv[1],

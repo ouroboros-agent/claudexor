@@ -1,7 +1,9 @@
 /**
- * `claudexor harness install` — the disclosed, pinned remote vendor installer
+ * `claudexor harness install` — the disclosed, pinned vendor installer
  * (issue #89; restored from the PR #82 cut with the security objections
- * fixed).
+ * fixed). The historical/default `remote` target remains the SSH-host flow;
+ * an explicit `local` target installs into the managed toolchain root that
+ * local binary resolution and confinement already own.
  *
  * Contract:
  * - npm-distributed harnesses (claude/codex/opencode) install ONE exact
@@ -16,13 +18,26 @@
  *   downloaded first (never piped to a shell), its size and sha256 are
  *   printed, and it runs in the visible PTY the operator is watching — the
  *   same principle as interactive SSH auth.
- * - NOTHING executes without disclosure: the exact command and install
+ * - NOTHING executes without authorization: the exact command and install
  *   destination print first, and execution needs a TTY confirmation or an
  *   explicit `--yes` (the macOS flow confirms against this module's own
- *   `--dry-run --json` disclosure before passing `--yes`).
- * - failures are typed and loud; a failed download or non-zero installer exit
- *   never reads as success, and the temp download dir is removed on every
- *   path.
+ *   `--dry-run --json` disclosure before passing `--yes`). For a host
+ *   integration, `--target local --yes` IS that authorization, granted by the
+ *   owner action that invoked it; there is no second confirmation hidden
+ *   inside the producer, and the unattended script path never claims the
+ *   human-observed verification the watched remote path earns.
+ * - concurrent installs into one prefix are serialized by a cross-process
+ *   lease. A lease whose owner died is NOT reclaimed automatically: it fails
+ *   closed with a typed `install_lock_stale` and the exact cleanup path.
+ * - failures are typed and loud; a failed download, a non-zero installer exit,
+ *   or a failed post-install binary/version proof never reads as success, and
+ *   the temp download dir is removed on every path.
+ * - the post-install PROOF is what the local target has instead of a witness.
+ *   A watched remote install keeps the historical exit-code contract, because
+ *   the operator is looking at the terminal; an unattended local install must
+ *   earn its `ok:true`, so exit zero without a resolvable launcher and a
+ *   matching `--version` is a typed failure, and `installedBinary` /
+ *   `installedVersion` are present on every local success.
  * - `--json` keeps stdout pure: exactly ONE JSON object. In json mode every
  *   human progress line goes to stderr and child processes (npm/curl/the
  *   vendor script) run with their stdout routed onto stderr, so vendor
@@ -33,161 +48,106 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { CLAUDE_VENDOR_CLI_VERSION } from "@claudexor/harness-claude";
-import { CODEX_VENDOR_CLI_VERSION } from "@claudexor/harness-codex";
-import { OPENCODE_VENDOR_CLI_VERSION } from "@claudexor/harness-opencode";
 import { composeBaseEnv } from "@claudexor/core";
-import type { PinnedVendorCliVersion } from "@claudexor/util";
-import { flagBool, type ParsedArgs } from "./args.js";
+import { flagBool, flagStr, type ParsedArgs } from "./args.js";
+import { CliError, renderCliFailure } from "./cli-error.js";
 import { print, printJson, printUsageError } from "./cli-io.js";
 import { INSTALLABLE_HARNESSES } from "./harness-command-specs.js";
+import {
+  acquireHarnessInstallLease,
+  HARNESS_INSTALL_LOCK_TIMEOUT_MS,
+  type HarnessInstallLease,
+} from "./harness-install-lease.js";
+import {
+  proveInstalledNpm,
+  proveInstalledScriptVendor,
+  type HarnessProofResult,
+} from "./harness-install-proof.js";
 
-export type InstallableHarness = (typeof INSTALLABLE_HARNESSES)[number];
+import {
+  harnessInstallerDisclosure,
+  isHarnessInstallTarget,
+  isInstallableHarness,
+  NPM_PINS,
+  scriptInstaller,
+  TARGET_LAYOUTS,
+  type HarnessInstallerDisclosure,
+  type HarnessInstallTarget,
+  type InstallableHarness,
+} from "./harness-install-recipes.js";
 
-export function isInstallableHarness(value: string): value is InstallableHarness {
-  return INSTALLABLE_HARNESSES.includes(value as InstallableHarness);
-}
-
-/** Exact npm pins. Each version ALIASES the harness package's vendor-version
- * SSOT (vendor-cli-version.ts there). For claude/codex that is the version
- * this release's freshness gates verified; the opencode pin is a
- * deterministic install target only — no recorded verification fixture
- * vouches for it (its vendor-cli-version.ts discloses this). Cursor and agy
- * are absent deliberately: they ship no npm artifact (see SCRIPT_INSTALLERS
- * below). */
-export type HarnessInstallVerification =
-  "release_verified" | "deterministic_only" | "human_observed";
-
-const NPM_PINS: Partial<
-  Record<
-    InstallableHarness,
-    {
-      npmPackage: string;
-      version: PinnedVendorCliVersion;
-      verification: Exclude<HarnessInstallVerification, "human_observed">;
-    }
-  >
-> = {
-  claude: {
-    npmPackage: "@anthropic-ai/claude-code",
-    version: CLAUDE_VENDOR_CLI_VERSION,
-    verification: "release_verified",
-  },
-  codex: {
-    npmPackage: "@openai/codex",
-    version: CODEX_VENDOR_CLI_VERSION,
-    verification: "release_verified",
-  },
-  opencode: {
-    npmPackage: "opencode-ai",
-    version: OPENCODE_VENDOR_CLI_VERSION,
-    verification: "deterministic_only",
-  },
-};
-
-export const CURSOR_INSTALL_URL = "https://cursor.com/install";
-/**
- * Google's official Antigravity CLI installer, as published on
- * antigravity.google/docs/cli/install (`curl -fsSL <this url> | bash`, which
- * Claudexor deliberately does NOT do — see the header). Verified end to end on
- * 2026-08-16: the script fetched from this URL installed agy 1.1.13 to
- * `~/.local/bin/agy`, which is the destination disclosed below. The vendor
- * ships one signed Go binary and no npm package, so it takes the same
- * human-observed path as cursor.
- */
-export const AGY_INSTALL_URL = "https://antigravity.google/cli/install.sh";
-/** The vendor's Windows installer, from the same documentation page. */
-export const AGY_INSTALL_URL_WINDOWS = "https://antigravity.google/cli/install.ps1";
-
-/** Vendors distributed as a shell installer instead of a pinnable npm
- * artifact. ONE branch serves both entries; the per-harness text below is the
- * only thing that differs, so a third such vendor is a row, not a fork. */
-const SCRIPT_INSTALLERS: Record<
-  "agy" | "cursor",
-  { url: string; windowsUrl?: string; installLocation: string; pinNote: string }
-> = {
-  agy: {
-    url: AGY_INSTALL_URL,
-    // The one vendor here that publishes a Windows installer of its own; the
-    // POSIX row would otherwise be all Claudexor could honestly offer.
-    windowsUrl: AGY_INSTALL_URL_WINDOWS,
-    installLocation: "~/.local/bin (as selected by Google's Antigravity installer)",
-    pinNote:
-      "none — Antigravity ships no pinnable npm artifact; the vendor script is downloaded in full, its size and sha256 print, and it runs in this terminal where you watch it",
-  },
-  cursor: {
-    url: CURSOR_INSTALL_URL,
-    installLocation: "~/.local/bin (or ~/.cursor/bin, as selected by Cursor's installer)",
-    pinNote:
-      "none — Cursor ships no pinnable npm artifact; the vendor script is downloaded in full, its size and sha256 print, and it runs in this terminal where you watch it",
-  },
-};
-
-type ScriptInstaller = (typeof SCRIPT_INSTALLERS)[keyof typeof SCRIPT_INSTALLERS];
-
-/** Membership is asked of the TABLE, never re-typed: a third script vendor is
- * one row, and cannot be added to the table yet fall through here. */
-function scriptInstaller(harness: InstallableHarness): ScriptInstaller | null {
-  return Object.hasOwn(SCRIPT_INSTALLERS, harness)
-    ? SCRIPT_INSTALLERS[harness as keyof typeof SCRIPT_INSTALLERS]
-    : null;
-}
-
-export interface HarnessInstallerDisclosure {
-  harness: InstallableHarness;
-  command: string;
-  installLocation: string;
-  /** Exact vendor version the command installs; null exactly for the script
-   * vendors (cursor, agy), which have no pinnable artifact — disclosed, never
-   * faked. */
-  pinnedVersion: string | null;
-  /** Evidence behind the install target. Package-registry integrity verifies
-   * downloaded bytes for every npm pin, but only release_verified means the
-   * exact vendor version was exercised by this release's freshness gates. */
-  verification: HarnessInstallVerification;
-}
-
-export function harnessInstallerDisclosure(
-  harness: InstallableHarness,
-): HarnessInstallerDisclosure {
-  const pin = NPM_PINS[harness];
-  if (pin) {
-    return {
-      harness,
-      command: `npm install --global --prefix ~/.claudexor/remote/vendor ${pin.npmPackage}@${pin.version}`,
-      installLocation: "~/.claudexor/remote/vendor/bin",
-      pinnedVersion: pin.version,
-      verification: pin.verification,
-    };
-  }
-  const script = scriptInstaller(harness);
-  /* c8 ignore next -- every non-npm harness has a script row; this is the
-     unreachable guard that keeps the two tables honest. */
-  if (!script) throw new Error(`harness ${harness} has neither an npm pin nor a script installer`);
-  const windows = process.platform === "win32";
-  const url = windows ? (script.windowsUrl ?? script.url) : script.url;
-  const file = windows && script.windowsUrl ? "install.ps1" : "install.sh";
-  const runner =
-    windows && script.windowsUrl ? "powershell -ExecutionPolicy Bypass -File" : "/bin/sh";
-  return {
-    harness,
-    command:
-      `curl --fail --silent --show-error --location ${url} ` +
-      `--output <private-tmpdir>/${file} && ${runner} <private-tmpdir>/${file}`,
-    installLocation:
-      windows && script.windowsUrl
-        ? "%LOCALAPPDATA%\\agy\\bin (as selected by Google's Antigravity installer)"
-        : script.installLocation,
-    pinnedVersion: null,
-    verification: "human_observed",
-  };
-}
+// The recipe surface is re-exported from its historical home: callers and
+// tests import `harness-installer.js`, and the split is an internal one.
+export {
+  AGY_INSTALL_URL,
+  AGY_INSTALL_URL_WINDOWS,
+  CURSOR_INSTALL_URL,
+  HARNESS_INSTALL_TARGETS,
+  harnessInstallerDisclosure,
+  isHarnessInstallTarget,
+  isInstallableHarness,
+  type HarnessInstallTarget,
+  type InstallableHarness,
+} from "./harness-install-recipes.js";
 
 export interface HarnessInstallRunResult {
   exitCode: number;
   /** Set when the installer refused loudly WITHOUT running the vendor
    * payload (failed/unreadable download); never a silent partial install. */
   refusal?: string;
+  /** Stable machine reason when the payload did not run or did not verify. */
+  code?: string;
+  /** Evidence for the exact unpinned vendor-script bytes that ran. */
+  installerSha256?: string;
+  installerByteLength?: number;
+  /** Present on every SUCCESS: the absolute launcher the proof executed. */
+  installedBinary?: string;
+  /** Present on every SUCCESS: the exact npm pin, or the script vendor's own
+   * trimmed `--version` line. */
+  installedVersion?: string;
+}
+
+function verificationFailure(
+  harness: InstallableHarness,
+  reason: string,
+  evidence: Pick<HarnessInstallRunResult, "installerSha256" | "installerByteLength"> = {},
+): HarnessInstallRunResult {
+  return {
+    exitCode: 1,
+    code: "install_verification_failed",
+    refusal: `${harness} installer exited successfully, but installation verification failed: ${reason}`,
+    ...evidence,
+  };
+}
+
+/** The managed toolchain root and its npm/PATH contract are POSIX-only in this
+ * release, so the local target refuses on Windows instead of installing into a
+ * prefix nothing would then resolve. The remote target is unaffected. */
+function localPlatformRefusal(platform: NodeJS.Platform): HarnessInstallRunResult | null {
+  if (platform !== "win32") return null;
+  return {
+    exitCode: 1,
+    code: "unsupported_platform",
+    refusal: "--target local is not supported on Windows by this release; nothing was executed",
+  };
+}
+
+/** An unexpected throw is still ONE typed JSON object, never a stack trace on
+ * a machine caller's stdout. */
+function harnessInstallException(error: unknown): CliError {
+  const causeCode =
+    error && typeof error === "object" && typeof (error as { code?: unknown }).code === "string"
+      ? String((error as { code: string }).code)
+      : null;
+  const detail = error instanceof Error ? error.message : String(error);
+  return new CliError(
+    "operational",
+    `harness installer failed without a verified result: ${detail}`,
+    {
+      code: "harness_install_failed",
+      ...(causeCode ? { details: { causeCode } } : {}),
+    },
+  );
 }
 
 export function runHarnessInstaller(
@@ -195,9 +155,19 @@ export function runHarnessInstaller(
   options: {
     home?: string;
     nodePath?: string;
+    /** Explicit install layout. Omitted preserves the historical remote target. */
+    target?: HarnessInstallTarget;
     spawn?: typeof spawnSync;
     mkdir?: typeof mkdirSync;
     exists?: typeof existsSync;
+    /** Production installs serialize cross-process. Tests may disable only this
+     * wrapper while preserving the install recipe under test. */
+    lock?: boolean;
+    lockTimeoutMs?: number;
+    platform?: NodeJS.Platform;
+    /** Test/integration source before the clean allowlist and target-aware PATH
+     * normalization are applied. Provider credentials are still scrubbed. */
+    sourceEnv?: NodeJS.ProcessEnv;
     /** `--json` stdout purity: route human progress lines AND child stdout
      * to stderr, so stdout carries exactly one JSON object (the caller's
      * final envelope). Human mode keeps everything on stdout as before. */
@@ -205,8 +175,15 @@ export function runHarnessInstaller(
   } = {},
 ): HarnessInstallRunResult {
   const home = resolve(options.home ?? homedir());
+  const target = options.target ?? "remote";
+  const platform = options.platform ?? process.platform;
+  if (target === "local") {
+    const unsupported = localPlatformRefusal(platform);
+    if (unsupported) return unsupported;
+  }
   const spawn = options.spawn ?? spawnSync;
   const json = options.json === true;
+  const runnerNodePath = resolve(options.nodePath ?? process.execPath);
   // stdin inherited; child stdout -> OUR stderr (fd 2) in json mode so
   // vendor/npm output stays visible but never pollutes the JSON envelope.
   const childStdio: "inherit" | [number, number, number] = json ? [0, 2, 2] : "inherit";
@@ -216,14 +193,21 @@ export function runHarnessInstaller(
   };
   // Vendor-controlled npm/curl/shell children receive the shared minimal
   // runtime env, never the parent process's provider credentials.
-  const environment = { ...composeBaseEnv("clean"), HOME: home };
+  const resolutionSource = {
+    ...(options.sourceEnv ?? process.env),
+    HOME: home,
+    CLAUDEXOR_REMOTE_RUNTIME: target === "remote" ? "1" : "0",
+  };
+  const environment = {
+    ...composeBaseEnv("clean", resolutionSource, runnerNodePath, platform),
+    HOME: home,
+  };
   const pin = NPM_PINS[harness];
+  const script = scriptInstaller(harness);
+  let npmCLI: string | undefined;
   if (pin) {
-    const vendorRoot = join(home, ".claudexor", "remote", "vendor");
-    (options.mkdir ?? mkdirSync)(vendorRoot, { recursive: true, mode: 0o700 });
-    const nodePath = resolve(options.nodePath ?? process.execPath);
-    const npmCLI = resolve(
-      dirname(nodePath),
+    npmCLI = resolve(
+      dirname(runnerNodePath),
       "..",
       "lib",
       "node_modules",
@@ -234,79 +218,174 @@ export function runHarnessInstaller(
     if (!(options.exists ?? existsSync)(npmCLI)) {
       return {
         exitCode: 1,
+        code: "embedded_npm_missing",
         refusal:
           `the bundled npm entrypoint is missing at ${npmCLI} ` +
           "(expected inside the pinned Node runtime next to this CLI); nothing was executed",
       };
     }
-    const result = spawn(
-      nodePath,
-      [npmCLI, "install", "--global", "--prefix", vendorRoot, `${pin.npmPackage}@${pin.version}`],
-      { stdio: childStdio, env: environment },
-    );
-    return { exitCode: result.status ?? 1 };
   }
-  // Script vendors (cursor, agy): download the COMPLETE vendor script before
-  // execution (`--fail` rejects HTTP error bodies), read it back and print its
-  // size + sha256 so the watching human sees exactly which bytes are about to
-  // run, and remove the private temp dir on every success/failure path.
-  const script = scriptInstaller(harness);
-  /* c8 ignore next */
-  if (!script) return { exitCode: 1, refusal: `no installer is defined for ${harness}` };
-  const windows = process.platform === "win32";
-  const useWindowsScript = windows && script.windowsUrl !== undefined;
-  const url = useWindowsScript ? script.windowsUrl! : script.url;
-  if (windows && !useWindowsScript) {
-    return {
-      exitCode: 1,
-      refusal: `${harness} publishes no Windows installer; install it yourself and re-run \`claudexor doctor\``,
-    };
-  }
-  const temporaryDirectory = mkdtempSync(join(tmpdir(), `claudexor-${harness}-install-`));
-  const installerPath = join(temporaryDirectory, useWindowsScript ? "install.ps1" : "install.sh");
+  const proofRuntime = { runnerNodePath, platform, resolutionSource, environment, spawn };
+  // The remote target runs in a PTY the operator is watching and keeps the
+  // historical exit-code contract. Only the unattended local target has to
+  // prove what it installed.
+  const proofRequired = target === "local";
+  const proveInstalled = (): HarnessProofResult =>
+    pin
+      ? proveInstalledNpm(
+          {
+            vendorRoot: TARGET_LAYOUTS[target].root(home),
+            npmPackage: pin.npmPackage,
+            binaryNames: pin.binaryNames,
+            expectedVersion: pin.version,
+          },
+          proofRuntime,
+        )
+      : /* c8 ignore next -- every non-npm harness has a script row */
+        proveInstalledScriptVendor(script?.binaryName ?? harness, proofRuntime);
+
+  let lease: HarnessInstallLease | undefined;
   try {
-    const downloaded = spawn(
-      "curl",
-      // `url`, never `script.url`: on Windows the disclosure names the
-      // vendor's PowerShell installer, and the bytes fetched MUST be the bytes
-      // disclosed — both reviewers of the sprint triad caught the divergence.
-      ["--fail", "--silent", "--show-error", "--location", url, "--output", installerPath],
-      { stdio: childStdio, env: environment },
-    );
-    if (downloaded.status !== 0) {
-      return {
-        exitCode: downloaded.status ?? 1,
-        refusal: `the download of ${url} failed (curl exit ${downloaded.status ?? "unknown"}); nothing was executed`,
-      };
+    if (options.lock !== false) {
+      try {
+        lease = acquireHarnessInstallLease(
+          home,
+          options.lockTimeoutMs ?? HARNESS_INSTALL_LOCK_TIMEOUT_MS,
+        );
+      } catch (error) {
+        const code =
+          typeof (error as { code?: unknown }).code === "string"
+            ? String((error as { code: string }).code)
+            : "install_lock_failed";
+        return {
+          exitCode: 1,
+          code,
+          refusal: `${error instanceof Error ? error.message : String(error)}; nothing was executed`,
+        };
+      }
     }
-    let payload: Buffer;
-    try {
-      payload = readFileSync(installerPath);
-    } catch {
+
+    if (pin && npmCLI) {
+      const vendorRoot = TARGET_LAYOUTS[target].root(home);
+      const alreadyInstalled = proofRequired ? proveInstalled() : null;
+      if (alreadyInstalled?.ok) {
+        note(`${harness} ${pin.version} is already installed at ${vendorRoot}; nothing to change`);
+        return { exitCode: 0, ...alreadyInstalled.proof };
+      }
+      (options.mkdir ?? mkdirSync)(vendorRoot, { recursive: true, mode: 0o700 });
+      const result = spawn(
+        runnerNodePath,
+        [npmCLI, "install", "--global", "--prefix", vendorRoot, `${pin.npmPackage}@${pin.version}`],
+        { stdio: childStdio, env: environment },
+      );
+      if (result.status !== 0) return { exitCode: result.status ?? 1 };
+      if (!proofRequired) return { exitCode: 0 };
+      const installed = proveInstalled();
+      return installed.ok
+        ? { exitCode: 0, ...installed.proof }
+        : verificationFailure(harness, installed.reason);
+    }
+
+    // Script vendors (cursor, agy): download the COMPLETE vendor script before
+    // execution (`--fail` rejects HTTP error bodies), read it back and record
+    // its size + sha256 so the receipt names exactly which bytes ran. Remote
+    // execution stays human-observed; local `--yes` is explicitly authorized
+    // unattended execution. The private temp dir is removed on every path.
+    /* c8 ignore next */
+    if (!script)
       return {
         exitCode: 1,
-        refusal: "the downloaded installer script could not be read back; nothing was executed",
+        code: "no_installer",
+        refusal: `no installer is defined for ${harness}`,
+      };
+    const alreadyInstalled = proofRequired ? proveInstalled() : null;
+    if (alreadyInstalled?.ok) {
+      note(
+        `${harness} is already installed at ${alreadyInstalled.proof.installedBinary}; nothing to change`,
+      );
+      return { exitCode: 0, ...alreadyInstalled.proof };
+    }
+    const windows = platform === "win32";
+    const useWindowsScript = windows && script.windowsUrl !== undefined;
+    const url = useWindowsScript ? script.windowsUrl! : script.url;
+    if (windows && !useWindowsScript) {
+      return {
+        exitCode: 1,
+        code: "unsupported_platform",
+        refusal: `${harness} publishes no Windows installer; install it yourself and re-run \`claudexor doctor\``,
       };
     }
-    note(
-      `${harness} installer downloaded: ${payload.length} bytes, ` +
-        `sha256 ${createHash("sha256").update(payload).digest("hex")}`,
-    );
-    const runner: [string, string[]] = useWindowsScript
-      ? ["powershell", ["-ExecutionPolicy", "Bypass", "-File", installerPath]]
-      : ["/bin/sh", [installerPath]];
-    note(`running: ${runner[0]} ${runner[1].join(" ")}`);
-    const executed = spawn(runner[0], runner[1], { stdio: childStdio, env: environment });
-    return { exitCode: executed.status ?? 1 };
+    const temporaryDirectory = mkdtempSync(join(tmpdir(), `claudexor-${harness}-install-`));
+    const installerPath = join(temporaryDirectory, useWindowsScript ? "install.ps1" : "install.sh");
+    try {
+      const downloaded = spawn(
+        "curl",
+        // `url`, never `script.url`: on Windows the disclosure names the
+        // vendor's PowerShell installer, and the bytes fetched MUST be the bytes
+        // disclosed — both reviewers of the sprint triad caught the divergence.
+        ["--fail", "--silent", "--show-error", "--location", url, "--output", installerPath],
+        { stdio: childStdio, env: environment },
+      );
+      if (downloaded.status !== 0) {
+        return {
+          exitCode: downloaded.status ?? 1,
+          code: "installer_download_failed",
+          refusal: `the download of ${url} failed (curl exit ${downloaded.status ?? "unknown"}); nothing was executed`,
+        };
+      }
+      let payload: Buffer;
+      try {
+        payload = readFileSync(installerPath);
+      } catch {
+        return {
+          exitCode: 1,
+          code: "installer_read_failed",
+          refusal: "the downloaded installer script could not be read back; nothing was executed",
+        };
+      }
+      if (payload.length === 0) {
+        return {
+          exitCode: 1,
+          code: "installer_empty",
+          refusal: "the downloaded installer script is empty; nothing was executed",
+        };
+      }
+      const installerSha256 = createHash("sha256").update(payload).digest("hex");
+      const installerByteLength = payload.length;
+      note(
+        `${harness} installer downloaded: ${installerByteLength} bytes, sha256 ${installerSha256}`,
+      );
+      const runner: [string, string[]] = useWindowsScript
+        ? ["powershell", ["-ExecutionPolicy", "Bypass", "-File", installerPath]]
+        : ["/bin/sh", [installerPath]];
+      note(`running: ${runner[0]} ${runner[1].join(" ")}`);
+      const executed = spawn(runner[0], runner[1], { stdio: childStdio, env: environment });
+      if (executed.status !== 0) {
+        return { exitCode: executed.status ?? 1, installerSha256, installerByteLength };
+      }
+      if (!proofRequired) return { exitCode: 0 };
+      const installed = proveInstalled();
+      return installed.ok
+        ? { exitCode: 0, installerSha256, installerByteLength, ...installed.proof }
+        : verificationFailure(harness, installed.reason, { installerSha256, installerByteLength });
+    } finally {
+      rmSync(temporaryDirectory, { recursive: true, force: true });
+    }
   } finally {
-    rmSync(temporaryDirectory, { recursive: true, force: true });
+    lease?.release();
   }
 }
 
-const INSTALL_USAGE = `usage: claudexor harness install <${INSTALLABLE_HARNESSES.join("|")}> [--dry-run] [--yes]`;
+const INSTALL_USAGE = `usage: claudexor harness install <${INSTALLABLE_HARNESSES.join("|")}> [--target <local|remote>] [--dry-run] [--yes]`;
 
 function pinDisclosureLine(disclosure: HarnessInstallerDisclosure): string {
   if (disclosure.pinnedVersion === null) {
+    if (disclosure.verification === "unattended_unpinned") {
+      return (
+        "Version pin:      none — this vendor ships no pinnable artifact; this authorized " +
+        "unattended install records the downloaded script's size and sha256 instead of a human's attention"
+      );
+    }
     return `Version pin:      ${scriptInstaller(disclosure.harness)?.pinNote ?? "none"}`;
   }
   if (disclosure.verification === "deterministic_only") {
@@ -345,20 +424,43 @@ export function harnessInstallCommand(
   args: ParsedArgs,
   json: boolean,
   /** Test seam: forwarded to `runHarnessInstaller` (spawn/home/... fakes). */
-  runnerOptions: Omit<NonNullable<Parameters<typeof runHarnessInstaller>[1]>, "json"> = {},
+  runnerOptions: Omit<
+    NonNullable<Parameters<typeof runHarnessInstaller>[1]>,
+    "json" | "target"
+  > = {},
 ): number {
   const harness = args._[2] ?? "";
   if (!isInstallableHarness(harness) || args._.length !== 3) {
     return printUsageError(json, INSTALL_USAGE);
   }
-  const disclosure = harnessInstallerDisclosure(harness);
+  const targetValue = flagStr(args, "target");
+  if (
+    (Object.prototype.hasOwnProperty.call(args.flags, "target") && targetValue === undefined) ||
+    (targetValue !== undefined && !isHarnessInstallTarget(targetValue))
+  ) {
+    return printUsageError(json, `${INSTALL_USAGE}\nclaudexor: --target must be local or remote`);
+  }
+  const target = targetValue ?? "remote";
+  const disclosure = harnessInstallerDisclosure(harness, target);
+  // Refuse the unsupported layout BEFORE the dry run, so a machine caller's
+  // disclosure never advertises an install this host cannot perform.
+  if (target === "local") {
+    const unsupported = localPlatformRefusal(runnerOptions.platform ?? process.platform);
+    if (unsupported) {
+      if (json)
+        printJson({ ok: false, dryRun: flagBool(args, "dry-run"), ...unsupported, ...disclosure });
+      else print(`Install refused: ${unsupported.refusal}`);
+      return 1;
+    }
+  }
   if (flagBool(args, "dry-run")) {
     if (json) printJson({ ok: true, dryRun: true, ...disclosure });
     else printHumanDisclosure(disclosure);
     return 0;
   }
   // Disclosure precedes EVERY execution path; --json without --yes refuses
-  // (machine callers must have shown the dry-run disclosure themselves).
+  // (machine callers must have shown the dry-run disclosure themselves, and a
+  // local `--yes` IS the authorization their owning Connect action granted).
   if (!json) printHumanDisclosure(disclosure);
   if (!flagBool(args, "yes")) {
     if (json || !process.stdin.isTTY) {
@@ -380,16 +482,18 @@ export function harnessInstallCommand(
       return 1;
     }
   }
-  const result = runHarnessInstaller(harness, { ...runnerOptions, json });
+  let result: HarnessInstallRunResult;
+  try {
+    result = runHarnessInstaller(harness, { ...runnerOptions, json, target });
+  } catch (error) {
+    return renderCliFailure(json, harnessInstallException(error), {
+      messagePrefix: "claudexor harness install:",
+      extras: { dryRun: false, ...disclosure },
+    });
+  }
   const ok = result.exitCode === 0 && result.refusal === undefined;
   if (json) {
-    printJson({
-      ok,
-      dryRun: false,
-      exitCode: result.exitCode,
-      ...(result.refusal === undefined ? {} : { refusal: result.refusal }),
-      ...disclosure,
-    });
+    printJson({ ok, dryRun: false, ...result, ...disclosure });
   } else if (result.refusal !== undefined) {
     print(`Install refused: ${result.refusal}`);
   } else if (!ok) {

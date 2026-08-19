@@ -3,9 +3,11 @@
  * M7 engine-runtime UPDATE unit builder (D22).
  *
  * The update unit shipped by the macOS app's auto-updater is the fixed set of
- * engine-owned resources listed in CLOSURE_ENTRIES. Node, the CLI, UI resources,
- * and icons remain app-owned; a Node bump ships a new DMG. We build the tarball
- * from the already-signed, already-verified app bundle. Internal package links
+ * engine-owned resources listed in CLOSURE_ENTRIES. The reviewed CLI bundle is
+ * included so an embedding host can invoke exact operational commands from the
+ * same signed closure. Node, UI resources, and icons remain app-owned; a Node
+ * bump ships a new DMG. We build the tarball from the already-signed,
+ * already-verified app bundle. Internal package links
  * are materialized as regular files/directories and links escaping their
  * closure entry are refused. The resulting single archive can be unpacked by
  * hosts without POSIX symlink semantics.
@@ -57,6 +59,7 @@ const ROOT = resolve(HERE, "..");
  */
 const CLOSURE_ENTRIES = [
   "claudexord.bundle.cjs",
+  "claudexor.bundle.cjs",
   "setup-login-runner.cjs",
   "browser-mcp-runtime",
   "native",
@@ -276,14 +279,17 @@ function main() {
     if (!existsSync(tarballPath) || statSync(tarballPath).size === 0) {
       throw new Error(`tar produced no runtime closure at ${tarballPath}`);
     }
-    // The stamped bundle inside the PACKED closure MUST carry this exact build
-    // sha, so manifest and `--probe` identity agree byte-for-byte.
-    const bundleText = readFileSync(join(staged, "claudexord.bundle.cjs"), "utf8");
-    if (!bundleText.includes(buildSha)) {
-      throw new Error(
-        `claudexord.bundle.cjs is not stamped with build sha ${buildSha}: run build-app.sh with the ` +
-          "esbuild CLAUDEXOR_BUILD_SHA define (bundled + downloaded closures must be stamped identically)",
-      );
+    // Both executable JS entries inside the PACKED closure MUST carry this
+    // exact build sha. The daemon's probe and the host-invoked CLI therefore
+    // stay bound to the same reviewed publication identity.
+    for (const bundle of ["claudexord.bundle.cjs", "claudexor.bundle.cjs"]) {
+      const bundleText = readFileSync(join(staged, bundle), "utf8");
+      if (!bundleText.includes(buildSha)) {
+        throw new Error(
+          `${bundle} is not stamped with build sha ${buildSha}: run build-app.sh with the ` +
+            "esbuild CLAUDEXOR_BUILD_SHA define (bundled + downloaded closures must be stamped identically)",
+        );
+      }
     }
   } finally {
     rmSync(work, { recursive: true, force: true });

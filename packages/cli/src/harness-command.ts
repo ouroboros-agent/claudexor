@@ -8,9 +8,11 @@ import { buildRegistry } from "./registry.js";
 /**
  * `claudexor harness list [--all]` and `claudexor harness install <id>`.
  * Fakes are test fixtures, not real harnesses; `--all` reveals them. The
- * install verb is the disclosed installer (harness-installer.ts, issue #89):
- * exact npm pins for claude/codex/opencode, the human-verified PTY path for
- * the script vendors (cursor, agy), and nothing executes without disclosure.
+ * install verb is the target-aware disclosed installer (harness-installer.ts,
+ * issue #89): exact npm pins for claude/codex/opencode, and for the script
+ * vendors (cursor, agy) either the human-verified remote PTY path or, under an
+ * explicit `--target local --yes`, receipt-bound unattended execution. Nothing
+ * executes without disclosure and explicit authorization.
  * Flags are verb-owned (registry `subcommandFlags`): `harness list --yes` or
  * `harness install --all` is a loud exit-2 usage error, never a silently
  * ignored flag (INV-021).
