@@ -74,7 +74,9 @@ describe.skipIf(process.platform !== "win32")("Win32 ConPTY helper integration",
     const result = await finished;
     expect(result.code).toBe(0);
     expect(result.stdout).toContain("https://accounts.google.com/o/oauth2/auth");
-    expect(result.stdout).toContain("CODE:one-shot-code-42");
+    const ansiCode = "\u001b[31mCODE:one-shot-code-42\u001b[0m";
+    expect(result.stdout).toContain(ansiCode);
+    expect(result.stdout.slice(result.stdout.indexOf(ansiCode) + ansiCode.length)).toMatch(/^\r\n/);
 
     const rejected = await runHelper(["--exit", "42"]);
     expect(rejected.code).toBe(42);
@@ -201,6 +203,7 @@ async function runDetachedFixture(args: string[]): Promise<CollectedChild> {
 
 async function runHelper(args: string[]): Promise<CollectedChild> {
   const child = spawnHelper(args);
+  child.stdin.end();
   return await collect(child);
 }
 
