@@ -70,6 +70,10 @@ describe.skipIf(process.platform !== "win32")("Win32 ConPTY helper integration",
     });
     const finished = collect(child);
     await withTimeout(inputReady, 5_000, "interactive helper startup");
+    // Production receives the submitted sidecar on its 300 ms poll after the
+    // URL is visible. Preserve that real pacing: inbox ConPTY may emit the
+    // prompt before its input thread is ready on older Windows builds.
+    await new Promise((resolveWait) => setTimeout(resolveWait, 300));
     child.stdin.write(encodeWindowsConptyLine("one-shot-code-42"));
     const result = await finished;
     expect(result.code).toBe(0);
@@ -147,7 +151,12 @@ describe.skipIf(process.platform !== "win32")("Win32 ConPTY helper integration",
 
       try {
         ({ helperPid, vendorPid, descendantPid } = await observedPids);
-        expect(killWindowsProcessTree(workerPid)).toEqual({ status: "killed", pid: workerPid });
+        const termination = killWindowsProcessTree(workerPid);
+        expect(termination.pid).toBe(workerPid);
+        // taskkill can return 255 when one enumerated child exits during the
+        // kill. The exact postcondition below remains the authority; a wholly
+        // absent root before the call would not exercise this path.
+        expect(termination.status).not.toBe("not_found");
         await withTimeout(finished, 10_000, "worker tree taskkill");
         await expectPidsGone([workerPid, helperPid, vendorPid, descendantPid]);
       } finally {
