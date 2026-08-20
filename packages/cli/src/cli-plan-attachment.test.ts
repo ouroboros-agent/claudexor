@@ -82,7 +82,13 @@ describe("plan CLI attachment transport", () => {
 
     const priorArgv = process.argv;
     const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
-    const stdout = vi.spyOn(process.stdout, "write").mockImplementation((() => true) as never);
+    const flushedWrite = (...args: unknown[]) => {
+      const callback = args.find((arg) => typeof arg === "function") as (() => void) | undefined;
+      callback?.();
+      return true;
+    };
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(flushedWrite as never);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(flushedWrite as never);
     process.argv = [
       process.execPath,
       "claudexor",
@@ -98,6 +104,7 @@ describe("plan CLI attachment transport", () => {
     } finally {
       process.argv = priorArgv;
       stdout.mockRestore();
+      stderr.mockRestore();
     }
 
     expect(uploadedBytes).toBe(bytes);
