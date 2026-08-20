@@ -1444,6 +1444,62 @@ describe("DaemonServer", () => {
     expect(() => commandAuthority(dir)).toThrow(/duplicate|multiple terminal events/);
   });
 
+  it("defaults to twelve regular concurrent jobs and queues the thirteenth", async () => {
+    const dir = tempDir("c12");
+    const authority = commandAuthority(dir);
+    const socketPath = join(dir, "daemon.sock");
+    let active = 0;
+    let maxActive = 0;
+    let started = 0;
+    let releaseRuns!: () => void;
+    const runBarrier = new Promise<void>((resolve) => {
+      releaseRuns = resolve;
+    });
+    const server = new DaemonServer({
+      socketPath,
+      token: "token",
+      commands: authority.slot,
+      runner: async (params, ctx) => {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        started += 1;
+        ctx.onRunStart({
+          runId: `run-${(params as { id: number }).id}`,
+          taskId: "task",
+          runDir: dir,
+        });
+        try {
+          await runBarrier;
+          return { lifecycle: "succeeded" };
+        } finally {
+          active -= 1;
+        }
+      },
+    });
+    await server.start();
+    const client = new DaemonClient(socketPath, "token");
+    let jobs: Array<{ id: string }> = [];
+    try {
+      jobs = await Promise.all(
+        Array.from({ length: 13 }, (_, index) => client.enqueue({ id: index + 1 })),
+      );
+      expect(started).toBe(12);
+      await expect(client.health()).resolves.toMatchObject({ active: 12, queue: 1 });
+
+      releaseRuns();
+      const records = await Promise.all(jobs.map((job) => terminal(client, job.id)));
+      expect(records.map((record) => record.state)).toEqual(Array(13).fill("succeeded"));
+      expect(maxActive).toBe(12);
+    } finally {
+      releaseRuns();
+      if (jobs.length > 0) {
+        await Promise.all(jobs.map((job) => terminal(client, job.id))).catch(() => {});
+      }
+      await server.stop();
+      authority.journal.close();
+    }
+  });
+
   it("bounds concurrency and cancellation while exposing run identity", async () => {
     const dir = tempDir("concurrency");
     const authority = commandAuthority(dir);
