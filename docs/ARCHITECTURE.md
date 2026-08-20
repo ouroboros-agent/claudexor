@@ -883,6 +883,10 @@ interactive REPL enters through the managed daemon and `/v2`; the CLI starts it
 when needed and fails loudly if it cannot. There is no second in-process CLI
 run/thread authority. The daemon remains the single scheduler and journal
 writer while the mode pipelines below retain their distinct mutability.
+By default, the daemon admits up to twelve regular jobs globally per data root.
+Same-thread turns remain serialized, while one already validated Delegate child
+may use the scheduler's single overflow lane to prevent a waiting parent from
+deadlocking.
 `claudexor doctor`, `models`, and `auth status` are also thin projections of the
 daemon's typed `/v2/harnesses` and `/v2/harnesses/:id/models` readiness services;
 requested harness filters reach the producer instead of probing unrelated adapters.

@@ -385,7 +385,7 @@ export class DaemonServer {
   }
 
   private get maxConcurrent(): number {
-    return this.opts.maxConcurrent ?? 4;
+    return this.opts.maxConcurrent ?? 12;
   }
 
   /** Daemon-owned cancellation primitive used by RPC and the Delegate drain
