@@ -46,19 +46,30 @@ export function watchLoginInput(
   options: {
     onDelivered?: (value: string) => void;
     windowsConpty?: boolean;
+    ready?: () => boolean;
   } = {},
 ): () => void {
   let delivered = false;
   const timer = setInterval(() => {
-    if (delivered || !manifest.inputPath || !child.stdin || child.stdin.destroyed) return;
+    if (
+      delivered ||
+      options.ready?.() === false ||
+      !manifest.inputPath ||
+      !child.stdin ||
+      child.stdin.destroyed
+    )
+      return;
     const input = readRunnerLoginInput(manifest.inputPath, manifest.jobId, manifest.executionId);
     if (!input) return;
     delivered = true;
     options.onDelivered?.(input.value);
     try {
-      // ConPTY owns the terminal-to-console translation. Feed its input pipe
-      // ordinary terminal bytes: CR is Enter, while plain pipes retain LF.
-      child.stdin.write(options.windowsConpty ? `${input.value}\r` : `${input.value}\n`);
+      // Win32 console applications request ConPTY's win32-input mode before
+      // reading KEY_EVENT_RECORDs. The runner gates this write on that request;
+      // plain pipes and POSIX helpers retain LF.
+      child.stdin.write(
+        options.windowsConpty ? encodeWindowsConptyLine(input.value) : `${input.value}\n`,
+      );
       // The secret has been handed to the vendor; what stays on disk is a
       // non-secret consumed marker, so the one-shot conflict check still
       // refuses a second submission while the code itself stops existing.
@@ -77,6 +88,20 @@ export function watchLoginInput(
   timer.unref?.();
   void now;
   return () => clearInterval(timer);
+}
+
+function encodeWindowsConptyLine(value: string): string {
+  const keyRecord = (virtualKey: number, scanCode: number, codeUnit: number, keyDown: 0 | 1) =>
+    `\u001b[${virtualKey};${scanCode};${codeUnit};${keyDown};0;1_`;
+  let encoded = "";
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    encoded += keyRecord(231, 0, codeUnit, 1);
+    encoded += keyRecord(231, 0, codeUnit, 0);
+  }
+  encoded += keyRecord(13, 28, 13, 1);
+  encoded += keyRecord(13, 28, 13, 0);
+  return encoded;
 }
 
 /** Ring buffer of the last OUTPUT_TAIL_BYTES of tee'd vendor output. */
