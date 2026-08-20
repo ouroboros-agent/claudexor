@@ -136,6 +136,7 @@ const resultsDir = join(batteryRoot, "results");
 const reposDir = join(batteryRoot, "repos");
 const logsDir = join(batteryRoot, "logs");
 const maxUsd = process.env.CLAUDEXOR_BATTERY_MAX_USD ?? "1.50";
+const requiredCodexProfileId = "mironov_codex2";
 const timeoutMs = Number(process.env.CLAUDEXOR_BATTERY_TIMEOUT_MS ?? 20 * 60_000);
 const requestedHarnesses = (process.env.CLAUDEXOR_BATTERY_HARNESSES ?? "codex,claude,cursor,agy")
   .split(",")
@@ -2864,7 +2865,8 @@ async function runNativeAccessSuccessRow(phase, row, profileEntry) {
         access: row.access,
         ...(row.profileId ? { credentialProfileId: row.profileId } : {}),
         ...(model.id ? { model: model.id } : {}),
-        ...(row.browser ? { browser: true, web: "auto" } : { web: "off" }),
+        web: "auto",
+        ...(row.browser ? { browser: true } : {}),
         effort: "low",
         paidBudget: { kind: "finite", maxUsd: Number(maxUsd) },
         maxSeconds: 15 * 60,
@@ -3145,7 +3147,7 @@ async function runNativeAccessPhase() {
   }
   const entries = profiles.json?.profiles ?? [];
   const named = {
-    codex: selectBatteryProfile(entries, "codex", "proton0"),
+    codex: selectBatteryProfile(entries, "codex", requiredCodexProfileId),
     claude: selectBatteryProfile(entries, "claude", "proton2"),
     cursor: selectBatteryProfile(entries, "cursor", "sol-validator"),
     agy: selectBatteryProfile(entries, "agy", "anton-razzhigaev"),
@@ -3158,8 +3160,8 @@ async function runNativeAccessPhase() {
       access: "workspace_write",
     },
     {
-      id: "codex-proton0-ws",
-      name: "Codex proton0 native workspace_write",
+      id: "codex-mironov-codex2-ws",
+      name: "Codex mironov_codex2 native workspace_write",
       harness: "codex",
       access: "workspace_write",
       profileId: named.codex?.profile?.profile_id,
@@ -3244,7 +3246,7 @@ async function runNativeAccessPhase() {
     await runNativeAccessRefusalRow(
       phase,
       {
-        id: "codex-proton0-browser-ws-refusal",
+        id: "codex-mironov-codex2-browser-ws-refusal",
         name: "Codex workspace_write Browser requires explicit Full",
         harness: "codex",
         profileId: codexProfileId,
@@ -3255,8 +3257,8 @@ async function runNativeAccessPhase() {
     await runNativeAccessSuccessRow(
       phase,
       {
-        id: "codex-proton0-browser-full",
-        name: "Codex proton0 trusted Full Browser",
+        id: "codex-mironov-codex2-browser-full",
+        name: "Codex mironov_codex2 trusted Full Browser",
         harness: "codex",
         access: "full",
         profileId: codexProfileId,
@@ -3663,7 +3665,7 @@ function phase0(harnessPhasesRequested = true) {
   const byId = new Map(doctorHarnesses.map((h) => [h.id, h]));
   for (const status of doctorHarnesses) evidence.harnessReports[status.id] = status;
   const named = {
-    codex: selectBatteryProfile(profileEntries, "codex", "proton0"),
+    codex: selectBatteryProfile(profileEntries, "codex", requiredCodexProfileId),
     claude: selectBatteryProfile(profileEntries, "claude", "proton2"),
     cursor: selectBatteryProfile(profileEntries, "cursor", "sol-validator"),
     agy: selectBatteryProfile(profileEntries, "agy", "anton-razzhigaev"),
