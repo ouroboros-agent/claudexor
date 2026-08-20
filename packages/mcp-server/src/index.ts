@@ -13,6 +13,7 @@ import {
 } from "@modelcontextprotocol/server/stdio";
 import {
   effortJsonSchema,
+  AccessProfile,
   ExternalContextPolicy,
   type ModeKind,
   ProviderFamily,
@@ -25,9 +26,8 @@ import { journalRecoveryTools } from "./recovery-tools.js";
 import { formatRunResult, structuredRunResult } from "./run-result-format.js";
 import { assertNoPluginArtifactSkew } from "./plugin-skew.js";
 
-// The SDK wants self-contained schemas, so inline generated internal refs once at load.
+// Inline generated refs once at load; the SDK requires self-contained schemas.
 function inlineJsonSchemaRefs(schema: Record<string, unknown>): Record<string, unknown> {
-  // Resolve full JSON-pointer refs, not just top-level definition names.
   const resolvePointer = (pointer: string): unknown => {
     let node: unknown = schema;
     for (const rawSegment of pointer.split("/").slice(1)) {
@@ -326,7 +326,7 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
       paidBudget: paidBudgetSchema,
       access: {
         type: "string",
-        enum: ["readonly", "workspace_write", "full", "external_sandbox_full", "inherit_native"],
+        enum: AccessProfile.options,
         description: "Optional access profile for this run.",
       },
       ...(runControlApplicability({ mode }).reviewerPanel.applicable

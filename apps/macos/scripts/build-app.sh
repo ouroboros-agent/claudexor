@@ -492,15 +492,17 @@ if [ "${CLAUDEXOR_NO_ENGINE_BUNDLE:-0}" != "1" ]; then
   # previously discovered a forbidden native addon only at release time.
   echo "==> Closure-buildability smoke (build-runtime-closure against the packaged app)"
   CLOSURE_SMOKE_DIR="$(mktemp -d)"
-  CLOSURE_CONPTY_ARGS=()
+  # Keep this array nonempty: macOS Bash 3.2 treats an empty array as unbound under nounset.
+  CLOSURE_BUILD_ARGS=(
+    --app-bundle "$APP"
+    --version "$VERSION"
+    --out "$CLOSURE_SMOKE_DIR"
+  )
   if [ -n "$WIN32_CONPTY_SHA256" ]; then
-    CLOSURE_CONPTY_ARGS+=(--win32-conpty-sha256 "$WIN32_CONPTY_SHA256")
+    CLOSURE_BUILD_ARGS+=(--win32-conpty-sha256 "$WIN32_CONPTY_SHA256")
   fi
   if node "$REPO_ROOT/scripts/build-runtime-closure.mjs" \
-      --app-bundle "$APP" \
-      --version "$VERSION" \
-      --out "$CLOSURE_SMOKE_DIR" \
-      "${CLOSURE_CONPTY_ARGS[@]}" >/dev/null; then
+      "${CLOSURE_BUILD_ARGS[@]}" >/dev/null; then
     echo "    runtime closure builds from the packaged app"
     rm -rf "$CLOSURE_SMOKE_DIR"
   else

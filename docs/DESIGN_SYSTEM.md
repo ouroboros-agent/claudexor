@@ -730,9 +730,10 @@ views in the shared design-system files; screens compose them.
     selection lives in the app), the `HarnessAccountChip` (which
     harness answers in chat + the thread's account, sticky on the thread), the composite **`AccessChip`**
     (the per-turn write scope — Read-only / Workspace write / Full access — as a
-    first-class chip; it reads "Full access · Browser" and DISABLES while the
-    agent browser is armed, because Browser derives Full access and a downgrade
-    would be a contradiction; choosing Full access for an ungranted repo surfaces
+    first-class chip; it appends " · Browser" while the agent browser is armed
+    but remains editable because Browser never widens the selected access;
+    unsupported native harness/access combinations refuse before launch;
+    choosing Full access for an ungranted repo surfaces
     an inline "Full access requires a one-time grant" row with the grant action —
     the grant stays a separate explicit act, never implied by the chip),
     the attachment controls
@@ -754,7 +755,9 @@ views in the shared design-system files; screens compose them.
     through up to three real repair attempts by default (`maxAttempts: 3` on
     the wire), not one provider invocation. Best-of, Until clean, and Create
     use their own controls; the canonical strategy normalizer drops hidden
-    Single attempt values whenever they do not apply;
+    Single attempt values whenever they do not apply. Under Read-only, Until
+    clean and Max attempts disappear, Single sends neither convergence field,
+    and a stale Until-clean selection reconciles to Single before Send;
   - the **harness pool** multiselect chips (the eligible pool Best-of runs — one
     candidate per harness; the primary answers in chat);
   - the **per-harness model rows** (`Models — per harness for THIS turn`): one
@@ -845,13 +848,12 @@ views in the shared design-system files; screens compose them.
 - **Agent-driven browser toggle.** A per-turn `Browser` toggle in the "⋯"
   popover, offered ONLY when a pooled harness reports the `browser_tool`
   capability (hidden otherwise — never a dead switch). It is live egress and is
-  disclosed as such: arming it forces Full access and lifts a `web: off` policy
-  to `auto` — never a silent escalation ("Agent browses in a real window · runs
-  at Full access" renders under the switch). Access and web policy retain their
-  separately selected values underneath this effective override: disarming
-  Browser restores both selections, and only those selected values may PATCH a
-  sticky thread preference. Switching to Ask/Plan or losing the last capable
-  lane disarms Browser before Send. The hover help explains that the
+  disclosed as such, but arming it never rewrites access or web policy. A
+  selected `web: off` remains `off` on the wire with `browser: true`, and the
+  engine's existing typed preflight owns the incompatible-request refusal.
+  Disarming Browser leaves both selections unchanged, and only those selected
+  values may PATCH a sticky thread preference. Switching to Ask/Plan or losing
+  the last capable lane disarms Browser before Send. The hover help explains that the
   agent drives a real HEADED browser window (navigate / screenshot / read) and
   that navigation snapshots are recorded in the run's artifacts. The run
   inspector projects engine receipts for mixed pools: each lane says whether

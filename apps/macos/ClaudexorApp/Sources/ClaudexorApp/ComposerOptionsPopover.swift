@@ -216,9 +216,8 @@ extension ThreadsScreen {
                 }
             }
             // Agent-driven browser (Playwright MCP). Offered only where a pooled
-            // harness can inject it. Arming it forces Full access (codex's sandbox
-            // cancels the navigation otherwise) and is disclosed below — never a
-            // silent escalation.
+            // harness can inject it. Access remains an independent request axis;
+            // the daemon refuses unsupported native harness/access combinations.
             if browserAvailableForCurrentTurn {
                 OptionRow(label: "Browser") {
                     Toggle("", isOn: Binding(
@@ -233,7 +232,7 @@ extension ThreadsScreen {
                     .help("Let the agent drive a real browser (navigate / screenshot / read). Runs headed so you watch the real window live; navigation snapshots are recorded in the run.")
                 }
                 if effectiveBrowserArmed {
-                    Text("Agent browses in a real window · runs at Full access")
+                    Text("Agent browses in a real window · keeps \(effectiveAccess.label)")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .padding(.leading, 2)
@@ -271,7 +270,7 @@ extension ThreadsScreen {
             if composerMode == .agent {
                 OptionSection(title: "Agent strategy") {
                     Picker("", selection: $agentStrategy) {
-                        ForEach(AgentStrategy.allCases) { s in
+                        ForEach(AgentStrategy.composerCases(access: effectiveAccess)) { s in
                             Label(s.label, systemImage: s.glyph).tag(s)
                         }
                     }
@@ -280,7 +279,8 @@ extension ThreadsScreen {
                     .help(agentStrategy.blurb)
                     // Max-attempts caps the single/until-clean repair loop; it is
                     // meaningless for a Best-of race, so it hides there.
-                    if agentStrategy == .single || agentStrategy == .untilClean {
+                    if effectiveAccess != .readOnly
+                        && (agentStrategy == .single || agentStrategy == .untilClean) {
                         HStack(spacing: Theme.Spacing.xl) {
                             Stepper("Max attempts: \(maxAttempts)", value: $maxAttempts, in: 1...8)
                                 .disabled(agentStrategy == .untilClean)

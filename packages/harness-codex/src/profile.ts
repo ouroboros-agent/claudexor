@@ -1,15 +1,7 @@
-/**
- * `external_sandbox_full` = codex stands its own sandbox down; the engine
- * provides its own boundary only on delegated runs (a direct request runs
- * unrestricted). Required, not optional: codex shells out to
- * `/usr/bin/sandbox-exec` and macOS refuses a nested profile, so the two
- * cannot both be applied.
- */
 export const CODEX_ACCESS_PROFILES = [
   "readonly",
   "workspace_write",
   "full",
-  "external_sandbox_full",
   "inherit_native",
 ] as const;
 
@@ -35,7 +27,7 @@ import { BIN, codexNativeEnv, type CodexProfileRuntimeDeps } from "./index.js";
  * native `defaultNativeCodexHome`), read the account's OWN `auth.json` and
  * project ONLY the allowlisted `{email, plan}` claims out of the id_token. The
  * token itself and every other claim never leave this function — nothing is
- * returned or logged but email and plan. Containment is enforced HERE: a home
+ * returned or logged but email and plan. Path ownership is enforced HERE: a home
  * outside the Claudexor-owned root (the ordinary vendor `~/.codex` above all)
  * is refused WITHOUT a read. Missing/malformed/undisclosed → `null`, never a
  * throw — an unreadable store must not break the accounts listing.
@@ -85,7 +77,7 @@ function decodeJwtClaims(jwt: string): Record<string, unknown> | null {
 
 /**
  * True when `dir` resolves inside the Claudexor-owned tree — the SAME
- * confinement the isolation-locator discipline uses, normalized through the
+ * ownership rule the isolation-locator discipline uses, normalized through the
  * deepest existing ancestor so a symlinked root (/var → /private/var) matches.
  */
 function isWithinOwnedRoot(dir: string): boolean {
@@ -100,7 +92,7 @@ function isWithinOwnedRoot(dir: string): boolean {
  * legacy native home IS a legal row locator — the exact dir the startup
  * migration auto-registers as `codex-default` (bytes never move). The
  * operator's ordinary ~/.codex stays outside the owned root and is still
- * refused by the shared confinement check.
+ * refused by the shared locator check.
  */
 export function canonicalCodexProfileHome(locator: string): string {
   return canonicalIsolationLocator(locator, "credential profile CODEX_HOME");

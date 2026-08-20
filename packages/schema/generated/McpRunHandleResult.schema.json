@@ -681,9 +681,11 @@
                         "credential_pool_exhausted",
                         "delegated_home_unavailable",
                         "delegated_confinement_unavailable",
-                        "delegated_evidence_incomplete"
+                        "delegated_evidence_incomplete",
+                        "access_profile_incompatible",
+                        "retired_access_profile"
                       ],
-                      "description": "Machine-readable failure sub-code within a RunFailure category (budget-denial reasons, Delegate child-drain timeout, a spent subscription quota window whose reopen time is RunFailure.resetsAt, an exhausted credential rotation pool whose EARLIEST known member reset is RunFailure.resetsAt, and the delegated-run confinement refusals: missing scoped home, no OS-enforced boundary on this host, incomplete applied evidence)."
+                      "description": "Machine-readable failure sub-code within a RunFailure category, including historical delegated-run failures and active access-profile refusals."
                     },
                     {
                       "type": "null"

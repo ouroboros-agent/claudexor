@@ -9,6 +9,7 @@ import {
   IsoTimestamp,
   ModeKind,
   NonBlankString,
+  RecordedAccessProfile,
   SchemaVersion,
 } from "./primitives.js";
 import { PaidBudget, RoutingGoal } from "./budget.js";
@@ -46,6 +47,16 @@ export const TestCommandGrant = z
   .describe("External exact grant for one versioned project test command.");
 export type TestCommandGrant = z.infer<typeof TestCommandGrant>;
 
+/** Historical counterpart used only inside immutable TaskContracts. */
+export const RecordedTestCommandGrant = TestCommandGrant.extend({
+  accessProfile: RecordedAccessProfile.describe(
+    "Effective access profile recorded by this historical grant.",
+  ),
+})
+  .strict()
+  .describe("Historical exact grant for one versioned project test command.");
+export type RecordedTestCommandGrant = z.infer<typeof RecordedTestCommandGrant>;
+
 export const TestCommand = TestCommandInvocation.extend({
   id: Id.describe("Test command id."),
   required: z.boolean().default(true).describe("Whether this test must pass (vs advisory)."),
@@ -60,6 +71,22 @@ export const TestCommand = TestCommandInvocation.extend({
   .strict()
   .describe("A deterministic typed-argv test command used as a verification gate.");
 export type TestCommand = z.infer<typeof TestCommand>;
+
+/** Historical counterpart used only inside immutable TaskContracts. */
+export const RecordedTestCommand = TestCommandInvocation.extend({
+  id: Id.describe("Test command id."),
+  required: z.boolean().default(true).describe("Whether this test must pass (vs advisory)."),
+  trust_required: z
+    .boolean()
+    .default(false)
+    .describe("Whether this command originated in versioned project config."),
+  trust_grant: RecordedTestCommandGrant.nullable()
+    .default(null)
+    .describe("Matching historical external grant; null when none was found."),
+})
+  .strict()
+  .describe("A deterministic typed-argv test command recorded in an immutable TaskContract.");
+export type RecordedTestCommand = z.infer<typeof RecordedTestCommand>;
 
 export const ProtectedPathApproval = z
   .object({
@@ -246,7 +273,7 @@ export const TaskContract = z
     tests: z
       .object({
         commands: z
-          .array(TestCommand)
+          .array(RecordedTestCommand)
           .default([])
           .describe("Deterministic test commands configured as gates."),
       })
@@ -254,11 +281,11 @@ export const TaskContract = z
       .describe("Deterministic test gates for the run."),
     access: z
       .object({
-        requested_profile: AccessProfile.default("workspace_write").describe(
+        requested_profile: RecordedAccessProfile.default("workspace_write").describe(
           "Access profile the caller requested.",
         ),
         /** Profile actually enforced by the engine (mode/trust clamps applied; never client-supplied). */
-        effective_profile: AccessProfile.default("workspace_write").describe(
+        effective_profile: RecordedAccessProfile.default("workspace_write").describe(
           "Access profile actually enforced by the engine (mode/trust clamps applied; never client-supplied).",
         ),
       })
@@ -326,6 +353,23 @@ export const TaskContract = z
   .describe("Immutable contract describing a single run; built once, hashed, never mutated.");
 export type TaskContract = z.infer<typeof TaskContract>;
 
+/** Writer/runtime contract for a new run. Historical decoding uses TaskContract
+ * below, but no active builder can produce a retired access value. */
+export const ActiveTaskContract = TaskContract.extend({
+  tests: z
+    .object({
+      commands: z.array(TestCommand).default([]),
+    })
+    .default({ commands: [] }),
+  access: z
+    .object({
+      requested_profile: AccessProfile.default("workspace_write"),
+      effective_profile: AccessProfile.default("workspace_write"),
+    })
+    .default({ requested_profile: "workspace_write", effective_profile: "workspace_write" }),
+}).describe("Immutable contract produced for a new active run.");
+export type ActiveTaskContract = z.infer<typeof ActiveTaskContract>;
+
 /**
  * Decoder for the persisted, frozen task artifact used to authorize delivery.
  * Runtime construction keeps TaskContract defaults for callers building a new
@@ -334,7 +378,7 @@ export type TaskContract = z.infer<typeof TaskContract>;
  */
 export const FrozenTaskContractArtifact = z
   .object({
-    tests: z.object({ commands: z.array(TestCommand) }).passthrough(),
+    tests: z.object({ commands: z.array(RecordedTestCommand) }).passthrough(),
   })
   .passthrough()
   .pipe(TaskContract)

@@ -41,8 +41,8 @@ function profile(over: Partial<CredentialProfile> = {}): CredentialProfile {
   } as CredentialProfile;
 }
 
-// Under the vitest CLAUDEXOR_CONFIG_DIR sandbox the override IS the
-// confinement root (round-18 #4).
+// Under the vitest CLAUDEXOR_CONFIG_DIR sandbox the override IS the owned
+// profile-storage root (round-18 #4).
 const ownedTmp = join(process.env.CLAUDEXOR_CONFIG_DIR as string, "test-tmp");
 mkdirSync(ownedTmp, { recursive: true });
 
@@ -68,7 +68,7 @@ describe("canonicalCodexProfileHome (INV-135, unified account model)", () => {
   it("accepts the Claudexor-owned legacy native home — the codex-default row locator", () => {
     // The startup migration auto-registers the legacy default store as the
     // `codex-default` row without moving bytes, so its exact dir is a legal
-    // locator now. The owned-root confinement is unchanged: the operator's
+    // locator now. The owned-storage rule is unchanged: the operator's
     // ordinary ~/.codex stays refused (out-of-tree case above).
     const home = defaultNativeCodexHome();
     expect(canonicalCodexProfileHome(home)).toBe(canonicalCodexProfileHome(`${home}/`));

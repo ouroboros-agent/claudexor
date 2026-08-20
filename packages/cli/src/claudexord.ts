@@ -240,18 +240,25 @@ export async function main(): Promise<void> {
                 request,
                 threadId ? threads.getThread(threadId) : undefined,
                 runConfig.project.constraints.protected_paths,
+                runConfig.trust.access_default,
               ),
           });
         }
-        const { executionRoot, inPlace, projectGitInitialization } =
-          await resolveThreadExecutionWorkspace({
-            threadId,
-            repoRoot,
-            mode,
-            requestedInPlace: p.execution.isolation === "live",
-            protectedPaths: runConfig.project.constraints.protected_paths,
-            threads,
-          });
+        const {
+          executionRoot: threadExecutionRoot,
+          inPlace,
+          projectGitInitialization,
+        } = await resolveThreadExecutionWorkspace({
+          threadId,
+          repoRoot,
+          mode,
+          access: p.access,
+          accessDefault: runConfig.trust.access_default,
+          requestedInPlace: p.execution.isolation === "live",
+          protectedPaths: runConfig.project.constraints.protected_paths,
+          threads,
+        });
+        const executionRoot = p.execution.workspaceRoot ?? threadExecutionRoot;
         const onRunStart = (info: { runId: string; taskId: string; runDir: string }): void => {
           ctx.onRunStart?.(info);
           if (!threadId) return;
@@ -329,6 +336,7 @@ export async function main(): Promise<void> {
             interactionTimeoutMs: runConfig.global.interaction_timeout_ms,
             threadId,
             executionRoot,
+            retryOf: p.retryOf ?? null,
             projectGitInitialization,
             ...threadRunResumeInputs(threads, threadId, requestedProfileId),
             onSessionObserved: threadId

@@ -39,9 +39,9 @@ export interface CandidateRun {
    * read prose to recover what the thrower already knew. */
   declaredFailure?: DeclaredFailure;
   /** What this attempt's harness process actually ran under (HOME, access,
-   * credential profile, applied OS boundary). Present on the success path AND
-   * on the per-slot failure path: a delegated caller audits the confinement it
-   * asked for instead of trusting that it happened. */
+   * credential profile, and historical/deliberate outer-boundary evidence).
+   * Present on success and per-slot failure so a delegated caller reads the
+   * applied fact instead of inferring it from the request. */
   applied?: AppliedAttemptFacts;
 }
 

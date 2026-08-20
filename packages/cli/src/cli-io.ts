@@ -17,6 +17,20 @@ export function printJsonLine(value: unknown): void {
   process.stdout.write(JSON.stringify(value) + "\n");
 }
 
+export function exitAfterOutputFlush(code: number): void {
+  // JSON projections such as `doctor --all` can exceed a pipe's 64 KiB high-water
+  // mark. A direct process.exit() discards that buffered tail while still reporting
+  // success. Empty writes queue behind every prior write; exit only after both pipes
+  // have drained, while retaining the explicit termination that closes stray handles.
+  let pending = 2;
+  const flushed = () => {
+    pending -= 1;
+    if (pending === 0) process.exit(code);
+  };
+  process.stdout.write("", flushed);
+  process.stderr.write("", flushed);
+}
+
 /**
  * A usage/validation failure (exit 2). The JSON envelope aligns with the D-7
  * projector shape ({ok, exitCode, code, message}) while keeping the legacy

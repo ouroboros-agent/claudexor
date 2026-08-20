@@ -10,6 +10,7 @@ import { dispatchAcpCommand } from "./acp-auth-command.js";
 import { initProjectConfig } from "@claudexor/config";
 import {
   DecisionRecord,
+  AccessProfile,
   EFFORT_HINT_HELP,
   EffortHint,
   ExternalContextPolicy,
@@ -38,6 +39,7 @@ import {
   requiredStringFlagError,
   type ParsedArgs,
 } from "./args.js";
+import { exitAfterOutputFlush } from "./cli-io.js";
 import { print, printJson, printJsonLine, printUsageError, statusGlyph } from "./cli-io.js";
 import { controlProblemError, minIntError, renderCliFailure, usageError } from "./cli-error.js";
 import {
@@ -185,27 +187,14 @@ function resolveInstructions(args: ParsedArgs): string | undefined {
   return inline;
 }
 
-const ACCESS_PROFILES = new Set([
-  "readonly",
-  "workspace_write",
-  "full",
-  "external_sandbox_full",
-  "inherit_native",
-]);
-
 /** Access profile from `--access`. Invalid profiles FAIL LOUDLY (a typo must never silently run with the default write profile). */
-function accessProfile(
-  args: ParsedArgs,
-):
-  "readonly" | "workspace_write" | "full" | "external_sandbox_full" | "inherit_native" | undefined {
+function accessProfile(args: ParsedArgs): AccessProfile | undefined {
   const v = flagStr(args, "access");
   if (v === undefined) return undefined;
-  if (!ACCESS_PROFILES.has(v)) {
-    throw new Error(
-      `invalid --access '${v}' (expected readonly|workspace_write|full|external_sandbox_full|inherit_native)`,
-    );
+  if (!AccessProfile.options.includes(v as AccessProfile)) {
+    throw new Error(`invalid --access '${v}' (expected ${AccessProfile.options.join("|")})`);
   }
-  return v as never;
+  return AccessProfile.parse(v);
 }
 
 function effortHint(args: ParsedArgs): EffortHint | undefined {
@@ -1433,10 +1422,9 @@ async function dispatch(args: ParsedArgs, outputMode: CliOutputMode): Promise<nu
   }
 }
 
-// The ONE top-level result/error projector (D-7, GH #28): any throw from any
-// command path is rendered by renderCliFailure (see cli-error.ts) into exactly
-// one JSON envelope or one stderr line, via the central category->exit-code
-// table. Commands that already print and return a code are unaffected.
+// The ONE top-level result/error projector (D-7, GH #28): render any command throw
+// as one JSON envelope or stderr line via the central category->exit-code table.
+// Commands that already print and return a code are unaffected.
 async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2));
   if (flagBool(args, "version")) {
@@ -1452,7 +1440,7 @@ async function main(): Promise<number> {
 }
 
 main()
-  .then((code) => process.exit(code))
+  .then(exitAfterOutputFlush)
   .catch((err: unknown) => {
     // Last-resort projector: infer the complete mode even if parsing itself threw.
     const json = process.argv.includes("--json");
@@ -1464,5 +1452,5 @@ main()
       : stream
         ? "json-stream"
         : "human";
-    process.exit(renderOutputFailure(outputMode, err));
+    exitAfterOutputFlush(renderOutputFailure(outputMode, err));
   });

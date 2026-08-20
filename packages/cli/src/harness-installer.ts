@@ -3,7 +3,7 @@
  * (issue #89; restored from the PR #82 cut with the security objections
  * fixed). The historical/default `remote` target remains the SSH-host flow;
  * an explicit `local` target installs into the managed toolchain root that
- * local binary resolution and confinement already own.
+ * local harness resolution already owns.
  *
  * Contract:
  * - npm-distributed harnesses (claude/codex/opencode) install ONE exact

@@ -13,7 +13,7 @@ import { ensureDir, projectRuntimeDir } from "@claudexor/util";
  * the in-place write turn's native environment: unlike the disposable
  * `readOnlyHomeEnv`, a lane home is never deleted with the run — only the three
  * lifecycle owners (thread purge, credential-profile deletion, orphan
- * retention GC) remove it. INV-063 confinement: every lane home lives OUTSIDE
+ * retention GC) remove it. INV-063 isolation: every lane home lives OUTSIDE
  * every worktree, under `projectRuntimeDir/lanes/...`.
  */
 

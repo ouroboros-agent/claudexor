@@ -92,8 +92,7 @@ describe("processAttemptUsage", () => {
           {
             isolated: true,
             homeDir: "/scoped",
-            confinement: null,
-            confinementUnavailableReason: null,
+            outerBoundaryUnavailableReason: null,
           },
           "workspace_write",
           "prof-1",

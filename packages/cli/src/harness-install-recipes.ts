@@ -21,8 +21,8 @@ export function isInstallableHarness(value: string): value is InstallableHarness
 }
 
 /** Install destinations. `remote` is the historical issue-#89 SSH-host prefix;
- * `local` is the managed toolchain root this host's own binary resolution and
- * confinement already read, so an install there is immediately runnable. */
+ * `local` is the managed toolchain root this host's harness resolution already
+ * reads, so an install there is immediately runnable. */
 export const HARNESS_INSTALL_TARGETS = ["local", "remote"] as const;
 export type HarnessInstallTarget = (typeof HARNESS_INSTALL_TARGETS)[number];
 

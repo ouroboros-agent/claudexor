@@ -187,8 +187,12 @@ export class WorkspaceManager {
     // THIS turn's net change; a non-git folder falls back to a cpSync baseline.
     if (opts.inPlace) {
       const gitRepo = await isGitRepo(this.repoRoot);
-      const baseSha = gitRepo ? await snapshotTree(this.repoRoot) : null;
-      if (!gitRepo) this.snapshotBaseline(base);
+      // Read-only execution gets a scoped HOME but no write-oriented prep:
+      // no dangling Git snapshot, copied baseline, diff/capture, or later
+      // delivery. The native adapter policy owns the promised read-only mode.
+      const readOnly = opts.accessProfile === "readonly";
+      const baseSha = !readOnly && gitRepo ? await snapshotTree(this.repoRoot) : null;
+      if (!readOnly && !gitRepo) this.snapshotBaseline(base);
       return WorkspaceEnvelopeSchema.parse({
         id: envelopeId,
         task_id: opts.taskId,
@@ -367,6 +371,9 @@ export class WorkspaceManager {
     diff: string;
     binarySecretLike: boolean;
   }> {
+    if (env.policy_profile === "readonly") {
+      return { diff: "", binarySecretLike: false };
+    }
     // In-place: there is no isolated worktree. Capture the candidate tree in a
     // temporary object database so a secret refusal cannot leave its bytes as
     // dangling objects in the user's repository. The exact per-turn base still
@@ -523,10 +530,12 @@ export class WorkspaceManager {
     } catch {
       /* best-effort */
     }
-    try {
-      await worktreePrune(this.repoRoot);
-    } catch {
-      /* best-effort (repo may not be git in in-place mode) */
+    if (!inPlace) {
+      try {
+        await worktreePrune(this.repoRoot);
+      } catch {
+        /* best-effort */
+      }
     }
   }
 

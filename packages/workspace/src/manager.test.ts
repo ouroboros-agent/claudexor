@@ -636,6 +636,33 @@ describe("WorkspaceManager", () => {
     expect(existsSync(join(projectRuntimeDir(dir), "workspaces", "t-ip", "converge"))).toBe(false);
   });
 
+  it("readonly in-place work creates no baseline or Git writes and never captures delivery", async () => {
+    const repo = await initRepo();
+    writeFileSync(join(repo, "dirty.txt"), "pre-existing uncommitted state\n");
+    const indexRel = (await git(repo, ["rev-parse", "--git-path", "index"])).stdout.trim();
+    const indexPath = isAbsolute(indexRel) ? indexRel : resolve(repo, indexRel);
+    const indexBefore = readFileSync(indexPath);
+    const objectsBefore = (await git(repo, ["count-objects", "-v"])).stdout;
+    const headBefore = (await git(repo, ["rev-parse", "HEAD"])).stdout;
+    const mgr = new WorkspaceManager(repo);
+
+    const env = await mgr.create({
+      taskId: "t-readonly",
+      attemptId: "a01",
+      inPlace: true,
+      accessProfile: "readonly",
+    });
+    expect(env.worktree_path).toBe(repo);
+    expect(env.base_sha).toBeNull();
+    expect(await mgr.diff(env)).toBe("");
+    await mgr.dispose(env);
+
+    expect(readFileSync(indexPath).equals(indexBefore)).toBe(true);
+    expect((await git(repo, ["count-objects", "-v"])).stdout).toBe(objectsBefore);
+    expect((await git(repo, ["rev-parse", "HEAD"])).stdout).toBe(headBefore);
+    expect(readFileSync(join(repo, "dirty.txt"), "utf8")).toBe("pre-existing uncommitted state\n");
+  });
+
   it("flags a secret-bearing binary postimage in a non-git in-place directory", async () => {
     const dir = reapMk(join(tmpdir(), "claudexor-inplace-binary-"));
     writeFileSync(join(dir, "README.md"), "plain folder\n");

@@ -65,19 +65,46 @@ import ClaudexorKit
         #expect(options.maxAttempts == 3)
         #expect(composerRepairWire(
             mode: .agent,
+            access: .workspaceWrite,
             requestedAttempts: options.maxAttempts,
             requestedUntilClean: false
         ).attempts == 3)
         #expect(composerRepairWire(
             mode: .bestOfN,
+            access: .workspaceWrite,
             requestedAttempts: options.maxAttempts,
             requestedUntilClean: false
         ).attempts == nil)
         #expect(composerRepairWire(
             mode: .agent,
+            access: .workspaceWrite,
             requestedAttempts: options.maxAttempts,
             requestedUntilClean: true
         ).attempts == nil)
+    }
+
+    @Test func readOnlyAgentDropsConvergenceControlsAndReconcilesUntilClean() {
+        let single = composerRepairWire(
+            mode: .agent,
+            access: .readOnly,
+            requestedAttempts: TurnOptions.singleDefaultAttempts,
+            requestedUntilClean: false)
+        #expect(single == .init(attempts: nil, untilClean: nil))
+
+        let staleUntilClean = composerRepairWire(
+            mode: .agent,
+            access: .readOnly,
+            requestedAttempts: TurnOptions.singleDefaultAttempts,
+            requestedUntilClean: true)
+        #expect(staleUntilClean == .init(attempts: nil, untilClean: nil))
+        #expect(!AgentStrategy.composerCases(access: .readOnly).contains(.untilClean))
+        #expect(AgentStrategy.composerCases(access: .full).contains(.untilClean))
+        #expect(AgentStrategy.untilClean.reconciling(access: .readOnly) == .single)
+        #expect(AgentStrategy.bestOf.reconciling(access: .readOnly) == .bestOf)
+        #expect(composerRunApplicabilityShape(
+            mode: .agent,
+            access: .readOnly,
+            repair: staleUntilClean) == .readOnly)
     }
 
     /// The turn body actually encodes delegate/council when set (D32/D31 fields).

@@ -80,9 +80,7 @@ import {
   type CodexLoginProbe,
 } from "./auth.js";
 
-/** Sandbox mode per access profile; null = native. `external_sandbox_full`
- * stands codex's own sandbox down like `full`; the engine applies its own OS
- * boundary only on delegated runs — requested directly it is unrestricted. */
+/** Native Codex sandbox mode per active access profile; null = native default. */
 function sandboxMode(access: AccessProfile): string | null {
   switch (access) {
     case "readonly":
@@ -90,7 +88,6 @@ function sandboxMode(access: AccessProfile): string | null {
     case "workspace_write":
       return "workspace-write";
     case "full":
-    case "external_sandbox_full":
       return "danger-full-access";
     case "inherit_native":
       return null;

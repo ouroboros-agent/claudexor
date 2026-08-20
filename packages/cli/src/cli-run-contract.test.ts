@@ -117,7 +117,7 @@ describe("run-command pre-daemon machine contract", () => {
     });
   });
 
-  it("inspect exposes a failed run's lifecycle, typed failure, actions, and presentation", () => {
+  it("inspect drains a large failed run projection before exiting", () => {
     const root = mkdtempSync(join(tmpdir(), "claudexor-cli-inspect-terminal-"));
     tempRoots.push(root);
     const project = join(root, "project");
@@ -147,7 +147,10 @@ describe("run-command pre-daemon machine contract", () => {
       nextActions: ["Choose another harness and retry."],
     });
     store.writeYaml(join(paths.finalDir, "failure.yaml"), failure);
-    store.writeText(join(paths.finalDir, "summary.md"), "Provider is unavailable.\n");
+    // Larger than a pipe's 64 KiB high-water mark. The CLI used to call process.exit(0)
+    // immediately after writing this projection, producing truncated but successful JSON.
+    const diagnostic = `Provider is unavailable.\n${"diagnostic context\n".repeat(5_000)}`;
+    store.writeText(join(paths.finalDir, "summary.md"), diagnostic);
     store.writeYaml(
       join(paths.finalDir, "run_facts.yaml"),
       validateRunFactsInvariants({
@@ -185,6 +188,7 @@ describe("run-command pre-daemon machine contract", () => {
     );
     expect(json.status, json.stderr).toBe(0);
     expect(json.stderr).toBe("");
+    expect(Buffer.byteLength(json.stdout, "utf8")).toBeGreaterThan(64 * 1024);
     expect(JSON.parse(json.stdout)).toMatchObject({
       lifecycle: "failed",
       outputReadyState: "diagnostic",
@@ -196,7 +200,7 @@ describe("run-command pre-daemon machine contract", () => {
       primaryOutput: {
         kind: "diagnostic",
         path: "final/summary.md",
-        text: "Provider is unavailable.\n",
+        text: diagnostic,
       },
       runFacts: { outcome: { lifecycle: "failed", reason: "harness_failed" } },
     });

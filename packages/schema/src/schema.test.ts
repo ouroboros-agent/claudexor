@@ -2,12 +2,15 @@ import { describe, expect, it } from "vitest";
 import { EffortHint, mergeEffortLadders } from "./effort.js";
 import * as SetupLoginProtocol from "./setup-login-protocol.js";
 import {
+  AccessProfile,
+  ActiveTaskContract,
   CredentialProfile,
   HARNESS_INACTIVITY_TIMEOUT_DEFAULT_MS,
   ControlCredentialProfilesResponse,
   ControlRunDecisionRequest,
   ControlRunSummary,
   ControlRunStartRequest,
+  RecordedControlRunStartRequest,
   ControlSetupJob,
   ControlSetupJobCreateRequest,
   ControlSetupJobEvent,
@@ -17,6 +20,7 @@ import {
   ControlThreadTurnRequest,
   ConformanceReport,
   FrozenTaskContractArtifact,
+  RecordedAppliedAttemptFacts,
   HarnessManifest,
   HarnessStatusDto,
   HarnessRunSpec,
@@ -116,6 +120,65 @@ describe("TaskContract", () => {
     expect(tc.budget.routing_goal).toBe("auto");
     expect(tc.constraints.protected_path_approvals).toEqual([]);
     expect(tc.convergence.require_tests_pass).toBe(true);
+  });
+
+  it("separates active access from immutable historical decoding, including nested grants", () => {
+    expect(AccessProfile.options).toEqual([
+      "readonly",
+      "workspace_write",
+      "full",
+      "inherit_native",
+    ]);
+    expect(
+      ControlRunStartRequest.safeParse({ prompt: "x", access: "external_sandbox_full" }).success,
+    ).toBe(false);
+    expect(
+      RecordedControlRunStartRequest.parse({ prompt: "x", access: "external_sandbox_full" }).access,
+    ).toBe("external_sandbox_full");
+
+    const historical = {
+      task_id: "t-old",
+      created_at: "2026-06-05T00:00:00Z",
+      repo: { root: "/repo", base_ref: "main" },
+      schema_version: 2,
+      mode: { kind: "agent" },
+      user_intent: { raw: "old run" },
+      access: {
+        requested_profile: "external_sandbox_full",
+        effective_profile: "external_sandbox_full",
+      },
+      tests: {
+        commands: [
+          {
+            id: "gate-1",
+            program: "true",
+            trust_required: true,
+            trust_grant: {
+              projectDigest: "sha256:project",
+              configDigest: "sha256:config",
+              commandDigest: "sha256:command",
+              executablePath: "/usr/bin/true",
+              executableDigest: "sha256:executable",
+              accessProfile: "external_sandbox_full",
+            },
+          },
+        ],
+      },
+    };
+    expect(TaskContract.safeParse(historical).success).toBe(true);
+    expect(ActiveTaskContract.safeParse(historical).success).toBe(false);
+    expect(
+      RecordedAppliedAttemptFacts.parse({
+        harness_home_isolated: true,
+        harness_home_dir: "/scoped",
+        access_applied: "external_sandbox_full",
+        credential_profile_applied: null,
+        confinement_mechanism: "seatbelt",
+        confinement_profile_digest: "sha256:profile",
+        confinement_verified_denied_path: "/denied",
+        confinement_unavailable_reason: null,
+      }).access_applied,
+    ).toBe("external_sandbox_full");
   });
 
   it("requires an explicit gate list only when decoding frozen task authority", () => {

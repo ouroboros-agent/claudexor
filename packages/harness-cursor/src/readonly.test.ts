@@ -115,9 +115,9 @@ async function runCollecting(
   return { events, args: captured };
 }
 
-describe("cursor external_sandbox_full stands its own sandbox down (the engine boundary exists only on delegated runs)", () => {
-  it("maps external_sandbox_full to --force --sandbox disabled --trust, like codex/claude", async () => {
-    const { events, args } = await runCollecting(spec({ access: "external_sandbox_full" }));
+describe("cursor trusted full access", () => {
+  it("maps full to --force --sandbox disabled --trust", async () => {
+    const { events, args } = await runCollecting(spec({ access: "full" }));
     expect(events.some((e) => e.type === "error")).toBe(false);
     expect(args).not.toBeNull();
     const argv = args as unknown as string[];
@@ -126,27 +126,18 @@ describe("cursor external_sandbox_full stands its own sandbox down (the engine b
     const sandboxIdx = argv.indexOf("--sandbox");
     expect(sandboxIdx).toBeGreaterThanOrEqual(0);
     expect(argv[sandboxIdx + 1]).toBe("disabled");
-    // Full access with cursor's sandbox down (engine boundary only on
-    // delegated runs): never Ask mode.
+    // Full access uses the vendor's disabled-sandbox argv and never Ask mode.
     expect(modesOf(argv)).toEqual([]);
   });
 
-  it("still refuses bare full access (no external boundary claimed) without invoking the CLI", async () => {
-    const { events, args } = await runCollecting(spec({ access: "full" }));
-    expect(args).toBeNull();
-    const error = events.find((e) => e.type === "error");
-    expect(error?.error).toContain("not conformance-proven");
-    expect(events.at(-1)?.type).toBe("completed");
-  });
-
-  it("declares external_sandbox_full (and not full) in the manifest", async () => {
+  it("declares ordinary full and no retired access in the manifest", async () => {
     const adapter = createCursorAdapter({
       detectVersion: async () => "cursor-test",
       nativeAuthOk: async () => ({ kind: "authenticated" }),
       cursorApiKey: () => null,
     });
     const manifest = await adapter.discover();
-    expect(manifest.access_profiles_supported).toContain("external_sandbox_full");
-    expect(manifest.access_profiles_supported).not.toContain("full");
+    expect(manifest.access_profiles_supported).toContain("full");
+    expect(manifest.access_profiles_supported).not.toContain("external_sandbox_full");
   });
 });

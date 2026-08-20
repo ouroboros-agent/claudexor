@@ -10,6 +10,10 @@ import { isAbsolute } from "node:path";
 import {
   ControlQueuedRunInfo,
   ControlRunStartRequest,
+  RecordedControlRunStartRequest,
+  RETIRED_EXTERNAL_SANDBOX_FULL,
+  runAccessStrategyViolation,
+  runExecutionWorkspaceViolation,
   runStartStrategyViolations,
 } from "@claudexor/schema";
 import { assertNoInlineSecretValues, noProjectRepoRoot } from "@claudexor/util";
@@ -41,6 +45,36 @@ export function normalizeExistingProjectRoot(requestedRoot: string): string {
   });
 }
 
+function executionWorkspaceError(message: string, code: string): Error {
+  return Object.assign(new Error(message), {
+    status: 400,
+    code,
+    retryable: false,
+    requiredActions: [
+      "Provide execution.workspaceRoot as an absolute existing directory for this delegated live run.",
+    ],
+  });
+}
+
+/** Validate the one-shot execution tree without respelling it. */
+export function normalizeExistingExecutionWorkspace(workspaceRoot: string): string {
+  if (!isAbsolute(workspaceRoot)) {
+    throw executionWorkspaceError(
+      "execution.workspaceRoot must be an absolute path",
+      "execution_workspace_invalid",
+    );
+  }
+  try {
+    if (statSync(workspaceRoot).isDirectory()) return workspaceRoot;
+  } catch {
+    // Project and execution roots intentionally share existence semantics.
+  }
+  throw executionWorkspaceError(
+    `execution.workspaceRoot does not exist or is not a directory: ${workspaceRoot}`,
+    "execution_workspace_invalid",
+  );
+}
+
 export function normalizeRunStart(parsed: ControlRunStartRequest): ControlRunStartRequest {
   const mode = parsed.mode ?? "agent";
   // Empty chat is never a silent no-op (Bible): reject a blank prompt at the
@@ -55,6 +89,19 @@ export function normalizeRunStart(parsed: ControlRunStartRequest): ControlRunSta
   const strategyViolations = runStartStrategyViolations(parsed);
   if (strategyViolations.length > 0) {
     throw Object.assign(new Error(strategyViolations.join("; ")), { status: 400 });
+  }
+  // An explicit readonly request cannot ask the engine to run write-backed
+  // convergence or gate controls. Config-default access is resolved by the
+  // shared preflight; this early branch covers every public ingress before enqueue.
+  const accessStrategyViolation =
+    parsed.access === "readonly" ? runAccessStrategyViolation(parsed, "readonly") : null;
+  if (accessStrategyViolation) {
+    throw Object.assign(new Error(accessStrategyViolation.message), {
+      status: 400,
+      code: accessStrategyViolation.code,
+      retryable: accessStrategyViolation.retryable,
+      requiredActions: [...accessStrategyViolation.requiredActions],
+    });
   }
   // Validate BEFORE enqueue (ARCHITECTURE §5): a contradictory web policy must
   // 400 here, not persist a doomed job for the orchestrator to reject later.
@@ -77,6 +124,34 @@ export function normalizeRunStart(parsed: ControlRunStartRequest): ControlRunSta
       { status: 400 },
     );
   }
+  const workspaceRoot = parsed.execution?.workspaceRoot;
+  const workspaceShapeValid =
+    parsed.scope.kind === "project" &&
+    parsed.execution?.delegated === true &&
+    parsed.execution.isolation === "live" &&
+    mode === "agent";
+  if (workspaceRoot !== undefined && !workspaceShapeValid) {
+    throw executionWorkspaceError(
+      "execution.workspaceRoot is supported only for project-scoped delegated agent runs with execution.isolation='live'",
+      "execution_workspace_invalid",
+    );
+  }
+  const normalizedWorkspaceRoot =
+    workspaceRoot === undefined ? undefined : normalizeExistingExecutionWorkspace(workspaceRoot);
+  // An omitted Agent access profile inherits the project trust default, which
+  // this filesystem-only normalizer does not own. The project-aware preflight
+  // resolves that default and applies the same shared requirement below; only
+  // an explicitly mutating request can be decided at this boundary.
+  const workspaceViolation =
+    parsed.access === undefined ? null : runExecutionWorkspaceViolation(parsed, parsed.access);
+  if (workspaceViolation) {
+    throw Object.assign(new Error(workspaceViolation.message), {
+      status: 400,
+      code: workspaceViolation.code,
+      retryable: workspaceViolation.retryable,
+      requiredActions: [...workspaceViolation.requiredActions],
+    });
+  }
   if (parsed.scope.kind === "project") {
     // Existence is the only filesystem precondition here: a NON-GIT folder is
     // fine — write modes initialize the git boundary themselves (announced via
@@ -85,6 +160,12 @@ export function normalizeRunStart(parsed: ControlRunStartRequest): ControlRunSta
     const repoRoot = normalizeExistingProjectRoot(parsed.scope.root);
     return {
       ...parsed,
+      execution: {
+        ...parsed.execution,
+        ...(normalizedWorkspaceRoot === undefined
+          ? {}
+          : { workspaceRoot: normalizedWorkspaceRoot }),
+      },
       scope: {
         kind: "project",
         root: repoRoot,
@@ -112,6 +193,41 @@ export function normalizeRunStartRequest(raw: unknown): ControlRunStartRequest {
   return normalizeRunStart(ControlRunStartRequest.parse(raw ?? {}));
 }
 
+/** Reconstruct the request projection used by the pre-retirement command
+ * writer without applying current admission or filesystem checks. This exists
+ * only so an exact idempotency replay can recover an already-accepted handle;
+ * it is never passed to enqueue. */
+function recordedRunStartReplayProjection(
+  parsed: RecordedControlRunStartRequest,
+): RecordedControlRunStartRequest {
+  if (parsed.scope.kind !== "project") return parsed;
+  return {
+    ...parsed,
+    scope: {
+      kind: "project",
+      root: parsed.scope.root.trim(),
+      context: parsed.scope.context ?? "auto",
+      ephemeral: parsed.scope.ephemeral,
+    },
+  };
+}
+
+function retiredAccessProfileError(): Error {
+  return Object.assign(
+    new Error(
+      "external_sandbox_full is retired; choose workspace_write, or explicitly trust the repository and choose full",
+    ),
+    {
+      status: 409,
+      code: "retired_access_profile",
+      retryable: false,
+      requiredActions: [
+        "Choose workspace_write, or explicitly trust the repository and choose full.",
+      ],
+    },
+  );
+}
+
 export interface RunCreateRouteContext {
   daemon: DaemonFacadeClient;
   readBody(req: IncomingMessage): Promise<unknown>;
@@ -125,24 +241,38 @@ export interface RunCreateRouteContext {
 /**
  * Preserve a concurrently accepted idempotent command when mutable preflight
  * fails after the first durable lookup missed it. The second lookup is a
- * single race-closing probe, not polling; if it still misses (or cannot be
- * read), the original preflight error remains the response authority.
+ * single race-closing probe, not polling. Only a successful miss preserves
+ * the preflight refusal; an unreadable durable index leaves custody unknown
+ * and asks the caller to replay the same idempotency key.
  */
 export async function findAcceptedAroundPreflight<T>(
   findAccepted: () => Promise<T | null | undefined>,
   preflight: () => Promise<void>,
 ): Promise<T | null> {
-  const prior = await findAccepted();
+  const lookup = async (): Promise<T | null | undefined> => {
+    try {
+      return await findAccepted();
+    } catch {
+      throw Object.assign(
+        new Error(
+          "idempotency status is temporarily unavailable; retry the same operation with the same Idempotency-Key",
+        ),
+        {
+          status: 503,
+          code: "idempotency_status_unavailable",
+          retryable: true,
+          requiredActions: ["Retry the same operation with the same Idempotency-Key."],
+        },
+      );
+    }
+  };
+  const prior = await lookup();
   if (prior) return prior;
   try {
     await preflight();
   } catch (preflightError) {
-    try {
-      const raced = await findAccepted();
-      if (raced) return raced;
-    } catch {
-      // Preserve the causal preflight refusal when the race-closing probe itself fails.
-    }
+    const raced = await lookup();
+    if (raced) return raced;
     throw preflightError;
   }
   return null;
@@ -207,28 +337,36 @@ export async function handleRunCreate(
   res: ServerResponse,
 ): Promise<void> {
   let idempotencyKey: string;
-  let params: ControlRunStartRequest;
+  let recorded: RecordedControlRunStartRequest;
   try {
     idempotencyKey = requiredIdempotencyKey(req);
     const body = await ctx.readBody(req);
     assertNoInlineSecretValues(body);
-    params = normalizeRunStart(ControlRunStartRequest.parse(body));
+    recorded = recordedRunStartReplayProjection(RecordedControlRunStartRequest.parse(body));
   } catch (error) {
     return ctx.requestError(res, error);
   }
-  // Replay precedes every mutable capability/resource preflight. Once the
-  // daemon durably accepted this exact key+request, a later Git, account, or
-  // resource-state change must not replace its original handle with a new
-  // admission result.
+  let params: ControlRunStartRequest | undefined;
+  // Replay precedes active-schema retirement, filesystem validation, and
+  // mutable capability/resource preflight. Once an older daemon durably
+  // accepted this exact key+historical request, an upgrade must return that
+  // handle instead of abandoning an outcome whose original POST was unknown.
+  // The second probe closes the race where acceptance lands while current
+  // admission is refusing the request. A miss on both probes is the only
+  // authority to emit the retired-profile refusal.
   try {
     const prior = await findAcceptedAroundPreflight(
       () =>
-        ctx.daemon.findAccepted?.(params, {
+        ctx.daemon.findAccepted?.(recorded, {
           idempotencyKey,
           clientId: "control-api",
-          idempotencyRequest: params,
+          idempotencyRequest: recorded,
         }) ?? Promise.resolve(null),
       async () => {
+        if (recorded.access === RETIRED_EXTERNAL_SANDBOX_FULL) {
+          throw retiredAccessProfileError();
+        }
+        params = normalizeRunStart(ControlRunStartRequest.parse(recorded));
         await ctx.validateResources?.(params.attachments ?? []);
         await ctx.preflightRunRequirements?.(params);
       },
@@ -236,6 +374,14 @@ export async function handleRunCreate(
     if (prior) return ctx.respondToAcceptedJob(res, prior.id);
   } catch (error) {
     return ctx.requestError(res, error);
+  }
+  if (!params) {
+    return ctx.requestError(
+      res,
+      Object.assign(new Error("run-start admission did not produce an active request"), {
+        status: 500,
+      }),
+    );
   }
   if (params.threadId) {
     return ctx.json(res, 400, {

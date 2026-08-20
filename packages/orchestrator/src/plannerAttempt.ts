@@ -10,10 +10,10 @@ import {
 import type { EventLog } from "@claudexor/event-log";
 import type {
   ExternalContextPolicy,
+  ActiveTaskContract,
   HarnessEvent,
   HarnessRunSpec,
   Intent,
-  TaskContract,
 } from "@claudexor/schema";
 import { appendLine, redactSecrets, safeInvoke } from "@claudexor/util";
 import {
@@ -63,7 +63,7 @@ export interface PlannerAttemptOutcome {
 /** Inputs shared by solo fallback, Council drafts, and the Council merge. */
 export interface PlannerAttemptArgs {
   input: RunInput;
-  contract: TaskContract;
+  contract: ActiveTaskContract;
   taskId: string;
   runId: string;
   log: EventLog;

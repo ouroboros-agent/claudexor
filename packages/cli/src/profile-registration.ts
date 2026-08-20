@@ -17,7 +17,7 @@ import { buildRegistry } from "./registry.js";
  * The ONE owner of config-dir credential-profile registration (INV-135),
  * shared by `claudexor profiles add` and POST /v2/credential-profiles: a
  * locked, schema-validated global-config write (duplicate ids refused by the
- * registry schema), with the login dir created under the engine's confinement
+ * registry schema), with the login dir created under the engine-owned state
  * root. Never a raw YAML append — that can duplicate the top-level key and
  * brick the config.
  */

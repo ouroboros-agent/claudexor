@@ -2,7 +2,7 @@ import { z } from "zod/v3";
 import { AuthSourceKind, AuthSourceReadiness, CredentialRoute } from "./auth.js";
 import { CredentialProfile } from "./credential-profile.js";
 import { ToolRef } from "./tool-ref.js";
-import { HarnessConfinement, IsolationCapabilities } from "./harness-confinement.js";
+import { IsolationCapabilities } from "./harness-confinement.js";
 import {
   AccessProfile,
   AuthPreference,
@@ -653,13 +653,6 @@ export const HarnessRunSpec = z
     raw_context_packet: RawContextPacket.nullable()
       .optional()
       .describe("Hash-bound context packet supplied only to git-patch-envelope producers."),
-    /** The APPLIED OS boundary this process starts inside; null = none (every
-     * ordinary run). Consumed by the shared CLI run loop, never by adapters. */
-    confinement: HarnessConfinement.nullable()
-      .default(null)
-      .describe(
-        "OS-enforced filesystem boundary the harness process starts inside; null = none. Applied by the shared CLI run loop, not by adapters.",
-      ),
     extra: z
       .record(z.string(), z.unknown())
       .default({})

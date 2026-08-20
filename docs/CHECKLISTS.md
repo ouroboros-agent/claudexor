@@ -28,7 +28,7 @@ Use this before committing documentation changes.
   packet names, local absolute paths, raw planning prompts, transcript-style
   review verdicts, and token-like values.
 
-## Design Discipline (locked owner directives)
+## Design Discipline (locked operator directives)
 
 These are LOCKED rules for all future work. Do not re-litigate them.
 
@@ -38,7 +38,12 @@ These are LOCKED rules for all future work. Do not re-litigate them.
   hardcoded enums-in-logic, so new values / harnesses / modes work without
   re-patching. Reference example: the effort-ladder normalizer — adapters declare
   their `effort_levels`, a shared normalizer clamps to them, and no per-level value
-  is hardcoded in logic.
+  is hardcoded in logic. Generalization is earned, not automatic: before adding
+  a restriction, name the demonstrated marginal danger, affected common path,
+  and why existing trust, review, custody, and rollback controls are insufficient.
+  If a restriction touches a supported path, its acceptance proof includes a
+  positive production-shaped E2E of the promised capability, not only a denial
+  or policy-shape assertion; capability loss blocks the restriction.
 - **Staged-field rule.** A schema field ships only WITH a real producer AND a real
   consumer in the SAME change; otherwise it is deleted, never left as a dead or
   fake knob. This is exactly what `pnpm knip` plus the docs-truth gate enforce.
@@ -284,8 +289,18 @@ pnpm test
   contract of the unified account model — a PRE-migration (v3.5) fixture may
   undergo exactly ONE receipt-backed startup migration (the auto-registered
   `<harness>-default` rows plus the migration phase file, nothing else), and
-  the SECOND and every later start must leave `config.yaml` byte-identical;
-  an already-migrated config must stay byte-identical from the first start —
+  the row/locator/backup receipt and ordered backup chain must match (the first
+  backup byte-identical to the pre-start config, later backups containing only
+  preceding appended rows at the same private mode); the SECOND
+  and every later start must leave both `config.yaml` and
+  `migration/accounts-unified.json` byte- and mode-identical; an
+  already-migrated fixture must leave both identical from the first start —
+  prove the native-access matrix with stable project identity separate from
+  each delegated execution workspace, real edit plus test completion, exact
+  requested/effective access, requested/observed model, named-profile native
+  state, deliberate no-outer-boundary evidence, and no `sandbox-exec`; require
+  OpenCode `workspace_write` to refuse before spawn and record unavailable
+  OpenCode Full as a typed conditional omission rather than PASS/SKIP —
   prove every durable route interval in every Codex and
   Claude task attempt stayed on a disclosed native session, and report
   `FAIL=0 ENV=0 SKIP=0`. A scratch or partial run is diagnostic evidence, not
@@ -325,7 +340,7 @@ pnpm test
   engine closure + unsigned runtime manifest, the four remote SSH runtime
   archives, the unsigned remote manifest, and the remote SBOM), verifying every
   promoted asset in ONE early provenance loop before any use; only the two
-  owner-signed manifests (`runtime_manifest_b64` and
+  operator-signed manifests (`runtime_manifest_b64` and
   `remote_runtime_manifest_b64`, sealed offline via `pnpm sign:runtime-manifest`
   / `pnpm sign:remote-runtime-manifest`). The required `candidate_run_id`
   selects the candidate workflow run whose exact artifacts are promoted; only
@@ -435,7 +450,7 @@ pnpm test
 - Treat every reviewer finding and proposed patch as a hypothesis. Before
   accepting it, reproduce the behavior, identify the root cause and canonical
   owner/SSOT, search sibling surfaces and other instances of the same failure
-  class, and check the governing invariant or owner criterion. Repair the class
+  class, and check the governing invariant or operator-approved criterion. Repair the class
   only when multiple surfaces or a broken SSOT boundary prove it; otherwise
   prefer the smallest local correction. Investigate over believe; generalize
   over overfit; meta over patch.
@@ -516,7 +531,7 @@ pnpm test
   `reviewer.completed`, `reviewer.timed_out`, `reviewer.failed`) so a concurrent
   panel is diagnosable and does not look like a hang.
 
-### Release review protocol (v6, owner-locked — INV-125/INV-139)
+### Release review protocol (v6, operator-locked — INV-125/INV-139)
 
 This is the ONLY release review protocol. History for context: the 2.1.0
 release ran 18 wave rounds without converging (~40% of findings re-surfaced
@@ -524,17 +539,17 @@ earlier "accepted" fixes; ~26% of the release diff was authored by the loop
 itself). This protocol bounds the loop mechanically while preserving the full
 repository context that small review packets lost.
 
-> **Owner amendment 2026-08-06 (panel/transport).** By explicit owner decision
+> **Operator amendment 2026-08-06 (panel/transport).** By explicit operator decision
 > («не надо вообще codex использовать… Используй своих субагентов, ты же
 > можешь у себя разные модели вызывать так как ты cursor»), the formal
 > reviewer pair executes as **Cursor operator subagents**, not as native
 > Claude Code/Cursor CLI runs through Claudexor: slot `fable` = one slug from
-> the owner-approved tier set {`claude-fable-5-thinking-max`,
+> the operator-approved tier set {`claude-fable-5-thinking-max`,
 > `claude-fable-5-thinking-medium`, `claude-fable-5-thinking-high`} with the
 > full context, slot `sol` = one
 > slug from {`gpt-5.6-sol-xhigh`, `gpt-5.6-sol-max`, `gpt-5.6-sol-high`,
 > `gpt-5.6-sol-medium`}. The tier sets are an
-> operator decision of 2026-08-06 ~08:29 MSK under the owner authorization of
+> operator decision of 2026-08-06 ~08:29 MSK under the operator authorization of
 > 08:04 MSK («меня удовлетворяют модели fable-5 и gpt-5.6-sol», given after
 > the sol max tier disappeared from the subagent model catalog): two catalog
 > flaps within one hour showed that a hard single-tier pin would block the
@@ -544,11 +559,11 @@ repository context that small review packets lost.
 > after the live subagent catalog exposed only that tier; the 2026-08-10
 > operator addendum likewise admits the same-family `high` Fable tier after
 > the live catalog exposed only that Fable tier — ratified explicitly by the
-> owner the same day (verbatim «согласен с рекоментадцией. Продолжай»,
+> operator the same day (verbatim «согласен с рекоментадцией. Продолжай»,
 > 2026-08-10 ~20:46 MSK, after the constitutional gap was surfaced); the
 > 2026-08-16 operator addendum likewise admits the same-family `high` Sol
 > tier after the live catalog exposed only that Sol tier — ratified
-> explicitly by the owner the same day (quiz answer A, 2026-08-16 ~05:05
+> explicitly by the operator the same day (quiz answer A, 2026-08-16 ~05:05
 > MSK: «допустить тир gpt-5.6-sol-high в Sol-слот»; it sits above the
 > already-approved `medium`, so the assurance floor does not drop); no other
 > family is admitted. Each slot's sealed artifact is its markdown report plus metadata
@@ -557,7 +572,7 @@ repository context that small review packets lost.
 > must genuinely overlap. The slot metadata — model, intervals, verdict,
 > scope — is a set of operator-attested statements: the new transport
 > produces no independent session or event proof of the subagent executions,
-> an accepted property of this owner decision. The signed
+> an accepted property of this operator decision. The signed
 > attestation is schema v6 (`cursor-operator-fable-sol-v1`); it still binds
 > the exact candidate SHA/tree/version, full-gate receipt, sealed evidence
 > manifest/diff/wave, and now both reports' digests and model slugs. Schema
@@ -576,14 +591,14 @@ repository context that small review packets lost.
 
 - **One wave, in parallel, on a frozen candidate SHA**: exactly two formal
   full-context reviewers, executed as Cursor operator subagents per the
-  owner-approved panel (`OWNER_REVIEW_PANEL` in
+  operator-approved panel (`OWNER_REVIEW_PANEL` in
   `scripts/lib/release-review-contract.mjs`): slot `fable` = one slug from
   {`claude-fable-5-thinking-max`, `claude-fable-5-thinking-medium`,
   `claude-fable-5-thinking-high`}, slot
   `sol` = one slug from {`gpt-5.6-sol-xhigh`, `gpt-5.6-sol-max`,
   `gpt-5.6-sol-high`, `gpt-5.6-sol-medium`}. Each
   reviewer receives the complete Git-visible candidate repository, complete
-  diff, the same sealed evidence, owner dialogue/decisions, and tests, and may
+  diff, the same sealed evidence, operator dialogue/decisions, and tests, and may
   use live internet access where source verification is useful. No substitute
   model, API-key fallback, packet split, or extra critic can fill either
   slot; a slug outside a slot's tier set refuses fail-closed.
@@ -593,10 +608,10 @@ repository context that small review packets lost.
   `DECLINED_FINDINGS.md` (previously rejected findings with reasons), and
   `BLOCKER_FILTER.md` (the blocker contract below) — present from wave 1.
 - **Blocker contract (INV-139)**: a blocking finding must cite a violated
-  invariant or owner-accepted criterion, carry reproducible evidence, and
+  invariant or operator-approved criterion, carry reproducible evidence, and
   be reachable in the default configuration. Reachability caps severity at
   WARN otherwise. Reviewer `proposed_fix` is advisory. A finding that
-  re-litigates a recorded owner decision is out-of-scope by construction —
+  re-litigates a recorded operator decision is out-of-scope by construction —
   ledgered, never fixed.
 - **One adjudication → one batched fix commit.** Only findings passing the
   blocker contract earn fixes; everything else becomes a `docs/FEATURES.md`
@@ -611,7 +626,7 @@ repository context that small review packets lost.
   blocker on unchanged code without new evidence is invalid.
 - **Stop.** New proven blockers after confirmation get a fix + targeted
   re-check of exactly those findings. Anything beyond that requires an
-  explicit owner decision — the protocol never self-extends.
+  explicit operator decision — the protocol never self-extends.
 - **Ship rule**: confirmation pass + every open finding at WARN-or-below
   (each with its FEATURES/BACKLOG/DECLINED row) is releasable. A perfectly
   clean board is not required.
@@ -620,7 +635,7 @@ repository context that small review packets lost.
   the two executions must genuinely overlap in wall time; the two reports
   must be byte-distinct. Models, intervals, verdicts, and scope are
   operator-attested statements — this transport produces no independent
-  session or event proof (an accepted property of the owner decision above).
+  session or event proof (an accepted property of the operator decision above).
   An empty or instant execution is an infrastructure failure. Frozen slots
   have no internal transient retry; an operator retry uses fresh artifacts
   and a fresh review wave on the same still-clean SHA. A failed required

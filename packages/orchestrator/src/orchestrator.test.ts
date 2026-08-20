@@ -113,6 +113,24 @@ async function initRepo(): Promise<string> {
   return repo;
 }
 
+/** Authorize an explicitly requested Full fixture without touching real trust state. */
+function grantFullAccess(repo: string): void {
+  const configDir = process.env.CLAUDEXOR_CONFIG_DIR;
+  if (!configDir) throw new Error("test requires a scoped CLAUDEXOR_CONFIG_DIR");
+  mkdirSync(join(configDir, "trust"), { recursive: true });
+  writeFileSync(join(configDir, "trust", `${repoHash(repo)}.yaml`), "allow_full_access: true\n");
+}
+
+function setAccessDefault(repo: string, access: AccessProfile): void {
+  const configDir = process.env.CLAUDEXOR_CONFIG_DIR;
+  if (!configDir) throw new Error("test requires a scoped CLAUDEXOR_CONFIG_DIR");
+  mkdirSync(join(configDir, "trust"), { recursive: true });
+  writeFileSync(
+    join(configDir, "trust", `${repoHash(repo)}.yaml`),
+    `access_default: ${access}\nallow_full_access: false\n`,
+  );
+}
+
 function treeContainsBytes(root: string, needle: string): boolean {
   for (const entry of readdirSync(root, { withFileTypes: true })) {
     const path = join(root, entry.name);
@@ -337,7 +355,7 @@ function diffImplementer(
         // Implement-only: it must NOT also qualify as a reviewer (else it would
         // review its own candidate and crowd out a real cross-family reviewer).
         capabilities: { implement: true, browser_tool: browserTool },
-        access_profiles_supported: ["workspace_write", "external_sandbox_full"],
+        access_profiles_supported: ["workspace_write", "full"],
       });
     },
     async doctor() {
@@ -10886,7 +10904,7 @@ describe("Orchestrator", () => {
           kind: "local_cli",
           provider_family: "local",
           capabilities: { implement: true, json_schema_output: true },
-          access_profiles_supported: ["workspace_write", "external_sandbox_full"],
+          access_profiles_supported: ["workspace_write", "full"],
         });
       },
       async doctor() {
@@ -10965,7 +10983,7 @@ describe("Orchestrator", () => {
           kind: "local_cli",
           provider_family: "local",
           capabilities: { implement: true, json_schema_output: true },
-          access_profiles_supported: ["workspace_write", "external_sandbox_full"],
+          access_profiles_supported: ["workspace_write", "full"],
         });
       },
       async doctor() {
@@ -11026,7 +11044,7 @@ describe("Orchestrator", () => {
           kind: "local_cli",
           provider_family: "local",
           capabilities: { implement: true, json_schema_output: true },
-          access_profiles_supported: ["workspace_write", "external_sandbox_full"],
+          access_profiles_supported: ["workspace_write", "full"],
         });
       },
       async doctor() {
@@ -11224,7 +11242,7 @@ describe("Orchestrator", () => {
           kind: "local_cli",
           provider_family: "local",
           capabilities: { implement: true, known_models: ["model-x"] },
-          access_profiles_supported: ["workspace_write", "external_sandbox_full"],
+          access_profiles_supported: ["workspace_write", "full"],
         });
       },
       async *run(spec) {
@@ -11271,7 +11289,7 @@ describe("Orchestrator", () => {
             implement: true,
             known_models: [{ id: "sub-model", routes: ["local_session"] }],
           },
-          access_profiles_supported: ["workspace_write", "external_sandbox_full"],
+          access_profiles_supported: ["workspace_write", "full"],
         });
       },
     };
@@ -11303,7 +11321,7 @@ describe("Orchestrator", () => {
           kind: "local_cli",
           provider_family: "local",
           capabilities: { implement: true, max_turns: true },
-          access_profiles_supported: ["workspace_write", "external_sandbox_full"],
+          access_profiles_supported: ["workspace_write", "full"],
         });
       },
       async *run(spec) {
@@ -12028,6 +12046,242 @@ describe("Orchestrator v0.8 honesty & streaming", () => {
     const tracked = await runCapture("git", ["-C", dir, "ls-files"]);
     expect(tracked.stdout).toContain("notes.txt");
     expect(tracked.stdout).not.toContain(".claudexor/runs");
+  });
+
+  it("runs delegated readonly agents without Git, bridge, capture, or synthesis prep", async () => {
+    const dir = reapMk(join(tmpdir(), "claudexor-readonly-nongit-"));
+    writeFileSync(join(dir, "notes.txt"), "source stays untouched\n");
+    writeFileSync(join(dir, "AGENTS.md"), "# project instructions\n");
+    let calls = 0;
+    const readonlyAdapter = (id: string): HarnessAdapter => ({
+      ...realLikeAdapter(id),
+      async *run(spec) {
+        calls += 1;
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: spec.session_id, ts };
+        yield { type: "message", session_id: spec.session_id, ts, text: `answer from ${id}` };
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    });
+    const res = await new Orchestrator({
+      registry: new Map([
+        ["reader-a", readonlyAdapter("reader-a")],
+        ["reader-b", readonlyAdapter("reader-b")],
+      ]),
+      reviewers: [],
+    }).run({
+      repoRoot: dir,
+      executionRoot: dir,
+      prompt: "inspect only",
+      mode: "agent",
+      harnesses: ["reader-a", "reader-b"],
+      n: 2,
+      synthesis: "always",
+      access: "readonly",
+      inPlace: true,
+      delegated: true,
+    });
+
+    expect(res.lifecycle).toBe("succeeded");
+    expect(calls).toBe(2);
+    expect(existsSync(join(dir, ".git"))).toBe(false);
+    expect(existsSync(join(dir, "CLAUDE.md"))).toBe(false);
+    expect(readFileSync(join(dir, "notes.txt"), "utf8")).toBe("source stays untouched\n");
+    const events = readRunEvents(res.runDir);
+    expect(events.some((event) => event.type === "project.git.initialized")).toBe(false);
+    expect(events.some((event) => event.type === "project.claude_bridge.created")).toBe(false);
+    expect(events.filter((event) => event.type === "harness.started")).toHaveLength(2);
+    expect(existsSync(join(res.runDir, "final", "answer.md"))).toBe(true);
+    expect(existsSync(join(res.runDir, "final", "summary.md"))).toBe(true);
+    expect(existsSync(join(res.runDir, "final", "patch.diff"))).toBe(false);
+    expect(existsSync(join(res.runDir, "final", "work_product.yaml"))).toBe(false);
+    expect(existsSync(join(res.runDir, "final", "delivery_receipt.yaml"))).toBe(false);
+    expect(events.some((event) => event.type === "work_product.emitted")).toBe(false);
+    expect(events.some((event) => event.type === "work_product.adopted")).toBe(false);
+    for (const attemptId of ["a01", "a02"]) {
+      expect(existsSync(join(res.runDir, "attempts", attemptId, "patch.diff"))).toBe(false);
+      const attempt = new ArtifactStore(dir).readYaml<Record<string, unknown>>(
+        join(res.runDir, "attempts", attemptId, "attempt.yaml"),
+      );
+      expect(attempt).not.toHaveProperty("diffstat");
+    }
+    const synthesis = readFileSync(join(res.runDir, "arbitration", "synthesis.yaml"), "utf8");
+    expect(synthesis).toContain("synthesize: false");
+    expect(synthesis).toContain("readonly access has no write-backed synthesis lifecycle");
+  });
+
+  it("keeps readonly artifact-security failures diagnostic-only", async () => {
+    const dir = reapMk(join(tmpdir(), "claudexor-readonly-artifact-failure-"));
+    const secret = `sk-${"r".repeat(24)}`;
+    writeFileSync(join(dir, "secret.png"), Buffer.concat([Buffer.from([0]), Buffer.from(secret)]));
+    const adapter: HarnessAdapter = {
+      ...realLikeAdapter("reader"),
+      async *run(spec) {
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: spec.session_id, ts };
+        yield {
+          type: "message",
+          session_id: spec.session_id,
+          ts,
+          text: "![secret](secret.png)",
+        };
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    };
+    const res = await new Orchestrator({
+      registry: new Map([[adapter.id, adapter]]),
+      reviewers: [],
+    }).run({
+      repoRoot: dir,
+      executionRoot: dir,
+      prompt: "inspect only",
+      mode: "agent",
+      harnesses: [adapter.id],
+      access: "readonly",
+      inPlace: true,
+      delegated: true,
+    });
+
+    expect(res.lifecycle).toBe("failed");
+    expect(existsSync(join(res.runDir, "final", "patch.diff"))).toBe(false);
+    expect(existsSync(join(res.runDir, "final", "work_product.yaml"))).toBe(false);
+    expect(existsSync(join(res.runDir, "final", "delivery_receipt.yaml"))).toBe(false);
+    expect(existsSync(join(res.runDir, "final", "summary.md"))).toBe(true);
+    expect(existsSync(join(res.runDir, "final", "telemetry.yaml"))).toBe(true);
+    const events = readRunEvents(res.runDir);
+    expect(events.some((event) => event.type === "work_product.emitted")).toBe(false);
+    expect(events.some((event) => event.type === "work_product.adopted")).toBe(false);
+  });
+
+  it("refuses fresh delegated live writes without a caller-owned execution tree", async () => {
+    const dir = reapMk(join(tmpdir(), "claudexor-delegated-workspace-required-"));
+    writeFileSync(join(dir, "source.txt"), "unchanged\n");
+    let harnessCalls = 0;
+    const adapter: HarnessAdapter = {
+      ...realLikeAdapter("writer"),
+      async *run(): AsyncIterable<never> {
+        harnessCalls += 1;
+        throw new Error("missing execution workspace must refuse before spawn");
+      },
+    };
+    const orchestrator = new Orchestrator({
+      registry: new Map([[adapter.id, adapter]]),
+      reviewers: [],
+    });
+
+    await expect(
+      orchestrator.run({
+        repoRoot: dir,
+        prompt: "edit",
+        mode: "agent",
+        harnesses: [adapter.id],
+        access: "workspace_write",
+        inPlace: true,
+        delegated: true,
+      }),
+    ).rejects.toMatchObject({ code: "execution_workspace_required", status: 400 });
+    expect(harnessCalls).toBe(0);
+    expect(existsSync(join(dir, ".git"))).toBe(false);
+    expect(readFileSync(join(dir, "source.txt"), "utf8")).toBe("unchanged\n");
+  });
+
+  it("refuses readonly convergence before Git, run artifacts, or harness work", async () => {
+    const explicitRoot = reapMk(join(tmpdir(), "claudexor-readonly-convergence-explicit-"));
+    const defaultRoot = reapMk(join(tmpdir(), "claudexor-readonly-convergence-default-"));
+    writeFileSync(join(explicitRoot, "source.txt"), "unchanged\n");
+    writeFileSync(join(defaultRoot, "source.txt"), "unchanged\n");
+    setAccessDefault(defaultRoot, "readonly");
+    let harnessCalls = 0;
+    const adapter: HarnessAdapter = {
+      ...realLikeAdapter("impl"),
+      async *run(): AsyncIterable<never> {
+        harnessCalls += 1;
+        throw new Error("readonly convergence must refuse before spawn");
+      },
+    };
+    const orchestrator = new Orchestrator({
+      registry: new Map([[adapter.id, adapter]]),
+      reviewers: [],
+    });
+
+    for (const input of [
+      { repoRoot: explicitRoot, access: "readonly" as const, attempts: 2 },
+      { repoRoot: defaultRoot, untilClean: true },
+      {
+        repoRoot: explicitRoot,
+        access: "readonly" as const,
+        tests: [shellGate("printf ran > gate-ran.txt")],
+      },
+      {
+        repoRoot: defaultRoot,
+        tests: [shellGate("printf ran > gate-ran.txt")],
+      },
+    ]) {
+      await expect(
+        orchestrator.run({
+          ...input,
+          prompt: "repair without write access",
+          mode: "agent",
+          harnesses: [adapter.id],
+          inPlace: true,
+        }),
+      ).rejects.toMatchObject({
+        status: 400,
+        code: "strategy_access_incompatible",
+        retryable: false,
+      });
+    }
+
+    expect(harnessCalls).toBe(0);
+    for (const root of [explicitRoot, defaultRoot]) {
+      expect(existsSync(join(root, ".git"))).toBe(false);
+      expect(existsSync(join(root, "CLAUDE.md"))).toBe(false);
+      expect(existsSync(join(root, "gate-ran.txt"))).toBe(false);
+      expect(readFileSync(join(root, "source.txt"), "utf8")).toBe("unchanged\n");
+    }
+  });
+
+  it("leaves dirty Git metadata byte-stable for a delegated readonly agent", async () => {
+    const repo = await initRepo();
+    writeFileSync(join(repo, "dirty.txt"), "pre-existing user work\n");
+    writeFileSync(join(repo, "AGENTS.md"), "# project instructions\n");
+    const indexPath = join(repo, ".git", "index");
+    const indexBefore = readFileSync(indexPath);
+    const objectsBefore = (await runCapture("git", ["-C", repo, "count-objects", "-v"])).stdout;
+    const headBefore = (await runCapture("git", ["-C", repo, "rev-parse", "HEAD"])).stdout;
+    const reader: HarnessAdapter = {
+      ...realLikeAdapter("reader"),
+      async *run(spec) {
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: spec.session_id, ts };
+        yield { type: "message", session_id: spec.session_id, ts, text: "read-only answer" };
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    };
+
+    const res = await new Orchestrator({
+      registry: new Map([["reader", reader]]),
+      reviewers: [],
+    }).run({
+      repoRoot: repo,
+      executionRoot: repo,
+      prompt: "inspect only",
+      mode: "agent",
+      harnesses: ["reader"],
+      n: 1,
+      access: "readonly",
+      inPlace: true,
+      delegated: true,
+    });
+
+    expect(res.lifecycle).toBe("succeeded");
+    expect(readFileSync(indexPath).equals(indexBefore)).toBe(true);
+    expect((await runCapture("git", ["-C", repo, "count-objects", "-v"])).stdout).toBe(
+      objectsBefore,
+    );
+    expect((await runCapture("git", ["-C", repo, "rev-parse", "HEAD"])).stdout).toBe(headBefore);
+    expect(existsSync(join(repo, "CLAUDE.md"))).toBe(false);
+    expect(readFileSync(join(repo, "dirty.txt"), "utf8")).toBe("pre-existing user work\n");
   });
 
   it("announces project initialization prepared for an isolated read-only turn", async () => {
@@ -13198,6 +13452,7 @@ describe("browser preflight truth (INV-066 / P1-09)", () => {
 
   it("keeps mixed lanes participating and records requested/effective browser asymmetry", async () => {
     const repo = await initRepo();
+    grantFullAccess(repo);
     const seen = new Map<string, unknown>();
     const capable = observeBrowserSpec(diffImplementer("capable", "local", true), (browser) =>
       seen.set("capable", browser),
@@ -13219,7 +13474,7 @@ describe("browser preflight truth (INV-066 / P1-09)", () => {
       mode: "agent",
       harnesses: ["capable", "incapable"],
       n: 2,
-      access: "external_sandbox_full",
+      access: "full",
       browser: true,
       tests: [shellGate("true")],
     });
@@ -13236,6 +13491,7 @@ describe("browser preflight truth (INV-066 / P1-09)", () => {
 
   it("refuses a zero-effective browser pool before invoking a harness", async () => {
     const repo = await initRepo();
+    grantFullAccess(repo);
     let calls = 0;
     const incapable = observeBrowserSpec(diffImplementer("incapable", "local"), () => {
       calls += 1;
@@ -13251,7 +13507,7 @@ describe("browser preflight truth (INV-066 / P1-09)", () => {
       mode: "agent",
       harnesses: ["incapable"],
       n: 1,
-      access: "external_sandbox_full",
+      access: "full",
       browser: true,
     });
 
@@ -13326,7 +13582,7 @@ describe("delegation belt injection (D32)", () => {
             mcp_injection: mcpInjection,
             mcp_injection_requires_full_access: requiresFullAccess,
           },
-          access_profiles_supported: ["workspace_write", "external_sandbox_full"],
+          access_profiles_supported: ["workspace_write", "full"],
         });
       },
       async doctor() {
@@ -13714,6 +13970,7 @@ describe("delegation belt injection (D32)", () => {
 
   it("injects the belt on a full-access-requiring harness WHEN the lane runs at full access", async () => {
     const repo = await initRepo();
+    grantFullAccess(repo);
     let injected: unknown;
     const orch = new Orchestrator({
       registry: new Map([
@@ -13730,7 +13987,7 @@ describe("delegation belt injection (D32)", () => {
       prompt: "do the thing",
       mode: "agent",
       harnesses: ["fullonly"],
-      access: "external_sandbox_full",
+      access: "full",
       delegate: true,
       delegationBelt: belt,
     });
@@ -14370,6 +14627,7 @@ describe("delegation belt injection (D32)", () => {
     "refuses secret-bearing raster output from an $source",
     async (source) => {
       const repo = await initRepo();
+      grantFullAccess(repo);
       if (source === "ignored markdown link") {
         writeFileSync(join(repo, ".gitignore"), "preview.png\n");
         execFileSync("git", ["-C", repo, "add", ".gitignore"]);
@@ -14416,7 +14674,7 @@ describe("delegation belt injection (D32)", () => {
         prompt: "x",
         mode: "agent",
         harnesses: ["deleg"],
-        access: "external_sandbox_full",
+        access: "full",
         browser: true,
       });
 
@@ -14482,6 +14740,7 @@ describe("delegation belt injection (D32)", () => {
     async (state) => {
       const repo = reapMk(join(tmpdir(), `claudexor-raster-${state}-`));
       writeFileSync(join(repo, "README.md"), "# test\n");
+      grantFullAccess(repo);
       let raster: string | null = null;
       const adapter = delegatingAdapter(
         "raster",
@@ -14518,7 +14777,7 @@ describe("delegation belt injection (D32)", () => {
         harnesses: ["raster"],
         attempts: 2,
         inPlace: true,
-        access: "external_sandbox_full",
+        access: "full",
         browser: true,
       });
 

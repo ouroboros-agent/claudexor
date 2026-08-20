@@ -1,4 +1,94 @@
-import type { ModeKind } from "./primitives.js";
+import type { AccessProfile, ModeKind } from "./primitives.js";
+
+/**
+ * Resolve the requested/effective access pair once for every run producer.
+ * Ask and Plan clamp to readonly; Agent inherits the configured default only
+ * when the caller omitted an explicit access profile.
+ */
+export function resolveRunAccess(
+  value: { mode?: ModeKind; access?: AccessProfile },
+  accessDefault: AccessProfile,
+): { requested: AccessProfile; effective: AccessProfile } {
+  const mode = value.mode ?? "agent";
+  const readOnlyMode = mode === "ask" || mode === "plan";
+  const requested = value.access ?? (readOnlyMode ? "readonly" : accessDefault);
+  return {
+    requested,
+    effective: readOnlyMode ? "readonly" : requested,
+  };
+}
+
+export interface RunAccessStrategyViolation {
+  code: "strategy_access_incompatible";
+  message: string;
+  retryable: false;
+  requiredActions: readonly [string];
+}
+
+export interface RunExecutionWorkspaceViolation {
+  code: "execution_workspace_required";
+  message: string;
+  retryable: false;
+  requiredActions: readonly [string];
+}
+
+/**
+ * A fresh delegated live write must name the caller-owned execution tree.
+ * Exact Retry may replay the bounded historical shape whose stable scope root
+ * was itself the frozen execution tree.
+ */
+export function runExecutionWorkspaceViolation(
+  value: {
+    mode?: ModeKind;
+    retryOf?: string | null;
+    execution?: {
+      isolation?: "envelope" | "live";
+      delegated?: boolean;
+      workspaceRoot?: string;
+    };
+  },
+  effectiveAccess: AccessProfile,
+): RunExecutionWorkspaceViolation | null {
+  if (
+    effectiveAccess !== "readonly" &&
+    (value.mode ?? "agent") === "agent" &&
+    value.execution?.delegated === true &&
+    value.execution.isolation === "live" &&
+    value.execution.workspaceRoot === undefined &&
+    !value.retryOf
+  ) {
+    return {
+      code: "execution_workspace_required",
+      message:
+        "execution.workspaceRoot is required for a new delegated live run with mutating access",
+      retryable: false,
+      requiredActions: [
+        "Provide execution.workspaceRoot as an absolute existing directory for this delegated live run.",
+      ],
+    };
+  }
+  return null;
+}
+
+/** Write-backed strategy controls cannot honestly run under readonly access. */
+export function runAccessStrategyViolation(
+  value: { attempts?: number | null; untilClean?: boolean; tests?: readonly unknown[] | null },
+  effectiveAccess: AccessProfile,
+): RunAccessStrategyViolation | null {
+  const convergence =
+    value.untilClean === true || (value.attempts !== undefined && value.attempts !== null);
+  const gates = (value.tests?.length ?? 0) > 0;
+  if (effectiveAccess === "readonly" && (convergence || gates)) {
+    return {
+      code: "strategy_access_incompatible",
+      message:
+        "readonly access cannot use write-backed controls (attempts/untilClean/tests); drop those controls or choose workspace_write/full",
+      retryable: false,
+      requiredActions: ["Drop attempts/untilClean/tests, or choose workspace_write/full access."],
+    };
+  }
+  return null;
+}
 
 export interface RunControlApplicabilityItem {
   applicable: boolean;
@@ -144,20 +234,30 @@ function hasArrayEntries(value: unknown): boolean {
 
 /**
  * Whether this run shape needs a Git-backed workspace before a provider can
- * start. Read-only modes do not unless their durable thread itself lives in a
- * worktree. Agent race/create/single always do; the one existing non-Git write
+ * start. Read-only runs never require Git; an already-materialized durable
+ * thread worktree can be read directly without provisioning it. Agent
+ * race/create/single always do; the one existing non-Git write
  * path is live convergence, whose copy-baseline workspace is explicitly
  * implemented by the engine.
  */
 export function runStartRequiresGit(
   value: {
     mode?: ModeKind;
+    access?: AccessProfile;
     untilClean?: boolean;
     attempts?: number | null;
     execution?: { isolation?: "envelope" | "live" };
   },
-  context: { effectiveWorkspaceRequiresGit?: boolean } = {},
+  context: {
+    effectiveWorkspaceRequiresGit?: boolean;
+    accessDefault?: AccessProfile;
+    effectiveAccess?: AccessProfile;
+  } = {},
 ): boolean {
+  const effectiveAccess =
+    context.effectiveAccess ??
+    resolveRunAccess(value, context.accessDefault ?? "workspace_write").effective;
+  if (effectiveAccess === "readonly") return false;
   // A thread may execute "live" *inside a worktree*: isolated threads and
   // protected-path promotion are resolved by the daemon from durable thread /
   // project state, not from the wire isolation flag. That effective workspace

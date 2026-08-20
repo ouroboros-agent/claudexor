@@ -1,6 +1,5 @@
 /**
- * Thread-turn write routes: POST /threads/:id/turns (create + enqueue) and
- * POST /threads/:id/turns/:turnId/retry (re-enqueue a REFUSED turn).
+ * Thread-turn write routes for create/enqueue and retrying a REFUSED turn.
  *
  * Extracted from daemon-server.ts (INV-124 ratchet). The server passes a thin
  * ctx of bound helpers; these functions own the per-thread serialization and
@@ -23,6 +22,7 @@ import {
 import type { DaemonFacadeClient, DaemonRunRecord } from "./daemon-server.js";
 import { assertLatestThreadTurn, inspectThreadTurnCreateReplay } from "./thread-recovery.js";
 import { chainThreadMutation } from "./thread-mutation.js";
+import { assertActiveThreadAccessOverride } from "./thread-access-migration.js";
 import {
   assertPlanAnswerQuestionsArtifact,
   assertPlanAnswerSubmission,
@@ -259,6 +259,7 @@ export function handleThreadTurnCreate(
         run_ids?: string[];
         workspace?: { mode?: string };
       };
+      assertActiveThreadAccessOverride(thread.access, body["access"]);
       const turns = detail.turns as Array<Record<string, unknown>>;
       let prompt = String(body["prompt"] ?? "");
       let mode = typeof body["mode"] === "string" ? (body["mode"] as string) : thread.mode;

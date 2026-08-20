@@ -119,7 +119,11 @@
                 "delegated": {
                   "type": "boolean",
                   "default": false,
-                  "description": "Marks a run driven by an EXTERNAL orchestrator that owns the workspace, not by the operator at a surface. Such a run is confined to a scoped harness HOME even under isolation='live' (an in-place delegated attempt therefore cannot resume a native vendor session stored under the real HOME). Unrelated to the `delegate` belt flag and to `delegatedFromRunId` (belt-child provenance)."
+                  "description": "Marks a run driven by an EXTERNAL orchestrator that owns the workspace, not by the operator at a surface. Such a run uses a scoped harness HOME even under isolation='live' (an in-place delegated attempt therefore cannot resume a native vendor session stored under the real HOME). Unrelated to the `delegate` belt flag and to `delegatedFromRunId` (belt-child provenance)."
+                },
+                "workspaceRoot": {
+                  "type": "string",
+                  "description": "Absolute existing execution workspace for a project-scoped delegated agent live run. The stable project identity remains scope.root."
                 }
               },
               "additionalProperties": false,
@@ -306,7 +310,6 @@
                 "readonly",
                 "workspace_write",
                 "full",
-                "external_sandbox_full",
                 "inherit_native"
               ],
               "description": "Requested access profile; effective access is derived by the engine and never client-supplied."
@@ -522,6 +525,19 @@
           "additionalProperties": false,
           "description": "Request body for POST /runs: prompt, mode, scope, routing, strategy flags, budget, policies, and thread linkage."
         },
+        "accessChoice": {
+          "type": "object",
+          "properties": {
+            "required": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "required"
+          ],
+          "additionalProperties": false,
+          "description": "Whether Run Again requires an explicit active access choice."
+        },
         "differences": {
           "type": "array",
           "items": {
@@ -552,7 +568,8 @@
       },
       "required": [
         "sourceRunId",
-        "request"
+        "request",
+        "accessChoice"
       ],
       "additionalProperties": false,
       "description": "Editable Run Again draft copied from a prior run with explicit omissions."

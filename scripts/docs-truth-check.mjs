@@ -14,7 +14,7 @@
  *     manifest.
  *  5. macOS debug-route parity (AppModel.swift vs apps/macos/README.md).
  *  6. Deleted-screen guard (chat-first collapse must not silently revert).
- *  7. Retired-contract guard for small, owner-approved phrases whose return
+ *  7. Retired-contract guard for small, operator-approved phrases whose return
  *     would contradict current schema/runtime truth.
  *  8. Dead-symbol check: code-shaped backticked identifiers in public docs
  *     must exist in the source tree (catches NavigationSplitView/glowHi-class
@@ -343,7 +343,7 @@ for (const docPath of ["docs/DESIGN_SYSTEM.md", "docs/ARCHITECTURE.md"]) {
 
 // --------------------------------------------------------------------------
 // 6. Retired contracts: these literal claims each contradicted an executable
-//    owner. Normalize whitespace only so wrapped Markdown cannot evade the
+//    runtime contract. Normalize whitespace only so wrapped Markdown cannot evade the
 //    guard; this is deliberately a small inventory, not prose-regex policy.
 // --------------------------------------------------------------------------
 
@@ -379,6 +379,27 @@ const RETIRED_CONTRACT_CLAIMS = [
   ],
   ["scripts/real-harness-battery.mjs", 'const plansDir = join(detail.runDir, "plans")'],
 ];
+
+// The active access vocabulary is schema-owned. Historical decoders may keep
+// retired literals, but a docs/build regression must never promote one back to
+// active ingress or omit a live value from the canonical architecture map.
+try {
+  const { AccessProfile } = await import("../packages/schema/dist/index.js");
+  const options = AccessProfile.options;
+  if (options.includes("external_sandbox_full")) {
+    failures.push("AccessProfile re-advertises retired external_sandbox_full");
+  }
+  const architecture = readFileSync("docs/ARCHITECTURE.md", "utf8");
+  for (const option of options) {
+    if (!architecture.includes(`\`${option}\``)) {
+      failures.push(`docs/ARCHITECTURE.md omits active access profile '${option}'`);
+    }
+  }
+} catch (error) {
+  failures.push(
+    `cannot verify schema-owned active access vocabulary: ${error instanceof Error ? error.message : String(error)}`,
+  );
+}
 
 for (const [targetPath, claim] of RETIRED_CONTRACT_CLAIMS) {
   const normalized = readFileSync(targetPath, "utf8").replace(/\s+/g, " ");

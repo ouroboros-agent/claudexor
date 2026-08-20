@@ -347,10 +347,10 @@
                               "readonly",
                               "workspace_write",
                               "full",
-                              "external_sandbox_full",
-                              "inherit_native"
+                              "inherit_native",
+                              "external_sandbox_full"
                             ],
-                            "description": "Effective access profile covered by this grant."
+                            "description": "Effective access profile recorded by this historical grant."
                           }
                         },
                         "required": [
@@ -362,13 +362,13 @@
                           "accessProfile"
                         ],
                         "additionalProperties": false,
-                        "description": "External exact grant for one versioned project test command."
+                        "description": "Historical exact grant for one versioned project test command."
                       },
                       {
                         "type": "null"
                       }
                     ],
-                    "description": "Matching external grant; null when none was found.",
+                    "description": "Matching historical external grant; null when none was found.",
                     "default": null
                   }
                 },
@@ -377,7 +377,7 @@
                   "id"
                 ],
                 "additionalProperties": false,
-                "description": "A deterministic typed-argv test command used as a verification gate."
+                "description": "A deterministic typed-argv test command recorded in an immutable TaskContract."
               },
               "default": [],
               "description": "Deterministic test commands configured as gates."
@@ -398,8 +398,8 @@
                 "readonly",
                 "workspace_write",
                 "full",
-                "external_sandbox_full",
-                "inherit_native"
+                "inherit_native",
+                "external_sandbox_full"
               ],
               "description": "Access profile the caller requested.",
               "default": "workspace_write"

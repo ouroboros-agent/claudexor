@@ -205,7 +205,7 @@ export async function profilesCommandWithDeps(
   if (sub === "add") {
     // ONE registration owner shared with POST /v2/credential-profiles
     // (profile-registration.ts): locked global-config write, duplicate ids
-    // refused loudly, login dir created under the confinement root.
+    // refused loudly, login dir created under the engine-owned state root.
     const harness = args._[2];
     const profileId = args._[3];
     if (!harness || !profileId) {

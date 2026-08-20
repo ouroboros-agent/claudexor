@@ -1,6 +1,6 @@
 import { z } from "zod/v3";
 import {
-  AccessProfile,
+  RecordedAccessProfile,
   AuthPreference,
   Id,
   IsoTimestamp,
@@ -115,7 +115,7 @@ export const Thread = z
     /** Sticky write scope for the thread's write turns (D26): a per-turn
      * selection wins; null = the repo's trust access_default. Read-only
      * intents are clamped to readonly by the engine regardless. */
-    access: AccessProfile.nullable()
+    access: RecordedAccessProfile.nullable()
       .default(null)
       .describe(
         "Sticky write scope for write turns; per-turn selection wins, null = the repo trust default.",

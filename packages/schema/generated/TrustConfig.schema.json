@@ -16,7 +16,6 @@
             "readonly",
             "workspace_write",
             "full",
-            "external_sandbox_full",
             "inherit_native"
           ],
           "description": "Default access profile for runs in this repo.",
@@ -92,7 +91,6 @@
                   "readonly",
                   "workspace_write",
                   "full",
-                  "external_sandbox_full",
                   "inherit_native"
                 ],
                 "description": "Effective access profile covered by this grant."

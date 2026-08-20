@@ -9298,6 +9298,129 @@ describe("DaemonControlApiServer", () => {
     );
   });
 
+  it("POST /runs returns an already accepted historical-access handle before retirement validation", async () => {
+    const { daemon, record } = fakeDaemon();
+    const historicalBody = {
+      prompt: "historical pending start",
+      mode: "agent",
+      scope: { kind: "project", root: record.runDir },
+      access: "external_sandbox_full",
+    };
+    let findCalls = 0;
+    let enqueueCalls = 0;
+    const wrapped: DaemonFacadeClient = {
+      ...daemon,
+      async findAccepted(params, options) {
+        findCalls += 1;
+        expect(params).toMatchObject({ access: "external_sandbox_full" });
+        expect(options).toMatchObject({
+          idempotencyKey: "historical-start-accepted",
+          idempotencyRequest: expect.objectContaining({ access: "external_sandbox_full" }),
+        });
+        return record;
+      },
+      async enqueue() {
+        enqueueCalls += 1;
+        throw new Error("an accepted replay must not enqueue");
+      },
+    };
+    await withDaemonServer(wrapped, async (base) => {
+      const response = await apiFetch(`${base}/runs`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "Idempotency-Key": "historical-start-accepted",
+        },
+        body: JSON.stringify(historicalBody),
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ jobId: record.id, runId: record.runId });
+      expect(findCalls).toBe(1);
+      expect(enqueueCalls).toBe(0);
+    });
+  });
+
+  it("POST /runs refuses an absent historical-access replay only after both durable probes miss", async () => {
+    const { daemon, record } = fakeDaemon();
+    let findCalls = 0;
+    let enqueueCalls = 0;
+    const wrapped: DaemonFacadeClient = {
+      ...daemon,
+      async findAccepted(params) {
+        findCalls += 1;
+        expect(params).toMatchObject({ access: "external_sandbox_full" });
+        return null;
+      },
+      async enqueue() {
+        enqueueCalls += 1;
+        throw new Error("a retired access request must not enqueue");
+      },
+    };
+    await withDaemonServer(wrapped, async (base) => {
+      const response = await apiFetch(`${base}/runs`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "Idempotency-Key": "historical-start-absent",
+        },
+        body: JSON.stringify({
+          prompt: "historical pending start",
+          mode: "agent",
+          scope: { kind: "project", root: record.runDir },
+          access: "external_sandbox_full",
+        }),
+      });
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({
+        code: "retired_access_profile",
+        retryable: false,
+      });
+      expect(findCalls).toBe(2);
+      expect(enqueueCalls).toBe(0);
+    });
+  });
+
+  it("POST /runs keeps a historical replay pending when the race-closing lookup is unreadable", async () => {
+    const { daemon, record } = fakeDaemon();
+    let findCalls = 0;
+    let enqueueCalls = 0;
+    const wrapped: DaemonFacadeClient = {
+      ...daemon,
+      async findAccepted(params) {
+        findCalls += 1;
+        expect(params).toMatchObject({ access: "external_sandbox_full" });
+        if (findCalls === 1) return null;
+        throw new Error("durable command index unavailable");
+      },
+      async enqueue() {
+        enqueueCalls += 1;
+        throw new Error("an unknown replay must not enqueue");
+      },
+    };
+    await withDaemonServer(wrapped, async (base) => {
+      const response = await apiFetch(`${base}/runs`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "Idempotency-Key": "historical-start-unknown",
+        },
+        body: JSON.stringify({
+          prompt: "historical pending start",
+          mode: "agent",
+          scope: { kind: "project", root: record.runDir },
+          access: "external_sandbox_full",
+        }),
+      });
+      expect(response.status).toBe(503);
+      expect(await response.json()).toMatchObject({
+        code: "idempotency_status_unavailable",
+        retryable: true,
+      });
+      expect(findCalls).toBe(2);
+      expect(enqueueCalls).toBe(0);
+    });
+  });
+
   it("Exact Retry creates a fresh idempotent command linked to the immutable source request", async () => {
     const { daemon, record } = fakeDaemon();
     let enqueued: Record<string, unknown> | undefined;
@@ -10017,9 +10140,11 @@ describe("DaemonControlApiServer", () => {
       expect(response.status).toBe(200);
       const body = (await response.json()) as {
         request: Record<string, unknown>;
+        accessChoice: { required: boolean };
         differences: Array<{ field: string }>;
       };
       expect(body.request).toMatchObject({ prompt: "hello", mode: "agent" });
+      expect(body.accessChoice.required).toBe(false);
       // The draft must be POSTable as-is: POST /runs 400s every one of these
       // (planRef/threadId included — a surviving planRef would replay the
       // frozen-plan reference past the boundary, INV-081).
@@ -10035,6 +10160,177 @@ describe("DaemonControlApiServer", () => {
         "planRef",
         "threadId",
       ]);
+    });
+  });
+
+  it("refuses Exact Retry of retired access and makes Run Again require an active choice", async () => {
+    const { daemon, record } = fakeDaemon();
+    record.state = "succeeded";
+    record.params = {
+      ...(record.params as Record<string, unknown>),
+      access: "external_sandbox_full",
+    };
+    let findCalls = 0;
+    let enqueueCalls = 0;
+    const wrapped: DaemonFacadeClient = {
+      ...daemon,
+      async findAccepted(params, options) {
+        findCalls += 1;
+        expect(params).toMatchObject({
+          access: "external_sandbox_full",
+          retryOf: "run-d1",
+        });
+        expect(options).toMatchObject({
+          operation: "run.retry",
+          idempotencyRequest: { retryOf: "run-d1" },
+        });
+        return null;
+      },
+      async enqueue() {
+        enqueueCalls += 1;
+        throw new Error("a retired access retry must not enqueue");
+      },
+    };
+    await withDaemonServer(wrapped, async (base) => {
+      const retry = await apiFetch(`${base}/runs/run-d1/retry`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "Idempotency-Key": "retired-retry" },
+        body: "{}",
+      });
+      expect(retry.status).toBe(409);
+      await expect(retry.json()).resolves.toMatchObject({
+        code: "retired_access_profile",
+        retryable: false,
+      });
+
+      const runAgain = await apiFetch(`${base}/runs/run-d1/run-again`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(runAgain.status).toBe(200);
+      const draft = (await runAgain.json()) as {
+        request: Record<string, unknown>;
+        accessChoice: { required: boolean };
+        differences: Array<{ field: string }>;
+      };
+      expect(draft.request).not.toHaveProperty("access");
+      expect(draft.accessChoice).toEqual({ required: true });
+      expect(draft.differences).toContainEqual(
+        expect.objectContaining({ field: "access", change: "omitted" }),
+      );
+      expect(findCalls).toBe(2);
+      expect(enqueueCalls).toBe(0);
+    });
+  });
+
+  it("keeps retired Exact Retry pending when the race-closing lookup is unreadable", async () => {
+    const { daemon, record } = fakeDaemon();
+    record.state = "succeeded";
+    record.params = {
+      ...(record.params as Record<string, unknown>),
+      access: "external_sandbox_full",
+    };
+    let findCalls = 0;
+    let enqueueCalls = 0;
+    const wrapped: DaemonFacadeClient = {
+      ...daemon,
+      async findAccepted(params, options) {
+        findCalls += 1;
+        expect(params).toMatchObject({ access: "external_sandbox_full", retryOf: "run-d1" });
+        expect(options).toMatchObject({
+          idempotencyKey: "retired-retry-unknown",
+          operation: "run.retry",
+          idempotencyRequest: { retryOf: "run-d1" },
+        });
+        if (findCalls === 1) return null;
+        throw new Error("durable command index unavailable");
+      },
+      async enqueue() {
+        enqueueCalls += 1;
+        throw new Error("an unknown replay must not enqueue");
+      },
+    };
+    await withDaemonServer(wrapped, async (base) => {
+      const response = await apiFetch(`${base}/runs/run-d1/retry`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "Idempotency-Key": "retired-retry-unknown",
+        },
+        body: "{}",
+      });
+      expect(response.status).toBe(503);
+      expect(await response.json()).toMatchObject({
+        code: "idempotency_status_unavailable",
+        retryable: true,
+      });
+      expect(findCalls).toBe(2);
+      expect(enqueueCalls).toBe(0);
+    });
+  });
+
+  it("Exact Retry returns an already accepted historical-access handle before retirement validation", async () => {
+    const { daemon, record } = fakeDaemon();
+    record.state = "succeeded";
+    record.params = {
+      ...(record.params as Record<string, unknown>),
+      access: "external_sandbox_full",
+    };
+    const acceptedRetry: DaemonRunRecord = {
+      id: "job-retired-retry-accepted",
+      state: "running",
+      runId: "run-retired-retry-accepted",
+      taskId: "task-retired-retry-accepted",
+      runDir: record.runDir,
+      params: {
+        ...(record.params as Record<string, unknown>),
+        parentRunId: "run-d1",
+        retryOf: "run-d1",
+      },
+    };
+    let findCalls = 0;
+    let enqueueCalls = 0;
+    const wrapped: DaemonFacadeClient = {
+      ...daemon,
+      async findAccepted(params, options) {
+        findCalls += 1;
+        expect(params).toMatchObject({ access: "external_sandbox_full", retryOf: "run-d1" });
+        expect(options).toMatchObject({
+          idempotencyKey: "retired-retry-accepted",
+          operation: "run.retry",
+          idempotencyRequest: { retryOf: "run-d1" },
+        });
+        return acceptedRetry;
+      },
+      async enqueue() {
+        enqueueCalls += 1;
+        throw new Error("an accepted retry replay must not enqueue");
+      },
+      async status(id) {
+        if (id === record.id) return record;
+        if (id === acceptedRetry.id) return acceptedRetry;
+        throw new Error(`missing ${id}`);
+      },
+      async list() {
+        return [record, acceptedRetry];
+      },
+    };
+    await withDaemonServer(wrapped, async (base) => {
+      const response = await apiFetch(`${base}/runs/run-d1/retry`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "Idempotency-Key": "retired-retry-accepted",
+        },
+        body: "{}",
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        retryOf: "run-d1",
+        jobId: acceptedRetry.id,
+        runId: acceptedRetry.runId,
+      });
+      expect(findCalls).toBe(1);
+      expect(enqueueCalls).toBe(0);
     });
   });
 

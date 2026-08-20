@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -81,6 +81,31 @@ describe("findAcceptedAroundPreflight", () => {
       ),
     ).rejects.toBe(preflightError);
   });
+
+  it("keeps custody unknown when the race-closing durable lookup cannot be read", async () => {
+    const preflightError = Object.assign(new Error("retired access"), {
+      status: 409,
+      code: "retired_access_profile",
+    });
+    let probes = 0;
+    await expect(
+      findAcceptedAroundPreflight(
+        async () => {
+          probes += 1;
+          if (probes === 1) return null;
+          throw new Error("durable command index unavailable");
+        },
+        async () => {
+          throw preflightError;
+        },
+      ),
+    ).rejects.toMatchObject({
+      status: 503,
+      code: "idempotency_status_unavailable",
+      retryable: true,
+    });
+    expect(probes).toBe(2);
+  });
 });
 
 describe("ephemeral project roots", () => {
@@ -103,5 +128,144 @@ describe("ephemeral project roots", () => {
       scope: { kind: "project", root },
     });
     expect(ordinary.scope).toEqual({ kind: "project", root, context: "auto", ephemeral: false });
+  });
+});
+
+describe("readonly strategy admission", () => {
+  it.each([
+    { attempts: 2 },
+    { untilClean: true },
+    { tests: [{ program: "sh", args: ["-c", "true"], envAllowlist: [] }] },
+  ])("refuses write-backed controls before enqueue (%o)", (strategy) => {
+    try {
+      normalizeRunStartRequest({
+        prompt: "repair without write access",
+        mode: "agent",
+        access: "readonly",
+        ...strategy,
+      });
+      throw new Error("expected readonly strategy refusal");
+    } catch (error) {
+      expect(error).toMatchObject({
+        status: 400,
+        code: "strategy_access_incompatible",
+        retryable: false,
+        requiredActions: [expect.stringMatching(/workspace_write\/full/)],
+      });
+    }
+  });
+});
+
+describe("delegated execution.workspaceRoot", () => {
+  function pair() {
+    const parent = mkdtempSync(join(tmpdir(), "claudexor-workspace-root-"));
+    roots.push(parent);
+    const project = join(parent, "stable-project");
+    const execution = join(parent, "execution-tree");
+    mkdirSync(project);
+    mkdirSync(execution);
+    return { project, execution };
+  }
+
+  it("preserves stable project identity separately from the execution tree", () => {
+    const { project, execution } = pair();
+    const request = normalizeRunStartRequest({
+      prompt: "edit the private tree",
+      mode: "agent",
+      scope: { kind: "project", root: project },
+      execution: { isolation: "live", delegated: true, workspaceRoot: execution },
+      access: "workspace_write",
+    });
+    expect(request.scope).toMatchObject({ kind: "project", root: project });
+    expect(request.execution.workspaceRoot).toBe(execution);
+  });
+
+  it("requires the field on fresh mutating delegated live runs", () => {
+    const { project } = pair();
+    expect(() =>
+      normalizeRunStartRequest({
+        prompt: "edit",
+        mode: "agent",
+        scope: { kind: "project", root: project },
+        execution: { isolation: "live", delegated: true },
+        access: "workspace_write",
+      }),
+    ).toThrow(/workspaceRoot is required/);
+    expect(
+      normalizeRunStartRequest({
+        prompt: "inspect",
+        mode: "agent",
+        scope: { kind: "project", root: project },
+        execution: { isolation: "live", delegated: true },
+        access: "readonly",
+      }).access,
+    ).toBe("readonly");
+    // Omitted Agent access is project-configured and cannot be guessed by this
+    // filesystem-only normalizer. The project-aware preflight resolves it.
+    expect(
+      normalizeRunStartRequest({
+        prompt: "use the project default",
+        mode: "agent",
+        scope: { kind: "project", root: project },
+        execution: { isolation: "live", delegated: true },
+      }).execution.workspaceRoot,
+    ).toBeUndefined();
+  });
+
+  it("refuses relative, missing, and non-external workspace declarations", () => {
+    const { project } = pair();
+    const base = {
+      prompt: "edit",
+      mode: "agent" as const,
+      scope: { kind: "project" as const, root: project },
+      access: "workspace_write" as const,
+    };
+    expect(() =>
+      normalizeRunStartRequest({
+        ...base,
+        execution: { isolation: "live", delegated: true, workspaceRoot: "relative/tree" },
+      }),
+    ).toThrow(/absolute path/);
+    expect(() =>
+      normalizeRunStartRequest({
+        ...base,
+        execution: {
+          isolation: "live",
+          delegated: true,
+          workspaceRoot: join(project, "missing"),
+        },
+      }),
+    ).toThrow(/does not exist/);
+    expect(() =>
+      normalizeRunStartRequest({
+        ...base,
+        execution: { isolation: "live", delegated: false, workspaceRoot: project },
+      }),
+    ).toThrow(/only for project-scoped delegated agent runs/);
+  });
+
+  it("allows bounded legacy Exact Retry but revalidates a frozen new-shape workspace", () => {
+    const { project, execution } = pair();
+    expect(
+      normalizeRunStartRequest({
+        prompt: "legacy retry",
+        mode: "agent",
+        scope: { kind: "project", root: project },
+        execution: { isolation: "live", delegated: true },
+        access: "workspace_write",
+        retryOf: "run-old",
+      }).execution.workspaceRoot,
+    ).toBeUndefined();
+    rmSync(execution, { recursive: true, force: true });
+    expect(() =>
+      normalizeRunStartRequest({
+        prompt: "new-shape retry",
+        mode: "agent",
+        scope: { kind: "project", root: project },
+        execution: { isolation: "live", delegated: true, workspaceRoot: execution },
+        access: "workspace_write",
+        retryOf: "run-new",
+      }),
+    ).toThrow(/does not exist/);
   });
 });

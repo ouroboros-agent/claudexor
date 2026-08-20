@@ -31,6 +31,19 @@ enum AgentStrategy: String, CaseIterable, Identifiable, Hashable {
         case .create: return "Scaffold a brand-new repo or component."
         }
     }
+
+    /// Read-only Agent turns cannot enter a repair/convergence loop. Keep the
+    /// other Agent shapes available and remove only the incompatible control.
+    static func composerCases(access: AccessProfile) -> [AgentStrategy] {
+        access == .readOnly ? allCases.filter { $0 != .untilClean } : allCases
+    }
+
+    /// Reconcile stored UI state when access narrows while the popover is
+    /// closed. A stale Until-clean selection becomes the honest Single shape;
+    /// every other strategy remains the user's selection.
+    func reconciling(access: AccessProfile) -> AgentStrategy {
+        access == .readOnly && self == .untilClean ? .single : self
+    }
 }
 
 /// The composer's per-turn strategy selection resolved into the wire-shaped
@@ -100,9 +113,13 @@ struct ComposerRepairWire: Equatable {
 
 func composerRepairWire(
     mode: RunMode,
+    access: AccessProfile,
     requestedAttempts: Int?,
     requestedUntilClean: Bool
 ) -> ComposerRepairWire {
+    guard access != .readOnly else {
+        return ComposerRepairWire(attempts: nil, untilClean: nil)
+    }
     let flags = mode.strategyFlags
     let isPlainAgent = mode == .agent
     let untilClean = (isPlainAgent && requestedUntilClean) || flags.untilClean
@@ -111,12 +128,15 @@ func composerRepairWire(
         untilClean: untilClean ? true : nil)
 }
 
-/// Select a server-projected Git cell from the exact repair fields that will
-/// ride the wire. This classifies; it never decides whether Git is required.
+/// Select a server-projected Git cell from the exact access and repair fields
+/// that will ride the wire. This classifies; it never decides whether Git is
+/// required.
 func composerRunApplicabilityShape(
     mode: RunMode,
+    access: AccessProfile,
     repair: ComposerRepairWire
 ) -> RunApplicabilityShape {
+    guard access != .readOnly else { return .readOnly }
     guard mode.apiValue == "agent" else { return .readOnly }
     return repair.untilClean == true || repair.attempts != nil ? .agentConvergence : .agentOther
 }
