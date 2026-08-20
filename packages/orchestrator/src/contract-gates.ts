@@ -22,6 +22,7 @@ export function resolveContractGates(input: {
   operatorCommands: TestCommandInvocation[];
   projectCommands: TestCommandInvocation[];
 }): { commands: GateCommands; autoProtectedPaths: string[] } {
+  if (input.effectiveAccess === "readonly") return { commands: [], autoProtectedPaths: [] };
   const projectDigest = sha256(canonicalProjectRoot(input.repoRoot));
   const configDigest = hashJson(input.config);
   const seen = new Set<string>();

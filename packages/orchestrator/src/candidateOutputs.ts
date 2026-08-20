@@ -358,8 +358,8 @@ export function writeCandidateAttemptArtifacts(input: {
   worktreePath: string;
   artifactRelativeDir: string | null;
   diff: string;
-  /** False for a secret-refused candidate: even an empty placeholder named
-   * patch.diff would falsely imply that an inspectable patch was retained. */
+  /** False when no candidate patch may be retained (readonly or secret-refused):
+   * even an empty patch.diff would falsely imply an inspectable patch exists. */
   persistPatch?: boolean;
   /** False for a secret-refused candidate: no answer-adjacent or artifact-dir
    * media is retained, even when an individual raster is otherwise safe. */
@@ -367,7 +367,8 @@ export function writeCandidateAttemptArtifacts(input: {
   answerText?: string;
   record: Record<string, unknown>;
 }): string[] {
-  if (input.persistPatch !== false) {
+  const persistPatch = input.persistPatch !== false;
+  if (persistPatch) {
     input.store.writeText(join(input.attemptDir, "patch.diff"), input.diff);
   }
   const stats = summarizeDiffPaths(input.diff);
@@ -389,11 +390,15 @@ export function writeCandidateAttemptArtifacts(input: {
         });
   input.store.writeYaml(join(input.attemptDir, "attempt.yaml"), {
     ...input.record,
-    diffstat: {
-      files: stats.paths.length,
-      additions: stats.additions,
-      deletions: stats.deletions,
-    },
+    ...(persistPatch
+      ? {
+          diffstat: {
+            files: stats.paths.length,
+            additions: stats.additions,
+            deletions: stats.deletions,
+          },
+        }
+      : {}),
     produced_files: produced,
   });
   return produced;

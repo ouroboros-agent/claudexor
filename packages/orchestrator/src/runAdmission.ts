@@ -19,6 +19,7 @@ export interface RunAdmissionInput {
   access?: AccessProfile;
   attempts?: number | null;
   untilClean?: boolean;
+  tests?: readonly unknown[] | null;
   inPlace?: boolean;
   delegated?: boolean;
   denyPaths?: string[];

@@ -167,7 +167,7 @@ describe("run request requirements preflight", () => {
     expect(resolvedRoots).toEqual(["/trusted-project", "/trusted-project"]);
   });
 
-  it("refuses readonly convergence and skips Git for ordinary readonly agents", async () => {
+  it("refuses readonly write-backed controls and skips Git", async () => {
     let gitProbes = 0;
     const preflight = createRunRequirementsPreflight(resources, "/no-project", {
       accessDefault: () => "readonly",
@@ -211,6 +211,22 @@ describe("run request requirements preflight", () => {
       retryable: false,
       requiredActions: [expect.stringMatching(/workspace_write\/full/)],
     });
+    for (const access of ["readonly", undefined] as const) {
+      await expect(
+        preflight(
+          ControlRunStartRequest.parse({
+            prompt: "run a write-backed gate",
+            mode: "agent",
+            ...(access === undefined ? {} : { access }),
+            tests: [{ program: "sh", args: ["-c", "true"], envAllowlist: [] }],
+          }),
+        ),
+      ).rejects.toMatchObject({
+        code: "strategy_access_incompatible",
+        status: 400,
+        retryable: false,
+      });
+    }
     await expect(
       preflight(ControlRunStartRequest.parse({ prompt: "inspect", mode: "agent" })),
     ).resolves.toBeUndefined();

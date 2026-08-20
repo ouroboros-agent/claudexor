@@ -2781,7 +2781,7 @@ export class Orchestrator {
           worktreePath: envelope.worktree_path,
           artifactRelativeDir,
           diff,
-          persistPatch: secretDiffRefusal === undefined,
+          persistPatch: secretDiffRefusal === undefined && isMutatingAccess(access),
           persistProducedMedia: secretDiffRefusal === undefined,
           answerText,
           record: {

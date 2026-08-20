@@ -12098,6 +12098,13 @@ describe("Orchestrator v0.8 honesty & streaming", () => {
     expect(existsSync(join(res.runDir, "final", "delivery_receipt.yaml"))).toBe(false);
     expect(events.some((event) => event.type === "work_product.emitted")).toBe(false);
     expect(events.some((event) => event.type === "work_product.adopted")).toBe(false);
+    for (const attemptId of ["a01", "a02"]) {
+      expect(existsSync(join(res.runDir, "attempts", attemptId, "patch.diff"))).toBe(false);
+      const attempt = new ArtifactStore(dir).readYaml<Record<string, unknown>>(
+        join(res.runDir, "attempts", attemptId, "attempt.yaml"),
+      );
+      expect(attempt).not.toHaveProperty("diffstat");
+    }
     const synthesis = readFileSync(join(res.runDir, "arbitration", "synthesis.yaml"), "utf8");
     expect(synthesis).toContain("synthesize: false");
     expect(synthesis).toContain("readonly access has no write-backed synthesis lifecycle");
@@ -12200,6 +12207,15 @@ describe("Orchestrator v0.8 honesty & streaming", () => {
     for (const input of [
       { repoRoot: explicitRoot, access: "readonly" as const, attempts: 2 },
       { repoRoot: defaultRoot, untilClean: true },
+      {
+        repoRoot: explicitRoot,
+        access: "readonly" as const,
+        tests: [shellGate("printf ran > gate-ran.txt")],
+      },
+      {
+        repoRoot: defaultRoot,
+        tests: [shellGate("printf ran > gate-ran.txt")],
+      },
     ]) {
       await expect(
         orchestrator.run({
@@ -12220,6 +12236,7 @@ describe("Orchestrator v0.8 honesty & streaming", () => {
     for (const root of [explicitRoot, defaultRoot]) {
       expect(existsSync(join(root, ".git"))).toBe(false);
       expect(existsSync(join(root, "CLAUDE.md"))).toBe(false);
+      expect(existsSync(join(root, "gate-ran.txt"))).toBe(false);
       expect(readFileSync(join(root, "source.txt"), "utf8")).toBe("unchanged\n");
     }
   });

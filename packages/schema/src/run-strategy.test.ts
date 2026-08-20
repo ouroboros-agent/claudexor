@@ -28,7 +28,7 @@ describe("run access and strategy", () => {
     });
   });
 
-  it("refuses patch convergence only when effective access is readonly", () => {
+  it("refuses write-backed controls only when effective access is readonly", () => {
     expect(runAccessStrategyViolation({ attempts: 3 }, "readonly")).toMatchObject({
       code: "strategy_access_incompatible",
       message: expect.stringMatching(/readonly/),
@@ -39,8 +39,15 @@ describe("run access and strategy", () => {
       message: expect.stringMatching(/readonly/),
       retryable: false,
     });
+    expect(runAccessStrategyViolation({ tests: [{}] }, "readonly")).toMatchObject({
+      code: "strategy_access_incompatible",
+      message: expect.stringMatching(/tests/),
+      retryable: false,
+    });
     expect(runAccessStrategyViolation({}, "readonly")).toBeNull();
+    expect(runAccessStrategyViolation({ tests: [] }, "readonly")).toBeNull();
     expect(runAccessStrategyViolation({ attempts: 3 }, "workspace_write")).toBeNull();
+    expect(runAccessStrategyViolation({ tests: [{}] }, "workspace_write")).toBeNull();
     expect(runAccessStrategyViolation({ untilClean: true }, "full")).toBeNull();
   });
 

@@ -70,21 +70,21 @@ export function runExecutionWorkspaceViolation(
   return null;
 }
 
-/** Patch-convergence controls cannot honestly run under readonly access. */
+/** Write-backed strategy controls cannot honestly run under readonly access. */
 export function runAccessStrategyViolation(
-  value: { attempts?: number | null; untilClean?: boolean },
+  value: { attempts?: number | null; untilClean?: boolean; tests?: readonly unknown[] | null },
   effectiveAccess: AccessProfile,
 ): RunAccessStrategyViolation | null {
-  if (
-    effectiveAccess === "readonly" &&
-    (value.untilClean === true || (value.attempts !== undefined && value.attempts !== null))
-  ) {
+  const convergence =
+    value.untilClean === true || (value.attempts !== undefined && value.attempts !== null);
+  const gates = (value.tests?.length ?? 0) > 0;
+  if (effectiveAccess === "readonly" && (convergence || gates)) {
     return {
       code: "strategy_access_incompatible",
       message:
-        "readonly access cannot use patch-convergence controls (attempts/untilClean); drop those controls or choose workspace_write/full",
+        "readonly access cannot use write-backed controls (attempts/untilClean/tests); drop those controls or choose workspace_write/full",
       retryable: false,
-      requiredActions: ["Drop attempts/untilClean, or choose workspace_write/full access."],
+      requiredActions: ["Drop attempts/untilClean/tests, or choose workspace_write/full access."],
     };
   }
   return null;

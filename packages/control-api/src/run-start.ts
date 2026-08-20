@@ -90,9 +90,9 @@ export function normalizeRunStart(parsed: ControlRunStartRequest): ControlRunSta
   if (strategyViolations.length > 0) {
     throw Object.assign(new Error(strategyViolations.join("; ")), { status: 400 });
   }
-  // An explicit readonly request cannot ask the patch-repair engine to mutate
-  // and converge. Config-default access is resolved by the shared preflight;
-  // this early branch covers every public ingress before enqueue.
+  // An explicit readonly request cannot ask the engine to run write-backed
+  // convergence or gate controls. Config-default access is resolved by the
+  // shared preflight; this early branch covers every public ingress before enqueue.
   const accessStrategyViolation =
     parsed.access === "readonly" ? runAccessStrategyViolation(parsed, "readonly") : null;
   if (accessStrategyViolation) {

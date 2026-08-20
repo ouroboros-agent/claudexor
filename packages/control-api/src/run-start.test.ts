@@ -132,27 +132,28 @@ describe("ephemeral project roots", () => {
 });
 
 describe("readonly strategy admission", () => {
-  it.each([{ attempts: 2 }, { untilClean: true }])(
-    "refuses patch convergence before enqueue (%o)",
-    (strategy) => {
-      try {
-        normalizeRunStartRequest({
-          prompt: "repair without write access",
-          mode: "agent",
-          access: "readonly",
-          ...strategy,
-        });
-        throw new Error("expected readonly strategy refusal");
-      } catch (error) {
-        expect(error).toMatchObject({
-          status: 400,
-          code: "strategy_access_incompatible",
-          retryable: false,
-          requiredActions: [expect.stringMatching(/workspace_write\/full/)],
-        });
-      }
-    },
-  );
+  it.each([
+    { attempts: 2 },
+    { untilClean: true },
+    { tests: [{ program: "sh", args: ["-c", "true"], envAllowlist: [] }] },
+  ])("refuses write-backed controls before enqueue (%o)", (strategy) => {
+    try {
+      normalizeRunStartRequest({
+        prompt: "repair without write access",
+        mode: "agent",
+        access: "readonly",
+        ...strategy,
+      });
+      throw new Error("expected readonly strategy refusal");
+    } catch (error) {
+      expect(error).toMatchObject({
+        status: 400,
+        code: "strategy_access_incompatible",
+        retryable: false,
+        requiredActions: [expect.stringMatching(/workspace_write\/full/)],
+      });
+    }
+  });
 });
 
 describe("delegated execution.workspaceRoot", () => {

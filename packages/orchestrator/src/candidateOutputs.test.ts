@@ -400,5 +400,6 @@ describe("candidate produced-output persistence", () => {
     expect(produced).toEqual([]);
     expect(existsSync(join(attemptDir, "produced"))).toBe(false);
     expect(writes[0]?.["produced_files"]).toEqual([]);
+    expect(writes[0]).not.toHaveProperty("diffstat");
   });
 });
