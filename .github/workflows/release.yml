@@ -1060,9 +1060,9 @@ jobs:
           set -euo pipefail
           package_dir="$RUNNER_TEMP/core-package-smoke"
           mkdir -p "$package_dir"
-          # npm, not pnpm: pnpm pack normalizes modes to 0644 and strips the
-          # helper's owner-executable bit (the very fact this step verifies).
-          (cd packages/core && npm pack --pack-destination "$package_dir")
+          # pnpm pack rewrites workspace: specs but strips exec bits; npm pack
+          # does the reverse. The shared helper does pnpm + source-mode restore.
+          node scripts/lib/pack-with-modes.mjs --package packages/core --destination "$package_dir"
           tarballs=("$package_dir"/*.tgz)
           test "${#tarballs[@]}" -eq 1 && test -f "${tarballs[0]}" || {
             echo "::error::Expected exactly one core npm tarball."

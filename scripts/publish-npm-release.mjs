@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { packWithSourceModes } from "./lib/pack-with-modes.mjs";
 import { pathToFileURL } from "node:url";
 
 const root = resolve(import.meta.dirname, "..");
@@ -213,15 +214,13 @@ function topological(packagesByName) {
 }
 
 function pack(pkg) {
-  const before = new Set(readdirSync(out));
-  // npm, not pnpm: pnpm's tarball writer normalizes file modes to 0644, which
-  // strips the owner-executable bit from dist/native payloads — the Darwin
-  // package verifier then correctly refuses the tarball. npm preserves the
-  // on-disk bit (verified empirically on both tools).
-  run("npm", ["pack", "--pack-destination", out], pkg.directory);
-  const created = readdirSync(out).filter((file) => file.endsWith(".tgz") && !before.has(file));
-  if (created.length !== 1) fail(`expected one tarball for ${pkg.name}, got ${created.join(", ")}`);
-  return join(out, created[0]);
+  // pnpm pack (workspace: specs rewritten) + source-mirrored executable bits —
+  // neither tool alone provides both; see scripts/lib/pack-with-modes.mjs.
+  try {
+    return packWithSourceModes(pkg.directory, out);
+  } catch (error) {
+    fail(`packing ${pkg.name}: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 function view(spec) {
