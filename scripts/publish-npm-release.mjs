@@ -214,7 +214,11 @@ function topological(packagesByName) {
 
 function pack(pkg) {
   const before = new Set(readdirSync(out));
-  run("pnpm", ["pack", "--pack-destination", out], pkg.directory);
+  // npm, not pnpm: pnpm's tarball writer normalizes file modes to 0644, which
+  // strips the owner-executable bit from dist/native payloads — the Darwin
+  // package verifier then correctly refuses the tarball. npm preserves the
+  // on-disk bit (verified empirically on both tools).
+  run("npm", ["pack", "--pack-destination", out], pkg.directory);
   const created = readdirSync(out).filter((file) => file.endsWith(".tgz") && !before.has(file));
   if (created.length !== 1) fail(`expected one tarball for ${pkg.name}, got ${created.join(", ")}`);
   return join(out, created[0]);
