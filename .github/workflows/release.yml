@@ -929,11 +929,13 @@ jobs:
           if ($probe.version -ne $env:VERSION -or $probe.buildSha -ne $env:PREPARED_SHA) {
             throw "assembled closure probe identity mismatch"
           }
-          $home = Join-Path $env:RUNNER_TEMP "windows-candidate-home"
+          # $home is a READ-ONLY pwsh automatic variable; assigning it is a
+          # WriteError under ErrorActionPreference=Stop.
+          $smokeHome = Join-Path $env:RUNNER_TEMP "windows-candidate-home"
           $config = Join-Path $env:RUNNER_TEMP "windows-candidate-config"
-          New-Item -ItemType Directory -Force -Path $home | Out-Null
+          New-Item -ItemType Directory -Force -Path $smokeHome | Out-Null
           Remove-Item -LiteralPath $config -Recurse -Force -ErrorAction SilentlyContinue
-          $env:HOME = $home
+          $env:HOME = $smokeHome
           $env:CLAUDEXOR_CONFIG_DIR = $config
           $stdout = Join-Path $env:RUNNER_TEMP "windows-candidate-daemon.stdout.log"
           $stderr = Join-Path $env:RUNNER_TEMP "windows-candidate-daemon.stderr.log"
