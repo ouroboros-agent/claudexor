@@ -56,12 +56,9 @@ export function watchLoginInput(
     delivered = true;
     options.onDelivered?.(input.value);
     try {
-      // Win32 console applications enable ConPTY's win32-input-mode and read
-      // KEY_EVENT_RECORDs. A terminal therefore sends the frozen CSI record
-      // form, not raw CR/LF text. POSIX helpers and plain pipes retain LF.
-      child.stdin.write(
-        options.windowsConpty ? encodeWindowsConptyLine(input.value) : `${input.value}\n`,
-      );
+      // ConPTY owns the terminal-to-console translation. Feed its input pipe
+      // ordinary terminal bytes: CR is Enter, while plain pipes retain LF.
+      child.stdin.write(options.windowsConpty ? `${input.value}\r` : `${input.value}\n`);
       // The secret has been handed to the vendor; what stays on disk is a
       // non-secret consumed marker, so the one-shot conflict check still
       // refuses a second submission while the code itself stops existing.
@@ -80,59 +77,6 @@ export function watchLoginInput(
   timer.unref?.();
   void now;
   return () => clearInterval(timer);
-}
-
-function encodeWindowsConptyLine(value: string): string {
-  const keyRecord = (
-    virtualKey: number,
-    scanCode: number,
-    codeUnit: number,
-    keyDown: 0 | 1,
-    controlKeyState: number,
-  ) => `\u001b[${virtualKey};${scanCode};${codeUnit};${keyDown};${controlKeyState};1_`;
-  let encoded = "";
-  for (let index = 0; index < value.length; index += 1) {
-    const codeUnit = value.charCodeAt(index);
-    const [virtualKey, scanCode, controlKeyState] = windowsConptyKey(codeUnit);
-    encoded += keyRecord(virtualKey, scanCode, codeUnit, 1, controlKeyState);
-    encoded += keyRecord(virtualKey, scanCode, codeUnit, 0, controlKeyState);
-  }
-  encoded += keyRecord(13, 28, 13, 1, 0);
-  encoded += keyRecord(13, 28, 13, 0, 0);
-  return encoded;
-}
-
-function windowsConptyKey(codeUnit: number): [virtualKey: number, scanCode: number, state: number] {
-  const value = String.fromCharCode(codeUnit);
-  const shifted = '~!@#$%^&*()_+{}|:"<>?';
-  const unshifted = "`1234567890-=[]\\;',./";
-  const shiftedIndex = shifted.indexOf(value);
-  const base = shiftedIndex >= 0 ? unshifted[shiftedIndex]! : value.toLowerCase();
-  const state = shiftedIndex >= 0 || /^[A-Z]$/.test(value) ? 16 : 0;
-  const rows = ["1234567890-=", "qwertyuiop[]", "asdfghjkl;'", "zxcvbnm,./"];
-  const starts = [2, 16, 30, 44];
-  let scanCode = base === "`" ? 41 : base === "\\" ? 43 : 0;
-  for (let row = 0; row < rows.length && scanCode === 0; row += 1) {
-    const offset = rows[row]!.indexOf(base);
-    if (offset >= 0) scanCode = starts[row]! + offset;
-  }
-  if (value === " ") return [32, 57, 0];
-  if (/^[a-z]$/i.test(value)) return [value.toUpperCase().charCodeAt(0), scanCode, state];
-  if (/^[0-9]$/.test(base)) return [base.charCodeAt(0), scanCode, state];
-  const oemVirtualKeys: Record<string, number> = {
-    "`": 192,
-    "-": 189,
-    "=": 187,
-    "[": 219,
-    "]": 221,
-    "\\": 220,
-    ";": 186,
-    "'": 222,
-    ",": 188,
-    ".": 190,
-    "/": 191,
-  };
-  return oemVirtualKeys[base] === undefined ? [231, 0, 0] : [oemVirtualKeys[base], scanCode, state];
 }
 
 /** Ring buffer of the last OUTPUT_TAIL_BYTES of tee'd vendor output. */
