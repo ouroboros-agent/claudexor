@@ -7,6 +7,29 @@ import { describe, expect, it } from "vitest";
 const repo = resolve(import.meta.dirname, "../../..");
 const verifier = resolve(repo, "scripts/verify-release-input.mjs");
 
+/** The ambient env with every workflow-projected release input cleared. The
+ * publish workflow itself runs this suite in its deterministic gates, so a
+ * live `SKIP_CUSTOM_ED25519_INPUT=true` (or any other projected input) would
+ * otherwise leak into cases that assert a DIFFERENT input combination — the
+ * suite must pin the whole surface it is testing, never inherit it. */
+function baseEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const key of [
+    "RELEASE_MODE_INPUT",
+    "RELEASE_REF_INPUT",
+    "REVIEW_ATTESTATION_B64_INPUT",
+    "RUNTIME_MANIFEST_B64_INPUT",
+    "REMOTE_RUNTIME_MANIFEST_B64_INPUT",
+    "SKIP_CUSTOM_ED25519_INPUT",
+    "CANDIDATE_RUN_ID_INPUT",
+    "GITHUB_SHA",
+    "GITHUB_REF",
+  ]) {
+    delete env[key];
+  }
+  return env;
+}
+
 function head(): string {
   return execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim();
 }
@@ -56,7 +79,7 @@ function verifyPublish(
     cwd: fixture.fixture,
     encoding: "utf8",
     env: {
-      ...process.env,
+      ...baseEnv(),
       GITHUB_SHA: fixture.candidateSha,
       GITHUB_REF: `refs/tags/${fixture.tag}`,
       RELEASE_MODE_INPUT: "publish",
@@ -77,7 +100,7 @@ describe("candidate release input", () => {
       cwd: repo,
       encoding: "utf8",
       env: {
-        ...process.env,
+        ...baseEnv(),
         GITHUB_SHA: candidateSha,
         RELEASE_MODE_INPUT: "candidate",
         RELEASE_REF_INPUT: candidateSha,
@@ -94,7 +117,7 @@ describe("candidate release input", () => {
       cwd: repo,
       encoding: "utf8",
       env: {
-        ...process.env,
+        ...baseEnv(),
         GITHUB_SHA: "0".repeat(40),
         RELEASE_MODE_INPUT: "candidate",
         RELEASE_REF_INPUT: candidateSha,
@@ -132,7 +155,7 @@ describe("candidate release input", () => {
         cwd: fixture,
         encoding: "utf8",
         env: {
-          ...process.env,
+          ...baseEnv(),
           GITHUB_SHA: "0".repeat(40),
           GITHUB_REF: "refs/tags/v2.0.0",
           RELEASE_MODE_INPUT: "publish",
@@ -178,7 +201,7 @@ describe("candidate release input", () => {
         cwd: fixture,
         encoding: "utf8",
         env: {
-          ...process.env,
+          ...baseEnv(),
           GITHUB_SHA: candidateSha,
           GITHUB_REF: "refs/heads/main",
           RELEASE_MODE_INPUT: "publish",
@@ -268,7 +291,7 @@ describe("one-release custom Ed25519 waiver", () => {
       cwd: repo,
       encoding: "utf8",
       env: {
-        ...process.env,
+        ...baseEnv(),
         GITHUB_SHA: candidateSha,
         RELEASE_MODE_INPUT: "candidate",
         RELEASE_REF_INPUT: candidateSha,
