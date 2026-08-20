@@ -167,14 +167,6 @@ export async function runSetupLoginWorker(
     manifest.harness === "codex" || manifest.deviceCodePath !== undefined || urlDisclosure;
   const tail = createTailBuffer();
   const urlDetector = createOAuthUrlDetector();
-  let win32InputModeReady = false;
-  let terminalModeTail = "";
-  const observeTerminalMode = (chunk: Buffer): void => {
-    if (win32InputModeReady) return;
-    const combined = terminalModeTail + chunk.toString("utf8");
-    win32InputModeReady = combined.includes("\u001b[?9001h");
-    terminalModeTail = combined.slice(-7);
-  };
   const discloseOAuthUrl = (chunk: Buffer): void => {
     if (!manifest.deviceCodePath) return;
     const url = urlDetector.push(chunk);
@@ -256,7 +248,6 @@ export async function runSetupLoginWorker(
       if (teeOutput) {
         const tee = (sink: NodeJS.WriteStream) => (chunk: Buffer) => {
           sink.write(chunk);
-          if (terminal?.backend === "windows_conpty") observeTerminalMode(chunk);
           tail.push(chunk);
           discloseOAuthUrl(chunk);
         };
@@ -269,7 +260,6 @@ export async function runSetupLoginWorker(
         stopInputWatch = watchLoginInput(manifest, child, now, {
           onDelivered: (value) => tail.forget(value),
           windowsConpty: terminal?.backend === "windows_conpty",
-          ready: () => terminal?.backend !== "windows_conpty" || win32InputModeReady,
         });
       }
       result = await waitForExit(child);

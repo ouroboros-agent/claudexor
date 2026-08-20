@@ -46,27 +46,18 @@ export function watchLoginInput(
   options: {
     onDelivered?: (value: string) => void;
     windowsConpty?: boolean;
-    ready?: () => boolean;
   } = {},
 ): () => void {
   let delivered = false;
   const timer = setInterval(() => {
-    if (
-      delivered ||
-      options.ready?.() === false ||
-      !manifest.inputPath ||
-      !child.stdin ||
-      child.stdin.destroyed
-    )
-      return;
+    if (delivered || !manifest.inputPath || !child.stdin || child.stdin.destroyed) return;
     const input = readRunnerLoginInput(manifest.inputPath, manifest.jobId, manifest.executionId);
     if (!input) return;
     delivered = true;
     options.onDelivered?.(input.value);
     try {
-      // Win32 console applications request ConPTY's win32-input mode before
-      // reading KEY_EVENT_RECORDs. The runner gates this write on that request;
-      // plain pipes and POSIX helpers retain LF.
+      // Plain UTF-8 represents normal terminal keys. Encode only Enter as a
+      // Win32 key record so console line input submits on every ConPTY build.
       child.stdin.write(
         options.windowsConpty ? encodeWindowsConptyLine(input.value) : `${input.value}\n`,
       );
@@ -93,15 +84,7 @@ export function watchLoginInput(
 function encodeWindowsConptyLine(value: string): string {
   const keyRecord = (virtualKey: number, scanCode: number, codeUnit: number, keyDown: 0 | 1) =>
     `\u001b[${virtualKey};${scanCode};${codeUnit};${keyDown};0;1_`;
-  let encoded = "";
-  for (let index = 0; index < value.length; index += 1) {
-    const codeUnit = value.charCodeAt(index);
-    encoded += keyRecord(231, 0, codeUnit, 1);
-    encoded += keyRecord(231, 0, codeUnit, 0);
-  }
-  encoded += keyRecord(13, 28, 13, 1);
-  encoded += keyRecord(13, 28, 13, 0);
-  return encoded;
+  return value + keyRecord(13, 28, 13, 1) + keyRecord(13, 28, 13, 0);
 }
 
 /** Ring buffer of the last OUTPUT_TAIL_BYTES of tee'd vendor output. */
