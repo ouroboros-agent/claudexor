@@ -349,7 +349,10 @@ export function runHarnessInstaller(
           refusal: "the downloaded installer script could not be read back; nothing was executed",
         };
       }
-      if (payload.length === 0) {
+      // Local only: an unattended install must not "run" an empty body and
+      // report success. The watched remote flow keeps upstream's behaviour —
+      // the human sees "0 bytes" printed and the vendor script exit honestly.
+      if (proofRequired && payload.length === 0) {
         return {
           exitCode: 1,
           code: "installer_empty",

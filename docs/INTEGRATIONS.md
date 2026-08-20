@@ -48,11 +48,12 @@ For a valid `harness install ... --yes --json` invocation, stdout is exactly one
 JSON object. Every executed result carries `ok: boolean`, `dryRun: false`,
 `exitCode: number`, `target: "local" | "remote"`, `harness: string`,
 `command: string`, `installLocation: string`, `pinnedVersion: string | null`, and
-`verification: string`. Every successful executed result additionally carries
+`verification: string`. Every successful `--target local` result additionally carries
 `installedBinary` (an absolute launcher path) and `installedVersion` (the exact
-npm pin, or Cursor's bounded non-empty version line). Child exit zero is not
-sufficient: if that launcher/version proof fails, the result is
-`ok: false`, `code: "install_verification_failed"`. A Cursor result after a
+npm pin, or Cursor's bounded non-empty version line). On the local target,
+child exit zero is not sufficient: if that launcher/version proof fails, the
+result is `ok: false`, `code: "install_verification_failed"`. A remote success
+keeps the historical contract — `exitCode: 0` with no proof fields. A Cursor result after a
 successful non-empty download additionally carries `installerSha256` (64
 lowercase hex characters) and `installerByteLength` (a positive integer),
 including when the downloaded script itself exits non-zero or its post-install

@@ -5,13 +5,23 @@ Release history for Claudexor. The current version is declared in the root
 
 - **v3.7.0** (2026-08-19): a host embedding Claudexor can finish `Connect` for
   a vendor CLI that is not installed yet. `claudexor harness install` gains an
-  explicit `--target local`, which installs into the managed toolchain root
-  (`~/.claudexor/node`) that local binary resolution and confinement already
-  read, instead of the SSH-host prefix the historical `remote` target owns.
+  explicit `--target local`: npm-pinned vendors install into the managed
+  toolchain root (`~/.claudexor/node`) that local binary resolution and
+  confinement already read, instead of the SSH-host prefix the historical
+  `remote` target owns; the script vendors (cursor, agy) keep choosing their
+  own destination (`~/.local/bin` / `~/.cursor/bin`) — the receipt discloses
+  where, and the resolver reads both.
   The watched remote flow keeps its prefix, its disclosure and its exit-code
-  contract, and neither the install lease nor the post-install proof applies to
-  it — the one deliberate difference is that a refused install no longer
-  creates an empty vendor root before refusing. What the unattended local path
+  contract, and neither the install lease, the post-install proof, nor the
+  empty-download refusal applies to it. Two deliberate differences remain and
+  are the whole list: a refused install no longer creates an empty vendor root
+  before refusing, and — because the resolver now reads Cursor's own
+  `~/.cursor/bin` — vendor children resolve executables through one more
+  user-owned directory of the same trust class as the `~/.local/bin` they
+  already searched. The lease also does not serialize a local install against
+  a concurrent remote one writing the same vendor-chosen launcher; upstream
+  had no serialization anywhere, so that is the inherited baseline, disclosed
+  rather than claimed away. What the unattended local path
   has instead of a human at the terminal is proof: concurrent
   installs into one prefix serialize on a cross-process lease (a lease whose
   owner died fails closed with a typed `install_lock_stale` and its exact

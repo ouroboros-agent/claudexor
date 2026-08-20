@@ -576,6 +576,46 @@ describe("harness install --target local", () => {
     }
   });
 
+  it("refuses an empty local download but lets the watched remote flow run it as upstream did", () => {
+    // The empty-body refusal is part of the unattended local proof contract.
+    // Remote keeps upstream behaviour: the human sees "0 bytes" printed and the
+    // vendor script's own exit decides the outcome.
+    const emptyCurlSpawn = () =>
+      vi.fn((binary: string, argv: readonly string[]) => {
+        if (binary === "curl") writeFileSync(String(argv.at(-1)), "");
+        return { status: 0 } as never;
+      });
+    const localHome = mkdtempSync(join(tmpdir(), "claudexor-empty-local-"));
+    const remoteHome = mkdtempSync(join(tmpdir(), "claudexor-empty-remote-"));
+    try {
+      const localSpawn = emptyCurlSpawn();
+      const local = runHarnessInstaller("cursor", {
+        home: localHome,
+        target: "local",
+        spawn: localSpawn as never,
+        lock: false,
+        // Pin resolution to the fixture HOME: the host machine may really have
+        // a cursor-agent on PATH, which would satisfy the pre-install proof.
+        sourceEnv: { PATH: "" } as NodeJS.ProcessEnv,
+      });
+      expect(local).toMatchObject({ exitCode: 1, code: "installer_empty" });
+      expect(localSpawn).toHaveBeenCalledOnce();
+
+      const remoteSpawn = emptyCurlSpawn();
+      const remote = runHarnessInstaller("cursor", {
+        home: remoteHome,
+        spawn: remoteSpawn as never,
+        sourceEnv: { PATH: "" } as NodeJS.ProcessEnv,
+      });
+      expect(remote).toEqual({ exitCode: 0 });
+      expect(remoteSpawn).toHaveBeenCalledTimes(2);
+      expect(remoteSpawn.mock.calls[1]![0]).toBe("/bin/sh");
+    } finally {
+      rmSync(localHome, { recursive: true, force: true });
+      rmSync(remoteHome, { recursive: true, force: true });
+    }
+  });
+
   it("fails closed without mutating a lease whose recorded owner has exited", () => {
     const home = mkdtempSync(join(tmpdir(), "claudexor-harness-stale-lock-"));
     const lock = join(home, ".claudexor", "harness-install.lock");
