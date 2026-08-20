@@ -352,8 +352,7 @@ export interface RunInput {
    * Defaults to `repoRoot` (in-place threads and ordinary runs).
    */
   executionRoot?: string;
-  /** Frozen control-plane retry provenance. Historical Exact Retry may replay
-   * the pre-workspaceRoot shape; fresh delegated writes may not omit it. */
+  /** Frozen retry provenance: historical replay may omit workspaceRoot; fresh writes may not. */
   retryOf?: string | null;
   /** Project Git initialization that had to happen before an isolated thread
    * worktree could be materialized. Announced immediately after run.created. */
@@ -510,12 +509,9 @@ export interface RunInput {
    * is the deliverable. Only honored by convergence modes.
    */
   inPlace?: boolean;
-  /**
-   * `execution.delegated`: this run is driven by an EXTERNAL orchestrator that
-   * owns the workspace. Every attempt then uses a scoped harness HOME even
-   * in-place (see `scopedHarnessHome`) so the selected profile and writable
-   * vendor state stay explicit. The scoped HOME is not an OS boundary.
-   */
+  /** External-orchestrator run: every attempt uses a scoped harness HOME even
+   * in-place, keeping profile and writable vendor state explicit. This is not
+   * an OS boundary. */
   delegated?: boolean;
   /**
    * Per-run globs no candidate may touch (create/modify/delete/rename). Unlike

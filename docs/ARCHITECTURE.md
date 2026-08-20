@@ -2795,7 +2795,7 @@ credential variables.
 The installer recipe producer also accepts the explicit `local` target used by
 host integrations. Npm harnesses then install under the existing managed Node
 root (`~/.claudexor/node/bin`), which is already shared by local resolution and
-the confinement exec carve-out; Cursor keeps its vendor-selected destination,
+native harness PATH resolution; Cursor keeps its vendor-selected destination,
 and normalized harness discovery covers both `~/.local/bin` and
 `~/.cursor/bin`. An explicit `--target local --yes` is suitable for an
 unattended Connect action that already carries the user's authorization. Cursor

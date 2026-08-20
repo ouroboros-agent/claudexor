@@ -187,13 +187,11 @@ function resolveInstructions(args: ParsedArgs): string | undefined {
   return inline;
 }
 
-const ACCESS_PROFILES = new Set<string>(AccessProfile.options);
-
 /** Access profile from `--access`. Invalid profiles FAIL LOUDLY (a typo must never silently run with the default write profile). */
 function accessProfile(args: ParsedArgs): AccessProfile | undefined {
   const v = flagStr(args, "access");
   if (v === undefined) return undefined;
-  if (!ACCESS_PROFILES.has(v)) {
+  if (!AccessProfile.options.includes(v as AccessProfile)) {
     throw new Error(`invalid --access '${v}' (expected ${AccessProfile.options.join("|")})`);
   }
   return AccessProfile.parse(v);

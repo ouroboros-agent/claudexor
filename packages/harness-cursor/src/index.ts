@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import type {
   AuthPreference,
   ConformanceReport,
-  CredentialProfile,
   HarnessCapabilityProfile,
   HarnessEvent,
   HarnessManifest,
@@ -24,7 +23,7 @@ import {
 } from "@claudexor/core";
 import { resolveSecret } from "@claudexor/secrets";
 import { CLAUDEXOR_VERSION, nowIso, redactSecrets } from "@claudexor/util";
-import { createCursorParser, parseCursorModelList, parseCursorStderrFailure } from "./parse.js";
+import { createCursorParser, parseCursorStderrFailure } from "./parse.js";
 export { parseCursorModelList } from "./parse.js";
 import {
   cursorObservationAuthenticated,
@@ -45,6 +44,12 @@ import {
 } from "./profile.js";
 export { canonicalCursorProfileHome, cursorProfilePathEnv } from "./profile.js";
 import { smokeIsolatedApiKey, unsmokedApiSmoke, type CursorApiSmokeResult } from "./smoke.js";
+import {
+  listCursorModelsFromReadyRoute,
+  queryCursorModels,
+  type CursorEnvMap as EnvMap,
+  type CursorModelLister,
+} from "./models.js";
 export {
   cleanupCursorSmokeBase,
   cursorApiSmokeFinalText,
@@ -140,13 +145,12 @@ function cursorApiKey(env?: Record<string, string | null | undefined>): string |
   );
 }
 
-type EnvMap = Record<string, string | null | undefined>;
 type CursorApiSmokeCacheEntry = { result: CursorApiSmokeResult; expiresAtMs: number };
 type CursorRuntimeDeps = {
   detectVersion: typeof detectVersion;
   nativeAuthOk: typeof probeCursorNativeAuth;
   cursorApiKey: typeof cursorApiKey;
-  listCursorModels: typeof listCursorModels;
+  listCursorModels: CursorModelLister;
   smokeIsolatedApiKey: typeof smokeIsolatedApiKey;
   apiSmokeCache: Map<string, CursorApiSmokeCacheEntry>;
   apiSmokeCacheTtlMs: number;
@@ -175,23 +179,6 @@ async function smokeCursorApiKey(
   const ttlMs = result.ok ? deps.apiSmokeCacheTtlMs : deps.apiSmokeFailureCacheTtlMs;
   if (!fresh && ttlMs > 0) deps.apiSmokeCache.set(cacheKey, { result, expiresAtMs: now + ttlMs });
   return result;
-}
-
-async function listCursorModels(
-  env: EnvMap = { ...providerScrubEnv() },
-  cwd?: string,
-): Promise<HarnessModel[]> {
-  try {
-    const r = await runCapture(BIN, ["--list-models"], {
-      env,
-      ...(cwd ? { cwd } : {}),
-      timeoutMs: 30_000,
-    });
-    if (r.code !== 0) return [];
-    return parseCursorModelList(r.stdout);
-  } catch {
-    return [];
-  }
 }
 
 function cursorBaseEnv(env?: EnvMap): EnvMap {
@@ -250,90 +237,12 @@ async function resolveCursorAuthRoute(
   return { route, env, key, nativeAuthed, scopedHome };
 }
 
-/**
- * A PINNED profile owns its own inventory. `resolveCursorAuthRoute` below is
- * the engine-default ladder, which under D-U3 can only ever find the API-key
- * route — so asking it about a named native account returns an empty list and
- * the strict model gate then refuses a model the account really offers. The run
- * path resolves a pinned profile through `resolveCursorRunRoute`; enumeration
- * must go through the SAME seam, or preflight and spawn are asking two
- * different accounts.
- */
-async function listCursorModelsForProfile(
-  deps: CursorRuntimeDeps,
-  spec: HarnessModelSpec & { credentialProfile: CredentialProfile },
-): Promise<HarnessModel[]> {
-  const resolved = await resolveCursorRunRoute(
-    {
-      credential_profile: spec.credentialProfile,
-      env: spec.env ?? {},
-      auth_preference: spec.authPreference ?? "auto",
-    },
-    deps,
-    ({ cursorApiKey, ...input }) =>
-      resolveCursorAuthRoute(cursorApiKey ? { ...deps, cursorApiKey } : deps, input),
-    spec.abortSignal,
-  );
-  if ("refusal" in resolved) return [];
-  if (resolved.route === "local_session")
-    return deps.listCursorModels({ ...resolved.env, CURSOR_API_KEY: null }, spec.cwd);
-  if (resolved.route === "api_key" && resolved.key)
-    return deps.listCursorModels({ ...resolved.env, CURSOR_API_KEY: resolved.key }, spec.cwd);
-  return [];
-}
-
-async function listCursorModelsFromReadyRoute(
-  deps: CursorRuntimeDeps,
-  spec?: HarnessModelSpec,
-): Promise<HarnessModel[]> {
-  if (spec?.credentialProfile)
-    return listCursorModelsForProfile(deps, {
-      ...spec,
-      credentialProfile: spec.credentialProfile,
-    });
-  // ONE seam for every enumeration below: the inventory must run in the same
-  // working directory the eventual run will use, because cursor-agent resolves
-  // account/workspace state relative to it.
-  const modelsFrom = (env: EnvMap) => deps.listCursorModels(env, spec?.cwd);
-  const catalogOnly = () =>
-    modelsFrom({ ...providerScrubEnv(), CURSOR_API_KEY: deps.cursorApiKey(spec?.env) ?? null });
-  if (spec?.env || spec?.authPreference || spec?.fresh) {
-    const authPreference = spec.authPreference ?? "auto";
-    const resolved = await resolveCursorAuthRoute(deps, {
-      env: spec.env,
-      authPreference,
-      fresh: spec?.fresh,
-      abortSignal: spec?.abortSignal,
-    });
-    if (resolved.route === "local_session") {
-      const models = await modelsFrom({ ...resolved.env, CURSOR_API_KEY: null });
-      if (models.length > 0) return models;
-      if (authPreference === "subscription") return [];
-    }
-    if (resolved.route === "api_key" && resolved.key) {
-      const models = await modelsFrom({ ...resolved.env, CURSOR_API_KEY: resolved.key });
-      if (models.length > 0) return models;
-    }
-    return [];
-  }
-  // No default native session exists to list models from (D-U3: the host
-  // Keychain is never probed); the key route and the static catalog remain.
-  const key = deps.cursorApiKey();
-  if (!key) return catalogOnly();
-  const apiSmoke = await smokeCursorApiKey(deps, key, spec?.fresh === true);
-  if (apiSmoke.ok) {
-    const models = await modelsFrom({ ...providerScrubEnv(), CURSOR_API_KEY: key });
-    if (models.length > 0) return models;
-  }
-  return catalogOnly();
-}
-
 export function createCursorAdapter(deps: Partial<CursorRuntimeDeps> = {}): HarnessAdapter {
   const runtime: CursorRuntimeDeps = {
     detectVersion,
     nativeAuthOk: probeCursorNativeAuth,
     cursorApiKey,
-    listCursorModels,
+    listCursorModels: (env, cwd) => queryCursorModels(BIN, env, cwd),
     smokeIsolatedApiKey,
     apiSmokeCache: new Map(),
     apiSmokeCacheTtlMs: CURSOR_API_SMOKE_CACHE_TTL_MS,
@@ -430,7 +339,13 @@ export function createCursorAdapter(deps: Partial<CursorRuntimeDeps> = {}): Harn
     },
 
     async models(spec?: HarnessModelSpec): Promise<HarnessModel[]> {
-      return listCursorModelsFromReadyRoute(runtime, spec);
+      return listCursorModelsFromReadyRoute(
+        runtime,
+        spec,
+        ({ cursorApiKey, ...input }) =>
+          resolveCursorAuthRoute(cursorApiKey ? { ...runtime, cursorApiKey } : runtime, input),
+        (key, fresh) => smokeCursorApiKey(runtime, key, fresh),
+      );
     },
 
     async probeCredentialProfile(profile, abortSignal) {
