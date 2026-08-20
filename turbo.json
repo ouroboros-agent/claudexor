@@ -6,7 +6,7 @@
     "build": {
       "dependsOn": ["^build"],
       "outputs": ["dist/**"],
-      "passThroughEnv": ["INCLUDE", "LIB", "LIBPATH"]
+      "passThroughEnv": ["INCLUDE", "LIB", "LIBPATH", "CLAUDEXOR_SKIP_WIN32_CONPTY_BUILD"]
     },
     "typecheck": {
       "dependsOn": ["^build"]
