@@ -56,11 +56,14 @@ export function watchLoginInput(
     delivered = true;
     options.onDelivered?.(input.value);
     try {
-      // Plain UTF-8 represents normal terminal keys. Encode only Enter as a
-      // Win32 key record so console line input submits on every ConPTY build.
-      child.stdin.write(
-        options.windowsConpty ? encodeWindowsConptyLine(input.value) : `${input.value}\n`,
-      );
+      if (options.windowsConpty) {
+        // Server-era ConPTY parsers have shipped bugs around chunked Win32
+        // input-mode sequences. Keep each complete KEY_EVENT_RECORD in its
+        // own pipe write instead of presenting one concatenated CSI stream.
+        for (const record of encodeWindowsConptyLine(input.value)) child.stdin.write(record);
+      } else {
+        child.stdin.write(`${input.value}\n`);
+      }
       // The secret has been handed to the vendor; what stays on disk is a
       // non-secret consumed marker, so the one-shot conflict check still
       // refuses a second submission while the code itself stops existing.
@@ -81,10 +84,16 @@ export function watchLoginInput(
   return () => clearInterval(timer);
 }
 
-function encodeWindowsConptyLine(value: string): string {
+function encodeWindowsConptyLine(value: string): string[] {
   const keyRecord = (virtualKey: number, scanCode: number, codeUnit: number, keyDown: 0 | 1) =>
     `\u001b[${virtualKey};${scanCode};${codeUnit};${keyDown};0;1_`;
-  return value + keyRecord(13, 28, 13, 1) + keyRecord(13, 28, 13, 0);
+  const records: string[] = [];
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    records.push(keyRecord(231, 0, codeUnit, 1), keyRecord(231, 0, codeUnit, 0));
+  }
+  records.push(keyRecord(13, 28, 13, 1), keyRecord(13, 28, 13, 0));
+  return records;
 }
 
 /** Ring buffer of the last OUTPUT_TAIL_BYTES of tee'd vendor output. */
