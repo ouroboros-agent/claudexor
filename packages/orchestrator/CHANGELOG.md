@@ -1,5 +1,27 @@
 # @claudexor/orchestrator
 
+## 3.8.0
+
+### Patch Changes
+
+- 6054b7d: Make credential-profile custody and managed setup login platform-aware, with an exact Windows Antigravity one-binding policy, vendor-proven doctor/quota results, durable ambiguity handling, and host-resolved terminal capability projection.
+- Updated dependencies [6054b7d]
+  - @claudexor/schema@3.8.0
+  - @claudexor/core@3.8.0
+  - @claudexor/arbitration@3.8.0
+  - @claudexor/budget@3.8.0
+  - @claudexor/config@3.8.0
+  - @claudexor/context@3.8.0
+  - @claudexor/delivery@3.8.0
+  - @claudexor/event-log@3.8.0
+  - @claudexor/gateway@3.8.0
+  - @claudexor/policy@3.8.0
+  - @claudexor/review@3.8.0
+  - @claudexor/workspace@3.8.0
+  - @claudexor/synthesis@3.8.0
+  - @claudexor/artifact-store@3.8.0
+  - @claudexor/util@3.8.0
+
 ## 3.7.0
 
 ### Patch Changes

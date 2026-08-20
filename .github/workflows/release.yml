@@ -13,19 +13,19 @@ on:
         required: true
         type: string
       review_attestation_b64:
-        description: Base64 signed schema-v6 full-context owner-review attestation (Cursor operator panel); required for publish unless the exact v3.7.0 waiver is true
+        description: Base64 signed schema-v6 full-context owner-review attestation (Cursor operator panel); required for publish unless the exact v3.8.0 waiver is true
         required: false
         type: string
       runtime_manifest_b64:
-        description: Base64 owner-signed runtime-update manifest (D-2); required for publish unless the exact v3.7.0 waiver is true
+        description: Base64 owner-signed runtime-update manifest (D-2); required for publish unless the exact v3.8.0 waiver is true
         required: false
         type: string
       remote_runtime_manifest_b64:
-        description: Base64 owner-signed four-target SSH runtime manifest; required for publish unless the exact v3.7.0 waiver is true
+        description: Base64 owner-signed four-target SSH runtime manifest; required for publish unless the exact v3.8.0 waiver is true
         required: false
         type: string
       skip_custom_ed25519:
-        description: One-release waiver for v3.7.0 publish only; requires all three custom Ed25519 inputs to be empty
+        description: One-release waiver for v3.8.0 publish only; requires all three custom Ed25519 inputs to be empty
         required: false
         type: boolean
         default: false
@@ -769,7 +769,7 @@ jobs:
           # D-2/A-5: candidate keeps the UNSIGNED manifest in its internal
           # artifact (owner normally signs it offline). Publish either ships
           # only the OWNER-SIGNED manifest after fail-closed verification
-          # against the PROMOTED candidate closure, or, for the exact v3.7.0
+          # against the PROMOTED candidate closure, or, for the exact v3.8.0
           # waiver, ships no canonical manifest at all.
           if [ "$RELEASE_MODE_INPUT" = publish ]; then
             if [ "$SKIP_CUSTOM_ED25519_INPUT" != true ]; then

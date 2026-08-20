@@ -31,7 +31,7 @@ with a vendor usage source (Antigravity, Claude, and Codex); Cursor has none
 yet. Everything runs on your machine, files are the source of truth, and there
 is no telemetry.
 
-Current status: **v3.7.0**. See "Stability at 2.0" below for what is a stable
+Current status: **v3.8.0**. See "Stability at 2.0" below for what is a stable
 contract and what remains experimental; retired verbs and mode ids hard-error
 with the new spelling instead of silently aliasing.
 
@@ -160,9 +160,9 @@ explicit-port preview tunnel.
 
 ### Updates
 
-**v3.7.0 release exception.** The owner-authorized release omits the three
+**v3.8.0 release exception.** The owner-authorized release omits the three
 custom Ed25519 documents rather than publishing unsigned substitutes. Existing
-app installs therefore cannot take the in-place engine update to 3.7.0, and
+app installs therefore cannot take the in-place engine update to 3.8.0, and
 the app cannot perform a first-time remote bootstrap from that release. A fresh
 signed/notarized DMG, npm packages, and reviewed exact-pin embedders remain
 usable; normal releases keep the signed-manifest path below fail-closed.

@@ -221,7 +221,7 @@ describe("candidate release input", () => {
 
 describe("one-release custom Ed25519 waiver", () => {
   it("rejects a non-boolean waiver value", () => {
-    withPublishFixture("3.7.0", (fixture) => {
+    withPublishFixture("3.8.0", (fixture) => {
       const result = verifyPublish(fixture, { SKIP_CUSTOM_ED25519_INPUT: "1" });
 
       expect(result.status).toBe(1);
@@ -231,8 +231,8 @@ describe("one-release custom Ed25519 waiver", () => {
     });
   });
 
-  it("accepts an exact v3.7.0 publish with all three custom inputs empty", () => {
-    withPublishFixture("3.7.0", (fixture) => {
+  it("accepts an exact v3.8.0 publish with all three custom inputs empty", () => {
+    withPublishFixture("3.8.0", (fixture) => {
       const reviewPath = resolve(fixture.fixture, "review-attestation.json");
       const result = verifyPublish(fixture, {
         REVIEW_ATTESTATION_PATH: reviewPath,
@@ -246,7 +246,7 @@ describe("one-release custom Ed25519 waiver", () => {
   });
 
   it("keeps the normal publish path fail-closed when the review attestation is empty", () => {
-    withPublishFixture("3.7.0", (fixture) => {
+    withPublishFixture("3.8.0", (fixture) => {
       const result = verifyPublish(fixture);
 
       expect(result.status).toBe(1);
@@ -256,13 +256,13 @@ describe("one-release custom Ed25519 waiver", () => {
     });
   });
 
-  it("rejects the waiver for every package version except 3.7.0", () => {
+  it("rejects the waiver for every package version except 3.8.0", () => {
     withPublishFixture("3.3.17", (fixture) => {
       const result = verifyPublish(fixture, { SKIP_CUSTOM_ED25519_INPUT: "true" });
 
       expect(result.status).toBe(1);
       expect(result.stderr).toContain(
-        "release input rejected: skip_custom_ed25519 is authorized only for package version 3.7.0",
+        "release input rejected: skip_custom_ed25519 is authorized only for package version 3.8.0",
       );
     });
   });
@@ -272,7 +272,7 @@ describe("one-release custom Ed25519 waiver", () => {
     "RUNTIME_MANIFEST_B64_INPUT",
     "REMOTE_RUNTIME_MANIFEST_B64_INPUT",
   ])("rejects the waiver when %s is nonempty", (inputName) => {
-    withPublishFixture("3.7.0", (fixture) => {
+    withPublishFixture("3.8.0", (fixture) => {
       const result = verifyPublish(fixture, {
         [inputName]: "e30=",
         SKIP_CUSTOM_ED25519_INPUT: "true",

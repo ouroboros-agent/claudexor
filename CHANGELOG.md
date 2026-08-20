@@ -3,7 +3,7 @@
 Release history for Claudexor. The current version is declared in the root
 `package.json` (the version SSOT); tags `v*` correspond to GitHub Releases.
 
-- **v3.7.0** (2026-08-19): a host embedding Claudexor can finish `Connect` for
+- **v3.8.0** (2026-08-20): a host embedding Claudexor can finish `Connect` for
   a vendor CLI that is not installed yet. `claudexor harness install` gains an
   explicit `--target local`: npm-pinned vendors install into the managed
   toolchain root (`~/.claudexor/node`) that local binary resolution and
@@ -49,6 +49,11 @@ Release history for Claudexor. The current version is declared in the root
   waiver: Apple codesigning/notarization, GitHub provenance and npm provenance
   are unchanged, and the three custom Ed25519 documents are simply absent
   rather than unsigned — no client signature check is weakened.
+  The release also carries the Windows Antigravity work merged from PR #207:
+  credential-profile custody and managed setup login become platform-aware,
+  with an exact Windows Antigravity one-binding policy, vendor-proven
+  doctor/quota results, durable ambiguity handling, and host-resolved terminal
+  capability projection.
 - **v3.6.0** (2026-08-18): the unified account model (INV-135 rewrite,
   owner-approved). Every account is a named registry row; the separate
   "default"/"CLI login" account type is gone. A detected legacy claude/codex

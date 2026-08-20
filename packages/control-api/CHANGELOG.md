@@ -1,5 +1,16 @@
 # @claudexor/control-api
 
+## 3.8.0
+
+### Patch Changes
+
+- Updated dependencies [6054b7d]
+  - @claudexor/schema@3.8.0
+  - @claudexor/delivery@3.8.0
+  - @claudexor/event-log@3.8.0
+  - @claudexor/secrets@3.8.0
+  - @claudexor/util@3.8.0
+
 ## 3.7.0
 
 ### Patch Changes

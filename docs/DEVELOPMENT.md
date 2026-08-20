@@ -253,7 +253,7 @@ with the candidate's unsigned manifest), regenerates the remote SBOM
 deterministically from the promoted unsigned manifest, `cmp`s it against the
 provenance-verified candidate SBOM, and ships the CANDIDATE bytes (A-5).
 
-Package version 3.7.0 has one owner-authorized release exception. A publish
+Package version 3.8.0 has one owner-authorized release exception. A publish
 dispatch may set `skip_custom_ed25519: true` only for that exact version and
 only when `review_attestation_b64`, `runtime_manifest_b64`, and
 `remote_runtime_manifest_b64` are all empty. The candidate remains the exact
@@ -261,7 +261,7 @@ twelve-asset, provenance-attested internal set above. The final GitHub Release
 then omits `REVIEW_ATTESTATION.json`, `runtime-manifest.json`, and
 `remote-runtime-manifest.json`; it must never copy either unsigned candidate
 manifest under the canonical release name. This leaves the existing app engine
-update and first-time remote bootstrap unavailable for 3.7.0 while their
+update and first-time remote bootstrap unavailable for 3.8.0 while their
 client verifiers stay fail-closed. DMG/ZIP signing and notarization, npm
 publication, SBOMs, GitHub artifact provenance, and npm provenance are
 unchanged. The verifier rejects this waiver for every other version, and the

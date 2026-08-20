@@ -35,7 +35,7 @@ release. The existing signed runtime manifest remains the
 publication authority, so an embedder does not create a second artifact or
 trust root.
 
-Release `3.7.0` is an explicit one-release exception: its GitHub Release omits
+Release `3.8.0` is an explicit one-release exception: its GitHub Release omits
 the custom signed runtime and remote-runtime manifests instead of publishing
 unsigned files. Existing app installs cannot use in-place engine update for
 that version, and the app cannot first-bootstrap a remote runtime from it.

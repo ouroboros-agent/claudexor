@@ -68,8 +68,8 @@ const manifest = JSON.parse(readFileSync("package.json", "utf8"));
 const version = manifest.version;
 if (mode === "publish" && tag !== `v${version}`)
   fail(["publish tag does not match package.json version"]);
-if (skipCustomEd25519 && version !== "3.7.0") {
-  fail(["skip_custom_ed25519 is authorized only for package version 3.7.0"]);
+if (skipCustomEd25519 && version !== "3.8.0") {
+  fail(["skip_custom_ed25519 is authorized only for package version 3.8.0"]);
 }
 
 let attestationText = "";

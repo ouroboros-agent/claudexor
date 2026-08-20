@@ -1,5 +1,16 @@
 # @claudexor/harness-codex
 
+## 3.8.0
+
+### Patch Changes
+
+- 6054b7d: Make credential-profile custody and managed setup login platform-aware, with an exact Windows Antigravity one-binding policy, vendor-proven doctor/quota results, durable ambiguity handling, and host-resolved terminal capability projection.
+- Updated dependencies [6054b7d]
+  - @claudexor/schema@3.8.0
+  - @claudexor/core@3.8.0
+  - @claudexor/secrets@3.8.0
+  - @claudexor/util@3.8.0
+
 ## 3.7.0
 
 ### Patch Changes
