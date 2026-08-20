@@ -39,7 +39,7 @@ import {
   CLAUDE_KNOWN_MODELS,
   CLAUDE_KNOWN_MODELS_VERIFIED_AGAINST,
 } from "./capability-profile.js";
-export { claudeQuotaModelAliases } from "./capability-profile.js";
+export { CLAUDE_MANAGED_LOGIN, claudeQuotaModelAliases } from "./capability-profile.js";
 import { claudeNativeLoginRemedy } from "./doctor-remedy.js";
 import { claudeNativeHomeEnv, defaultNativeClaudeConfigDir } from "./native-home.js";
 export { claudeAccountIdentity, defaultNativeClaudeConfigDir } from "./native-home.js";
@@ -354,7 +354,7 @@ export function createClaudeAdapter(deps: Partial<ClaudeRuntimeDeps> = {}): Harn
   };
   return {
     id: "claude",
-
+    capabilityProfile: CLAUDE_CAPABILITY_PROFILE,
     async discover(): Promise<HarnessManifest> {
       const version = await runtime.detectVersion();
       if (version === null) {

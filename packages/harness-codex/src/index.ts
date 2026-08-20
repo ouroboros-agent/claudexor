@@ -66,6 +66,8 @@ export {
   ensureCodexApiAuth,
   probeLogin,
 } from "./auth.js";
+import { CODEX_CAPABILITY_PROFILE } from "./capability-profile.js";
+export { CODEX_MANAGED_LOGIN } from "./capability-profile.js";
 import {
   CODEX_FILE_AUTH_ARGS,
   CODEX_PROJECT_DOC_FALLBACK_ARGS,
@@ -373,6 +375,7 @@ export function createCodexAdapter(deps: Partial<CodexRuntimeDeps> = {}): Harnes
   };
   return {
     id: "codex",
+    capabilityProfile: CODEX_CAPABILITY_PROFILE,
 
     async discover(): Promise<HarnessManifest> {
       const version = await runtime.detectVersion();
@@ -440,34 +443,15 @@ export function createCodexAdapter(deps: Partial<CodexRuntimeDeps> = {}): Harnes
           known_models_verified_against: CODEX_VENDOR_CLI_VERSION,
         },
         capability_profile: {
+          ...CODEX_CAPABILITY_PROFILE,
           auth: {
-            supported_sources: ["native_session", "provider_auth_file"],
+            ...CODEX_CAPABILITY_PROFILE.auth,
             preferred_source: nativeSessionAvailable
               ? "native_session"
               : apiKey
                 ? "provider_auth_file"
                 : null,
-            credential_transports: [
-              { source: "native_session", kind: "config_file", relocatable_by: ["CONFIG_DIR"] },
-              { source: "provider_auth_file", kind: "config_file", relocatable_by: ["CONFIG_DIR"] },
-            ],
           },
-          access_control: { readonly_mechanism: "fs_sandbox" },
-          isolation: { supported_containment: ["host_user_context", "env_or_file_injection"] },
-          mcp_injection: true,
-          // Codex's workspace-write seatbelt cancels the belt's daemon-crossing
-          // MCP call in headless exec; only danger-full-access (full) lets it
-          // through — same constraint the browser MCP already rides.
-          mcp_injection_requires_full_access: true,
-          attachment_inputs: [
-            {
-              kind: "image",
-              mime_types: ["image/png", "image/jpeg", "image/gif", "image/webp"],
-              max_bytes: 20 * 1024 * 1024,
-              max_count: 20,
-              transport: "file_path",
-            },
-          ],
         },
         auth_modes: authModes,
         access_profiles_supported: CODEX_ACCESS_PROFILES,

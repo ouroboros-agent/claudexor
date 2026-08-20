@@ -58,6 +58,9 @@ BUILD="${CLAUDEXOR_BUILD:-$(date +%Y%m%d%H%M)}"
 BUILD_SHA="${CLAUDEXOR_BUILD_SHA:-$(cd "$REPO_ROOT" && git rev-parse HEAD 2>/dev/null || echo unknown)}"
 export CLAUDEXOR_BUILD_SHA="$BUILD_SHA"
 DEV_REMOTE_RUNTIME="${CLAUDEXOR_DEV_REMOTE_RUNTIME:-0}"
+WIN32_CONPTY_SOURCE="${CLAUDEXOR_WIN32_CONPTY_HELPER:-}"
+WIN32_CONPTY_EXPECTED_SHA256="${CLAUDEXOR_WIN32_CONPTY_SHA256:-}"
+REQUIRE_WIN32_CONPTY="${CLAUDEXOR_REQUIRE_WIN32_CONPTY_HELPER:-0}"
 if [ "$DEV_REMOTE_RUNTIME" = "1" ] && [ -n "${SIGN_IDENTITY:-}" ]; then
   echo "ERROR: CLAUDEXOR_DEV_REMOTE_RUNTIME is for unsigned local bundles only" >&2
   exit 1
@@ -276,6 +279,26 @@ if [ "${CLAUDEXOR_NO_ENGINE_BUNDLE:-0}" != "1" ]; then
     exit 1
   fi
   echo "    bundled universal process-identity helper"
+  WIN32_CONPTY_SHA256=""
+  if [ -n "$WIN32_CONPTY_SOURCE" ]; then
+    WIN32_CONPTY_HELPER="$APP/Contents/Resources/native/claudexor-conpty-helper.exe"
+    VERIFY_CONPTY_ARGS=(--file "$WIN32_CONPTY_SOURCE")
+    if [ -n "$WIN32_CONPTY_EXPECTED_SHA256" ]; then
+      VERIFY_CONPTY_ARGS+=(--expected-sha256 "$WIN32_CONPTY_EXPECTED_SHA256")
+    fi
+    node "$REPO_ROOT/scripts/verify-win32-conpty-helper.mjs" "${VERIFY_CONPTY_ARGS[@]}"
+    cp "$WIN32_CONPTY_SOURCE" "$WIN32_CONPTY_HELPER"
+    chmod 755 "$WIN32_CONPTY_HELPER"
+    WIN32_CONPTY_SHA256="$(shasum -a 256 "$WIN32_CONPTY_HELPER" | awk '{print $1}')"
+    node "$REPO_ROOT/scripts/verify-win32-conpty-helper.mjs" \
+      --file "$WIN32_CONPTY_SOURCE" \
+      --file "$WIN32_CONPTY_HELPER" \
+      --expected-sha256 "$WIN32_CONPTY_SHA256"
+    echo "    bundled Windows ConPTY helper (PE32+ x64, enclosing app resource seal only)"
+  elif [ "$REQUIRE_WIN32_CONPTY" = "1" ]; then
+    echo "ERROR: candidate build requires CLAUDEXOR_WIN32_CONPTY_HELPER from the authoritative Windows build" >&2
+    exit 1
+  fi
   # Prefer an explicit/notarized Node for the bundled engine. CI release builds
   # always set CLAUDEXOR_NODE_BIN (release.yml captures process.execPath from
   # actions/setup-node), so the PATH fallback below only ever applies to LOCAL
@@ -350,6 +373,36 @@ if [ "${CLAUDEXOR_NO_ENGINE_BUNDLE:-0}" != "1" ]; then
   fi
   rm -f "$APP/Contents/Resources/setup-runner-smoke.out"
   echo "    bundled setup-login runner launches"
+
+  # The engine closure intentionally omits the full CLI. Prove the exact
+  # packaged daemon bundle advertises and owns the narrow external-terminal
+  # recovery role, and that malformed setup input cannot fall through into
+  # daemon startup or create runtime state.
+  BUNDLED_ENGINE_PROBE="$("$APP/Contents/Resources/node" "$ENGINE_JS" --probe)"
+  "$APP/Contents/Resources/node" -e '
+    const probe = JSON.parse(process.argv[1]);
+    if (!Array.isArray(probe.roles) || !probe.roles.includes("setup_attach")) {
+      throw new Error(`packaged daemon probe lacks setup_attach: ${JSON.stringify(probe)}`);
+    }
+  ' "$BUNDLED_ENGINE_PROBE"
+  BUNDLED_SETUP_SMOKE_ROOT="$(mktemp -d)"
+  set +e
+  env -i HOME="$BUNDLED_SETUP_SMOKE_ROOT/home" PATH="/usr/bin:/bin" \
+    CLAUDEXOR_CONFIG_DIR="$BUNDLED_SETUP_SMOKE_ROOT/config" \
+    "$APP/Contents/Resources/node" "$ENGINE_JS" setup invalid \
+    >"$BUNDLED_SETUP_SMOKE_ROOT/stdout" 2>"$BUNDLED_SETUP_SMOKE_ROOT/stderr"
+  BUNDLED_SETUP_STATUS=$?
+  set -e
+  if [ "$BUNDLED_SETUP_STATUS" -ne 2 ] \
+    || ! grep -q "usage: claudexor setup attach <jobId>" "$BUNDLED_SETUP_SMOKE_ROOT/stderr" \
+    || [ -e "$BUNDLED_SETUP_SMOKE_ROOT/config" ]; then
+    echo "ERROR: packaged daemon setup role did not fail malformed input before daemon startup" >&2
+    cat "$BUNDLED_SETUP_SMOKE_ROOT/stdout" "$BUNDLED_SETUP_SMOKE_ROOT/stderr" >&2
+    rm -rf "$BUNDLED_SETUP_SMOKE_ROOT"
+    exit 1
+  fi
+  rm -rf "$BUNDLED_SETUP_SMOKE_ROOT"
+  echo "    bundled daemon setup attach role launches without the full CLI"
 
   # No network/package-manager access participates in the packaged Browser MCP.
   BROWSER_SMOKE_HOME="$(mktemp -d)"
@@ -439,7 +492,15 @@ if [ "${CLAUDEXOR_NO_ENGINE_BUNDLE:-0}" != "1" ]; then
   # previously discovered a forbidden native addon only at release time.
   echo "==> Closure-buildability smoke (build-runtime-closure against the packaged app)"
   CLOSURE_SMOKE_DIR="$(mktemp -d)"
-  if node "$REPO_ROOT/scripts/build-runtime-closure.mjs"       --app-bundle "$APP"       --version "$VERSION"       --out "$CLOSURE_SMOKE_DIR" >/dev/null; then
+  CLOSURE_CONPTY_ARGS=()
+  if [ -n "$WIN32_CONPTY_SHA256" ]; then
+    CLOSURE_CONPTY_ARGS+=(--win32-conpty-sha256 "$WIN32_CONPTY_SHA256")
+  fi
+  if node "$REPO_ROOT/scripts/build-runtime-closure.mjs" \
+      --app-bundle "$APP" \
+      --version "$VERSION" \
+      --out "$CLOSURE_SMOKE_DIR" \
+      "${CLOSURE_CONPTY_ARGS[@]}" >/dev/null; then
     echo "    runtime closure builds from the packaged app"
     rm -rf "$CLOSURE_SMOKE_DIR"
   else
@@ -497,7 +558,8 @@ if [ -n "${SIGN_IDENTITY:-}" ]; then
   SIGNED_PROBE="$("$APP/Contents/Resources/node" "$ENGINE_JS" --probe)"
   "$APP/Contents/Resources/node" -e '
     const probe = JSON.parse(process.argv[1]);
-    if (probe.version !== process.argv[2] || probe.buildSha !== process.argv[3]) {
+    if (probe.version !== process.argv[2] || probe.buildSha !== process.argv[3]
+      || !Array.isArray(probe.roles) || !probe.roles.includes("setup_attach")) {
       throw new Error(`signed app probe mismatch: ${JSON.stringify(probe)}`);
     }
   ' "$SIGNED_PROBE" "$VERSION" "$BUILD_SHA"

@@ -77,9 +77,19 @@ pnpm test
   the daemon/Control API. UI code may display or copy the returned allowlisted
   command and guide, but must not construct or execute harness login/install
   commands locally.
+- Effective setup-login capability is projected from the adapter's managed-login
+  declaration, exact vendor binary, and the same bounded terminal resolver the
+  runner calls immediately before spawn. Assert own-property `setupLogin` on
+  every current harness/catalog row, legacy omission compatibility, and
+  `external_terminal` rather than false `in_app` when the daemon backend is not
+  ready. Request/profile/cardinality validation must precede helper probing and
+  durable creation; rejected requests make zero helper/vendor calls and zero
+  mutations.
 - Native login must use the shared absolute binary + argv spec and a
   provider-secret-scrubbed environment; no `sh -c`, OAuth callback broker, or
-  copied Terminal output.
+  copied Terminal output. The manifest owns exactly one `managed_login.stdin`
+  declaration per setup command; command flow/window/argv stay in the command
+  registry and input class is not re-authored there.
 - Cancel/timeout/restart must stop only an identity-proven process group (TERM,
   bounded KILL fallback) and reach terminal state only after death proof. Test
   PID reuse, missing/corrupt sidecars, and `termination_unconfirmed`.
@@ -236,6 +246,16 @@ pnpm test
   vendor state remains scoped, default and profile logins both work, and a
   missing bridge refuses with the real cause + Native setup remedy. A green
   host doctor with a red scoped-env probe is a finding, not a flake.
+- **CONCEPT-CHANGE(INV-067, INV-135):** test the effective platform policy,
+  not a universal "profile HOME equals credential identity" assumption.
+  Windows Antigravity permits one enabled OS-user-scoped binding: create and
+  enable enforce the bound atomically, disable remains the recovery action,
+  over-cap legacy state fails routing/setup/quota with
+  `credential_profile_ambiguous` and zero probes, and disabled rows sharing
+  that OS-user credential are never probed. Disabled rows backed by
+  profile-isolated credentials remain non-routable but retain readiness probes.
+  Deletion removes Claudexor-owned state while the receipt explicitly
+  reports the vendor OS-user credential left unchanged.
 - Versioned repo config must never self-grant sensitive powers.
 - Run a targeted search for token-like values when touching auth, secrets,
   artifact writing, or logging.
@@ -273,9 +293,14 @@ pnpm test
 - New terminal states, retry events, or telemetry fields are documented in
   architecture/development docs and have generated schema updates.
 - Swift tests/build pass.
-- Live native-login acceptance passes for Codex, Claude, and Cursor: observe
+- Live native-login acceptance passes for Codex, Claude, Cursor, and
+  Antigravity on each claimed platform: observe
   awaiting_user -> verifying -> succeeded, typed auth status, background
   recovery, and duplicate-create suppression without logout or credential reads.
+  Windows terminal-input acceptance starts from a console-attached control
+  process, proves the production print probe cannot open `CONIN$`, proves the
+  bounded ConPTY helper protocol before vendor start, and verifies timeout/
+  cancel cleanup with exact PIDs and honest unconfirmed outcomes.
 - Packaged app/ZIP/DMG and the npm CLI package contain the setup-login runner;
   the bundle boot smoke starts both the daemon and helper with bundled Node.
 - The signed candidate executes the exact packaged daemon `--probe` with its

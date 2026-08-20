@@ -6,10 +6,12 @@ import {
 } from "./config-dir-login-harnesses.js";
 import { loadConfig, updateGlobalConfig } from "@claudexor/config";
 import { normalizeThroughExistingAncestor } from "@claudexor/core";
+import { credentialProfilePolicyProblem, credentialProfilePolicyState } from "@claudexor/core";
 import { defaultNativeClaudeConfigDir } from "@claudexor/harness-claude";
 import { defaultNativeCodexHome } from "@claudexor/harness-codex";
 import { harnessSupportsBootstrapLogin, type CredentialProfile } from "@claudexor/schema";
 import { claudexorOwnedRoot, noProjectRepoRoot, nowIso } from "@claudexor/util";
+import { buildRegistry } from "./registry.js";
 
 /**
  * The ONE owner of config-dir credential-profile registration (INV-135),
@@ -26,6 +28,8 @@ export interface RegisterProfileInput {
   harnessId: string;
   profileId: string;
   displayName?: string;
+  /** Deterministic policy tests; production always uses process.platform. */
+  platform?: NodeJS.Platform;
 }
 
 export function registerConfigDirProfile(input: RegisterProfileInput): {
@@ -60,7 +64,6 @@ export function registerConfigDirProfile(input: RegisterProfileInput): {
     );
   }
   const locator = join(claudexorOwnedRoot(), "profiles", `${harnessId}-${profileId}`);
-  mkdirSync(locator, { recursive: true });
   const entry: CredentialProfile = {
     profile_id: profileId,
     harness_id: harnessId,
@@ -72,12 +75,69 @@ export function registerConfigDirProfile(input: RegisterProfileInput): {
     created_at: nowIso(),
   };
   try {
-    const { path } = updateGlobalConfig((config) => ({
-      ...config,
-      credential_profiles: [...config.credential_profiles, entry],
-    }));
+    const { path } = updateGlobalConfig((config) => {
+      // Exact idempotency signal precedes the platform count. A retry for an
+      // existing id must never be mislabeled as a cardinality conflict.
+      if (
+        config.credential_profiles.some(
+          (profile) => profile.harness_id === harnessId && profile.profile_id === profileId,
+        )
+      ) {
+        throw Object.assign(
+          new Error(`a profile with id "${profileId}" already exists for harness "${harnessId}"`),
+          {
+            status: 409,
+            code: "credential_profile_exists",
+            retryable: false,
+            fieldErrors: {
+              "/profileId": ["A profile with this id already exists for this harness."],
+            },
+            requiredActions: [],
+          },
+        );
+      }
+      const state = credentialProfilePolicyState({
+        adapter: buildRegistry({ includeFakes: false }).get(harnessId),
+        registry: config.credential_profiles,
+        platform: input.platform,
+      });
+      if (state.ambiguous)
+        throw credentialProfilePolicyProblem(state, "credential_profile_ambiguous");
+      if (
+        state.policy.max_enabled_profiles !== null &&
+        state.enabledProfileCount >= state.policy.max_enabled_profiles
+      ) {
+        throw credentialProfilePolicyProblem(
+          state,
+          "credential_profile_limit_exceeded",
+          "/profileId",
+        );
+      }
+      // Directory creation is inside the same locked decision, after every
+      // invariant check and before config persistence. A mkdir failure leaves
+      // no row; a later write failure can leave only an empty owned directory.
+      mkdirSync(locator, { recursive: true });
+      return {
+        ...config,
+        credential_profiles: [...config.credential_profiles, entry],
+      };
+    });
     return { profile: entry, configPath: path };
   } catch (err) {
+    if (
+      err &&
+      typeof err === "object" &&
+      "status" in err &&
+      (err as { status?: unknown }).status === 409 &&
+      "code" in err &&
+      [
+        "credential_profile_exists",
+        "credential_profile_limit_exceeded",
+        "credential_profile_ambiguous",
+      ].includes(String((err as { code?: unknown }).code))
+    ) {
+      throw err;
+    }
     const message = err instanceof Error ? err.message : String(err);
     throw Object.assign(new Error(`could not register the profile: ${message}`), {
       status: /duplicate/i.test(message) ? 409 : 400,

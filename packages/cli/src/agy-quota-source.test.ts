@@ -1,4 +1,12 @@
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -149,12 +157,24 @@ describe("refreshAgyQuota", () => {
     });
   });
 
-  it("never spawns the vendor for a profile with no token (no login can be triggered)", async () => {
-    const { bin } = scaffold({ token: false, script: '#!/bin/sh\ntouch "$0.spawned"\n' });
+  it("uses the vendor as the auth oracle when no token file exists", async () => {
+    const { bin } = scaffold({
+      token: false,
+      script: `#!/bin/sh
+touch "$0.spawned"
+case "$2" in
+"/model") printf '%s\n' '${MODEL_ENVELOPE("gemini-3.7-flash-high")}' ;;
+*) cat <<'JSON'
+${ENVELOPE}
+JSON
+;;
+esac
+`,
+    });
     const out = await refreshAgyQuota({ bin });
-    expect(out.snapshots).toEqual([]);
-    expect(out.absences?.[0]).toMatchObject({ reason: "not_logged_in" });
-    expect(() => readFileSync(`${bin}.spawned`)).toThrow();
+    expect(out.absences ?? []).toEqual([]);
+    expect(out.snapshots).toHaveLength(1);
+    expect(readFileSync(`${bin}.spawned`, "utf8")).toBe("");
   });
 
   it("reports an unspawnable binary as a typed absence instead of throwing", async () => {
@@ -186,6 +206,69 @@ describe("refreshAgyQuota", () => {
     });
     const out = await refreshAgyQuota({ bin });
     expect(out.absences?.[0]).toMatchObject({ reason: "auth_revoked" });
+  });
+
+  it("does not classify a generic authentication-word infrastructure error as logout", async () => {
+    const { bin } = scaffold({
+      token: false,
+      script:
+        '#!/bin/sh\necho \'{"status":"ERROR","error":"authentication service network unavailable"}\'\n',
+    });
+    const out = await refreshAgyQuota({ bin });
+    expect(out.absences?.[0]).toMatchObject({ reason: "refresh_failed" });
+  });
+
+  it("fails loudly on ambiguous Windows rows with one absence per subject and zero vendor calls", async () => {
+    const { bin } = scaffold({
+      token: false,
+      script: '#!/bin/sh\ntouch "$0.spawned"\n',
+    });
+    const root = process.env.CLAUDEXOR_CONFIG_DIR!;
+    const secondHome = join(root, "profiles", "agy-prof-b");
+    mkdirSync(secondHome, { recursive: true });
+    writeFileSync(
+      join(root, "config.yaml"),
+      [
+        "version: 1",
+        "credential_profiles:",
+        "  - profile_id: prof-a",
+        "    harness_id: agy",
+        "    display_name: A",
+        "    credential_kind: config_dir_login",
+        `    isolation_locator: ${join(root, "profiles", "agy-prof-a")}`,
+        "    enabled: true",
+        "  - profile_id: prof-b",
+        "    harness_id: agy",
+        "    display_name: B",
+        "    credential_kind: config_dir_login",
+        `    isolation_locator: ${secondHome}`,
+        "    enabled: true",
+        "",
+      ].join("\n"),
+    );
+    const out = await refreshAgyQuota({ bin, platform: "win32" });
+    expect(out.snapshots).toEqual([]);
+    expect(out.absences?.map((item) => [item.subject.subject_id, item.reason]).sort()).toEqual([
+      ["prof-a", "credential_profile_ambiguous"],
+      ["prof-b", "credential_profile_ambiguous"],
+    ]);
+    expect(existsSync(`${bin}.spawned`)).toBe(false);
+  });
+
+  it("never probes a disabled agy row", async () => {
+    const { bin } = scaffold({
+      token: false,
+      script: '#!/bin/sh\ntouch "$0.spawned"\n',
+    });
+    const root = process.env.CLAUDEXOR_CONFIG_DIR!;
+    const yaml = readFileSync(join(root, "config.yaml"), "utf8").replace(
+      "    enabled: true",
+      "    enabled: false",
+    );
+    writeFileSync(join(root, "config.yaml"), yaml);
+    const out = await refreshAgyQuota({ bin, platform: "win32" });
+    expect(out).toEqual({ snapshots: [], absences: [] });
+    expect(existsSync(`${bin}.spawned`)).toBe(false);
   });
 });
 

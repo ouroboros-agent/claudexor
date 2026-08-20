@@ -136,8 +136,8 @@ struct AccountRowView: View {
             .disabled(loginDisabled)
             .fixedSize()
             .help(row.verified
-                ? "Manage this account's native login"
-                : "Start the official CLI login for this account — the sign-in link appears right here, no Terminal window")
+                ? "Manage this account's vendor login."
+                : "Start the official vendor login for this account.")
     }
 
     /// The delete control, or a clear spacer that still holds the column (so the
@@ -148,7 +148,7 @@ struct AccountRowView: View {
             Button(role: .destructive, action: delete) { Image(systemName: "trash") }
                 .buttonStyle(.borderless)
                 .controlSize(.small)
-                .help("Remove this account: its registration and its own login/key. Your \(row.family.label) account at the vendor survives — Sign in restores it.")
+                .help("Remove this Claudexor binding and any Claudexor-owned state or managed secret. A vendor credential for this OS user may be left unchanged.")
         } else {
             AlignedColumnSpacer(width: Col.delete)
         }

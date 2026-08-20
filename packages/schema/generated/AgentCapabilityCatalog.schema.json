@@ -299,6 +299,32 @@
                 ],
                 "additionalProperties": false,
                 "description": "Whether this installed runtime can offer Delegate through this harness."
+              },
+              "setupLogin": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "mode": {
+                        "type": "string",
+                        "enum": [
+                          "in_app",
+                          "external_terminal"
+                        ],
+                        "description": "in_app requests the daemon-hosted login flow; external_terminal requests the existing client PTY flow."
+                      }
+                    },
+                    "required": [
+                      "mode"
+                    ],
+                    "additionalProperties": false,
+                    "description": "Effective setup-login flow for this harness on the current host."
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Effective setup-login flow for this harness on the current host; current producers emit null or an object, while omission identifies a legacy catalog row."
               }
             },
             "required": [

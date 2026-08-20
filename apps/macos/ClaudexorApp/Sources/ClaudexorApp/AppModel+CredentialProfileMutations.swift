@@ -3,6 +3,10 @@ import ClaudexorKit
 // MARK: - Credential profile mutations + quota rotation
 
 extension AppModel {
+    struct CredentialProfileDeletionResult: Equatable {
+        let message: String
+        let isError: Bool
+    }
     /// Toggle an account row's Enabled — the ONE routing control, uniformly the
     /// profile PATCH route for every row (unified account model; the retired
     /// `native_credentials_enabled` settings path died with the CLI-login
@@ -47,19 +51,22 @@ extension AppModel {
         }
     }
 
-    /// Remove a credential profile (INV-135 / D-U4): success means the registry
-    /// entry AND the account's own credential material are provably gone (the
-    /// vendor's ordinary host stores stay untouchable). Returns the daemon's
+    /// Remove a credential profile (INV-135 / D-U4): success means the binding
+    /// and any Claudexor-owned state or managed secret are gone. Vendor-owned
+    /// OS-user credentials can deliberately remain unchanged and are disclosed
+    /// as successful info.
+    /// Returns the daemon's
     /// reason on refusal: a 409 while a login job is active, or the typed
     /// RETRYABLE 503 `credential_cleanup_failed` — the row stays registered so
     /// the removal can simply be retried; that state is an error, never a
     /// half-deleted success. An old engine's removed-with-warning receipt is
     /// still surfaced verbatim.
-    func deleteCredentialProfile(harnessId: String, profileId: String) async -> String? {
+    func deleteCredentialProfile(harnessId: String, profileId: String) async
+        -> CredentialProfileDeletionResult {
         let locationID = activeExecutionLocation
         accountsNextUpAuthorityFresh[locationID] = false
         guard let requestClient = gateway(for: locationID) else {
-            return "Engine offline — reconnect to remove an account."
+            return .init(message: "Engine offline — reconnect to remove an account.", isError: true)
         }
         do {
             let receipt = try await requestClient.deleteCredentialProfile(
@@ -78,24 +85,34 @@ extension AppModel {
                 await refreshOpenThread(
                     locationID: locationID, id: selectedThreadId, mayReconnect: false)
             }
-            return receipt.cleanupWarning
+            return .init(message: Self.deletionSuccessMessage(for: receipt), isError: false)
         } catch {
             // The row survived; reload so the surface keeps showing it beside
             // the refusal instead of pretending the delete settled.
             await refreshCredentialProfiles(locationID: locationID)
-            return Self.deleteRefusalMessage(for: error) ?? userMessage(for: error)
+            return .init(
+                message: Self.deleteRefusalMessage(for: error) ?? userMessage(for: error),
+                isError: true)
         }
     }
 
+    static func deletionSuccessMessage(for receipt: DeleteCredentialProfileReceipt) -> String {
+        if receipt.vendorCredentialDisposition != nil {
+            return "Removed from Claudexor. Claudexor removed the binding and any Claudexor-owned state or managed secret; it did not change any vendor credential for this OS user."
+        }
+        if let warning = receipt.cleanupWarning { return "Removed from Claudexor. \(warning)" }
+        return "Removed from Claudexor."
+    }
+
     /// The typed delete-refusal mapping (D-U4): the engine's retryable
-    /// `credential_cleanup_failed` names the honest state — row kept, material
-    /// possibly partial — and the working next act (retry). nil falls back to
-    /// the generic error mapping.
+    /// `credential_cleanup_failed` names the honest state — binding kept,
+    /// owned-state cleanup possibly partial — and the working next act
+    /// (retry). nil falls back to the generic error mapping.
     static func deleteRefusalMessage(for error: Error) -> String? {
         guard let problem = (error as? GatewayError)?.controlProblem,
               problem.code == "credential_cleanup_failed"
         else { return nil }
-        return "Couldn't remove the account's own login data, so it is still registered: \(problem.message) Try Remove again."
+        return "Couldn't remove Claudexor-owned state or a managed secret, so the binding is still registered: \(problem.message) Try Remove again."
     }
 
     // MARK: Auto-switch-at-quota (batch-6 item b)
@@ -108,10 +125,25 @@ extension AppModel {
     /// patched harnesses that had nothing to switch to (owner: "renders but
     /// doesn't activate").
     var autoBalanceHarnessIds: [String] {
-        AccountsAutoBalance.eligibleHarnessIds(
-            profiles: activeCredentialProfiles.map {
-                (harnessId: $0.profile.harnessId, enabled: $0.profile.enabled)
+        let serverEligible: Set<String>
+        if accountsNextUpAuthorityFresh[activeExecutionLocation] == true {
+            serverEligible = Set(activeAccountPools.compactMap { pool in
+                if case .profile = pool.nextUp { return pool.harnessId }
+                return nil
             })
+        } else {
+            serverEligible = []
+        }
+        return AccountsAutoBalance.eligibleHarnessIds(
+            profiles: activeCredentialProfiles.map {
+                // Ambiguous and server-unavailable rows are not rotation
+                // candidates. Valid pools keep every verified enabled row.
+                let serverReady = $0.status.availability == "available"
+                    && $0.status.verification == "passed"
+                return (harnessId: $0.profile.harnessId,
+                        enabled: $0.profile.enabled && serverReady)
+            },
+            serverEligibleHarnessIds: serverEligible)
     }
 
     /// Aggregated auto-switch state across the eligible harnesses. `mixed` (they

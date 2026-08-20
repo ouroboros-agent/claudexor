@@ -27,6 +27,7 @@ import {
   selectFromAccountPool,
 } from "@claudexor/orchestrator";
 import type { HarnessStatus } from "@claudexor/gateway";
+import { credentialProfilePolicyState } from "@claudexor/core";
 import { codexAccountIdentity } from "@claudexor/harness-codex";
 import { claudeAccountIdentity } from "@claudexor/harness-claude";
 import { buildGateway, buildRegistry } from "./registry.js";
@@ -51,9 +52,35 @@ export function profileAccountIdentity(profile: CredentialProfile): AccountIdent
  */
 export async function profileDoctorStatus(
   profile: CredentialProfile,
+  platform: NodeJS.Platform = process.platform,
 ): Promise<CredentialProfileStatus> {
   const adapter = buildRegistry().get(profile.harness_id);
+  const policy = credentialProfilePolicyState({ adapter, registry: [profile], platform });
+  if (!profile.enabled && disabledProfileSharesOsUserCredential(policy)) {
+    return inactiveProfileStatus(profile, "This profile is disabled and was not probed.");
+  }
   return probeCredentialProfileStatus(profile, adapter?.probeCredentialProfile?.bind(adapter));
+}
+
+function inactiveProfileStatus(
+  profile: CredentialProfile,
+  detail: string,
+): CredentialProfileStatus {
+  return {
+    profile_id: profile.profile_id,
+    harness_id: profile.harness_id,
+    availability: "unavailable",
+    verification: "not_run",
+    verification_source: "local_store",
+    detail,
+    last_verified_at: null,
+  };
+}
+
+export function disabledProfileSharesOsUserCredential(
+  state: ReturnType<typeof credentialProfilePolicyState>,
+): boolean {
+  return state.policy.identity_scope === "os_user";
 }
 
 /**
@@ -62,12 +89,34 @@ export async function profileDoctorStatus(
  * store identity path. A malformed rich receipt loses identity and fails
  * closed through the shared readiness wrapper.
  */
-export async function profileAccountProjection(profile: CredentialProfile): Promise<{
+export async function profileAccountProjection(
+  profile: CredentialProfile,
+  registry: readonly CredentialProfile[] = [profile],
+  platform: NodeJS.Platform = process.platform,
+): Promise<{
   profile: CredentialProfile;
   status: CredentialProfileStatus;
   identity: AccountIdentity | null;
 }> {
   const adapter = buildRegistry().get(profile.harness_id);
+  const cardinality = credentialProfilePolicyState({ adapter, registry, platform });
+  if (!profile.enabled && disabledProfileSharesOsUserCredential(cardinality)) {
+    return {
+      profile,
+      status: inactiveProfileStatus(profile, "This profile is disabled and was not probed."),
+      identity: profileAccountIdentity(profile),
+    };
+  }
+  if (profile.enabled && cardinality.ambiguous) {
+    return {
+      profile,
+      status: inactiveProfileStatus(
+        profile,
+        `${profile.harness_id} has ${cardinality.enabledProfileCount} enabled bindings on ${cardinality.platform}; disable extra profiles before this OS-user-scoped credential can be selected or probed.`,
+      ),
+      identity: profileAccountIdentity(profile),
+    };
+  }
   if (!adapter?.probeCredentialAccount) {
     return {
       profile,
@@ -137,6 +186,19 @@ export async function accountPoolsProjection(
         next_up: {
           kind: "none",
           reason: `harness is disabled in settings (harnesses.${harnessId}.enabled=false)`,
+        },
+      };
+    }
+    const cardinality = credentialProfilePolicyState({
+      adapter: buildRegistry({ includeFakes: false }).get(harnessId),
+      registry: cfg.credential_profiles,
+    });
+    if (cardinality.ambiguous) {
+      return {
+        harness_id: harnessId,
+        next_up: {
+          kind: "none",
+          reason: `${harnessId} has an ambiguous enabled profile set; disable extra profiles before routing`,
         },
       };
     }

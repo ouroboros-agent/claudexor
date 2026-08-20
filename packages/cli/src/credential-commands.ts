@@ -30,6 +30,9 @@ import { ensureDaemon } from "./daemon-run.js";
 import { controlApiFetch } from "./live.js";
 import { daemonGet } from "./ops-commands.js";
 import { nativeLoginEnv, nativeLoginSpec } from "./native-login.js";
+import { credentialProfilePolicyProblem, credentialProfilePolicyState } from "@claudexor/core";
+import { buildRegistry } from "./registry.js";
+import { CliError, renderCliFailure } from "./cli-error.js";
 
 async function stdinText(): Promise<string> {
   const chunks: Buffer[] = [];
@@ -43,30 +46,70 @@ async function stdinText(): Promise<string> {
  * doctor's projection — this command never probes vendors itself.
  */
 export async function profilesCommand(args: ParsedArgs, json: boolean): Promise<number> {
+  return profilesCommandWithDeps(args, json);
+}
+
+export interface ProfilesCommandDeps {
+  daemonGet?: typeof daemonGet;
+  spawnSync?: typeof spawnSync;
+  platform?: NodeJS.Platform;
+}
+
+/** Injectable only at the process/vendor boundary so policy ordering has a
+ * zero-spawn regression test without contacting a daemon or vendor. */
+export async function profilesCommandWithDeps(
+  args: ParsedArgs,
+  json: boolean,
+  deps: ProfilesCommandDeps = {},
+): Promise<number> {
+  const get = deps.daemonGet ?? daemonGet;
+  const spawnVendor = deps.spawnSync ?? spawnSync;
   const sub = args._[1] ?? "list";
   if (sub === "login") {
     // INV-135 profile login: the SAME vendor login command the setup jobs run,
-    // spawned interactively in THIS terminal with the profile's scoped config
-    // dir. The default vendor store is never touched; the doctor probe after
-    // exit is the verification truth.
+    // spawned interactively in THIS terminal with the profile's scoped state.
+    // Some platforms keep the vendor credential at OS-user scope; the doctor
+    // probe after exit is the verification truth.
     const harness = args._[2];
     const profileId = args._[3];
     if (!harness || !profileId) {
       return printUsageError(json, "usage: claudexor profiles login <harness> <profile-id>");
     }
-    // Claude profile login is deliberately the vendor's interactive TTY flow.
-    // Inheriting its stdout while also promising one JSON object would corrupt
-    // the machine surface, so refuse before discovery, prose, or spawn. Codex
-    // keeps its daemon-owned device-code JSON flow below.
+    const listing = ControlCredentialProfilesResponse.parse(await get("/credential-profiles"));
+    // The listing is the canonical registry projection. Apply the same static
+    // platform/cardinality gate as setup jobs before emitting interactive
+    // prose, spawning a vendor, or contacting any vendor surface. This closes
+    // the direct profile-login bypass without changing the valid TTY flow.
+    const adapter = buildRegistry({ includeFakes: false }).get(harness);
+    if (adapter) {
+      const state = credentialProfilePolicyState({
+        adapter,
+        registry: listing.profiles.map((row) => row.profile),
+        platform: deps.platform,
+      });
+      if (state.ambiguous) {
+        const problem = credentialProfilePolicyProblem(state, "credential_profile_ambiguous");
+        return renderCliFailure(
+          json,
+          new CliError("operational", problem.message, {
+            code: problem.code,
+            retryable: problem.retryable,
+            fieldErrors: problem.fieldErrors,
+            requiredActions: problem.requiredActions,
+            context: problem.context,
+          }),
+        );
+      }
+    }
+    // Non-Codex profile login is deliberately the vendor's interactive TTY
+    // flow. Refuse JSON only after the static registry policy above so JSON
+    // cannot bypass the same typed ambiguity disposition as human mode.
     if (json && harness !== "codex") {
       return printUsageError(
         true,
         `claudexor profiles login ${harness} is interactive and does not support --json`,
       );
     }
-    const listing = ControlCredentialProfilesResponse.parse(
-      await daemonGet("/credential-profiles"),
-    );
     const entry = listing.profiles.find(
       (p) => p.profile.harness_id === harness && p.profile.profile_id === profileId,
     );
@@ -141,7 +184,7 @@ export async function profilesCommand(args: ParsedArgs, json: boolean): Promise<
     }
     const configDir = canonicalProfileLoginDir(harness, profile.isolation_locator ?? "");
     print(`running ${spec.displayCommand} into ${configDir}`);
-    const child = spawnSync(spec.binary, spec.args, {
+    const child = spawnVendor(spec.binary, spec.args, {
       stdio: "inherit",
       env: nativeLoginEnv(harness, process.env, configDir),
     });
@@ -149,7 +192,7 @@ export async function profilesCommand(args: ParsedArgs, json: boolean): Promise<
       print(`login command exited with ${child.status ?? child.signal ?? "unknown"}`);
     }
     const after = ControlCredentialProfilesResponse.parse(
-      await daemonGet("/credential-profiles"),
+      await get("/credential-profiles"),
     ).profiles.find((p) => p.profile.harness_id === harness && p.profile.profile_id === profileId);
     const status = after?.status;
     if (json) printJson({ profile: after?.profile ?? profile, status: status ?? null });
@@ -233,8 +276,8 @@ export async function profilesCommand(args: ParsedArgs, json: boolean): Promise<
       return printUsageError(json, "usage: claudexor profiles remove <harness> <profile-id>");
     }
     // Daemon-owned removal (one mutation path): registry entry + the profile's
-    // own credential material (scoped login dir / namespaced secret); refuses
-    // while a login job for the account is active.
+    // binding plus data Claudexor owns; vendor-owned OS-user credentials are
+    // reported explicitly and left untouched. Active login jobs still refuse.
     const { addr } = await ensureDaemon();
     const response = await controlApiFetch(
       addr,
@@ -251,6 +294,11 @@ export async function profilesCommand(args: ParsedArgs, json: boolean): Promise<
     if (json) printJson(receipt);
     else {
       print(`removed ${harness}/${profileId} (${receipt.credentialCleanup})`);
+      if (receipt.vendorCredentialDisposition) {
+        print(
+          "Claudexor removed the binding and any Claudexor-owned state or managed secret; it did not change any vendor credential for this OS user.",
+        );
+      }
       if (receipt.cleanupWarning) print(`warning: ${receipt.cleanupWarning}`);
     }
     return 0;
@@ -296,7 +344,7 @@ export async function profilesCommand(args: ParsedArgs, json: boolean): Promise<
       "usage: claudexor profiles [list | add <harness> <profile-id> | login <harness> <profile-id> | enable <harness> <profile-id> | disable <harness> <profile-id> | remove <harness> <profile-id> | rollback-migration [harness]]",
     );
   }
-  const result = ControlCredentialProfilesResponse.parse(await daemonGet("/credential-profiles"));
+  const result = ControlCredentialProfilesResponse.parse(await get("/credential-profiles"));
   if (json) {
     printJson(result);
     return 0;

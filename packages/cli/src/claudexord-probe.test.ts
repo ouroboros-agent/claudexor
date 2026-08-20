@@ -79,9 +79,11 @@ describe("claudexord --probe (D-2 install probe)", () => {
     expect(runProbeIfRequested(["--probe"])).toBe(true);
     expect(runProbeIfRequested([])).toBe(false);
     expect(runProbeIfRequested(["--other"])).toBe(false);
+    expect(runProbeIfRequested(["--probe", "setup"])).toBe(false);
+    expect(runProbeIfRequested(["setup", "--probe"])).toBe(false);
   });
 
-  it("prints one JSON line {version, buildSha} and starts nothing durable", () => {
+  it("prints one additive setup_attach role on the built entry and starts nothing durable", () => {
     const dist = resolve(import.meta.dirname, "../dist/claudexord.js");
     if (!existsSync(dist)) {
       // The integration assertion needs the built daemon; `pnpm build` runs
@@ -96,9 +98,14 @@ describe("claudexord --probe (D-2 install probe)", () => {
     });
     const lines = out.trim().split("\n");
     expect(lines).toHaveLength(1);
-    const parsed = JSON.parse(lines[0]!) as { version: string; buildSha: string };
+    const parsed = JSON.parse(lines[0]!) as {
+      version: string;
+      buildSha: string;
+      roles?: string[];
+    };
     expect(parsed.version).toBe(CLAUDEXOR_VERSION);
     expect(parsed.buildSha).toBe(sha);
+    expect(parsed.roles).toEqual(["setup_attach"]);
   });
 });
 

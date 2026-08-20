@@ -9,9 +9,11 @@ import {
   writeFileSync,
 } from "node:fs";
 import { spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ControlSetupJob } from "@claudexor/schema";
 import { ProcessGroupService, type ProcessIdentityReader } from "@claudexor/core";
 import {
@@ -19,7 +21,7 @@ import {
   extractOAuthUrl,
   runSetupLoginWorker,
 } from "./setup-login-runner.js";
-import { ptyWrappedCommand } from "./setup-login-pty.js";
+import { resolvePtyWrappedCommand } from "./setup-login-pty.js";
 import { createDeviceCodeDisclosureWatcher } from "./setup-device-code-disclosure.js";
 import {
   SETUP_LOGIN_PROTOCOL_VERSION,
@@ -30,6 +32,7 @@ import {
   sealLoginManifest,
 } from "./setup-login-protocol.js";
 import { projectSetupDeviceCode } from "./setup-client-pty.js";
+import { nativeLoginEnv } from "./native-login.js";
 
 /**
  * Upstream half of "non-codex login without Terminal.app": a TERMINAL-mode
@@ -138,6 +141,89 @@ async function runWorker(manifestPath: string, nativeDir: string): Promise<numbe
     }
   }
 }
+
+describe("external client_pty attach runner", () => {
+  it.each([
+    ["agy", ["-p", "/model", "--output-format", "json"]],
+    ["claude", ["auth", "login"]],
+    ["cursor", ["login"]],
+  ] as const)(
+    "runs %s once on inherited stdio without a terminal helper",
+    async (harness, args) => {
+      const jobDir = join(root, `external-${harness}`);
+      mkdirSync(jobDir, { mode: 0o700 });
+      const binary = join(jobDir, harness);
+      writeFileSync(binary, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+      chmodSync(binary, 0o700);
+      const profileConfigDir = join(root, `profile-${harness}`);
+      const executable = captureExecutableEvidence(binary);
+      const spec = sealLoginManifest({
+        version: SETUP_LOGIN_PROTOCOL_VERSION,
+        jobId: `setup-external-${harness}`,
+        executionId: "execution-1",
+        harness,
+        jobDir,
+        binary,
+        args: [...args],
+        cwd: jobDir,
+        profileConfigDir,
+        statePath: join(jobDir, "runner-state.json"),
+        resultPath: join(jobDir, "runner-result.json"),
+        permitPath: join(jobDir, "runner-permit.json"),
+        permitDeadlineAt: new Date(Date.now() + 5_000).toISOString(),
+        executable,
+        commandDigest: commandDigest(executable, args),
+      });
+      const manifestPath = join(jobDir, "runner-manifest.json");
+      atomicPrivateJson(manifestPath, spec);
+      atomicPrivateJson(spec.permitPath, {
+        version: SETUP_LOGIN_PROTOCOL_VERSION,
+        jobId: spec.jobId,
+        executionId: spec.executionId,
+        issuedAt: new Date().toISOString(),
+        commandDigest: spec.commandDigest,
+        manifestDigest: spec.manifestDigest,
+      });
+      const calls: Array<{
+        binary: string;
+        args: readonly string[];
+        options: Record<string, unknown>;
+      }> = [];
+      const spawnProcess = vi.fn((spawnBinary, spawnArgs, options) => {
+        calls.push({ binary: String(spawnBinary), args: spawnArgs as string[], options });
+        const child = new EventEmitter() as ChildProcess;
+        queueMicrotask(() => child.emit("close", 0, null));
+        return child;
+      });
+      const terminalResolver = vi.fn();
+      const prior = process.env.CLAUDEXOR_CONFIG_DIR;
+      process.env.CLAUDEXOR_CONFIG_DIR = root;
+      let expectedEnv: NodeJS.ProcessEnv = {};
+      try {
+        expectedEnv = nativeLoginEnv(harness, process.env, profileConfigDir);
+        expect(
+          await runSetupLoginWorker(manifestPath, {
+            processGroupService: processGroups(),
+            selfPid: 4242,
+            spawnProcess: spawnProcess as never,
+            resolvePtyCommand: terminalResolver,
+          }),
+        ).toBe(0);
+      } finally {
+        if (prior === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+        else process.env.CLAUDEXOR_CONFIG_DIR = prior;
+      }
+      expect(spawnProcess).toHaveBeenCalledOnce();
+      expect(terminalResolver).not.toHaveBeenCalled();
+      expect(calls[0]).toMatchObject({ binary: realpathSync(binary), args: [...args] });
+      expect(calls[0]?.options).toMatchObject({
+        cwd: jobDir,
+        stdio: "inherit",
+        env: expectedEnv,
+      });
+    },
+  );
+});
 
 describe("extractOAuthUrl", () => {
   it("finds a sign-in URL through ANSI color noise and trims trailing punctuation", () => {
@@ -516,11 +602,22 @@ describe("daemon-hosted no-Terminal login modes (owner directive 2026-08-04)", (
  * the tty ever stops being allocated.
  */
 describe("pty-stdin login transport (agy)", () => {
-  it("prefers the tool that actually works, quotes for Tcl, and refuses when neither exists", () => {
+  it("prefers the tool that actually works, quotes for Tcl, and types unavailable hosts", async () => {
+    const inspectExpect = async (path: string) =>
+      path === "/usr/bin/expect" ? ("regular_executable" as const) : ("missing" as const);
     // expect present (every macOS, and a Linux box that installed it).
-    const wrapped = ptyWrappedCommand("/bin/a gy", [], (p) => p === "/usr/bin/expect");
-    expect(wrapped).toMatchObject({ binary: "/usr/bin/expect" });
-    const script = (wrapped as { args: string[] }).args[1]!;
+    const wrapped = await resolvePtyWrappedCommand("/bin/a gy", [], {
+      platform: "darwin",
+      inspectExecutable: inspectExpect,
+    });
+    expect(wrapped).toMatchObject({
+      status: "ready",
+      backend: "expect",
+      command: { binary: "/usr/bin/expect" },
+      helperControlStderr: false,
+    });
+    if (wrapped.status !== "ready") throw new Error("expect transport did not resolve");
+    const script = wrapped.command.args[1]!;
     expect(script).toContain("spawn -noecho {/bin/a gy}");
     // `interact` returns EXPECT's status, not the vendor's, so the script must
     // wait on the child and exit with what it exited with — otherwise a login
@@ -529,12 +626,24 @@ describe("pty-stdin login transport (agy)", () => {
     expect(script).toContain("exit [lindex $r 3]");
     // A word Tcl braces cannot carry is REFUSED, never escaped into a
     // different command than the manifest digest sealed.
-    expect(ptyWrappedCommand("/bin/a{gy", [], (p) => p === "/usr/bin/expect")).toMatchObject({
-      refusal: expect.stringContaining("cannot carry unchanged"),
+    expect(
+      await resolvePtyWrappedCommand("/bin/a{gy", [], {
+        platform: "darwin",
+        inspectExecutable: inspectExpect,
+      }),
+    ).toMatchObject({
+      status: "unsupported",
+      errorCode: "terminal_transport_unsupported",
     });
     // No tty helper at all: a typed refusal, never a login that cannot finish.
-    expect(ptyWrappedCommand("/bin/agy", [], () => false)).toMatchObject({
-      refusal: expect.stringContaining("no terminal helper"),
+    expect(
+      await resolvePtyWrappedCommand("/bin/agy", [], {
+        platform: "darwin",
+        inspectExecutable: async () => "missing",
+      }),
+    ).toMatchObject({
+      status: "unavailable",
+      errorCode: "terminal_transport_unavailable",
     });
   });
 
@@ -545,8 +654,11 @@ describe("pty-stdin login transport (agy)", () => {
     mkdirSync(root, { recursive: true });
     writeFileSync(probe, "#!/bin/bash\n[ -t 0 ] || exit 3\nexit ${1:-0}\n", { mode: 0o700 });
     const run = async (code: string): Promise<number | null> => {
-      const wrapped = ptyWrappedCommand(probe, [code]) as { binary: string; args: string[] };
-      const child = spawn(wrapped.binary, wrapped.args, { stdio: ["pipe", "pipe", "pipe"] });
+      const wrapped = await resolvePtyWrappedCommand(probe, [code]);
+      if (wrapped.status !== "ready") throw new Error("host expect transport unavailable");
+      const child = spawn(wrapped.command.binary, wrapped.command.args, {
+        stdio: ["pipe", "pipe", "pipe"],
+      });
       child.stdout.resume();
       child.stderr.resume();
       return new Promise((resolve) => child.once("exit", resolve));

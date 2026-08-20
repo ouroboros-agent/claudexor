@@ -50,14 +50,9 @@ extension AppModel {
         profileID: String? = nil
     ) async {
         let location = ExecutionLocationID.remote(connectionID)
-        guard remoteConnections.contains(where: { $0.id == connectionID }),
-              let admittedLease = beginRemoteAction(.setupLogin, connectionID: connectionID)
+        guard remoteConnections.contains(where: { $0.id == connectionID }) else { return }
+        guard let admittedLease = beginRemoteAction(.setupLogin, connectionID: connectionID)
         else { return }
-        let transport: SetupJobTransport = harness == .codex ? .daemon : .clientPty
-        let terminalPresentation =
-            transport == .clientPty
-            ? beginRemoteTerminalPresentation(connectionID: connectionID)
-            : nil
         // Admit before the first suspension so invocation order, rather than
         // reconnect scheduling order, defines which login is newest.
         remoteDeviceLogin = nil
@@ -66,31 +61,54 @@ extension AppModel {
         {
             dismissRemoteTerminal(request)
         }
-        retireHarnessProjection(at: location)
-        if remoteClients[location] == nil { await connectRemote(connectionID) }
-        guard let reboundLease = rebindRemoteActionToCurrentGeneration(admittedLease) else {
-            if let terminalPresentation {
-                finishRemoteTerminalPresentation(terminalPresentation)
+        let routingDecision = await RemoteSetupLoginRouting
+            .decisionAfterLoadingCurrentProjection(harness: harness) {
+                if remoteClients[location] == nil { await connectRemote(connectionID) }
+                guard remoteClients[location] != nil else { return nil }
+                if remoteHarnessReadinessFresh[location] != true {
+                    _ = await refreshHarnesses(
+                        fresh: true, locationID: location, markStaleOnFailure: true)
+                }
+                guard remoteHarnessReadinessFresh[location] == true else { return nil }
+                return remoteHarnesses[location]
             }
+        guard let reboundLease = rebindRemoteActionToCurrentGeneration(admittedLease) else {
             finishRemoteAction(admittedLease)
             return
         }
         guard let connection = remoteConnections.first(where: { $0.id == connectionID }),
               let client = remoteClients[location]
         else {
-            if let terminalPresentation {
-                finishRemoteTerminalPresentation(terminalPresentation)
-            }
             finishRemoteAction(reboundLease)
             return
         }
         let lease = reboundLease
+        let transport: SetupJobTransport
+        switch routingDecision {
+        case .unavailable(let message):
+            remoteConnectionMessages[connectionID] = message
+            finishRemoteAction(lease)
+            return
+        case .transport(let selected):
+            transport = selected
+        }
+        let codexLoginFlow: SetupCodexLoginFlow? = harness == .codex
+            ? (transport == .daemon ? .deviceAuth : .browserRedirect)
+            : nil
+        let terminalPresentation =
+            transport == .clientPty
+            ? beginRemoteTerminalPresentation(connectionID: connectionID)
+            : nil
+        // Selection consumed the current daemon projection. Retire it only
+        // after that decision so a cold reconnect cannot be mistaken for a
+        // legacy engine whose decoded row genuinely omitted setupLogin.
+        retireHarnessProjection(at: location)
         let setupTarget = RemoteSetupLoginTarget(
             connectionID: connectionID,
             harness: harness.rawValue,
             profileID: profileID,
             transport: transport.rawValue,
-            loginFlow: harness == .codex ? "device_auth" : nil)
+            loginFlow: codexLoginFlow?.rawValue)
         beginRemoteSetupJobOwnership(lease: lease, target: setupTarget)
         var createdJobID: String?
         var handedOff = false
@@ -108,13 +126,11 @@ extension AppModel {
             }
         }
         do {
-            // Codex device auth remains daemon/API driven. Browser-redirect CLI
-            // logins use the same sealed client_pty job as Claude/Cursor.
             let job = try await client.createSetupJob(SetupJobCreateRequest(
                 harness: harness,
                 action: .login,
                 profileId: profileID,
-                loginFlow: harness == .codex ? .deviceAuth : nil,
+                loginFlow: codexLoginFlow,
                 transport: transport))
             createdJobID = job.jobId
             recordRemoteSetupJob(job.jobId, lease: lease, target: setupTarget)
@@ -146,7 +162,7 @@ extension AppModel {
                 handedOff = true
             } else {
                 remoteConnectionMessages[connectionID] =
-                    "Codex device login started."
+                    "\(HarnessFamily(rawValue: harness.rawValue).label) sign-in started."
                 remoteDeviceLogin = RemoteDeviceLoginRequest(
                     lease: lease, jobID: job.jobId)
                 handedOff = true

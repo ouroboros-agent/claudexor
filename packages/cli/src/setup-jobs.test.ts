@@ -25,6 +25,7 @@ import type {
   AuthSourceReadiness,
   CredentialRoute,
   HarnessRunSpec,
+  SetupNativeCommandErrorCode,
 } from "@claudexor/schema";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "@claudexor/config";
@@ -216,7 +217,7 @@ function writeRunnerResultV2(
     commandStarted?: boolean;
     exitCode?: number | null;
     signal?: string | null;
-    errorCode?: "permit_timeout" | "spawn_failed" | "device_auth_unsupported";
+    errorCode?: SetupNativeCommandErrorCode;
     permitIssuedAt?: string | null;
     executionId?: string;
   } = {},
@@ -506,6 +507,56 @@ describe("setup jobs", () => {
     expect(await waitForTerminal(manager, job.jobId)).toBe("timed_out");
     await manager.shutdown();
   });
+
+  it.each(["agy", "claude", "cursor"])(
+    "seals %s client_pty as external attach before any daemon runner/probe",
+    async (harness) => {
+      process.env.CLAUDEXOR_CONFIG_DIR = join(root, "client-pty-config");
+      const binary = join(root, `fake-${harness}`);
+      writeFileSync(binary, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+      chmodSync(binary, 0o700);
+      const envKey = `CLAUDEXOR_${harness.toUpperCase()}_BIN`;
+      const oldBinary = process.env[envKey];
+      process.env[envKey] = binary;
+      const profile = registerConfigDirProfile({ harnessId: harness, profileId: "work" }).profile;
+      const spawnProcess = vi.fn();
+      let terminalOpens = 0;
+      const manager = createSetupJobManager({
+        rootDir: join(root, `client-pty-${harness}`),
+        platform: "linux",
+        runnerPath: resolveSetupLoginRunnerPath(),
+        spawn: spawnProcess as never,
+        openTerminal: () => {
+          terminalOpens += 1;
+          return fakeOpener();
+        },
+      });
+      try {
+        await manager.start();
+        const job = manager.create({
+          harness,
+          action: "login",
+          authRequest: "subscription",
+          profileId: profile.profile_id,
+          transport: "client_pty",
+        });
+        expect(job).toMatchObject({ state: "waiting_for_input", transport: "client_pty" });
+        const manifest = readLoginManifest(manager._store.paths(job.jobId).manifest);
+        expect(manifest.binary).toBe(realpathSync(binary));
+        expect(manifest.profileConfigDir).toBe(profile.isolation_locator);
+        expect(manifest).not.toHaveProperty("deviceCodePath");
+        expect(manifest).not.toHaveProperty("loginMode");
+        expect(manifest).not.toHaveProperty("inputPath");
+        expect(manifest).not.toHaveProperty("ptyStdin");
+        expect(spawnProcess).not.toHaveBeenCalled();
+        expect(terminalOpens).toBe(0);
+      } finally {
+        await manager.shutdown();
+        if (oldBinary === undefined) delete process.env[envKey];
+        else process.env[envKey] = oldBinary;
+      }
+    },
+  );
 
   it("permits a client_pty attach after its journaled deadline was extended", async () => {
     let nowMs = Date.parse("2026-07-25T00:00:00.000Z");
@@ -1962,6 +2013,78 @@ describe("setup jobs", () => {
     await manager.shutdown();
   });
 
+  it.each([
+    ["terminal_transport_unavailable", "not_supported", "not_supported"],
+    ["terminal_transport_unsupported", "not_supported", "not_supported"],
+    ["terminal_transport_probe_failed", "failed", "launch_failed"],
+    ["terminal_transport_failed", "failed", "launch_failed"],
+  ] as const)(
+    "maps a pre-vendor %s receipt to its exact durable outcome",
+    async (errorCode, expectedState, expectedReason) => {
+      const group = processGroupFixture({ leader: knownLeader(160) });
+      const manager = createSetupJobManager({
+        rootDir: join(root, `terminal-receipt-${errorCode}`),
+        platform: "darwin",
+        runnerPath: "/tmp/setup-login-runner.js",
+        openTerminal: fakeOpener,
+        monitorPollMs: 1,
+        processGroups: group.service,
+      });
+      await manager.start();
+      const job = manager.create(LOGIN_REQUEST);
+      const observedAt = new Date().toISOString();
+      writeRunnerStateV2(manager, job.jobId, group.leader, "awaiting_permit", observedAt);
+      await waitForPhase(manager, job.jobId, "awaiting_user");
+      writeRunnerStateV2(manager, job.jobId, group.leader, "running", observedAt);
+      const permitIssuedAt = manager.status({ jobId: job.jobId }).execution?.permitIssuedAt ?? null;
+      writeRunnerResultV2(manager, job.jobId, {
+        commandStarted: false,
+        errorCode,
+        exitCode: null,
+        permitIssuedAt,
+      });
+      expect(await waitForTerminal(manager, job.jobId)).toBe(expectedState);
+      expect(manager.status({ jobId: job.jobId })).toMatchObject({
+        state: expectedState,
+        outcome: { reason: expectedReason },
+        nativeCommand: { commandStarted: false, errorCode },
+      });
+      await manager.shutdown();
+    },
+  );
+
+  it("keeps a post-start terminal transport break distinct from vendor spawn", async () => {
+    const group = processGroupFixture({ leader: knownLeader(161) });
+    const manager = createSetupJobManager({
+      rootDir: join(root, "terminal-receipt-post-start"),
+      platform: "darwin",
+      runnerPath: "/tmp/setup-login-runner.js",
+      openTerminal: fakeOpener,
+      monitorPollMs: 1,
+      processGroups: group.service,
+    });
+    await manager.start();
+    const job = manager.create(LOGIN_REQUEST);
+    const observedAt = new Date().toISOString();
+    writeRunnerStateV2(manager, job.jobId, group.leader, "awaiting_permit", observedAt);
+    await waitForPhase(manager, job.jobId, "awaiting_user");
+    writeRunnerStateV2(manager, job.jobId, group.leader, "running", observedAt);
+    writeRunnerResultV2(manager, job.jobId, {
+      commandStarted: true,
+      errorCode: "terminal_transport_failed",
+      exitCode: null,
+    });
+    expect(await waitForTerminal(manager, job.jobId)).toBe("failed");
+    expect(manager.status({ jobId: job.jobId })).toMatchObject({
+      outcome: { reason: "command_failed" },
+      nativeCommand: { commandStarted: true, errorCode: "terminal_transport_failed" },
+    });
+    expect(manager.status({ jobId: job.jobId }).message).toContain(
+      "terminal transport failed after the vendor command started",
+    );
+    await manager.shutdown();
+  });
+
   it("never offers the macOS-only Terminal handoff off macOS", async () => {
     // The remedy names `--browser-redirect`, which startObservableLogin refuses
     // unless the daemon runs on macOS. Windows reaches this message now that
@@ -2317,8 +2440,8 @@ describe("setup jobs for credential profiles (INV-135)", () => {
       openTerminal: fakeOpener,
     });
     const AGY_LOGIN = { harness: "agy", action: "login", authRequest: "subscription" } as const;
-    // agy has NO default credential store, so a profile-less login is refused
-    // at create time rather than dropping a vendor token in the daemon's home.
+    // agy has NO default binding store, so a profile-less login is refused at
+    // create time rather than targeting vendor state at the daemon's HOME.
     expect(() => manager.create(AGY_LOGIN)).toThrow(/no default credential store/);
 
     const job = manager.create({ ...AGY_LOGIN, profileId: "work" });
@@ -2373,6 +2496,11 @@ describe("setup jobs for credential profiles (INV-135)", () => {
     expect(resolveLoginProfileBinding("codex", "login", "work")).toEqual({
       profileId: "work",
       configDir: realpathSync(profile.isolation_locator!),
+      credentialPolicy: {
+        identity_scope: "profile",
+        max_enabled_profiles: null,
+        cleanup_owner: "claudexor",
+      },
     });
   });
 

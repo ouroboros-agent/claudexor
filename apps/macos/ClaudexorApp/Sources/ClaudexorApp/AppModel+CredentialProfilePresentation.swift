@@ -3,7 +3,7 @@ import ClaudexorKit
 // MARK: - Credential profile presentation
 
 extension AppModel {
-    // MARK: Footer profile (M5c) — the active credential identity in the sidebar
+    // MARK: Footer profile (M5c) — the active credential binding in the sidebar
 
     /// The harness + credential profile the NEXT turn of the current thread/draft
     /// will authenticate as, resolved from the wire (thread sticky > draft). The

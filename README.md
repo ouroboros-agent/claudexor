@@ -23,12 +23,13 @@ Compared to driving a bare Codex or Claude Code session, Claudexor adds the
 layer the vendors do not ship: best-of-N races with independent reviewers and
 arbitration; honest budget/quota accounting (unknown cost is never `$0`);
 deterministic gates and protected paths; and — since 2.1 — **credential
-profiles**: several Claude/Codex/Cursor subscriptions registered side by side,
-each with its own isolated named login. Live subscription-quota tracking —
-and the opt-in policy that rotates a spent account out of the way on typed
-vendor limits — covers the harnesses with a vendor usage source (Claude and
-Codex); Cursor has none yet. Everything runs on your machine, files are the
-source of truth, and there is no telemetry.
+profiles**: named Antigravity/Claude/Codex/Cursor subscription bindings side
+by side, each with Claudexor-scoped state and platform-declared credential
+custody. Live subscription-quota tracking — and the opt-in policy that rotates
+a spent account out of the way on typed vendor limits — covers the harnesses
+with a vendor usage source (Antigravity, Claude, and Codex); Cursor has none
+yet. Everything runs on your machine, files are the source of truth, and there
+is no telemetry.
 
 Current status: **v3.7.0**. See "Stability at 2.0" below for what is a stable
 contract and what remains experimental; retired verbs and mode ids hard-error
@@ -413,18 +414,22 @@ claudexor agent --delegate "ship the v2 parser refactor across this repo"
 ## Accounts And Quota
 
 Every account is a **named registry row** — one unified kind (INV-135), no
-separate "default" or "CLI login" account type. Register several Claude,
-Codex, or Cursor subscriptions side by side, each in its own isolated
-Claudexor-owned store. An existing legacy default-store login auto-registers
-at the first start of this engine as the ordinary `claude-default` /
-`codex-default` row (its credential bytes never move), and `claudexor auth
-login <harness>` is simply sugar for signing into that bootstrap row. The
-vendor's ordinary host stores (`~/.claude`, `~/.codex`, the host Cursor
-Keychain login) are never read or mutated — Cursor accounts live only in
-isolated file-store rows. Rows may alternatively use namespaced secret-store
-keys (`anthropic:work`, `openai:acc2`). Rows are durable non-secret entries in
-the global config's `credential_profiles`; secret material stays in the row's
-own store dir or the secret store.
+separate "default" or "CLI login" account type. Register named Antigravity,
+Claude, Codex, or Cursor subscription bindings side by side, each with its own
+Claudexor-owned scoped state and subject to the effective platform cardinality
+policy. Windows Antigravity permits one enabled OS-user binding. An existing
+legacy default-store login auto-registers at the first start of this engine as
+the ordinary `claude-default` / `codex-default` row (its credential bytes never
+move), and `claudexor auth
+login <harness>` is simply sugar for signing into that bootstrap row. Removing
+a row does not mutate vendor credentials outside the binding; on platforms
+where a credential is owned by the OS user, it may be left unchanged. Cursor
+accounts live only in isolated file-store rows. Rows may alternatively use
+namespaced secret-store keys (`anthropic:work`, `openai:acc2`). Rows are
+durable non-secret entries in the global config's `credential_profiles`;
+credential material stays in Claudexor-owned scoped state, a managed secret
+store, or a vendor/OS-user store declared by platform policy, never in the
+registry row.
 
 ```bash
 claudexor profiles                         # every account per harness + the informational next-up verdict
@@ -433,17 +438,17 @@ claudexor profiles add claude work         # register another account
 claudexor profiles login claude work       # the vendor's own login, scoped to the row's dir
 claudexor profiles disable claude work     # Enabled toggle: a disabled account is never routable
 claudexor profiles enable claude work
-claudexor profiles remove claude work      # delete the row AND its local credential material
+claudexor profiles remove claude work      # remove the binding + any Claudexor-owned state/managed secret
 claudexor secrets set claude_oauth:work --from-env TOKEN_VAR
 claudexor agent "fix the parser" --profile work   # explicit per-run pin always wins
 ```
 
 Accounts are **symmetric**: every row has the same **Enabled** toggle (the
 only routing control — there is NO user-settable "active" account) and the
-same **Remove** (removal deletes the row and its local credential material,
-provably: a partial cleanup is a typed retryable error, never a silent
-half-delete; your account at the vendor is untouched and "Sign in" brings it
-back). An UNPINNED run routes through the quota-aware **pool** of enabled,
+same **Remove** (removal deletes the binding and any Claudexor-owned state or
+managed secret, provably: a partial cleanup is a typed retryable error, never a
+silent half-delete; a vendor credential for the OS user may be left unchanged).
+An UNPINNED run routes through the quota-aware **pool** of enabled,
 signed-in accounts: the freshest-headroom account wins, unknown-quota accounts
 rank after known headroom but before exhausted ones, and ties break
 deterministically. An unpinned chat thread is **sticky**: it stays on the
@@ -458,18 +463,19 @@ owner (`accountPools`; also `GET /v2/account-pools`). When the pool is empty
 or exhausted, the typed API-key fallback may serve the run as an explicit,
 disclosed **route** — never a synthetic account row; key management stays in
 Auth. The macOS Accounts surface renders these rows directly from ONE server
-projection — no client re-derives Enabled or next-up. Each row's secondary
-line shows the account's non-secret **email · plan**, projected daemon-side
-from that account's OWN Claudexor-owned store.
+projection — no client re-derives Enabled or next-up. When the harness exposes
+it, each row's secondary line shows the account's non-secret **email · plan**,
+projected daemon-side under that binding's effective credential route; agy
+currently exposes no machine-readable account identity.
 Vendor-session resume never crosses accounts. Subscription quota is tracked
-per account from the vendor's own `oauth/usage` endpoint (proactive
-five-hour/seven-day/per-model percentages in the app's quota footer, one chip
-per account) — the access token is read transiently from the row's own
-vendor store, its macOS keychain item or on Linux the vendor's
-`.credentials.json` in the row's config dir — and each harness may declare
-a typed `profile_policy`
-(`limit_action: fail|ask|rotate`): reactive rotation moves pool-selected
-accounts ONLY on typed vendor-limit signals — never on ordinary
+per account through each harness's declared vendor source: vendor usage
+endpoints where available and Antigravity's own `/quota` command (proactive
+window/per-model percentages in the app's quota footer, one chip per account).
+Source-specific credential access stays inside the adapter/vendor route;
+Windows agy uses the current OS user's Credential Manager identity while the
+binding HOME scopes vendor state. Each harness may declare a typed
+`profile_policy` (`limit_action: fail|ask|rotate`): reactive rotation moves
+pool-selected accounts ONLY on typed vendor-limit signals — never on ordinary
 network errors and never off an explicit pin — with full provenance on the
 run record. Downgrading to an older engine is supported through the engine's
 own rollback (`claudexor profiles rollback-migration`) run BEFORE the
@@ -530,8 +536,8 @@ claudexor auth status
 claudexor auth login codex    # codex login (device-auth by default)
 claudexor auth login claude   # claude auth login (claude.ai subscription route)
 claudexor auth login cursor   # cursor-agent login 
-claudexor profiles add agy work    # Antigravity signs in per named account
-claudexor profiles login agy work # (it has no default account to sign in to)
+claudexor profiles add agy work    # register a named Antigravity binding
+claudexor profiles login agy work  # login with its scoped HOME and platform credential policy
 claudexor secrets set openai --from-env OPENAI_API_KEY
 claudexor secrets list
 claudexor settings show

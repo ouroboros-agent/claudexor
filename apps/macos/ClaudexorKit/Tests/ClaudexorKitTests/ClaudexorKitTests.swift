@@ -398,6 +398,30 @@ import Testing
         #expect(legacyStatus.routableIntents.isEmpty)
         #expect(legacyStatus.disabledIntents.isEmpty)
         #expect(legacyStatus.checks.isEmpty)
+        #expect(legacyStatus.setupLogin == .legacyAbsent)
+
+        let unavailable = try JSONDecoder().decode(
+            HarnessStatus.self,
+            from: Data(#"{"id":"agy","status":"unavailable","setupLogin":null}"#.utf8))
+        #expect(unavailable.setupLogin == .unavailable)
+        let inApp = try JSONDecoder().decode(
+            HarnessStatus.self,
+            from: Data(#"{"id":"claude","status":"ok","setupLogin":{"mode":"in_app"}}"#.utf8))
+        #expect(inApp.setupLogin == .inApp)
+        let terminal = try JSONDecoder().decode(
+            HarnessStatus.self,
+            from: Data(#"{"id":"cursor","status":"ok","setupLogin":{"mode":"external_terminal"}}"#.utf8))
+        #expect(terminal.setupLogin == .externalTerminal)
+        #expect(throws: DecodingError.self) {
+            _ = try JSONDecoder().decode(
+                HarnessStatus.self,
+                from: Data(#"{"id":"x","status":"ok","setupLogin":{"mode":"automatic"}}"#.utf8))
+        }
+        #expect(throws: DecodingError.self) {
+            _ = try JSONDecoder().decode(
+                HarnessStatus.self,
+                from: Data(#"{"id":"x","status":"ok","setupLogin":{"mode":"in_app","junk":true}}"#.utf8))
+        }
     }
 
     @Test func harnessModelsResponseDecodesEnumerationAndNoneFallback() throws {
@@ -1358,6 +1382,55 @@ import Testing
         #expect(throws: DecodingError.self) {
             try JSONDecoder().decode(SetupJob.self, from: JSONSerialization.data(withJSONObject: object))
         }
+    }
+
+    @Test func terminalTransportReceiptCodesMatchCommandStartBoundary() throws {
+        let digest = String(repeating: "a", count: 64)
+        var receipt: [String: Any] = [
+            "executionId": "exec-terminal-1",
+            "commandDigest": digest,
+            "manifestDigest": String(repeating: "b", count: 64),
+            "permitIssuedAt": NSNull(),
+            "commandStarted": false,
+            "exitCode": NSNull(),
+            "signal": NSNull(),
+            "finishedAt": "2026-08-19T00:00:00Z"
+        ]
+        let beforeVendor: [(String, SetupNativeCommandErrorCode)] = [
+            ("terminal_transport_unavailable", .terminalTransportUnavailable),
+            ("terminal_transport_unsupported", .terminalTransportUnsupported),
+            ("terminal_transport_probe_failed", .terminalTransportProbeFailed)
+        ]
+        for (raw, expected) in beforeVendor {
+            receipt["errorCode"] = raw
+            let data = try JSONSerialization.data(withJSONObject: receipt)
+            let decoded = try JSONDecoder().decode(SetupNativeCommandReceipt.self, from: data)
+            #expect(decoded.errorCode == expected)
+
+            var contradicted = receipt
+            contradicted["commandStarted"] = true
+            contradicted["permitIssuedAt"] = "2026-08-18T23:59:59Z"
+            #expect(throws: DecodingError.self) {
+                try JSONDecoder().decode(
+                    SetupNativeCommandReceipt.self,
+                    from: JSONSerialization.data(withJSONObject: contradicted))
+            }
+        }
+
+        // A relay/control break may occur before or after the helper's validated
+        // started frame; only the ordinary started-command permit rule applies.
+        receipt["errorCode"] = "terminal_transport_failed"
+        let preStart = try JSONDecoder().decode(
+            SetupNativeCommandReceipt.self,
+            from: JSONSerialization.data(withJSONObject: receipt))
+        #expect(preStart.errorCode == .terminalTransportFailed)
+
+        receipt["commandStarted"] = true
+        receipt["permitIssuedAt"] = "2026-08-18T23:59:59Z"
+        let postStart = try JSONDecoder().decode(
+            SetupNativeCommandReceipt.self,
+            from: JSONSerialization.data(withJSONObject: receipt))
+        #expect(postStart.errorCode == .terminalTransportFailed)
     }
 
     @Test func authCapabilityReceiptPreservesRequiredNullableFields() throws {
@@ -2950,6 +3023,7 @@ extension ClaudexorKitTests {
         #expect(receipt.removed == true)
         #expect(receipt.credentialCleanup == "config_dir_removed")
         #expect(receipt.cleanupWarning == nil)
+        #expect(receipt.vendorCredentialDisposition == nil)
 
         let warned = """
         {"profile":{"profile_id":"w","harness_id":"codex","display_name":"w",
@@ -2962,6 +3036,16 @@ extension ClaudexorKitTests {
             DeleteCredentialProfileReceipt.self, from: Data(warned.utf8))
         #expect(disclosed.credentialCleanup == "none")
         #expect(disclosed.cleanupWarning?.contains("cleanup failed") == true)
+
+        let external = """
+        {"removed":true,"credentialCleanup":"none","vendorCredentialDisposition":{
+          "owner":"vendor","scope":"os_user","state":"left_unchanged"}}
+        """
+        let externalReceipt = try JSONDecoder().decode(
+            DeleteCredentialProfileReceipt.self, from: Data(external.utf8))
+        #expect(externalReceipt.vendorCredentialDisposition?.owner == .vendor)
+        #expect(externalReceipt.vendorCredentialDisposition?.scope == .osUser)
+        #expect(externalReceipt.vendorCredentialDisposition?.state == .leftUnchanged)
     }
 
     /// `verification_source` is what the `verification` verdict is WORTH:

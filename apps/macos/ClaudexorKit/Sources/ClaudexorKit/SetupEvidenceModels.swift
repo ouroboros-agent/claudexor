@@ -132,6 +132,10 @@ public enum SetupNativeCommandErrorCode: String, Codable, Sendable {
     case permitTimeout = "permit_timeout"
     case spawnFailed = "spawn_failed"
     case deviceAuthUnsupported = "device_auth_unsupported"
+    case terminalTransportUnavailable = "terminal_transport_unavailable"
+    case terminalTransportUnsupported = "terminal_transport_unsupported"
+    case terminalTransportProbeFailed = "terminal_transport_probe_failed"
+    case terminalTransportFailed = "terminal_transport_failed"
 }
 
 public struct SetupNativeCommandReceipt: Codable, Sendable, Equatable {
@@ -194,6 +198,12 @@ public struct SetupNativeCommandReceipt: Codable, Sendable, Equatable {
         if errorCode == .deviceAuthUnsupported {
             try require(!commandStarted, decoder: decoder,
                         "Device auth unsupported means the vendor command was never started")
+        }
+        if let errorCode,
+           [.terminalTransportUnavailable, .terminalTransportUnsupported,
+            .terminalTransportProbeFailed].contains(errorCode) {
+            try require(!commandStarted, decoder: decoder,
+                        "Preflight terminal transport failure cannot claim command start")
         }
     }
 

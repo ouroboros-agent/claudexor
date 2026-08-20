@@ -16,6 +16,7 @@ import type {
 } from "@claudexor/schema";
 import type { loadConfig } from "@claudexor/config";
 import type { AdapterRegistry, HarnessAdapter } from "@claudexor/core";
+import { credentialProfilePolicyProblem, credentialProfilePolicyState } from "@claudexor/core";
 import type { EventLog } from "@claudexor/event-log";
 import { PoolRouteFlags, resolveAccountForRun } from "./account-resolution.js";
 import { currentSubjectProber, readyProfilesForRotation } from "./credential-differential.js";
@@ -204,10 +205,15 @@ export class OrchestratorCredentials {
     defaultRoute: "local_session" | "api_key" | null,
   ): Promise<CredentialProfile | null> {
     const adapter = this.host.registry().get(harnessId);
+    const registry = this.host.config(input.repoRoot)?.global.credential_profiles ?? [];
+    const profileCardinality = credentialProfilePolicyState({ adapter, registry });
+    if (profileCardinality.ambiguous)
+      throw credentialProfilePolicyProblem(profileCardinality, "credential_profile_ambiguous");
     return resolveAccountForRun({
       harnessId,
-      registry: this.host.config(input.repoRoot)?.global.credential_profiles ?? [],
+      registry,
       policy: this.profilePolicy(input.repoRoot, harnessId),
+      profileCardinality,
       snapshots: this.host.quotaSnapshots(),
       quota: this.vendorQuotaObservations(),
       unusable: this.host.credentialUnusable(),

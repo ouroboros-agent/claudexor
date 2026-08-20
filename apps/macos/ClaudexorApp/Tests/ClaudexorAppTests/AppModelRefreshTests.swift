@@ -4493,8 +4493,9 @@ struct AppModelRefreshTests {
 
         #expect(deleted.count == 1)
         #expect(reloaded.count == 1)
-        #expect(notice?.contains("still registered") == true)
-        #expect(notice?.contains("Try Remove again") == true)
+        #expect(notice.isError)
+        #expect(notice.message.contains("still registered"))
+        #expect(notice.message.contains("Try Remove again"))
         // The row survives the failed delete — never a half-deleted success.
         #expect(AccountsPresentation.rows(model: model).first?.profileId == "work")
     }

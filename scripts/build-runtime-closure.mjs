@@ -47,6 +47,7 @@ import {
   copyTreeMaterialized,
 } from "./lib/remote-runtime-archive.mjs";
 import { runtimeArchiveName, runtimeArchiveUrl } from "./lib/runtime-manifest-contract.mjs";
+import { verifyWin32ConptyHelperCustody } from "./lib/win32-conpty-artifact.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..");
@@ -241,6 +242,11 @@ function main() {
       fail(`closure entry must be a regular file or directory: Contents/Resources/${entry}`);
     }
   }
+  const expectedWin32ConptySha256 = options["win32-conpty-sha256"];
+  const win32ConptyHelper = join(resources, "native", "claudexor-conpty-helper.exe");
+  if (expectedWin32ConptySha256 !== undefined) {
+    verifyWin32ConptyHelperCustody([win32ConptyHelper], expectedWin32ConptySha256);
+  }
   // Node MUST stay app-owned: refuse to ship it inside the update closure even
   // if a future build-app.sh change accidentally routed it here.
   if (CLOSURE_ENTRIES.includes("node"))
@@ -267,6 +273,12 @@ function main() {
     // Run the addon guard AFTER link materialization so a linked directory
     // cannot hide a forbidden `.node` payload from the recursive walk.
     assertNoNativeAddons(staged, CLOSURE_ENTRIES);
+    if (expectedWin32ConptySha256 !== undefined) {
+      verifyWin32ConptyHelperCustody(
+        [win32ConptyHelper, join(staged, "native", "claudexor-conpty-helper.exe")],
+        expectedWin32ConptySha256,
+      );
+    }
 
     // Tar the closure entries at the ROOT of the archive (no leading ./ dir),
     // so unpacking into versions/<v>/ yields

@@ -3,6 +3,19 @@ import { AdapterStatus, ConformanceCheck, HarnessManifest } from "./harness.js";
 import { AuthSourceReadiness } from "./auth.js";
 import { DelegationCapability } from "./delegation.js";
 
+/** Effective host login flow a thin client may request for one harness. */
+export const SetupLoginCapability = z
+  .object({
+    mode: z
+      .enum(["in_app", "external_terminal"])
+      .describe(
+        "in_app requests the daemon-hosted login flow; external_terminal requests the existing client PTY flow.",
+      ),
+  })
+  .strict()
+  .describe("Effective setup-login flow for this harness on the current host.");
+export type SetupLoginCapability = z.infer<typeof SetupLoginCapability>;
+
 /**
  * ONE display-ready readiness check (W4.7 sol #18): the daemon normalizes raw
  * doctor probes, auth-source readiness, and the configured-model verdict into
@@ -96,6 +109,11 @@ export const HarnessStatusDto = z
       .default(null)
       .describe(
         "Engine-owned Delegate capability for this harness and installed runtime; null on legacy status rows.",
+      ),
+    setupLogin: SetupLoginCapability.nullable()
+      .optional()
+      .describe(
+        "Effective setup-login flow for this harness on the current host; current producers emit null or an object, while omission identifies a legacy row.",
       ),
   })
   .describe(

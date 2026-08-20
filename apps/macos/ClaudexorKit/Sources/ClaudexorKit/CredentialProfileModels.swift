@@ -11,10 +11,11 @@ import FoundationNetworking
 // names (snake_case) — mapped explicitly here.
 
 /// Non-secret {email, plan} identity of one account (INV-067), derived
-/// DAEMON-SIDE from the account's OWN Claudexor-owned store. The app RENDERS
-/// this projection — it never reads a vendor credential file itself (the
-/// removed app-side reader was the INV-067/INV-002 violation). Both fields are
-/// optional so a store that discloses only one still projects.
+/// DAEMON-SIDE under the exact binding's effective credential route when the
+/// harness exposes it. The app RENDERS this projection — it never reads a
+/// vendor credential file itself (the removed app-side reader was the
+/// INV-067/INV-002 violation). Both fields are optional because a harness may
+/// disclose one field or no machine-readable identity at all.
 public struct AccountIdentity: Codable, Sendable, Equatable {
     public let email: String?
     public let plan: String?
@@ -55,9 +56,10 @@ public struct CredentialProfileEntry: Codable, Sendable, Identifiable, Equatable
         public let availability: String
         public let verification: String
         /// WHAT the `verification` verdict is worth: `local_store` = only that
-        /// this profile's credential material is present and well-formed, which
-        /// cannot tell a live token from a revoked one; `vendor` = the vendor
-        /// itself answered a request made with THIS profile's credential.
+        /// this binding's required local state or managed secret is present and
+        /// well-formed, which cannot tell a live token from a revoked one;
+        /// `vendor` = the vendor answered under this binding's exact environment
+        /// and effective platform credential policy.
         /// Dropping it made `passed` read as vendor-confirmed on every client.
         public let verificationSource: String
         public let detail: String?
@@ -84,9 +86,10 @@ public struct CredentialProfileEntry: Codable, Sendable, Identifiable, Equatable
 
     public let profile: Profile
     public let status: Status
-    /// Non-secret {email, plan} of this account, projected daemon-side from the
-    /// profile's OWN store (INV-067). nil when absent/undisclosed, or when an
-    /// older daemon omits the field (`decodeIfPresent`).
+    /// Non-secret {email, plan} of this account, projected daemon-side under
+    /// the exact binding's effective credential route (INV-067). nil when
+    /// absent/undisclosed, or when an older daemon omits the field
+    /// (`decodeIfPresent`).
     public let identity: AccountIdentity?
     public var id: String { "\(profile.harnessId)/\(profile.profileId)" }
 
@@ -196,8 +199,8 @@ public struct UpdateCredentialProfileRequest: Encodable, Sendable, Equatable {
 }
 
 /// Body for POST /v2/credential-profiles. Registration only covers
-/// config_dir_login harnesses (claude|codex|cursor); the server validates the
-/// slug and rejects a duplicate id (409) or an unsupported harness (400).
+/// config_dir_login harnesses (agy|claude|codex|cursor); the server validates
+/// the slug and rejects a duplicate id (409) or an unsupported harness (400).
 public struct CreateCredentialProfileRequest: Encodable, Sendable, Equatable {
     public let harnessId: String
     public let profileId: String
@@ -219,11 +222,20 @@ public struct CreateCredentialProfileRequest: Encodable, Sendable, Equatable {
     }
 }
 
-/// Receipt for DELETE /v2/credential-profiles/:harness/:id. Under the unified
-/// account model (D-U4) this decodes ONLY on provable success: the registry
-/// entry AND the account's own credential material are gone. A partial cleanup
-/// failure is a typed RETRYABLE 503 (`credential_cleanup_failed`) that keeps
-/// the row registered — never `removed: true` with a warning.
+public struct VendorCredentialDisposition: Decodable, Sendable, Equatable {
+    public enum Owner: String, Decodable, Sendable { case vendor }
+    public enum Scope: String, Decodable, Sendable { case osUser = "os_user" }
+    public enum State: String, Decodable, Sendable { case leftUnchanged = "left_unchanged" }
+
+    public let owner: Owner
+    public let scope: Scope
+    public let state: State
+}
+
+/// Receipt for DELETE /v2/credential-profiles/:harness/:id. Success proves the
+/// binding and any Claudexor-owned state or managed secret were removed. A
+/// typed disposition records when a vendor-owned OS-user credential was left
+/// unchanged.
 public struct DeleteCredentialProfileReceipt: Decodable, Sendable {
     public let removed: Bool
     /// config_dir_removed | secret_deleted | none.
@@ -231,6 +243,7 @@ public struct DeleteCredentialProfileReceipt: Decodable, Sendable {
     /// DEPRECATED wire-compat field: a unified-model engine never emits it;
     /// only an older engine's removed-with-warning receipt still carries one.
     public let cleanupWarning: String?
+    public let vendorCredentialDisposition: VendorCredentialDisposition?
 }
 
 public extension GatewayClient {
@@ -287,8 +300,9 @@ public extension GatewayClient {
         return try Self.decoder.decode(CredentialProfileEntry.self, from: data)
     }
 
-    /// Remove a credential profile: the daemon deletes the registry entry plus
-    /// the profile's own credential material. 409 = a login job is active;
+    /// Remove a credential profile: the daemon deletes the binding plus any
+    /// Claudexor-owned state or managed secret. A vendor OS-user credential may
+    /// be left unchanged. 409 = a login job is active;
     /// 503 `credential_cleanup_failed` = a partial cleanup failure that kept
     /// the row registered — retry the removal (D-U4).
     func deleteCredentialProfile(harnessId: String, profileId: String) async throws

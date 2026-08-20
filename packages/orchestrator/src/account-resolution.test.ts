@@ -63,6 +63,46 @@ function ctx(overrides: Partial<AccountResolutionContext> = {}): AccountResoluti
 }
 
 describe("resolveAccountForRun ladder predicate (Enabled-toggle bypass fix)", () => {
+  it("fails loud on a pre-existing ambiguous profile set before any readiness probe", async () => {
+    let probes = 0;
+    const context = ctx({
+      harnessId: "agy",
+      registry: [
+        profileRow({ profile_id: "a", harness_id: "agy" }),
+        profileRow({ profile_id: "b", harness_id: "agy" }),
+      ],
+      profileCardinality: {
+        harnessId: "agy",
+        platform: "win32",
+        policy: {
+          identity_scope: "os_user",
+          max_enabled_profiles: 1,
+          cleanup_owner: "vendor",
+        },
+        enabledProfileCount: 2,
+        ambiguous: true,
+      },
+      probe: async (profile) => {
+        probes += 1;
+        return {
+          profile_id: profile.profile_id,
+          harness_id: profile.harness_id,
+          availability: "available",
+          verification: "passed",
+          verification_source: "vendor",
+          detail: "must not run",
+          last_verified_at: null,
+        };
+      },
+    });
+    await expect(resolveAccountForRun(context)).rejects.toMatchObject({
+      status: 409,
+      code: "credential_profile_ambiguous",
+      requiredActions: ["disable_extra_profiles"],
+    });
+    expect(probes).toBe(0);
+  });
+
   it("all-rows-disabled refuses typed under subscription — never the legacy ladder", async () => {
     const context = ctx({ registry: [profileRow({ enabled: false })] });
     await expect(resolveAccountForRun(context)).rejects.toMatchObject({

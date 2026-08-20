@@ -278,6 +278,7 @@ extension AppModel {
                 attachmentInputs: attachmentInputs,
                 acceptsBrowser: acceptsBrowser,
                 delegation: status.delegation,
+                setupLogin: status.setupLogin,
                 effortLevels: effortLevels,
                 modelEffortLevels: modelEffortLevels)
         }

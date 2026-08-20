@@ -64,31 +64,36 @@ export const BIN = process.env.CLAUDEXOR_CURSOR_BIN || "cursor-agent";
 const CURSOR_API_SMOKE_CACHE_TTL_MS = 60 * 60_000;
 const CURSOR_API_SMOKE_FAILURE_CACHE_TTL_MS = 30_000;
 
-const CURSOR_CAPABILITY_PROFILE: HarnessCapabilityProfile = HarnessCapabilityProfileSchema.parse({
-  auth: {
-    supported_sources: ["native_session", "api_key_env"],
-    preferred_source: null,
-    credential_transports: [
-      // Unified account model (owner decision D-U3): every native cursor
-      // session lives in the vendor's FILE store inside a Claudexor-owned
-      // account-row HOME (HOME/XDG/APPDATA-relocatable; config/session state
-      // relocates separately). The host OS-Keychain login is never read,
-      // probed, or bridged — that transport is retired.
-      { source: "native_session", kind: "config_file", relocatable_by: ["HOME"] },
-      { source: "api_key_env", kind: "env_var", relocatable_by: ["ENV"] },
-    ],
-  },
-  // Ask mode is the mechanism: the CLI withholds the write/shell tools there
-  // ("--mode ask ... (read-only)" per cursor-agent --help), which is a tool
-  // allowlist, not a filesystem sandbox. `--sandbox enabled` alone was proven
-  // NOT to enforce readonly: a print-mode agent run "has access to all tools,
-  // including write and shell", and a live probe wrote a file through it.
-  access_control: { readonly_mechanism: "tool_allowlist" },
-  isolation: {
-    supported_containment: ["env_or_file_injection"],
-  },
-  attachment_inputs: [],
-});
+/** One manifest-owned declaration of the managed login's stdin contract. */
+export const CURSOR_MANAGED_LOGIN = { stdin: "none" } as const;
+
+export const CURSOR_CAPABILITY_PROFILE: HarnessCapabilityProfile =
+  HarnessCapabilityProfileSchema.parse({
+    auth: {
+      supported_sources: ["native_session", "api_key_env"],
+      preferred_source: null,
+      credential_transports: [
+        // Unified account model (owner decision D-U3): every native cursor
+        // session lives in the vendor's FILE store inside a Claudexor-owned
+        // account-row HOME (HOME/XDG/APPDATA-relocatable; config/session state
+        // relocates separately). The host OS-Keychain login is never read,
+        // probed, or bridged — that transport is retired.
+        { source: "native_session", kind: "config_file", relocatable_by: ["HOME"] },
+        { source: "api_key_env", kind: "env_var", relocatable_by: ["ENV"] },
+      ],
+      managed_login: CURSOR_MANAGED_LOGIN,
+    },
+    // Ask mode is the mechanism: the CLI withholds the write/shell tools there
+    // ("--mode ask ... (read-only)" per cursor-agent --help), which is a tool
+    // allowlist, not a filesystem sandbox. `--sandbox enabled` alone was proven
+    // NOT to enforce readonly: a print-mode agent run "has access to all tools,
+    // including write and shell", and a live probe wrote a file through it.
+    access_control: { readonly_mechanism: "tool_allowlist" },
+    isolation: {
+      supported_containment: ["env_or_file_injection"],
+    },
+    attachment_inputs: [],
+  });
 
 /** True only when the supplied env explicitly selects the vendor FILE store
  * (an account row's HOME, `AGENT_CLI_CREDENTIAL_STORE=file`). Any other env
@@ -349,6 +354,7 @@ export function createCursorAdapter(deps: Partial<CursorRuntimeDeps> = {}): Harn
     });
   return {
     id: "cursor",
+    capabilityProfile: CURSOR_CAPABILITY_PROFILE,
 
     async discover(): Promise<HarnessManifest> {
       const version = await runtime.detectVersion();

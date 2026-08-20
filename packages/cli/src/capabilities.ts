@@ -16,9 +16,10 @@ import { validateModel } from "@claudexor/core";
 import { defaultClaudexorTools } from "@claudexor/mcp-server";
 import { CLAUDEXOR_VERSION } from "@claudexor/util";
 import { CLI_COMMANDS } from "./command-registry.js";
-import { buildGateway, harnessModels } from "./registry.js";
+import { buildGateway, buildRegistry, harnessModels } from "./registry.js";
 import { delegationCapabilityFor } from "./delegation-capability.js";
 import { probeGitCapability } from "@claudexor/workspace";
+import { effectiveSetupLoginCapability } from "./setup-login-capability.js";
 
 /** MCP tool names from the server's own descriptor producer (noop runner). */
 export function mcpToolNames(): readonly string[] {
@@ -42,6 +43,7 @@ export async function buildAgentCapabilityCatalog(): Promise<AgentCapabilityCata
     probeGitCapability(),
   ]);
   const cfg = loadConfig(NO_PROJECT_ROOT);
+  const adapters = buildRegistry({ includeFakes: false });
 
   const harnesses: CatalogHarness[] = await Promise.all(
     statuses.map(async (s) => {
@@ -92,6 +94,9 @@ export async function buildAgentCapabilityCatalog(): Promise<AgentCapabilityCata
         accessProfilesSupported: [...(s.manifest?.access_profiles_supported ?? [])],
         readonlyMechanism: profile?.access_control.readonly_mechanism ?? "none",
         delegation: delegationCapabilityFor(s.manifest),
+        setupLogin: await effectiveSetupLoginCapability(s.id, {
+          getAdapter: (id) => adapters.get(id),
+        }),
       };
     }),
   );

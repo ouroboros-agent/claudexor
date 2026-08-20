@@ -226,7 +226,11 @@ they already pay for; API keys are an explicitly-labeled fallback route,
 never the default. Native login remains a vendor ceremony that Claudexor
 observes and verifies — it never brokers callbacks, copies tokens, or
 mutates the vendor's own store. Additional accounts are additive isolated
-profiles with their own vendor-owned state; readiness is always a live
+profiles where the vendor's platform transport actually provides independent
+credential custody. The effective profile policy says when a row is
+config-directory-scoped versus OS-user-scoped; Windows Antigravity therefore
+allows one enabled binding instead of presenting several labels for one vendor
+Keychain identity. Readiness is always a live
 doctor projection in the exact environment a run will use, never a stored
 assertion. Raw secrets never become artifacts — prompts included.
 
@@ -242,8 +246,13 @@ server-side, vendor backend behavior Claudexor discloses and mitigates
 (device-code default, ephemeral-session request, isolation guidance) but never
 claims to prevent. Only the official app-server touches OAuth; Claudexor never
 brokers callbacks or reads the one-time code into anything durable. An
+effective per-harness capability tells clients whether the current host can run
+setup in-app or needs the existing external-terminal attach; it is derived
+from the same bounded terminal resolver used at launch, not from a global
+"login exists" switch. An
 interactive login survives an ordinary daemon restart; an explicit cancel or
-the login's own 15-minute deadline (extendable) are what end a pending login.
+the login's own deadline are what end a pending login (the engine's normal
+15-minute window is extendable; a shorter vendor-owned window is not).
 
 Remote execution extends the same local-first boundary rather than turning
 Claudexor into a credential broker. The user's system OpenSSH owns transport,

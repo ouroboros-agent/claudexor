@@ -387,31 +387,24 @@ enum AccountsAutoBalance {
     /// On pins `rotate`. Raw values are the wire `profileLimitAction` strings.
     enum Choice: String, CaseIterable { case fail, auto, rotate }
 
-    /// The rotation action is only auto-balance-capable for config_dir_login
-    /// families that also have a quota/typed-limit source to trigger rotation.
-    /// Cursor profiles can register (see configDirLoginHarnessIds) and — since
-    /// the typed cursor vendor-limit classifier — rotate REACTIVELY under the
-    /// engine's `auto` default, but cursor still has no proactive quota source,
-    /// so this control's capable-set has not admitted it yet; cursor rotation
-    /// stays engine-driven with no app-side knob until that is revisited.
-    /// agy qualifies on the same test: `config_dir_login` profiles plus a real
-    /// vendor quota source (`agy_command_usage`, read from the CLI's own
-    /// `/quota`), so a control here has an observable action to drive.
-    static let capableHarnessIds = ["claude", "codex", "agy"]
-
-    /// Harnesses eligible for the toggle: a capable family with enough
+    /// Harnesses eligible for the toggle: a server-projected pool with enough
     /// identities to rotate BETWEEN. Every account is a registry row (unified
     /// model) and rotation only draws from the ENABLED pool, so that uniformly
     /// means two or more ENABLED rows — a disabled row is not a rotation
     /// target, and counting it offered a toggle with nothing to switch to.
     /// An absent `enabled` (nil) fails open as enabled, the same rule the
     /// rest of the surface applies.
-    static func eligibleHarnessIds(profiles: [(harnessId: String, enabled: Bool?)]) -> [String] {
+    static func eligibleHarnessIds(
+        profiles: [(harnessId: String, enabled: Bool?)],
+        serverEligibleHarnessIds: Set<String>
+    ) -> [String] {
         var counts: [String: Int] = [:]
         for profile in profiles where profile.enabled != false {
             counts[profile.harnessId, default: 0] += 1
         }
-        return capableHarnessIds.filter { (counts[$0] ?? 0) >= 2 }
+        return counts.keys
+            .filter { serverEligibleHarnessIds.contains($0) && (counts[$0] ?? 0) >= 2 }
+            .sorted()
     }
 
     /// Aggregate on/off/auto/mixed/unavailable from each eligible harness's

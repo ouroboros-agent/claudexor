@@ -1,4 +1,5 @@
 import SwiftUI
+import ClaudexorKit
 
 // MARK: - Native-setup panel (pure rendering; split from AuthSheet.swift for
 // the complexity ratchet — AuthSheet stays the one owner of lifecycle
@@ -10,6 +11,7 @@ struct AuthSheetNativeSetupPanel: View {
     /// Nil = the harness's default store target; non-nil = an account row's own store.
     let profileId: String?
     let family: HarnessFamily
+    let setupLogin: HarnessSetupLoginCapability
     @Binding var showTerminalCaveat: Bool
     let runLogin: () -> Void
     let recheck: () -> Void
@@ -28,7 +30,7 @@ struct AuthSheetNativeSetupPanel: View {
                     .controlSize(.large)
                     .disabled(newSetupDisabled)
                     .help(AuthSheetPresentation.nativeLoginHelp(
-                        family: family, verified: targetVerified))
+                        family: family, verified: targetVerified, setupLogin: setupLogin))
 
                     Button(action: recheck) {
                         Label("Recheck", systemImage: "arrow.clockwise")
@@ -38,11 +40,10 @@ struct AuthSheetNativeSetupPanel: View {
                     .help("Run a fresh, non-cached Harness Doctor probe for installed/authenticated/routable status.")
                     Spacer(minLength: 0)
                 }
-                // The daemon-owned "run in terminal" caveat is secondary — collapsed.
-                DisclosureRow("Advanced — run in terminal", isExpanded: $showTerminalCaveat) {
+                DisclosureRow("Advanced — login transport", isExpanded: $showTerminalCaveat) {
                     Text(profileId == nil
-                        ? "Native login is daemon-owned. Completing its Terminal command is not readiness: only the exact native probe and same-harness smoke mark the session ready."
-                        : "Native login is daemon-owned and scoped to this account's own store. Its doctor probe is the verification truth; the default-route capability smoke does not apply.")
+                        ? "The engine declares whether managed login runs in-app or needs an attached terminal. Completion is not readiness: only the exact native probe and same-harness smoke mark the session ready."
+                        : "The engine owns the login transport and scopes the job to this account. Its doctor probe is the verification truth; the default-route capability smoke does not apply.")
                         .font(.caption2).foregroundStyle(.secondary).padding(.top, Theme.Spacing.xs)
                 }
                 .font(.caption)

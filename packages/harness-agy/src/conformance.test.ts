@@ -9,6 +9,7 @@ import {
 } from "@claudexor/core";
 import { parse as parseYaml } from "yaml";
 import { parseAgyEvent } from "./parse.js";
+import { agyPlatformIsolationDetail } from "./index.js";
 
 const FIXTURES = fileURLToPath(new URL("../fixtures", import.meta.url));
 /** W3.8: per-fixture STREAM SEMANTICS expectations, declared next to the
@@ -54,4 +55,19 @@ describe("agy adapter conformance fixtures", () => {
       }
     });
   }
+});
+
+describe("agy platform credential disclosure", () => {
+  it("derives Windows OS-user scope and cardinality from the capability profile", () => {
+    const detail = agyPlatformIsolationDetail("win32");
+    expect(detail).toContain("os_keychain");
+    expect(detail).toContain("current OS user");
+    expect(detail).toContain("maximum 1 enabled binding");
+  });
+
+  it("keeps Darwin proven and Linux explicitly unproven", () => {
+    expect(agyPlatformIsolationDetail("darwin")).toBeNull();
+    expect(agyPlatformIsolationDetail("linux")).toContain("config_file");
+    expect(agyPlatformIsolationDetail("linux")).toContain("unverified");
+  });
 });

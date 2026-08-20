@@ -3,30 +3,42 @@ import { namespacedSecretRefBase } from "@claudexor/util";
 import { Id, IsoTimestamp } from "./primitives.js";
 import { AuthAvailability, AuthVerification } from "./auth.js";
 
+/** Exact profile-policy problem vocabulary shared by mutation and admission
+ * surfaces. ControlProblem remains open for unrelated domain errors. */
+export const CredentialProfileProblemCode = z.enum([
+  "credential_profile_required",
+  "credential_profile_exists",
+  "credential_profile_limit_exceeded",
+  "credential_profile_ambiguous",
+]);
+export type CredentialProfileProblemCode = z.infer<typeof CredentialProfileProblemCode>;
+
 /**
- * The credential transport a profile isolates (INV-135, unified account
- * model). `config_dir_login` is a vendor-owned login living in a
- * Claudexor-scoped config dir or HOME (Claude CLAUDE_CONFIG_DIR / Codex
+ * The binding kind a profile uses (INV-135, unified account model).
+ * `config_dir_login` owns Claudexor-scoped vendor state in a config dir or HOME
+ * (Claude CLAUDE_CONFIG_DIR / Codex
  * CODEX_HOME / Cursor file-store HOME). The Claudexor-owned LEGACY native
  * dirs are legal locators — the startup migration registers them as the
  * `claude-default`/`codex-default` rows without moving bytes; the vendor's
  * ordinary host stores (~/.claude, ~/.codex) stay outside the owned root and
- * are never a locator. `oauth_token` and `api_key` are secret-store
- * references.
+ * are never a locator. A vendor OS-user credential may live outside that
+ * state and remain unchanged when the binding is removed. `oauth_token` and
+ * `api_key` are managed secret-store references.
  */
 export const CredentialKind = z
   .enum(["config_dir_login", "oauth_token", "api_key"])
   .describe(
-    "Credential transport a profile isolates: a scoped vendor config-dir login, a stored OAuth token, or a stored API key.",
+    "Binding kind for a profile: Claudexor-owned scoped vendor state, a managed OAuth secret, or a managed API-key secret; a vendor OS-user credential may remain outside that state.",
   );
 export type CredentialKind = z.infer<typeof CredentialKind>;
 
 /**
- * Durable, NON-SECRET registry entry for one credential identity of one
- * harness (INV-135). Secret material never lives here: `config_dir_login`
- * points at a vendor-owned directory, token/key kinds point at a namespaced
- * secret-store name. Readiness is intentionally NOT durable — it is the
- * doctor's `CredentialProfileStatus` projection.
+ * Durable, NON-SECRET named binding for one harness (INV-135). Secret material
+ * never lives here: `config_dir_login` points at Claudexor-owned scoped vendor
+ * state while effective platform policy may keep the credential at OS-user
+ * scope; token/key kinds point at a namespaced managed-secret name. Readiness
+ * is intentionally NOT durable — it is the doctor's
+ * `CredentialProfileStatus` projection.
  */
 export const CredentialProfile = z
   .object({
@@ -39,7 +51,7 @@ export const CredentialProfile = z
       .nullable()
       .default(null)
       .describe(
-        "Canonical absolute config-dir path for config_dir_login profiles; null for secret-ref kinds.",
+        "Canonical absolute path to Claudexor-owned scoped vendor state for config_dir_login bindings; null for secret-ref kinds.",
       ),
     secret_ref: z
       .string()
@@ -88,7 +100,7 @@ export const CredentialProfile = z
     }
   })
   .describe(
-    "Durable non-secret registry entry for one credential identity of one harness; secret material lives in the vendor dir or the secret store, never here.",
+    "Durable non-secret named binding for one harness; credential material may live in Claudexor-owned scoped state, a managed secret store, or a platform-declared vendor/OS-user store, never in this row.",
   );
 export type CredentialProfile = z.infer<typeof CredentialProfile>;
 
@@ -103,17 +115,17 @@ export const CredentialProfileStatus = z
     availability: AuthAvailability,
     verification: AuthVerification,
     /** WHAT the `verification` verdict is worth. `local_store` means only that
-     * this profile's own credential material is present and well-formed where
-     * it should be — it cannot tell a live token from a revoked one.
-     * `vendor` means the vendor itself answered a request made with THIS
-     * profile's credential. A router that needs "configured AND healthy" must
-     * read this alongside `verification`; `passed` + `local_store` promises
-     * strictly less than it sounds. */
+     * this binding's required local state or managed secret is present and
+     * well-formed — it cannot tell a live token from a revoked one. `vendor`
+     * means the vendor answered under THIS binding's exact environment and
+     * effective platform credential policy. A router that needs "configured
+     * AND healthy" must read this alongside `verification`; `passed` +
+     * `local_store` promises strictly less than it sounds. */
     verification_source: z
       .enum(["local_store", "vendor"])
       .default("local_store")
       .describe(
-        "How the verification verdict was reached: local_store = the profile's credential material is present locally (says nothing about the token being live); vendor = the vendor answered a request made with this profile's own credential.",
+        "How the verification verdict was reached: local_store = the binding's required local state or managed secret is present (says nothing about a token being live); vendor = the vendor answered under the exact binding environment and effective platform credential policy.",
       ),
     detail: z.string().optional().describe("Redacted human-readable probe evidence."),
     last_verified_at: IsoTimestamp.nullable()
@@ -403,12 +415,12 @@ export type ControlCredentialProfileUpdateResponse = z.infer<
   typeof ControlCredentialProfileUpdateResponse
 >;
 
-/** Register a config-dir login profile (claude/codex/cursor) from a UI surface —
+/** Register a config-dir login profile (agy/claude/codex/cursor) from a UI surface —
  * the same ONE locked registration owner `claudexor profiles add` uses. */
 export const ControlCredentialProfileCreateRequest = z
   .object({
     harnessId: Id.describe(
-      "Harness family (claude | codex | cursor) for the config-dir login profile.",
+      "Harness family (agy | claude | codex | cursor) for the config-dir login profile.",
     ),
     profileId: Id.describe("New profile id (bounded slug, unique per harness)."),
     displayName: z
@@ -423,25 +435,36 @@ export type ControlCredentialProfileCreateRequest = z.infer<
   typeof ControlCredentialProfileCreateRequest
 >;
 
-/** DELETE /credential-profiles/:harness/:id — removes the registry entry and
- * the profile's OWN credential material (its scoped login dir or the migrated
- * row's recorded legacy locator, or its namespaced secret). Success means the
- * row AND its material are provably gone (D-U4): a partial cleanup failure is
- * a typed RETRYABLE error that leaves the row registered, never a
- * `removed: true` with a warning. The vendor's ordinary host stores stay
- * untouchable by design. */
+/** DELETE /credential-profiles/:harness/:id — removes the binding and any state
+ * Claudexor owns (a scoped state dir, migrated owned locator, or namespaced
+ * secret). Success proves that owned cleanup; a partial failure is retryable
+ * and keeps the row registered. A typed disposition says when a vendor-owned
+ * OS-user credential was deliberately left unchanged. */
 export const ControlCredentialProfileDeleteResponse = z
   .object({
     profile: CredentialProfile.describe("The removed registry entry."),
     removed: z.literal(true),
     credentialCleanup: z
       .enum(["config_dir_removed", "secret_deleted", "none"])
-      .describe("What credential material was deleted alongside the registry entry."),
+      .describe(
+        "What Claudexor-owned state or managed secret was removed with the binding; this does not assert that a vendor OS-user credential changed.",
+      ),
     cleanupWarning: z
       .string()
       .optional()
       .describe(
         "DEPRECATED (wire-compat only): a unified-model engine never emits it — partial cleanup is a typed retryable error instead of a removed-with-warning receipt.",
+      ),
+    vendorCredentialDisposition: z
+      .object({
+        owner: z.literal("vendor"),
+        state: z.literal("left_unchanged"),
+        scope: z.literal("os_user"),
+      })
+      .strict()
+      .optional()
+      .describe(
+        "Exact disclosure that profile binding removal left a vendor-owned OS-user credential unchanged; absence preserves legacy receipts.",
       ),
   })
   .strict()

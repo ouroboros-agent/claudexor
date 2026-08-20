@@ -2,9 +2,26 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { userConfigDir } from "@claudexor/util";
-import { nativeLoginDisplayCommand, nativeLoginEnv, nativeLoginSpec } from "./native-login.js";
-import { defaultNativeClaudeConfigDir } from "@claudexor/harness-claude";
-import { CODEX_FILE_AUTH_OVERRIDE, defaultNativeCodexHome } from "@claudexor/harness-codex";
+import {
+  NATIVE_LOGIN_INPUTS,
+  nativeLoginDisplayCommand,
+  nativeLoginEnv,
+  nativeLoginSpec,
+} from "./native-login.js";
+import {
+  CLAUDE_MANAGED_LOGIN,
+  createClaudeAdapter,
+  defaultNativeClaudeConfigDir,
+} from "@claudexor/harness-claude";
+import {
+  CODEX_FILE_AUTH_OVERRIDE,
+  CODEX_MANAGED_LOGIN,
+  createCodexAdapter,
+  defaultNativeCodexHome,
+} from "@claudexor/harness-codex";
+import { CURSOR_MANAGED_LOGIN, createCursorAdapter } from "@claudexor/harness-cursor";
+import { AGY_MANAGED_LOGIN, createAgyAdapter } from "@claudexor/harness-agy";
+import { ControlHarnessSetupHarness } from "@claudexor/schema";
 
 describe("native login specs", () => {
   const resolver = (binary: string): string => `/normalized/bin/${binary}`;
@@ -122,6 +139,33 @@ describe("native login specs", () => {
     expect(nativeLoginDisplayCommand("codex")).toBe(
       "codex app-server device-code login (isolated Claudexor profile)",
     );
+  });
+
+  it("keeps one manifest-owned input declaration for every setup command", () => {
+    const manifestDeclarations = {
+      codex: createCodexAdapter().capabilityProfile?.auth.managed_login,
+      claude: createClaudeAdapter().capabilityProfile?.auth.managed_login,
+      cursor: createCursorAdapter().capabilityProfile?.auth.managed_login,
+      agy: createAgyAdapter().capabilityProfile?.auth.managed_login,
+    } as const;
+    const exportedDeclarations = {
+      codex: CODEX_MANAGED_LOGIN,
+      claude: CLAUDE_MANAGED_LOGIN,
+      cursor: CURSOR_MANAGED_LOGIN,
+      agy: AGY_MANAGED_LOGIN,
+    } as const;
+
+    expect(Object.keys(NATIVE_LOGIN_INPUTS).sort()).toEqual(
+      [...ControlHarnessSetupHarness.options].sort(),
+    );
+    for (const harness of ControlHarnessSetupHarness.options) {
+      expect(NATIVE_LOGIN_INPUTS[harness]).toBe(exportedDeclarations[harness]);
+      expect(manifestDeclarations[harness]).toEqual(exportedDeclarations[harness]);
+      expect(nativeLoginDisplayCommand(harness)).not.toBeNull();
+      const spec = nativeLoginSpec(harness, resolver);
+      expect(spec).not.toBeNull();
+      expect(spec?.ptyStdin === true).toBe(exportedDeclarations[harness].stdin === "terminal");
+    }
   });
 
   it("resolves the same explicit binary override used by the adapter", () => {
@@ -271,10 +315,10 @@ describe("native login specs", () => {
     }
   });
 
-  it("refuses an agy login with no profile HOME instead of writing into the operator's home", () => {
-    // Owner decision Л-4: agy has NO default credential store. Falling through
-    // would leave the daemon's own HOME in place and land a vendor token in the
-    // operator's real home (INV-135).
+  it("refuses an agy login with no profile HOME instead of targeting the operator's home", () => {
+    // Owner decision Л-4: agy has NO default binding store. Falling through
+    // would leave the daemon's own HOME in place and put vendor state/login
+    // artifacts in the operator's real home (INV-135).
     expect(() => nativeLoginEnv("agy", { HOME: "/daemon/home" })).toThrow(
       /no default credential store/,
     );

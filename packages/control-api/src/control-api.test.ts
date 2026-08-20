@@ -5186,6 +5186,118 @@ describe("DaemonControlApiServer", () => {
     );
   });
 
+  it("preserves explicit current setupLogin null/object on raw HTTP wires", async () => {
+    const { daemon } = fakeDaemon();
+    const statusRow = { id: "agy", status: "unavailable", setupLogin: null };
+    const catalog = {
+      ok: true,
+      version: "3.6.0",
+      generatedAt: "2026-08-19T00:00:00Z",
+      git: {
+        status: "missing",
+        version: null,
+        detail: "Git is not installed.",
+        remediation: "Install Git.",
+      },
+      harnesses: [
+        {
+          id: "agy",
+          enabled: true,
+          displayName: "Antigravity CLI",
+          status: "unavailable",
+          providerFamily: "google",
+          enabledIntents: [],
+          disabledIntents: [],
+          reasons: [],
+          configuredModel: null,
+          configuredModelValid: null,
+          models: { source: "none", count: 0, verifiedAgainst: null },
+          webPolicy: "uncontrolled",
+          attachmentInputs: [],
+          effortLevels: [],
+          accessProfilesSupported: ["readonly", "workspace_write", "full"],
+          readonlyMechanism: "none",
+          delegation: {
+            available: false,
+            reason: "manifest_unsupported",
+            remediation: "Choose another harness.",
+            requiresFullAccess: false,
+          },
+          setupLogin: { mode: "external_terminal" },
+        },
+      ],
+      availableHarnesses: [],
+      modes: ["ask", "plan", "agent"],
+      runControlKeys: [],
+      outputSchemaDialects: [
+        {
+          dialect: "draft-07",
+          uri: "http://json-schema.org/draft-07/schema#",
+          defaultWhenOmitted: true,
+        },
+      ],
+      mutability: {
+        readOnlyModes: ["ask", "plan"],
+        writeModes: ["agent"],
+        isolationKinds: ["envelope", "live"],
+        workspaceModes: ["in_place", "isolated"],
+        accessProfiles: ["readonly", "workspace_write", "full"],
+        applyModes: ["apply", "commit", "branch", "pr"],
+      },
+      cliCommands: [],
+      mcpTools: [],
+      runApplyStates: [],
+    };
+    await withDaemonServer(
+      daemon,
+      async (base) => {
+        const harnessResponse = await apiFetch(`${base}/harnesses`, {
+          headers: { authorization: `Bearer ${token}` },
+        });
+        expect(harnessResponse.status).toBe(200);
+        const harnessRaw = await harnessResponse.text();
+        const harnessBody = JSON.parse(harnessRaw) as { harnesses: Record<string, unknown>[] };
+        expect(Object.hasOwn(harnessBody.harnesses[0]!, "setupLogin")).toBe(true);
+        expect(harnessBody.harnesses[0]?.["setupLogin"]).toBeNull();
+        expect(harnessRaw).toContain('"setupLogin":null');
+
+        const catalogResponse = await apiFetch(`${base}/agent-capabilities`, {
+          headers: { authorization: `Bearer ${token}` },
+        });
+        expect(catalogResponse.status).toBe(200);
+        const catalogRaw = await catalogResponse.text();
+        const catalogBody = JSON.parse(catalogRaw) as { harnesses: Record<string, unknown>[] };
+        expect(Object.hasOwn(catalogBody.harnesses[0]!, "setupLogin")).toBe(true);
+        expect(catalogBody.harnesses[0]?.["setupLogin"]).toEqual({
+          mode: "external_terminal",
+        });
+
+        const snapshotResponse = await apiFetch(`${base}/credential-profiles?snapshot=true`, {
+          headers: { authorization: `Bearer ${token}` },
+        });
+        expect(snapshotResponse.status).toBe(200);
+        const snapshotRaw = await snapshotResponse.text();
+        const snapshotBody = JSON.parse(snapshotRaw) as { harnesses: Record<string, unknown>[] };
+        expect(Object.hasOwn(snapshotBody.harnesses[0]!, "setupLogin")).toBe(true);
+        expect(snapshotBody.harnesses[0]?.["setupLogin"]).toBeNull();
+      },
+      undefined,
+      {
+        harnesses: async () => ({ harnesses: [statusRow] }),
+        agentCapabilities: async () => catalog,
+        credentialProfiles: async () => ({
+          profiles: [],
+          harnessAccounts: [],
+          accountPools: [],
+          harnesses: [statusRow],
+          git: catalog.git,
+          quota: { snapshots: [], absences: [], refreshed_at: null },
+          quotaEventCursor: "quota-wire-setup-login",
+        }),
+      },
+    );
+  });
+
   it("serves a harness's enumerable models through the typed harnessModels service (ADP4)", async () => {
     const { daemon } = fakeDaemon();
     const modelInputs: unknown[] = [];

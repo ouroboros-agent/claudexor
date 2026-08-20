@@ -30,6 +30,18 @@ async function waitForFile(path: string, timeoutMs = 3_000): Promise<void> {
   }
 }
 
+async function waitForFileContent(
+  path: string,
+  expected: string,
+  timeoutMs = 3_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!existsSync(path) || readFileSync(path, "utf8") !== expected) {
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for ${path} = ${expected}`);
+    await delay(20);
+  }
+}
+
 function killIfRunning(pid: number | null): void {
   if (pid === null) return;
   try {
@@ -165,7 +177,7 @@ describe("bounded caller-side daemon launch adapter", () => {
       await waitForFile(started);
       await delay(30);
       launch.markReady();
-      await waitForFile(pipeClosed);
+      await waitForFileContent(pipeClosed, "EPIPE");
       expect(readFileSync(pipeClosed, "utf8")).toBe("EPIPE");
       await delay(30);
       expect(launch.failure()).toBeNull();
@@ -203,7 +215,7 @@ describe("bounded caller-side daemon launch adapter", () => {
         stderr: { kind: "retained", message: expect.stringContaining("waiting for readiness") },
       });
       expect(JSON.stringify(error.context)).toContain("startup_timeout");
-      await waitForFile(pipeClosed);
+      await waitForFileContent(pipeClosed, "EPIPE");
       expect(readFileSync(pipeClosed, "utf8")).toBe("EPIPE");
     } finally {
       killIfRunning(launch.pid);

@@ -260,18 +260,26 @@ enum AuthSheetPresentation {
     }
 
     /// Hover help for the native-setup panel's Log in / Manage Login button.
-    /// It names NO Terminal: every login this sheet starts uses the `daemon`
-    /// transport, and every daemon-hosted mode (device_code, url_disclosure,
-    /// url_disclosure_with_input) is hosted in this card by construction —
-    /// packages/cli/src/setup-jobs.ts, "Daemon-hosted modes never touch
-    /// Terminal". The old text special-cased codex and promised the other
-    /// families a Terminal window that has not opened since the 2026-08-04
-    /// owner directive; a per-family branch here would only be a second guess
-    /// at a server-owned fact, so the sentence stays true for all of them.
-    static func nativeLoginHelp(family: HarnessFamily, verified: Bool) -> String {
-        verified
-            ? "Open the native \(family.label) login flow to manage the verified session."
-            : "Start the native \(family.label) sign-in — the link and any one-time code appear here in this sheet, with no Terminal window."
+    /// Copy follows the engine-projected setupLogin capability instead of
+    /// guessing transport from the harness family: in-app jobs name this sheet,
+    /// external-terminal jobs disclose the attached terminal requirement, and
+    /// an older engine remains explicitly unknown.
+    static func nativeLoginHelp(
+        family: HarnessFamily,
+        verified: Bool,
+        setupLogin: HarnessSetupLoginCapability = .legacyAbsent
+    ) -> String {
+        if verified { return "Open the native \(family.label) login flow to manage the verified session." }
+        switch setupLogin {
+        case .inApp:
+            return "Start the native \(family.label) sign-in in this sheet."
+        case .externalTerminal:
+            return "Start the native \(family.label) sign-in in an attached terminal, as required by this engine."
+        case .unavailable:
+            return "This engine reports no managed native \(family.label) login."
+        case .legacyAbsent:
+            return "Start the native \(family.label) sign-in; this older engine does not report whether it is in-app or terminal-attached."
+        }
     }
 
     /// The Recheck / reconnect outcome sentence. A family with no default

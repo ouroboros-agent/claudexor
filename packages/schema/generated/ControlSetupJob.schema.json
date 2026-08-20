@@ -811,7 +811,11 @@
               "enum": [
                 "permit_timeout",
                 "spawn_failed",
-                "device_auth_unsupported"
+                "device_auth_unsupported",
+                "terminal_transport_unavailable",
+                "terminal_transport_unsupported",
+                "terminal_transport_probe_failed",
+                "terminal_transport_failed"
               ]
             },
             "finishedAt": {

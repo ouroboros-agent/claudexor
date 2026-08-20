@@ -21,6 +21,8 @@ import {
 import { QuotaConstraint, QuotaSource } from "./quota.js";
 import { RateLimitSignal } from "./rate-limit.js";
 import { EffortHint, ModelEffortCapability } from "./effort.js";
+import { AuthCapabilities } from "./platform-auth.js";
+export * from "./platform-auth.js";
 // Re-exported so sibling contract modules keep one import path for the type.
 export { EffortHint } from "./effort.js";
 
@@ -277,50 +279,6 @@ export function knownModelIdsForRoute(
     )
     .map((entry) => (typeof entry === "string" ? entry : entry.id));
 }
-
-export const CredentialTransportKind = z
-  .enum(["config_file", "env_var", "oauth_token_env", "os_keychain", "http_header", "none"])
-  .describe(
-    "Mechanism that carries a credential to the harness process (config file, env var, OAuth token env, OS keychain, HTTP header, or none).",
-  );
-export type CredentialTransportKind = z.infer<typeof CredentialTransportKind>;
-
-export const CredentialRelocation = z
-  .enum(["HOME", "CONFIG_DIR", "ENV", "none"])
-  .describe(
-    "Which relocation lever moves the credential into a scoped environment (HOME, a config dir override, env injection, or none).",
-  );
-export type CredentialRelocation = z.infer<typeof CredentialRelocation>;
-
-export const CredentialTransport = z
-  .object({
-    source: AuthSourceKind,
-    kind: CredentialTransportKind,
-    relocatable_by: z
-      .array(CredentialRelocation)
-      .default([])
-      .describe("Relocation levers that can move this transport into a scoped environment."),
-  })
-  .describe("How a credential from one auth source physically reaches the harness process.");
-export type CredentialTransport = z.infer<typeof CredentialTransport>;
-
-export const AuthCapabilities = z
-  .object({
-    supported_sources: z
-      .array(AuthSourceKind)
-      .default([])
-      .describe("Auth sources this harness supports."),
-    preferred_source: AuthSourceKind.nullable()
-      .default(null)
-      .describe("Auth source the adapter prefers; null when it has no preference."),
-    credential_transports: z
-      .array(CredentialTransport)
-      .default([])
-      .describe("Declared credential transports per auth source."),
-  })
-  .default({})
-  .describe("Declared auth routing facts for a harness.");
-export type AuthCapabilities = z.infer<typeof AuthCapabilities>;
 
 export const ReadonlyMechanism = z
   .enum(["fs_sandbox", "permission_deny", "tool_allowlist", "none"])

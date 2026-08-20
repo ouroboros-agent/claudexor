@@ -114,6 +114,20 @@
                         },
                         "default": [],
                         "description": "Relocation levers that can move this transport into a scoped environment."
+                      },
+                      "platforms": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "enum": [
+                            "darwin",
+                            "linux",
+                            "win32"
+                          ],
+                          "description": "Host platform used to resolve credential and managed-login policy."
+                        },
+                        "minItems": 1,
+                        "description": "Host platforms on which this physical credential transport applies; absent means every supported platform for backward compatibility."
                       }
                     },
                     "required": [
@@ -125,6 +139,90 @@
                   },
                   "default": [],
                   "description": "Declared credential transports per auth source."
+                },
+                "credential_profile_policies": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "source": {
+                        "$ref": "#/definitions/HarnessManifest/properties/capability_profile/properties/auth/properties/supported_sources/items"
+                      },
+                      "platforms": {
+                        "type": "array",
+                        "items": {
+                          "$ref": "#/definitions/HarnessManifest/properties/capability_profile/properties/auth/properties/credential_transports/items/properties/platforms/items"
+                        },
+                        "minItems": 1,
+                        "description": "Nonempty host-platform set governed by this policy row."
+                      },
+                      "identity_scope": {
+                        "type": "string",
+                        "enum": [
+                          "profile",
+                          "os_user"
+                        ],
+                        "description": "Identity boundary selected by a credential profile: the named profile itself or the host OS user/login vault."
+                      },
+                      "max_enabled_profiles": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "exclusiveMinimum": 0
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "description": "Maximum enabled profile bindings on these platforms; null means unbounded."
+                      },
+                      "cleanup_owner": {
+                        "type": "string",
+                        "enum": [
+                          "claudexor",
+                          "vendor"
+                        ],
+                        "description": "Who owns cleanup of the credential when its Claudexor profile binding is removed."
+                      }
+                    },
+                    "required": [
+                      "source",
+                      "platforms",
+                      "identity_scope",
+                      "max_enabled_profiles",
+                      "cleanup_owner"
+                    ],
+                    "additionalProperties": false,
+                    "description": "Platform-specific identity scope, enabled-profile cardinality, and credential cleanup ownership for one auth source."
+                  },
+                  "description": "Platform-specific profile identity/cardinality/cleanup policy; absent uses the backward-compatible profile-scoped, unbounded, Claudexor-owned defaults."
+                },
+                "managed_login": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "stdin": {
+                          "type": "string",
+                          "enum": [
+                            "none",
+                            "pipe",
+                            "terminal"
+                          ],
+                          "description": "Input transport the vendor login command requires."
+                        }
+                      },
+                      "required": [
+                        "stdin"
+                      ],
+                      "additionalProperties": false,
+                      "description": "Managed-login input requirement; command, argv, flow, and time window remain owned by the native-login registry."
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Managed subscription-login input requirement; null means this harness defines no managed login, absent is a legacy manifest."
                 }
               },
               "additionalProperties": false,
