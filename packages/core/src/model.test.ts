@@ -24,6 +24,8 @@ describe("validateModel (strict model-truth validation)", () => {
     const api = validateModel("anything", [], "api");
     expect(api.status).toBe("rejected");
     expect(api.message).toContain("live model inventory");
+    expect(api.message).toContain("repair the live account/auth route");
+    expect(api.message).not.toContain("known_models");
   });
 
   it("REJECTS a miss naming the truth source and the list (the fable regression, now typed)", () => {

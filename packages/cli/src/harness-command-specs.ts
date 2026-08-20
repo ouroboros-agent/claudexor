@@ -14,7 +14,7 @@ export const INSTALLABLE_HARNESSES = ["agy", "claude", "codex", "cursor", "openc
 
 /** The `harness` argument shape: rendered by `claudexor help` and reprinted by
  * the dispatcher when a verb is unknown. */
-export const HARNESS_USAGE_ARGS = `list [--all] | install <${INSTALLABLE_HARNESSES.join("|")}> [--dry-run] [--yes]`;
+export const HARNESS_USAGE_ARGS = `list [--all] | install <${INSTALLABLE_HARNESSES.join("|")}> [--target <local|remote>] [--dry-run] [--yes]`;
 
 export const HARNESS_COMMAND_SPECS: readonly CliCommandSpec[] = [
   {
@@ -24,9 +24,9 @@ export const HARNESS_COMMAND_SPECS: readonly CliCommandSpec[] = [
       { prefix: ["install"], min: 2, max: 2 },
     ],
     usageArgs: HARNESS_USAGE_ARGS,
-    summary: "List harnesses, or install one vendor CLI after disclosure",
-    flags: ["all", "dry-run", "yes", "json"],
-    subcommandFlags: { list: ["all"], install: ["dry-run", "yes"] },
+    summary: "List harnesses, or install one vendor CLI through the disclosed producer",
+    flags: ["all", "target", "dry-run", "yes", "json"],
+    subcommandFlags: { list: ["all"], install: ["target", "dry-run", "yes"] },
     mutability: "ops",
     stability: "stable",
   },

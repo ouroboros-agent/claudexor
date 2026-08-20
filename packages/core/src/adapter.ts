@@ -40,6 +40,13 @@ export interface DoctorSpec {
   abortSignal?: AbortSignal;
 }
 
+/** Model-inventory query bound to the credential identity that would run.
+ * Kept separate from DoctorSpec so profile identity never enters the shared
+ * doctor cache contract. */
+export interface HarnessModelSpec extends DoctorSpec {
+  credentialProfile?: CredentialProfile | null;
+}
+
 /**
  * The contract every harness adapter implements. Adapters translate a native
  * harness's I/O into typed Claudexor events — they never contain orchestration
@@ -82,7 +89,7 @@ export interface HarnessAdapter {
    * native-CLI adapters that cannot enumerate simply omit it. Must fail soft
    * (return [] on network/auth error) — never throw into a picker/consumer.
    */
-  models?(spec?: DoctorSpec): Promise<HarnessModel[]>;
+  models?(spec?: HarnessModelSpec): Promise<HarnessModel[]>;
 
   /** Optional cancellation. */
   cancel?(sessionId: string): Promise<void>;

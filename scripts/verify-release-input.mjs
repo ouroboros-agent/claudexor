@@ -16,6 +16,25 @@ const ref = process.env.RELEASE_REF_INPUT ?? "";
 const input = validateReleaseInput(mode, ref);
 if (!input.ok) fail(input.reasons);
 
+const skipCustomEd25519Input = process.env.SKIP_CUSTOM_ED25519_INPUT ?? "false";
+if (skipCustomEd25519Input !== "true" && skipCustomEd25519Input !== "false") {
+  fail(["skip_custom_ed25519 must be a boolean workflow input"]);
+}
+const skipCustomEd25519 = skipCustomEd25519Input === "true";
+const customEd25519Inputs = [
+  process.env.REVIEW_ATTESTATION_B64_INPUT ?? "",
+  process.env.RUNTIME_MANIFEST_B64_INPUT ?? "",
+  process.env.REMOTE_RUNTIME_MANIFEST_B64_INPUT ?? "",
+];
+if (skipCustomEd25519 && mode !== "publish") {
+  fail(["skip_custom_ed25519 is allowed only in publish mode"]);
+}
+if (skipCustomEd25519 && customEd25519Inputs.some((value) => value !== "")) {
+  fail([
+    "skip_custom_ed25519 requires review_attestation_b64, runtime_manifest_b64, and remote_runtime_manifest_b64 to all be empty",
+  ]);
+}
+
 if (process.argv.includes("--syntax-only")) process.exit(0);
 
 const git = (...args) => execFileSync("git", args, { encoding: "utf8" }).trim();
@@ -49,9 +68,12 @@ const manifest = JSON.parse(readFileSync("package.json", "utf8"));
 const version = manifest.version;
 if (mode === "publish" && tag !== `v${version}`)
   fail(["publish tag does not match package.json version"]);
+if (skipCustomEd25519 && version !== "3.7.0") {
+  fail(["skip_custom_ed25519 is authorized only for package version 3.7.0"]);
+}
 
 let attestationText = "";
-if (mode === "publish") {
+if (mode === "publish" && !skipCustomEd25519) {
   const encoded = process.env.REVIEW_ATTESTATION_B64_INPUT ?? "";
   if (!encoded || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) {
     fail(["publish mode requires a base64-encoded review attestation"]);
@@ -86,6 +108,7 @@ if (process.env.GITHUB_OUTPUT) {
       `tree=${candidateTree}`,
       `tag=${tag}`,
       `version=${version}`,
+      `skip_custom_ed25519=${skipCustomEd25519}`,
       "",
     ].join("\n"),
     { flag: "a" },

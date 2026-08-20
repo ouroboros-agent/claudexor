@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type {
   AuthPreference,
   ConformanceReport,
+  CredentialProfile,
   HarnessCapabilityProfile,
   HarnessEvent,
   HarnessManifest,
@@ -12,7 +13,7 @@ import {
   HarnessCapabilityProfile as HarnessCapabilityProfileSchema,
   HarnessManifest as HarnessManifestSchema,
 } from "@claudexor/schema";
-import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
+import type { DoctorSpec, HarnessAdapter, HarnessModelSpec } from "@claudexor/core";
 import {
   abortSignalFromSpec,
   HarnessUnavailableError,
@@ -176,9 +177,16 @@ async function smokeCursorApiKey(
   return result;
 }
 
-async function listCursorModels(env: EnvMap = { ...providerScrubEnv() }): Promise<HarnessModel[]> {
+async function listCursorModels(
+  env: EnvMap = { ...providerScrubEnv() },
+  cwd?: string,
+): Promise<HarnessModel[]> {
   try {
-    const r = await runCapture(BIN, ["--list-models"], { env, timeoutMs: 30_000 });
+    const r = await runCapture(BIN, ["--list-models"], {
+      env,
+      ...(cwd ? { cwd } : {}),
+      timeoutMs: 30_000,
+    });
     if (r.code !== 0) return [];
     return parseCursorModelList(r.stdout);
   } catch {
@@ -242,17 +250,53 @@ async function resolveCursorAuthRoute(
   return { route, env, key, nativeAuthed, scopedHome };
 }
 
+/**
+ * A PINNED profile owns its own inventory. `resolveCursorAuthRoute` below is
+ * the engine-default ladder, which under D-U3 can only ever find the API-key
+ * route — so asking it about a named native account returns an empty list and
+ * the strict model gate then refuses a model the account really offers. The run
+ * path resolves a pinned profile through `resolveCursorRunRoute`; enumeration
+ * must go through the SAME seam, or preflight and spawn are asking two
+ * different accounts.
+ */
+async function listCursorModelsForProfile(
+  deps: CursorRuntimeDeps,
+  spec: HarnessModelSpec & { credentialProfile: CredentialProfile },
+): Promise<HarnessModel[]> {
+  const resolved = await resolveCursorRunRoute(
+    {
+      credential_profile: spec.credentialProfile,
+      env: spec.env ?? {},
+      auth_preference: spec.authPreference ?? "auto",
+    },
+    deps,
+    ({ cursorApiKey, ...input }) =>
+      resolveCursorAuthRoute(cursorApiKey ? { ...deps, cursorApiKey } : deps, input),
+    spec.abortSignal,
+  );
+  if ("refusal" in resolved) return [];
+  if (resolved.route === "local_session")
+    return deps.listCursorModels({ ...resolved.env, CURSOR_API_KEY: null }, spec.cwd);
+  if (resolved.route === "api_key" && resolved.key)
+    return deps.listCursorModels({ ...resolved.env, CURSOR_API_KEY: resolved.key }, spec.cwd);
+  return [];
+}
+
 async function listCursorModelsFromReadyRoute(
   deps: CursorRuntimeDeps,
-  spec?: DoctorSpec,
+  spec?: HarnessModelSpec,
 ): Promise<HarnessModel[]> {
-  const catalogOnly = () => {
-    const key = deps.cursorApiKey(spec?.env);
-    return deps.listCursorModels({
-      ...providerScrubEnv(),
-      CURSOR_API_KEY: key ?? null,
+  if (spec?.credentialProfile)
+    return listCursorModelsForProfile(deps, {
+      ...spec,
+      credentialProfile: spec.credentialProfile,
     });
-  };
+  // ONE seam for every enumeration below: the inventory must run in the same
+  // working directory the eventual run will use, because cursor-agent resolves
+  // account/workspace state relative to it.
+  const modelsFrom = (env: EnvMap) => deps.listCursorModels(env, spec?.cwd);
+  const catalogOnly = () =>
+    modelsFrom({ ...providerScrubEnv(), CURSOR_API_KEY: deps.cursorApiKey(spec?.env) ?? null });
   if (spec?.env || spec?.authPreference || spec?.fresh) {
     const authPreference = spec.authPreference ?? "auto";
     const resolved = await resolveCursorAuthRoute(deps, {
@@ -262,12 +306,12 @@ async function listCursorModelsFromReadyRoute(
       abortSignal: spec?.abortSignal,
     });
     if (resolved.route === "local_session") {
-      const models = await deps.listCursorModels({ ...resolved.env, CURSOR_API_KEY: null });
+      const models = await modelsFrom({ ...resolved.env, CURSOR_API_KEY: null });
       if (models.length > 0) return models;
       if (authPreference === "subscription") return [];
     }
     if (resolved.route === "api_key" && resolved.key) {
-      const models = await deps.listCursorModels({ ...resolved.env, CURSOR_API_KEY: resolved.key });
+      const models = await modelsFrom({ ...resolved.env, CURSOR_API_KEY: resolved.key });
       if (models.length > 0) return models;
     }
     return [];
@@ -278,7 +322,7 @@ async function listCursorModelsFromReadyRoute(
   if (!key) return catalogOnly();
   const apiSmoke = await smokeCursorApiKey(deps, key, spec?.fresh === true);
   if (apiSmoke.ok) {
-    const models = await deps.listCursorModels({ ...providerScrubEnv(), CURSOR_API_KEY: key });
+    const models = await modelsFrom({ ...providerScrubEnv(), CURSOR_API_KEY: key });
     if (models.length > 0) return models;
   }
   return catalogOnly();
@@ -394,7 +438,7 @@ export function createCursorAdapter(deps: Partial<CursorRuntimeDeps> = {}): Harn
       return runCursor(spec, runtime);
     },
 
-    async models(spec?: DoctorSpec): Promise<HarnessModel[]> {
+    async models(spec?: HarnessModelSpec): Promise<HarnessModel[]> {
       return listCursorModelsFromReadyRoute(runtime, spec);
     },
 

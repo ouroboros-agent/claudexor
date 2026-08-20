@@ -1,5 +1,12 @@
 # claudexor
 
+## 3.7.0
+
+### Patch Changes
+
+- Updated dependencies
+  - @claudexor/cli@3.7.0
+
 ## 3.6.0
 
 ### Patch Changes

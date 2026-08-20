@@ -235,8 +235,13 @@ describe("delivery", () => {
     chmodSync(wrapper, 0o700);
     const oldPath = process.env.PATH;
     const oldHome = process.env.HOME;
+    const oldExecPath = process.execPath;
     process.env.HOME = testHome;
     process.env.PATH = `${wrapperBin}:${oldPath ?? ""}`;
+    // The runtime PATH contract prepends a launchable runner's real directory.
+    // Disable that unrelated prefix so this fixture deterministically exercises
+    // the managed HOME wrapper even when the host Node lives beside git.
+    process.execPath = join(wrapperDir, "no-such-runner-node");
     try {
       const res = await deliver(repo, patch, { mode: "commit", message: "must stay scoped" });
       expect(res.applied).toBe(false);
@@ -249,6 +254,7 @@ describe("delivery", () => {
       );
       expect((await git(repo, ["rev-parse", "HEAD"])).stdout.trim()).not.toBe(res.commit);
     } finally {
+      process.execPath = oldExecPath;
       process.env.PATH = oldPath;
       process.env.HOME = oldHome;
     }

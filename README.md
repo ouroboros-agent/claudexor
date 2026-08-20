@@ -31,7 +31,7 @@ with a vendor usage source (Antigravity, Claude, and Codex); Cursor has none
 yet. Everything runs on your machine, files are the source of truth, and there
 is no telemetry.
 
-Current status: **v3.6.0**. See "Stability at 2.0" below for what is a stable
+Current status: **v3.7.0**. See "Stability at 2.0" below for what is a stable
 contract and what remains experimental; retired verbs and mode ids hard-error
 with the new spelling instead of silently aliasing.
 
@@ -116,6 +116,19 @@ separate capabilities checked before a run starts. (The v1.0.0 DMG was unsigned
 — if you kept it, either upgrade or approve it via System Settings → Privacy &
 Security → Open Anyway.)
 
+Host integrations may install one vendor CLI into Claudexor's managed local
+toolchain with
+`claudexor harness install <harness> --target local --yes --json`; a host may
+bind that explicit unattended authorization to the user's Connect action.
+Exact npm pins install under `~/.claudexor/node`; Cursor remains unpinned, so
+the JSON receipt records the downloaded installer's SHA-256 and byte length.
+Every successful executed receipt also records the absolute installed launcher
+and its verified version; a zero-exit installer without that postcondition is a
+typed failure.
+Omitting `--target` preserves the disclosed remote-host flow, its prefix and
+its exit-code contract; the install lease and the post-install proof are part
+of the unattended local contract and do not apply there.
+
 ## Remote SSH
 
 The macOS app can run a thread on a Linux or macOS SSH host while keeping the
@@ -136,8 +149,10 @@ through a disclosed, exact-pinned flow — `claudexor harness install`, or
 Settings → Harnesses for a connected host: Claude, Codex, and OpenCode
 install one exact pinned npm version, while the Cursor and Antigravity vendor
 scripts are downloaded in full and run in the visible terminal where you watch
-them;
-nothing executes before the exact command is disclosed and confirmed.
+them; nothing executes before the exact package/version/destination install
+recipe is disclosed and confirmed. An embedding host may instead pass
+`--target local --yes`, which installs into the managed toolchain root and
+must prove the launcher it installed before reporting success.
 (Installing them on the host yourself works too.) Then sign in from the app,
 which runs each vendor's own login in an embedded SSH terminal (Codex uses
 device auth). Remote threads include an embedded SSH terminal and an
@@ -145,9 +160,16 @@ explicit-port preview tunnel.
 
 ### Updates
 
+**v3.7.0 release exception.** The owner-authorized release omits the three
+custom Ed25519 documents rather than publishing unsigned substitutes. Existing
+app installs therefore cannot take the in-place engine update to 3.7.0, and
+the app cannot perform a first-time remote bootstrap from that release. A fresh
+signed/notarized DMG, npm packages, and reviewed exact-pin embedders remain
+usable; normal releases keep the signed-manifest path below fail-closed.
+
 - **macOS app** — each release publishes a `claudexor-runtime-<version>.tar.gz`
-  closure (the bundled daemon, setup-login runner, Browser MCP, and native
-  process-identity helper; Node, the CLI, UI, and icons stay outside it) plus a **signed**
+  closure (the bundled daemon and CLI, setup-login runner, Browser MCP, and native
+  process-identity helper; Node, UI, and icons stay outside it) plus a **signed**
   `runtime-manifest.json` describing it. On foreground and from the bottom-left
   update chip / **Check for Updates**, the app reads that manifest and, if a
   newer runtime is offered, surfaces "Update available → vX.Y.Z". One click
@@ -167,8 +189,9 @@ explicit-port preview tunnel.
   may be exact-pinned by a host that owns its Claudexor daemon lifecycle. The
   archive contains only ordinary directories/files (internal package links are
   materialized), so its format needs no POSIX symlink support. The host supplies
-  the exact Node version proven by its reviewed pin, launches
-  `claudexord.bundle.cjs`, verifies `--probe` against the pinned
+  the exact full Node toolchain proven by its reviewed pin, launches
+  `claudexord.bundle.cjs`, invokes operational commands through the adjacent
+  `claudexor.bundle.cjs`, verifies `--probe` against the pinned
   `{version,buildSha}`, and uses
   `--stop <observed-version> <observed-buildSha>` before replacing a live
   closure. This is an extraction/daemon-bootstrap contract, not a claim that
@@ -177,12 +200,16 @@ explicit-port preview tunnel.
   a host may verify it live or rely on its reviewed exact
   URL/`buildSha`/SHA-256/size pin.
   `minAppVersion` remains the macOS app's compatibility field; embedders keep
-  protocol, one tested Node version, and entrypoint bounds in their pin instead
+  protocol, one tested Node toolchain, and separate daemon/CLI entrypoint bounds in their pin instead
   of creating a second Claudexor manifest or trust root. Start and stop must use
   the same `CLAUDEXOR_CONFIG_DIR` and, when overridden,
   `CLAUDEXOR_DAEMON_SOCK`, or the lifecycle command may address another daemon.
   A Windows consumer still owns a native
   extract/`--probe`/handshake/`--stop` smoke before claiming Windows support.
+  The local harness installer is intentionally typed-unsupported on Windows in
+  this release. On POSIX, npm-backed local installation additionally requires
+  `<node-root>/lib/node_modules/npm/bin/npm-cli.js`; Claudexor never falls back
+  to a `npm` found on ambient `PATH`.
 - **npm** — CLI/daemon installs update the ordinary way:
   `npm install -g claudexor@latest`. `claudexor release check` reports whether a
   newer engine runtime is published, verifying the same signed manifest

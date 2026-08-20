@@ -113,7 +113,7 @@ import {
   summarizeDiffPaths as diffStats,
   withInactivityWatchdog,
 } from "@claudexor/core";
-import { assertRouteModelsAllowed } from "./modelGovernance.js";
+import { assertRouteModelsAllowed, runModelGovernedRoute } from "./modelGovernance.js";
 import { authModeForCredentialRoute, authModeForPreference } from "./auth-route-classification.js";
 import { governRouteEffort } from "./effortGovernance.js";
 import { isFullAccess, RequestRequirementsResolver } from "./requestRequirements.js";
@@ -1610,7 +1610,9 @@ export class Orchestrator {
       }
     }
     // Strict pre-run model gate (INV-104) — see modelGovernance.ts.
-    await assertRouteModelsAllowed(out, input.models, this.execRootOf(input));
+    await assertRouteModelsAllowed(out, input.models, this.execRootOf(input), (id) =>
+      routeContext ? (routeContext.envForHarness?.(id) ?? routeContext.env) : undefined,
+    );
     return out;
   }
 
@@ -2499,7 +2501,7 @@ export class Orchestrator {
         const rateLimitStart = telemetry.rateLimits.length;
         let rawPatch: RawGitPatchEnvelope | null = null;
         try {
-          const watched = withInactivityWatchdog(adapter.run(runSpec), {
+          const watched = withInactivityWatchdog(runModelGovernedRoute(routed, runSpec), {
             timeoutMs: inactivityMs,
             countsAsProgress: countsAsAgentProgress,
             onTimeout: () => {
@@ -5835,15 +5837,17 @@ export class Orchestrator {
     log.emit("task.contract.created", { task_contract_hash: hashJson(contract) });
 
     // W3.3: ONE resolved read-only context — the routing point-probe and every
-    // planner spawn consume the SAME scoped env (see routeContext.ts). The
-    // probe home stays a disposable throwaway even for a thread lane turn (auth
-    // truth is home-independent); only the planner spawn swaps in the durable
-    // per-lane home below so its recorded native session survives.
-    const roHome = resolveReadOnlyRouteContext(this.execRootOf(input));
+    // planner spawn consume the SAME scoped env (see routeContext.ts).
     // A thread PLAN turn is a chat turn (INV-034): plan candidates are distinct
-    // harnesses run sequentially, so each records its own lane's native session
-    // and the next lane turn resumes it via `sessionSpecFields.resume_session_id`.
+    // harnesses run sequentially. Doctor, model inventory, and spawn share each
+    // lane's durable HOME; the disposable context remains the non-thread fallback.
     const laneRun = Boolean(input.threadId);
+    const roHome = resolveReadOnlyRouteContext(
+      this.execRootOf(input),
+      laneRun
+        ? (id) => this.laneHomeEnvFor(input, id, input.credentialProfileId ?? null)
+        : undefined,
+    );
     let adapters: RoutedAdapter[];
     try {
       adapters = await this.resolveCandidateAdapters(
@@ -6351,17 +6355,16 @@ export class Orchestrator {
         : Math.min(Math.max(input.n ?? 2, 1), 3);
     // W3.3: ONE resolved read-only context — the routing point-probe and every
     // read-only attempt spawn consume the SAME scoped env (see routeContext.ts).
-    // The point-probe home is a disposable throwaway even for a thread lane
-    // turn: readiness auth truth is home-INDEPENDENT (credentials come from the
-    // profile/keychain/default store, never the scoped home), so the probe and
-    // the run share the same auth source; only the ACTUAL spawn swaps in the
-    // durable per-lane home below so the recorded native session survives.
-    const roHome = resolveReadOnlyRouteContext(this.execRootOf(input));
     // A thread ASK turn is a chat turn: its native session is recorded per lane
-    // and the next lane turn resumes it (INV-034). Deep-scan (multi-scout
-    // research) and orchestrate (tool-belt planner, not the user's chat) are
-    // NOT lane chat turns — they keep the disposable home and record nothing.
+    // and the next lane turn resumes it (INV-034). Its doctor/model/spawn path
+    // shares that lane HOME; deep-scan and one-shot asks keep the disposable one.
     const laneRun = Boolean(input.threadId) && opts.mode === "ask" && !opts.deepScan;
+    const roHome = resolveReadOnlyRouteContext(
+      this.execRootOf(input),
+      laneRun
+        ? (id) => this.laneHomeEnvFor(input, id, input.credentialProfileId ?? null)
+        : undefined,
+    );
     let adapters: RoutedAdapter[];
     try {
       adapters = await this.resolveCandidateAdapters(
@@ -6765,7 +6768,7 @@ export class Orchestrator {
             ...(knobs.ignored.length > 0 ? { ignored_settings: knobs.ignored } : {}),
           });
           try {
-            const watchedReport = withInactivityWatchdog(adapter.run(runSpec), {
+            const watchedReport = withInactivityWatchdog(runModelGovernedRoute(routed, runSpec), {
               timeoutMs: harnessInactivityTimeoutMs(this.config(input.repoRoot)),
               countsAsProgress: countsAsAgentProgress,
               onTimeout: () => {

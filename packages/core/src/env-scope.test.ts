@@ -63,9 +63,10 @@ describe("composeBaseEnv (env_inheritance)", () => {
 
   it("mirror_native copies the whole parent env", () => {
     const env = composeBaseEnv("mirror_native", source, NO_RUNNER);
-    expect(env.PATH?.split(":").slice(0, 3)).toEqual([
+    expect(env.PATH?.split(":").slice(0, 4)).toEqual([
       "/home/x/.claudexor/node/bin",
       "/home/x/.local/bin",
+      "/home/x/.cursor/bin",
       "/home/x/.npm-global/bin",
     ]);
     expect(env.PATH?.split(":")).toContain("/usr/bin");
@@ -75,9 +76,10 @@ describe("composeBaseEnv (env_inheritance)", () => {
 
   it("clean keeps only the minimal allowlist (agent isolation): no arbitrary or provider vars leak", () => {
     const env = composeBaseEnv("clean", source, NO_RUNNER);
-    expect(env.PATH?.split(":").slice(0, 3)).toEqual([
+    expect(env.PATH?.split(":").slice(0, 4)).toEqual([
       "/home/x/.claudexor/node/bin",
       "/home/x/.local/bin",
+      "/home/x/.cursor/bin",
       "/home/x/.npm-global/bin",
     ]);
     expect(env.PATH?.split(":")).toContain("/usr/bin");
@@ -104,6 +106,10 @@ describe("composeBaseEnv managed-runner Node prepend rides every lane class (QA-
     root = realpathSync(mkdtempSync(join(tmpdir(), "env-scope-runner-")));
     runnerDir = join(root, "app-node");
     mkdirSync(runnerDir, { recursive: true });
+    // The prepend is refused for a group/world-writable runner dir (its own
+    // case below). Pin the mode so THIS fixture asserts the product rule and
+    // not the runner's umask: a `umask 0002` host would otherwise create 0o775.
+    chmodSync(runnerDir, 0o755);
     fakeNode = join(runnerDir, "node");
     writeFileSync(fakeNode, "#!/bin/sh\nexit 0\n");
     chmodSync(fakeNode, 0o755);

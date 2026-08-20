@@ -46,6 +46,8 @@ function fakeAppBundle(
   if (opts.omit !== "claudexord.bundle.cjs")
     // Stamp the sha into the bundle the way the real esbuild --define does.
     writeFileSync(join(resources, "claudexord.bundle.cjs"), `// daemon sha=${sha}\n`);
+  if (opts.omit !== "claudexor.bundle.cjs")
+    writeFileSync(join(resources, "claudexor.bundle.cjs"), `// cli sha=${sha}\n`);
   if (opts.omit !== "setup-login-runner.cjs")
     writeFileSync(join(resources, "setup-login-runner.cjs"), "// runner\n");
   writeFileSync(
@@ -75,7 +77,8 @@ function fakeAppBundle(
     }
   }
   // Node and the SwiftPM UI bundle are app-owned; they may be present in the
-  // real bundle but must NOT land in the closure.
+  // real bundle but must NOT land in the closure. The reviewed CLI is part of
+  // the closure so embedders can invoke exact operational commands.
   if (opts.withNode) writeFileSync(join(resources, "node"), "node-binary");
   writeFileSync(join(resources, "AppIcon.icns"), "icon");
   return join(root, "Claudexor.app");
@@ -158,12 +161,12 @@ describe("build-runtime-closure", () => {
       { encoding: "utf8" },
     );
     expect(listing).toContain("claudexord.bundle.cjs");
+    expect(listing).toContain("claudexor.bundle.cjs");
     expect(listing).toContain("browser-mcp-runtime/dist/browser-mcp-launcher.js");
     expect(listing).toContain("native/claudexor-process-identity");
-    // Node, the CLI, and AppIcon stay host/app-owned — never in the closure.
+    // Node and AppIcon stay host/app-owned — never in the closure.
     const entries = listing.split("\n");
     expect(entries).not.toContain("node");
-    expect(entries).not.toContain("claudexor.bundle.cjs");
     expect(listing).not.toContain("AppIcon.icns");
   });
 
@@ -239,6 +242,12 @@ describe("build-runtime-closure", () => {
     const app = fakeAppBundle(work, { omit: "setup-login-runner.cjs" });
     const out = join(work, "out");
     expect(() => run(app, out)).toThrow(/setup-login-runner\.cjs/);
+  });
+
+  it("fails when the reviewed CLI entry is missing from the app bundle", () => {
+    const app = fakeAppBundle(work, { omit: "claudexor.bundle.cjs" });
+    const out = join(work, "out");
+    expect(() => run(app, out)).toThrow(/claudexor\.bundle\.cjs/);
   });
 
   it("refuses a --version that does not match the generated CLAUDEXOR_VERSION", () => {

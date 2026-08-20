@@ -75,6 +75,14 @@ describe("resolveHarnessBinary", () => {
     expect(resolveHarnessBinary("missing-bin", env)).toBeNull();
   });
 
+  it("resolves Cursor's vendor-owned ~/.cursor/bin destination", () => {
+    const home = join(root, "cursor-home");
+    const cursorBin = join(home, ".cursor", "bin");
+    const installed = fakeBin(cursorBin, "cursor-agent");
+    const env = { HOME: home, PATH: "" } as NodeJS.ProcessEnv;
+    expect(resolveHarnessBinary("cursor-agent", env, "/no/such/node")).toBe(installed);
+  });
+
   it("passes absolute paths through only when they exist", () => {
     const abs = fakeBin(join(root, "abs"), "tool");
     expect(resolveHarnessBinary(abs, { HOME: root, PATH: "" } as NodeJS.ProcessEnv)).toBe(abs);
@@ -268,6 +276,10 @@ describe("managedRunnerNodeDir (QA-022 grandchild-shell Node anchor)", () => {
 
   function fakeNode(dir: string): string {
     mkdirSync(dir, { recursive: true });
+    // Pin the dir mode: a group/world-writable runner dir is refused on
+    // purpose (its own case below), so under `umask 0002` the default 0o775
+    // would make these cases assert the umask instead of the contract.
+    chmodSync(dir, 0o755);
     const p = join(dir, "node");
     writeFileSync(p, "#!/bin/sh\nexit 0\n");
     chmodSync(p, 0o755);

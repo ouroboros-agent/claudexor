@@ -119,6 +119,11 @@ export const CLI_FLAGS: readonly CliFlagSpec[] = [
     "Credential route filter for route-annotated model lists (models command)",
   ),
   valueFlag(
+    "target",
+    "<local|remote>",
+    "Harness install destination: local managed toolchain or remote runtime prefix (default: remote)",
+  ),
+  valueFlag(
     "mode",
     "<mode>",
     "agent verb: ask | plan | agent (strategies are flags, not modes);\n                           apply verb: delivery mode apply | commit | branch | pr",

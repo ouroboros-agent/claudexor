@@ -1,8 +1,8 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { HarnessRunSpec, type HarnessEvent } from "@claudexor/schema";
 import type { CliRunLoopOptions } from "@claudexor/core";
 import {
@@ -1346,5 +1346,103 @@ describe("doctor remedies never name a bare vendor login (INV-067, v3.0.3 wave 3
       expect(line).not.toMatch(/\(cursor-agent login/);
       expect(line).not.toMatch(/run `cursor-agent login`/);
     }
+  });
+});
+
+describe("models() under a pinned credential profile (INV-135 x INV-104)", () => {
+  // A real directory UNDER a Claudexor-owned root: the locator is canonicalized
+  // and containment-checked, so a synthetic path would refuse for the wrong
+  // reason and hide the regression this pins.
+  const configRoot = mkdtempSync(join(tmpdir(), "cursor-pinned-root-"));
+  const profileHome = join(configRoot, "profiles", "cursor-valentine");
+  mkdirSync(profileHome, { recursive: true });
+  const previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
+  beforeAll(() => {
+    process.env.CLAUDEXOR_CONFIG_DIR = configRoot;
+  });
+  afterAll(() => {
+    if (previousConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+    else process.env.CLAUDEXOR_CONFIG_DIR = previousConfigDir;
+    rmSync(configRoot, { recursive: true, force: true });
+  });
+  const fileStoreProfile = {
+    profile_id: "valentine",
+    harness_id: "cursor",
+    display_name: "Valentine",
+    credential_kind: "config_dir_login" as const,
+    isolation_locator: profileHome,
+    secret_ref: null,
+    enabled: true,
+    created_at: "2026-01-01T00:00:00.000Z",
+  };
+
+  it("enumerates through the profile's own route, not the engine-default ladder", async () => {
+    // The counterexample this pins: without the profile arm, `models()` fell to
+    // the default ladder, which under D-U3 can only find the API-key route.
+    // With no key it returned [] and the strict model gate then refused a model
+    // the pinned account really offers — preflight and spawn disagreeing about
+    // WHICH account they are talking about.
+    const seen: Array<Record<string, unknown>> = [];
+    const adapter = createCursorAdapter({
+      detectVersion: async () => "cursor-test",
+      nativeAuthOk: async () => nativeProbe(true),
+      cursorApiKey: () => null,
+      listCursorModels: async (env, cwd) => {
+        seen.push({ env: env as Record<string, unknown>, cwd });
+        return [
+          {
+            id: "gpt-5.6-sol-xhigh",
+            label: "GPT-5.6 Sol Extra High",
+            context_window: null,
+            routes: null,
+          },
+        ];
+      },
+      smokeIsolatedApiKey: async () => ({ ok: false, detail: "no key" }),
+    });
+
+    const models = await adapter.models?.({
+      cwd: "/repo/attempt",
+      env: {},
+      authPreference: "auto",
+      credentialProfile: fileStoreProfile,
+    });
+
+    expect(models).toEqual([
+      {
+        id: "gpt-5.6-sol-xhigh",
+        label: "GPT-5.6 Sol Extra High",
+        context_window: null,
+        routes: null,
+      },
+    ]);
+    expect(seen).toHaveLength(1);
+    // The account's own HOME answered, the API key was explicitly cleared, and
+    // the inventory ran in the run's cwd.
+    expect(seen[0]?.cwd).toBe("/repo/attempt");
+    const env = seen[0]?.env as Record<string, unknown>;
+    expect(env["HOME"]).toBe(realpathSync(profileHome));
+    expect(env["CURSOR_API_KEY"]).toBeNull();
+  });
+
+  it("returns an empty list rather than another account's when the profile refuses", async () => {
+    const adapter = createCursorAdapter({
+      detectVersion: async () => "cursor-test",
+      nativeAuthOk: async () => nativeProbe(false),
+      cursorApiKey: () => "default-account-key",
+      listCursorModels: async () => [
+        { id: "leaked-from-default", label: "Leaked", context_window: null, routes: null },
+      ],
+      smokeIsolatedApiKey: async () => ({ ok: true, detail: "ok" }),
+    });
+
+    const models = await adapter.models?.({
+      cwd: "/repo",
+      env: {},
+      authPreference: "auto",
+      credentialProfile: fileStoreProfile,
+    });
+
+    expect(models).toEqual([]);
   });
 });

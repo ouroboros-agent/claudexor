@@ -15,18 +15,55 @@ changing Claudexor.
 | MCP server | Exposes Claudexor tools to MCP clients. | Stable contract: the tool set with input/output schemas. Tool list follows the implementation, not old docs. |
 | ACP server | Lets compatible editors or agents talk to Claudexor as a local agent surface. | Experimental (may change in minors, disclosed in the CHANGELOG). |
 | Host plugins | User-global Claude Code, Codex, Cursor, and OpenCode integrations managed by `claudexor plugin`. | Experimental file layout (regenerate with `claudexor plugin repair all`). Installs owned local files/config only; host enablement can still require reload/manual action. |
-| Engine runtime closure | Node-free release artifact for a host that owns its daemon lifecycle, such as [Ouroboros](https://github.com/razzant/ouroboros). | Exact-pin contract: one link-free archive and the existing signed runtime manifest; the host supplies the tested Node version and verifies archive plus `--probe` identity. |
+| Engine runtime closure | Node-free release artifact containing reviewed daemon and CLI entrypoints for a host that owns its daemon lifecycle, such as [Ouroboros](https://github.com/razzant/ouroboros). | Exact-pin contract: one link-free archive and the existing signed runtime manifest; the host supplies the tested full Node toolchain and verifies archive plus `--probe` identity. |
 
 ## Embedded Engine Runtime
 
 An embedding host reuses `claudexor-runtime-<version>.tar.gz`, the same closure
 the macOS updater consumes. The archive contains regular files/directories only
-and deliberately excludes Node and the CLI. A host pins its exact URL, build
-SHA, SHA-256, size, protocol major, entrypoint, and tested Node version; after
-extraction it requires `node claudexord.bundle.cjs --probe` to report the same
-version/build identity. The existing signed runtime manifest remains the
+and deliberately excludes Node while including top-level
+`claudexord.bundle.cjs` and `claudexor.bundle.cjs`. A host pins its exact URL,
+build SHA, SHA-256, size, protocol major, separate daemon/CLI entrypoints, and
+tested full Node toolchain; after extraction it requires
+`node claudexord.bundle.cjs --probe` to report the same version/build identity.
+On POSIX, a host invoking
+`node claudexor.bundle.cjs harness install <harness> --target local --yes --json`
+must provide `<node-root>/bin/node` plus the exact adjacent
+`<node-root>/lib/node_modules/npm/bin/npm-cli.js`; no system/PATH npm is used.
+Local Windows installation is a typed unsupported-platform outcome in this
+release. The existing signed runtime manifest remains the
 publication authority, so an embedder does not create a second artifact or
 trust root.
+
+Release `3.7.0` is an explicit one-release exception: its GitHub Release omits
+the custom signed runtime and remote-runtime manifests instead of publishing
+unsigned files. Existing app installs cannot use in-place engine update for
+that version, and the app cannot first-bootstrap a remote runtime from it.
+Fresh signed/notarized app installs, npm packages, and reviewed embedders that
+pin the exact archive URL/build SHA/SHA-256/size remain usable. The normal
+signed-manifest contract above remains fail-closed for every non-exempt
+release.
+
+For a valid `harness install ... --yes --json` invocation, stdout is exactly one
+JSON object. Every executed result carries `ok: boolean`, `dryRun: false`,
+`exitCode: number`, `target: "local" | "remote"`, `harness: string`,
+`command: string`, `installLocation: string`, `pinnedVersion: string | null`, and
+`verification: string`. Every successful `--target local` result additionally carries
+`installedBinary` (an absolute launcher path) and `installedVersion` (the exact
+npm pin, or Cursor's bounded non-empty version line). On the local target,
+child exit zero is not sufficient: if that launcher/version proof fails, the
+result is `ok: false`, `code: "install_verification_failed"`. A remote success
+keeps the historical contract — `exitCode: 0` with no proof fields. A Cursor result after a
+successful non-empty download additionally carries `installerSha256` (64
+lowercase hex characters) and `installerByteLength` (a positive integer),
+including when the downloaded script itself exits non-zero or its post-install
+proof fails. A refusal may add `code`, `refusal`, or `message`; child/progress
+output goes only to stderr. If setup throws before producing a typed result,
+the canonical `harness_install_failed` JSON failure still carries every
+disclosure field (and the native `causeCode` when available). Dry-run
+returns the disclosure fields with
+`ok: true` and `dryRun: true`, without executing, proving a binary, or acquiring
+the install lease.
 
 The public [Ouroboros runtime pin](https://github.com/razzant/ouroboros/blob/ouroboros/ouroboros/claudexor_runtime_pin.json)
 is a working example of that exact-version, exact-build, and checksum contract.
