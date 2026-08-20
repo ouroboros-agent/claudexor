@@ -7,12 +7,20 @@ import {
 } from "./win32-msvc-runtime.mjs";
 
 describe("Win32 MSVC runtime build contract", () => {
-  it("passes the MSVC include and library search paths through Turbo builds", () => {
+  it("passes the MSVC paths and the ConPTY skip switch through Turbo builds", () => {
     const turboConfig = JSON.parse(
       readFileSync(new URL("../../turbo.json", import.meta.url), "utf8"),
     );
 
-    expect(turboConfig.tasks.build.passThroughEnv).toEqual(["INCLUDE", "LIB", "LIBPATH"]);
+    // Containment, not exact equality: this pins the CONTRACT (what must
+    // survive Turbo's strict env mode), not whichever unrelated switch the
+    // list happens to also carry. The compiling lane needs the MSVC trio;
+    // the release job that promotes assembled authoritative bytes needs the
+    // skip switch, or it rebuilds the helper on a runner with no MSVC.
+    const passThrough = turboConfig.tasks.build.passThroughEnv;
+    for (const name of ["INCLUDE", "LIB", "LIBPATH", "CLAUDEXOR_SKIP_WIN32_CONPTY_BUILD"]) {
+      expect(passThrough).toContain(name);
+    }
   });
 
   it("removes inherited compiler flag channels case-insensitively", () => {
