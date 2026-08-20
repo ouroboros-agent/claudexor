@@ -83,17 +83,56 @@ export function watchLoginInput(
 }
 
 function encodeWindowsConptyLine(value: string): string {
-  const keyRecord = (virtualKey: number, scanCode: number, codeUnit: number, keyDown: 0 | 1) =>
-    `\u001b[${virtualKey};${scanCode};${codeUnit};${keyDown};0;1_`;
+  const keyRecord = (
+    virtualKey: number,
+    scanCode: number,
+    codeUnit: number,
+    keyDown: 0 | 1,
+    controlKeyState: number,
+  ) => `\u001b[${virtualKey};${scanCode};${codeUnit};${keyDown};${controlKeyState};1_`;
   let encoded = "";
   for (let index = 0; index < value.length; index += 1) {
     const codeUnit = value.charCodeAt(index);
-    encoded += keyRecord(231, 0, codeUnit, 1);
-    encoded += keyRecord(231, 0, codeUnit, 0);
+    const [virtualKey, scanCode, controlKeyState] = windowsConptyKey(codeUnit);
+    encoded += keyRecord(virtualKey, scanCode, codeUnit, 1, controlKeyState);
+    encoded += keyRecord(virtualKey, scanCode, codeUnit, 0, controlKeyState);
   }
-  encoded += keyRecord(13, 28, 13, 1);
-  encoded += keyRecord(13, 28, 13, 0);
+  encoded += keyRecord(13, 28, 13, 1, 0);
+  encoded += keyRecord(13, 28, 13, 0, 0);
   return encoded;
+}
+
+function windowsConptyKey(codeUnit: number): [virtualKey: number, scanCode: number, state: number] {
+  const value = String.fromCharCode(codeUnit);
+  const shifted = '~!@#$%^&*()_+{}|:"<>?';
+  const unshifted = "`1234567890-=[]\\;',./";
+  const shiftedIndex = shifted.indexOf(value);
+  const base = shiftedIndex >= 0 ? unshifted[shiftedIndex]! : value.toLowerCase();
+  const state = shiftedIndex >= 0 || /^[A-Z]$/.test(value) ? 16 : 0;
+  const rows = ["1234567890-=", "qwertyuiop[]", "asdfghjkl;'", "zxcvbnm,./"];
+  const starts = [2, 16, 30, 44];
+  let scanCode = base === "`" ? 41 : base === "\\" ? 43 : 0;
+  for (let row = 0; row < rows.length && scanCode === 0; row += 1) {
+    const offset = rows[row]!.indexOf(base);
+    if (offset >= 0) scanCode = starts[row]! + offset;
+  }
+  if (value === " ") return [32, 57, 0];
+  if (/^[a-z]$/i.test(value)) return [value.toUpperCase().charCodeAt(0), scanCode, state];
+  if (/^[0-9]$/.test(base)) return [base.charCodeAt(0), scanCode, state];
+  const oemVirtualKeys: Record<string, number> = {
+    "`": 192,
+    "-": 189,
+    "=": 187,
+    "[": 219,
+    "]": 221,
+    "\\": 220,
+    ";": 186,
+    "'": 222,
+    ",": 188,
+    ".": 190,
+    "/": 191,
+  };
+  return oemVirtualKeys[base] === undefined ? [231, 0, 0] : [oemVirtualKeys[base], scanCode, state];
 }
 
 /** Ring buffer of the last OUTPUT_TAIL_BYTES of tee'd vendor output. */
