@@ -190,7 +190,8 @@ async function runDetachedFixture(args: string[]): Promise<CollectedChild> {
 
 async function runHelper(args: string[]): Promise<CollectedChild> {
   const child = spawnHelper(args);
-  child.stdin.end();
+  // Keep ConPTY input open until the helper exits. Closing it early sends a
+  // CTRL+C-style termination to attached clients on current Windows builds.
   return await collect(child);
 }
 
