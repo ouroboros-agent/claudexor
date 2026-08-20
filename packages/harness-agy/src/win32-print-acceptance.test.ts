@@ -33,6 +33,7 @@ interface FakeEvidence {
 
 interface AcceptanceSummary {
   ok: boolean;
+  stage?: string;
   workerPid: number;
   observedPids: number[];
   error?: string;
@@ -125,7 +126,16 @@ describe.skipIf(process.platform !== "win32")("Win32 agy acceptance", () => {
     const hostPid = child.pid;
     let summary: AcceptanceSummary | null = null;
     try {
-      const completed = await withTimeout(collect(child), 75_000, "agy acceptance console host");
+      let completed: CollectedChild;
+      try {
+        completed = await withTimeout(collect(child), 75_000, "agy acceptance console host");
+      } catch (error) {
+        if (existsSync(resultPath)) {
+          summary = JSON.parse(readFileSync(resultPath, "utf8")) as AcceptanceSummary;
+        }
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`${message}; stage=${summary?.stage ?? "not_started"}`);
+      }
       if (existsSync(resultPath)) {
         summary = JSON.parse(readFileSync(resultPath, "utf8")) as AcceptanceSummary;
       }

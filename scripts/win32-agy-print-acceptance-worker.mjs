@@ -35,7 +35,17 @@ process.env.CLAUDEXOR_AGY_BIN = fixture;
 for (const key of PROVIDER_KEYS) process.env[key] = "must-be-scrubbed";
 
 const observedPids = new Set([process.pid]);
-let summary = { ok: false, workerPid: process.pid, observedPids: [...observedPids] };
+let stage = "starting";
+let summary = { ok: false, stage, workerPid: process.pid, observedPids: [...observedPids] };
+const checkpoint = (next) => {
+  stage = next;
+  writeFileSync(
+    resultPath,
+    `${JSON.stringify({ ok: false, stage, workerPid: process.pid, observedPids: [...observedPids] })}\n`,
+    "utf8",
+  );
+};
+checkpoint(stage);
 try {
   if (process.platform !== "win32") throw new Error("Windows acceptance worker requires win32");
   const importFromRepo = (relative) => import(pathToFileURL(join(repoRoot, relative)).href);
@@ -58,6 +68,7 @@ try {
     importFromRepo("packages/cli/dist/setup-attach-command.js"),
     importFromRepo("packages/cli/dist/setup-job-support.js"),
   ]);
+  checkpoint("imports_loaded");
 
   const homeA = join(root, "profiles", "agy-win-a");
   const homeB = join(root, "profiles", "agy-win-b");
@@ -98,6 +109,7 @@ try {
     existsSync(join(controlHome, BROWSER_SENTINEL)),
     "console control did not enter the interactive/browser branch",
   );
+  checkpoint("console_control_complete");
 
   const route = profile.resolveAgyProfileRoute(profileA);
   assert(!("refusal" in route), "enabled profile route was refused");
@@ -105,10 +117,12 @@ try {
   const model = await profile.defaultAgyModelProbe(route.env);
   assert(model.kind === "authenticated", `model probe returned ${model.kind}`);
   assert(model.modelId === "gemini-3.7-flash-high", "model probe parsed the wrong model");
+  checkpoint("model_probe_complete");
 
   const quotaResult = await quota.refreshAgyQuota({ bin: fixture, platform: "win32" });
   assert(quotaResult.snapshots.length === 1, "quota did not select exactly one enabled profile");
   assert(quotaResult.absences.length === 0, "quota returned an unexpected absence");
+  checkpoint("quota_probe_complete");
 
   const hangMarker = join(homeA, HANG_MARKER);
   writeFileSync(hangMarker, "hang\n", "utf8");
@@ -131,6 +145,7 @@ try {
   observedPids.add(timeoutPids.vendor);
   observedPids.add(timeoutPids.descendant);
   await expectPidsGone(timeoutPids, 5_000);
+  checkpoint("timeout_cleanup_complete");
 
   const browserSentinel = join(homeA, BROWSER_SENTINEL);
   const browserSentinelBeforeClientPty = existsSync(browserSentinel);
@@ -204,6 +219,7 @@ try {
   assert(loginReceipt?.errorCode === undefined, "client_pty receipt recorded a transport error");
   const browserSentinelAfterClientPty = existsSync(browserSentinel);
   assert(browserSentinelAfterClientPty, "direct client_pty path did not expose CONIN$");
+  checkpoint("client_pty_complete");
 
   const interactiveArgs = ["--interactive"];
   const expectedHelper = realpathSync(
@@ -255,6 +271,7 @@ try {
     const inAppRunnerPid = inAppRunner.pid;
     inAppPids.add(inAppRunnerPid);
     observedPids.add(inAppRunnerPid);
+    checkpoint("in_app_runner_started");
     const inAppFinished = collectChild(inAppRunner);
     let awaitingPermit;
     await Promise.race([
@@ -282,6 +299,7 @@ try {
     );
     inAppPids.add(inAppWorkerPid);
     observedPids.add(inAppWorkerPid);
+    checkpoint("in_app_awaiting_permit");
 
     protocol.atomicPrivateJson(inAppManifest.permitPath, {
       version: protocol.SETUP_LOGIN_PROTOCOL_VERSION,
@@ -324,6 +342,7 @@ try {
       "in-app disclosure did not reconstruct the fragmented OAuth URL",
     );
     assert(disclosure?.userCode === "", "in-app URL disclosure persisted an unexpected user code");
+    checkpoint("in_app_url_disclosed");
 
     const processSnapshot = readWindowsProcessSnapshot(inAppWorkerPid);
     if (processSnapshot.observerPid > 0) {
@@ -356,7 +375,9 @@ try {
       value: oneShotInput,
       submittedAt: new Date().toISOString(),
     });
+    checkpoint("in_app_input_submitted");
     const inAppProcess = await inAppFinished;
+    checkpoint("in_app_runner_exited");
     const inAppReceipt = protocol.readRunnerResult(inAppManifest.resultPath);
     assert(inAppProcess.code === 0, `in-app runner exited ${String(inAppProcess.code)}`);
     assert(inAppProcess.signal === null, "in-app runner exited by signal");
@@ -409,6 +430,7 @@ try {
     unlinkIfPresent(inAppManifest.deviceCodePath);
     unlinkIfPresent(inAppManifest.inputPath);
   }
+  checkpoint("in_app_cleanup_complete");
 
   const controlEvidence = readEvidence(controlHome);
   const profileEvidence = readEvidence(homeA);
@@ -425,6 +447,7 @@ try {
 
   summary = {
     ok: true,
+    stage: "complete",
     workerPid: process.pid,
     observedPids: [...observedPids],
     paths: {
@@ -459,6 +482,7 @@ try {
 } catch (error) {
   summary = {
     ok: false,
+    stage,
     workerPid: process.pid,
     observedPids: [...observedPids],
     error: error instanceof Error ? error.message : String(error),
