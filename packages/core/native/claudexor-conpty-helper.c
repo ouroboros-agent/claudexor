@@ -22,6 +22,7 @@
 #define CLAUDEXOR_CONPTY_MAX_COMMAND_LINE 32766u
 #define CLAUDEXOR_CONPTY_CHILD_FAILURE_GRACE_MS 250u
 #define CLAUDEXOR_CONPTY_CHILD_TERMINATE_WAIT_MS 5000u
+#define CLAUDEXOR_CONPTY_OUTPUT_DRAIN_WAIT_MS 5000u
 
 #ifndef PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE
 #define PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE \
@@ -259,7 +260,15 @@ static DWORD WINAPI output_pump_main(LPVOID opaque) {
 
 static void close_and_join_output(HANDLE thread, OutputPump *pump) {
   if (thread != NULL) {
-    (void)WaitForSingleObject(thread, INFINITE);
+    DWORD waited = WaitForSingleObject(thread, CLAUDEXOR_CONPTY_OUTPUT_DRAIN_WAIT_MS);
+    if (waited == WAIT_TIMEOUT) {
+      /* ClosePseudoConsole is asynchronous on Windows 11 24H2+. A synchronous
+       * ReadFile can miss the resulting EOF, so cancel only that stale read
+       * after giving pending terminal output a bounded drain window. */
+      (void)CancelSynchronousIo(thread);
+      (void)WaitForSingleObject(thread, INFINITE);
+      if (pump->read_error == ERROR_OPERATION_ABORTED) pump->read_error = 0;
+    }
     CloseHandle(thread);
   }
   if (pump->conpty_output != INVALID_HANDLE_VALUE && pump->conpty_output != NULL) {
