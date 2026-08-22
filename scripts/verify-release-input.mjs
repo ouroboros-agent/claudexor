@@ -21,18 +21,46 @@ if (skipCustomEd25519Input !== "true" && skipCustomEd25519Input !== "false") {
   fail(["skip_custom_ed25519 must be a boolean workflow input"]);
 }
 const skipCustomEd25519 = skipCustomEd25519Input === "true";
+const waiveCursorReviewInput = process.env.WAIVE_CURSOR_REVIEW_INPUT ?? "false";
+if (waiveCursorReviewInput !== "true" && waiveCursorReviewInput !== "false") {
+  fail(["waive_cursor_review must be a boolean workflow input"]);
+}
+const waiveCursorReview = waiveCursorReviewInput === "true";
+const reviewAttestationInput = process.env.REVIEW_ATTESTATION_B64_INPUT ?? "";
+const runtimeManifestInput = process.env.RUNTIME_MANIFEST_B64_INPUT ?? "";
+const remoteRuntimeManifestInput = process.env.REMOTE_RUNTIME_MANIFEST_B64_INPUT ?? "";
 const customEd25519Inputs = [
-  process.env.REVIEW_ATTESTATION_B64_INPUT ?? "",
-  process.env.RUNTIME_MANIFEST_B64_INPUT ?? "",
-  process.env.REMOTE_RUNTIME_MANIFEST_B64_INPUT ?? "",
+  reviewAttestationInput,
+  runtimeManifestInput,
+  remoteRuntimeManifestInput,
 ];
 if (skipCustomEd25519 && mode !== "publish") {
   fail(["skip_custom_ed25519 is allowed only in publish mode"]);
+}
+if (waiveCursorReview && mode !== "publish") {
+  fail(["waive_cursor_review is allowed only in publish mode"]);
+}
+if (skipCustomEd25519 && waiveCursorReview) {
+  fail(["waive_cursor_review cannot be combined with skip_custom_ed25519"]);
 }
 if (skipCustomEd25519 && customEd25519Inputs.some((value) => value !== "")) {
   fail([
     "skip_custom_ed25519 requires review_attestation_b64, runtime_manifest_b64, and remote_runtime_manifest_b64 to all be empty",
   ]);
+}
+if (waiveCursorReview && reviewAttestationInput !== "") {
+  fail(["waive_cursor_review requires review_attestation_b64 to be empty"]);
+}
+if (waiveCursorReview && (runtimeManifestInput === "" || remoteRuntimeManifestInput === "")) {
+  fail(["waive_cursor_review still requires runtime_manifest_b64 and remote_runtime_manifest_b64"]);
+}
+if (
+  waiveCursorReview &&
+  [runtimeManifestInput, remoteRuntimeManifestInput].some(
+    (value) => !/^[A-Za-z0-9+/]+={0,2}$/.test(value),
+  )
+) {
+  fail(["waive_cursor_review requires base64-encoded runtime manifests"]);
 }
 
 if (process.argv.includes("--syntax-only")) process.exit(0);
@@ -71,10 +99,13 @@ if (mode === "publish" && tag !== `v${version}`)
 if (skipCustomEd25519 && version !== "3.8.0") {
   fail(["skip_custom_ed25519 is authorized only for package version 3.8.0"]);
 }
+if (waiveCursorReview && version !== "3.8.1") {
+  fail(["waive_cursor_review is authorized only for package version 3.8.1"]);
+}
 
 let attestationText = "";
-if (mode === "publish" && !skipCustomEd25519) {
-  const encoded = process.env.REVIEW_ATTESTATION_B64_INPUT ?? "";
+if (mode === "publish" && !skipCustomEd25519 && !waiveCursorReview) {
+  const encoded = reviewAttestationInput;
   if (!encoded || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) {
     fail(["publish mode requires a base64-encoded review attestation"]);
   }
@@ -109,6 +140,7 @@ if (process.env.GITHUB_OUTPUT) {
       `tag=${tag}`,
       `version=${version}`,
       `skip_custom_ed25519=${skipCustomEd25519}`,
+      `waive_cursor_review=${waiveCursorReview}`,
       "",
     ].join("\n"),
     { flag: "a" },

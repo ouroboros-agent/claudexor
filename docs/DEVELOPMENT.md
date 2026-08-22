@@ -267,6 +267,17 @@ publication, SBOMs, GitHub artifact provenance, and npm provenance are
 unchanged. The verifier rejects this waiver for every other version, and the
 default `false` path retains the normal schema-v6 and signed-manifest gates.
 
+Package version 3.8.1 has a separate, one-release owner waiver for the Cursor
+review attestation because the required Cursor Fable and Sol provider lanes
+were unavailable. A publish may set `waive_cursor_review: true` only for that
+exact version, with `review_attestation_b64` empty and both owner-signed runtime
+manifest inputs present and validly base64-encoded. This waiver omits only
+`REVIEW_ATTESTATION.json`; the candidate run, exact tag and SHA, artifact
+provenance, signed runtime and remote-runtime manifests, SBOMs, signing,
+notarization, npm provenance, and all remaining publication checks are
+unchanged. It is an explicit exception, not a substitute review report, and
+the normal schema-v6 contract remains fail-closed for every other release.
+
 The review process itself (panel composition, sealed packet contents, the
 blocker contract, wave discipline) is defined ONCE, in `docs/CHECKLISTS.md`
 (Release review protocol) — this file only covers the attestation transport.

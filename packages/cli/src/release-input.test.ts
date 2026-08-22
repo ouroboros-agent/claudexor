@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -18,6 +18,7 @@ function baseEnv(): NodeJS.ProcessEnv {
     "RELEASE_MODE_INPUT",
     "RELEASE_REF_INPUT",
     "REVIEW_ATTESTATION_B64_INPUT",
+    "WAIVE_CURSOR_REVIEW_INPUT",
     "RUNTIME_MANIFEST_B64_INPUT",
     "REMOTE_RUNTIME_MANIFEST_B64_INPUT",
     "SKIP_CUSTOM_ED25519_INPUT",
@@ -85,6 +86,7 @@ function verifyPublish(
       RELEASE_MODE_INPUT: "publish",
       RELEASE_REF_INPUT: fixture.tag,
       REVIEW_ATTESTATION_B64_INPUT: "",
+      WAIVE_CURSOR_REVIEW_INPUT: "false",
       RUNTIME_MANIFEST_B64_INPUT: "",
       REMOTE_RUNTIME_MANIFEST_B64_INPUT: "",
       SKIP_CUSTOM_ED25519_INPUT: "false",
@@ -306,5 +308,149 @@ describe("one-release custom Ed25519 waiver", () => {
     expect(result.stderr).toContain(
       "release input rejected: skip_custom_ed25519 is allowed only in publish mode",
     );
+  });
+});
+
+describe("one-release Cursor review waiver", () => {
+  const signedRuntimeInputs = {
+    RUNTIME_MANIFEST_B64_INPUT: "e30=",
+    REMOTE_RUNTIME_MANIFEST_B64_INPUT: "e30=",
+    WAIVE_CURSOR_REVIEW_INPUT: "true",
+  };
+
+  it("accepts only v3.8.1 with an empty review attestation and both runtime inputs", () => {
+    withPublishFixture("3.8.1", (fixture) => {
+      const reviewPath = resolve(fixture.fixture, "review-attestation.json");
+      const outputPath = resolve(fixture.fixture, "github-output");
+      const result = verifyPublish(fixture, {
+        ...signedRuntimeInputs,
+        REVIEW_ATTESTATION_PATH: reviewPath,
+        GITHUB_OUTPUT: outputPath,
+      });
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain(`release input OK: publish ${fixture.candidateSha}`);
+      expect(readFileSync(outputPath, "utf8")).toContain("waive_cursor_review=true");
+      expect(existsSync(reviewPath)).toBe(false);
+    });
+  });
+
+  it("keeps the normal v3.8.1 publish path fail-closed when review is empty", () => {
+    withPublishFixture("3.8.1", (fixture) => {
+      const result = verifyPublish(fixture, {
+        RUNTIME_MANIFEST_B64_INPUT: "e30=",
+        REMOTE_RUNTIME_MANIFEST_B64_INPUT: "e30=",
+      });
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        "release input rejected: publish mode requires a base64-encoded review attestation",
+      );
+    });
+  });
+
+  it("rejects a non-boolean waiver value", () => {
+    withPublishFixture("3.8.1", (fixture) => {
+      const result = verifyPublish(fixture, {
+        ...signedRuntimeInputs,
+        WAIVE_CURSOR_REVIEW_INPUT: "1",
+      });
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        "release input rejected: waive_cursor_review must be a boolean workflow input",
+      );
+    });
+  });
+
+  it("rejects the waiver for every package version except v3.8.1", () => {
+    withPublishFixture("3.8.0", (fixture) => {
+      const result = verifyPublish(fixture, signedRuntimeInputs);
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        "release input rejected: waive_cursor_review is authorized only for package version 3.8.1",
+      );
+    });
+  });
+
+  it("rejects the waiver in candidate mode", () => {
+    const candidateSha = head();
+    const result = spawnSync(process.execPath, [verifier, "--syntax-only"], {
+      cwd: repo,
+      encoding: "utf8",
+      env: {
+        ...baseEnv(),
+        GITHUB_SHA: candidateSha,
+        RELEASE_MODE_INPUT: "candidate",
+        RELEASE_REF_INPUT: candidateSha,
+        WAIVE_CURSOR_REVIEW_INPUT: "true",
+        RUNTIME_MANIFEST_B64_INPUT: "e30=",
+        REMOTE_RUNTIME_MANIFEST_B64_INPUT: "e30=",
+      },
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(
+      "release input rejected: waive_cursor_review is allowed only in publish mode",
+    );
+  });
+
+  it("rejects a nonempty review attestation", () => {
+    withPublishFixture("3.8.1", (fixture) => {
+      const result = verifyPublish(fixture, {
+        ...signedRuntimeInputs,
+        REVIEW_ATTESTATION_B64_INPUT: "e30=",
+      });
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        "release input rejected: waive_cursor_review requires review_attestation_b64 to be empty",
+      );
+    });
+  });
+
+  it.each(["RUNTIME_MANIFEST_B64_INPUT", "REMOTE_RUNTIME_MANIFEST_B64_INPUT"])(
+    "rejects the waiver when %s is missing",
+    (inputName) => {
+      withPublishFixture("3.8.1", (fixture) => {
+        const inputs = { ...signedRuntimeInputs };
+        delete inputs[inputName as keyof typeof inputs];
+        const result = verifyPublish(fixture, inputs);
+
+        expect(result.status).toBe(1);
+        expect(result.stderr).toContain(
+          "release input rejected: waive_cursor_review still requires runtime_manifest_b64 and remote_runtime_manifest_b64",
+        );
+      });
+    },
+  );
+
+  it("rejects a non-base64 runtime manifest", () => {
+    withPublishFixture("3.8.1", (fixture) => {
+      const result = verifyPublish(fixture, {
+        ...signedRuntimeInputs,
+        RUNTIME_MANIFEST_B64_INPUT: "not base64",
+      });
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        "release input rejected: waive_cursor_review requires base64-encoded runtime manifests",
+      );
+    });
+  });
+
+  it("rejects combining the review waiver with the v3.8.0 custom waiver", () => {
+    withPublishFixture("3.8.1", (fixture) => {
+      const result = verifyPublish(fixture, {
+        ...signedRuntimeInputs,
+        SKIP_CUSTOM_ED25519_INPUT: "true",
+      });
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        "release input rejected: waive_cursor_review cannot be combined with skip_custom_ed25519",
+      );
+    });
   });
 });

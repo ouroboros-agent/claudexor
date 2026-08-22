@@ -132,8 +132,16 @@ for (const [label, pattern] of [
     /skip_custom_ed25519:\s*\n\s*description:[^\n]*v3\.8\.0 publish only[^\n]*\n\s*required:\s*false\n\s*type:\s*boolean\n\s*default:\s*false/,
   ],
   [
+    "the v3.8.1 Cursor review waiver is an explicit boolean defaulting false",
+    /waive_cursor_review:\s*\n\s*description:[^\n]*v3\.8\.1 Cursor review attestation only[^\n]*\n\s*required:\s*false\n\s*type:\s*boolean\n\s*default:\s*false/,
+  ],
+  [
     "custom Ed25519 waiver input is projected into one shell-only environment variable",
     /SKIP_CUSTOM_ED25519_INPUT:\s*\$\{\{\s*inputs\.skip_custom_ed25519\s*\}\}/,
+  ],
+  [
+    "Cursor review waiver input is projected into one shell-only environment variable",
+    /WAIVE_CURSOR_REVIEW_INPUT:\s*\$\{\{\s*inputs\.waive_cursor_review\s*\}\}/,
   ],
   [
     "publish verifies the owner-signed remote runtime manifest",
@@ -657,8 +665,24 @@ for (const [label, pattern] of [
     /skipCustomEd25519\s*&&\s*version\s*!==\s*"3\.8\.0"/,
   ],
   [
+    "Cursor review waiver is permanently pinned to package version 3.8.1",
+    /waiveCursorReview\s*&&\s*version\s*!==\s*"3\.8\.1"/,
+  ],
+  [
+    "Cursor review waiver requires an empty review input",
+    /waiveCursorReview\s*&&\s*reviewAttestationInput\s*!==\s*""/,
+  ],
+  [
+    "Cursor review waiver still requires both runtime manifests",
+    /waiveCursorReview\s*&&[\s\S]*?runtimeManifestInput\s*===\s*""[\s\S]*?remoteRuntimeManifestInput\s*===\s*""/,
+  ],
+  [
+    "Cursor review waiver cannot combine with the custom Ed25519 waiver",
+    /skipCustomEd25519\s*&&\s*waiveCursorReview/,
+  ],
+  [
     "normal publish still verifies the signed schema-v6 review attestation",
-    /if\s*\(mode\s*===\s*"publish"\s*&&\s*!skipCustomEd25519\)/,
+    /if\s*\(mode\s*===\s*"publish"\s*&&\s*!skipCustomEd25519\s*&&\s*!waiveCursorReview\)/,
   ],
 ]) {
   if (!pattern.test(verifier)) errors.push(`verify-release-input.mjs: ${label}`);
@@ -787,9 +811,9 @@ if (
 }
 
 const directInputs = [...release.matchAll(/\$\{\{\s*inputs\.[^}]+\}\}/g)].map((match) => match[0]);
-if (directInputs.length !== 7) {
+if (directInputs.length !== 8) {
   errors.push(
-    `release.yml: expected exactly seven input projections into workflow env, got ${directInputs.length}`,
+    `release.yml: expected exactly eight input projections into workflow env, got ${directInputs.length}`,
   );
 }
 if (errors.length) {
@@ -921,7 +945,12 @@ function exactCandidateAppPromotionErrors(job) {
   );
   requirePattern(
     "normal publish must still assemble the signed review attestation",
-    /if \[ "\$RELEASE_MODE_INPUT" = publish \] && \[ "\$SKIP_CUSTOM_ED25519_INPUT" != true \]; then\n\s*cp "\$RUNNER_TEMP\/review-attestation\.json" "\$assets\/REVIEW_ATTESTATION\.json"/,
+    /if \[ "\$RELEASE_MODE_INPUT" = publish \] && \[ "\$SKIP_CUSTOM_ED25519_INPUT" != true \] && \[ "\$WAIVE_CURSOR_REVIEW_INPUT" != true \]; then\n\s*cp "\$RUNNER_TEMP\/review-attestation\.json" "\$assets\/REVIEW_ATTESTATION\.json"/,
+    assembleStep,
+  );
+  requirePattern(
+    "v3.8.1 review waiver must omit only the review attestation asset",
+    /if \[ "\$WAIVE_CURSOR_REVIEW_INPUT" = true \]; then\n\s*test ! -e "\$assets\/REVIEW_ATTESTATION\.json"/,
     assembleStep,
   );
   requirePattern(
