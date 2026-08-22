@@ -218,14 +218,28 @@ export async function probeAuthStatus(
   bin: string = BIN,
   options: ClaudeAuthStatusProbeOptions = {},
 ): Promise<ClaudeAuthStatusProbe> {
-  const configDir = options.configDir ?? defaultNativeClaudeConfigDir(options.env);
-  const env = claudeNativeEnv(options.env, configDir);
-  return probeClaudeAuthStatus(bin, {
-    env,
-    configDir,
-    abortSignal: options.abortSignal,
-    runCapture: options.runCapture,
-  });
+  try {
+    const configDir = options.configDir ?? defaultNativeClaudeConfigDir(options.env);
+    const env = claudeNativeEnv(options.env, configDir);
+    return await probeClaudeAuthStatus(bin, {
+      env,
+      configDir,
+      abortSignal: options.abortSignal,
+      runCapture: options.runCapture,
+    });
+  } catch (err) {
+    // Config/home normalization is part of the probe boundary too.  A bad
+    // locator or keychain bridge must remain a typed probe failure, rather
+    // than escaping and making callers mistake a transient status problem for
+    // a harness crash or a logged-out account.
+    const detail = err instanceof Error ? err.message : String(err);
+    return {
+      loggedIn: false,
+      authed: false,
+      authMethod: null,
+      probeError: redactClaudeDoctorDetail(detail),
+    };
+  }
 }
 
 export function anthropicApiKey(): string | null {

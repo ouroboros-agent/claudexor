@@ -228,6 +228,26 @@ describe("probeAuthStatus (JSON verdict beats exit code; probe failures are dist
     }
   });
 
+  it("returns a typed probe error when native-store normalization rejects the locator", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "claude-probe-"));
+    try {
+      const result = await probeAuthStatus("/fake/claude", {
+        env: { CLAUDEXOR_CLAUDE_NATIVE_DIR: join(dir, "outside-owned-root") },
+        runCapture: async () => {
+          throw new Error("runCapture must not be reached after locator rejection");
+        },
+      });
+      expect(result).toEqual({
+        loggedIn: false,
+        authed: false,
+        authMethod: null,
+        probeError: expect.stringContaining("must stay inside"),
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("no typed JSON + exit 0 is a probe error, never native readiness", async () => {
     const dir = mkdtempSync(join(tmpdir(), "claude-probe-"));
     try {
