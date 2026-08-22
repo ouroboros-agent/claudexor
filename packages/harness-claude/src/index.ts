@@ -47,8 +47,6 @@ import { probeClaudeCredentialProfile, resolveClaudeProfileRoute } from "./profi
 export { canonicalProfileConfigDir } from "./profile.js";
 import { probeClaudeAuthStatus } from "./auth-status.js";
 export {
-  CLAUDE_AUTH_STATUS_CACHE_TTL_MS,
-  CLAUDE_AUTH_STATUS_TOTAL_TIMEOUT_MS,
   clearClaudeAuthStatusCache,
 } from "./auth-status.js";
 import { smokeIsolatedApiKey, smokeIsolatedOAuthToken } from "./smoke.js";
