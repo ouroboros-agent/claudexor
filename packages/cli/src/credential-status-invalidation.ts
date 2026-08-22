@@ -46,3 +46,9 @@ export function bustCredentialStatusCaches(
   }
   if (!subject.secretName.includes(":")) credentialUnusableLedger.clearDefaultSubjects();
 }
+
+/** Clear the process-wide observations after a daemon login/logout lifecycle. */
+export function bustGlobalCredentialStatusCaches(quotaRegistry: () => QuotaRegistry): void {
+  bustCredentialStatusCaches(quotaRegistry);
+  credentialUnusableLedger.noteCredentialChange();
+}

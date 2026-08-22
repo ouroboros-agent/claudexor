@@ -45,10 +45,19 @@ export { claudeAccountIdentity, defaultNativeClaudeConfigDir } from "./native-ho
 import { createClaudeParser } from "./parse.js";
 import { probeClaudeCredentialProfile, resolveClaudeProfileRoute } from "./profile.js";
 export { canonicalProfileConfigDir } from "./profile.js";
-import { probeClaudeAuthStatus } from "./auth-status.js";
+import {
+  claudeAuthSourceReadiness,
+  probeClaudeAuthStatus,
+  redactClaudeDoctorDetail,
+  staleClaudeAuthStatusEvent,
+  type ClaudeAuthStatusProbe,
+} from "./auth-status.js";
 export {
   clearClaudeAuthStatusCache,
+  claudeAuthSourceReadiness,
+  redactClaudeDoctorDetail,
 } from "./auth-status.js";
+export type { ClaudeAuthStatusProbe } from "./auth-status.js";
 import { smokeIsolatedApiKey, smokeIsolatedOAuthToken } from "./smoke.js";
 import {
   BIN,
@@ -165,31 +174,11 @@ async function detectVersion(abortSignal?: AbortSignal): Promise<string | null> 
   }
 }
 
-/**
- * Native-session probe with a distinct PROBE-FAILURE state (same contract as
- * the codex adapter's probeLogin). `claude auth status` prints a typed JSON
- * verdict `{loggedIn, authMethod, ...}` on stdout; the exit code alone is NOT
- * the auth verdict. When the JSON is present we trust its `loggedIn` field;
- * a probe that produces no parseable verdict is a probe error, never a silent
- * "not logged in".
- */
-export interface ClaudeAuthStatusProbe {
-  loggedIn: boolean;
-  authed: boolean;
-  authMethod: string | null;
-  probeError: string | null;
-  /** True only when the result came from the bounded LKG grace window. */
-  stale?: boolean;
-  /** Age of the LKG auth verdict in milliseconds, when `stale` is true. */
-  staleAgeMs?: number;
-}
-
+/** Options for probing the default or explicitly selected native Claude store. */
 export interface ClaudeAuthStatusProbeOptions {
   env?: Record<string, string | null | undefined>;
-  /** Explicit CLAUDE_CONFIG_DIR for the probe (INV-135, release wave round-17
-   * BLOCK): without it the probe re-normalizes onto the DEFAULT native dir —
-   * a credential-profile probe must inspect ITS OWN store, never the
-   * default's. Callers without a profile omit it and keep the default. */
+  /** Explicit CLAUDE_CONFIG_DIR for the probe (INV-135): a credential-profile
+   * probe must inspect its own store, never the default's. */
   configDir?: string;
   abortSignal?: AbortSignal;
   runCapture?: typeof runCapture;
@@ -254,64 +243,6 @@ export function anthropicApiKey(): string | null {
  * (single owner), so this reads env-only under CLAUDEXOR_DISABLE_STORED_SECRETS. */
 function claudeOAuthToken(): string | null {
   return resolveSecret("claude_oauth") || process.env.CLAUDE_CODE_OAUTH_TOKEN || null;
-}
-
-export function claudeAuthSourceReadiness(input: {
-  native: ClaudeAuthStatusProbe;
-  oauthAvailable: boolean;
-  oauthVerification: "passed" | "failed" | "not_run";
-  oauthDetail: string;
-  apiKeyAvailable: boolean;
-  apiKeyVerification: "passed" | "failed" | "not_run";
-  apiKeyDetail: string;
-}): AuthSourceReadiness[] {
-  const nativeReady =
-    input.native.authed && input.native.probeError === null && input.native.stale !== true;
-  const nativeAvailability =
-    input.native.probeError || input.native.stale
-      ? "unknown"
-      : input.native.loggedIn
-        ? "available"
-        : "unavailable";
-  const nativeVerification = nativeReady
-    ? "passed"
-    : input.native.probeError || input.native.stale || !input.native.loggedIn
-      ? "not_run"
-      : "failed";
-  return [
-    {
-      source: "native_session",
-      availability: nativeAvailability,
-      verification: nativeVerification,
-      detail: nativeReady
-        ? "vendor status confirmed authMethod=claude.ai in the exact run environment"
-        : input.native.stale
-          ? `auth-status probe is stale; using last-known-good native session${
-              input.native.staleAgeMs === undefined ? "" : ` (${input.native.staleAgeMs}ms old)`
-            }`
-          : input.native.probeError
-            ? `auth-status probe failed: ${redactClaudeDoctorDetail(input.native.probeError)}`
-            : input.native.loggedIn
-              ? `Claude is logged in via ${input.native.authMethod ?? "unknown"}, not claude.ai`
-              : "official native Claude session is not logged in",
-    },
-    {
-      source: "oauth_token_env",
-      availability: input.oauthAvailable ? "available" : "unavailable",
-      verification: input.oauthVerification,
-      detail: input.oauthDetail,
-    },
-    {
-      source: "api_key_env",
-      availability: input.apiKeyAvailable ? "available" : "unavailable",
-      verification: input.apiKeyVerification,
-      detail: input.apiKeyDetail,
-    },
-  ];
-}
-
-export function redactClaudeDoctorDetail(text: string): string {
-  return redactSecrets(text).slice(0, 500);
 }
 
 /** The runtime surface the profile module needs (test-stubbable). */
@@ -909,22 +840,8 @@ async function* runClaude(
       staleAuthStatus = { ageMs: native.staleAgeMs };
     }
 
-    if (staleAuthStatus !== null) {
-      yield {
-        type: "message",
-        session_id: spec.session_id,
-        ts: nowIso(),
-        text: `[auth] native auth-status probe stale; using last-known-good session${
-          staleAuthStatus.ageMs === undefined ? "" : ` (${staleAuthStatus.ageMs}ms old)`
-        }`,
-        payload: {
-          auth_status_stale: true,
-          ...(staleAuthStatus.ageMs === undefined
-            ? {}
-            : { auth_status_stale_age_ms: staleAuthStatus.ageMs }),
-        },
-      };
-    }
+    if (staleAuthStatus !== null)
+      yield staleClaudeAuthStatusEvent(spec.session_id, staleAuthStatus.ageMs);
 
     // Auto selecting its API-key fallback is a paid-route switch and must remain
     // typed/visible; explicit routes never fall back.
@@ -961,20 +878,7 @@ async function* runClaude(
   }
 
   if (profile && staleAuthStatus !== null) {
-    yield {
-      type: "message",
-      session_id: spec.session_id,
-      ts: nowIso(),
-      text: `[auth] native auth-status probe stale; using last-known-good session${
-        staleAuthStatus.ageMs === undefined ? "" : ` (${staleAuthStatus.ageMs}ms old)`
-      }`,
-      payload: {
-        auth_status_stale: true,
-        ...(staleAuthStatus.ageMs === undefined
-          ? {}
-          : { auth_status_stale_age_ms: staleAuthStatus.ageMs }),
-      },
-    };
+    yield staleClaudeAuthStatusEvent(spec.session_id, staleAuthStatus.ageMs);
   }
 
   const useSubscription = route === "subscription";

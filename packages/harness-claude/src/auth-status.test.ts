@@ -68,10 +68,13 @@ describe("Claude auth-status resilience", () => {
   });
 
   it("retries once for a transport failure, then accepts a typed verdict", async () => {
+    let clock = 1_000;
+    vi.spyOn(Date, "now").mockImplementation(() => clock);
     let calls = 0;
     const timeouts: number[] = [];
     const runCapture = async () => {
       calls += 1;
+      clock += 100;
       return calls === 1
         ? result("", { code: null, signal: "SIGKILL" })
         : result('{"loggedIn":true,"authMethod":"claude.ai"}');

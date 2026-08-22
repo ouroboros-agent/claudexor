@@ -1,7 +1,24 @@
 import type { CaptureResult } from "@claudexor/core";
+import type { AuthSourceReadiness, HarnessEvent } from "@claudexor/schema";
 import { labelStreams, runCapture } from "@claudexor/core";
-import { redactSecrets } from "@claudexor/util";
-import type { ClaudeAuthStatusProbe } from "./index.js";
+import { nowIso, redactSecrets } from "@claudexor/util";
+
+/**
+ * Native-session probe with a distinct PROBE-FAILURE state (same contract as
+ * the codex adapter's probeLogin). `claude auth status` prints a typed JSON
+ * verdict; a probe that produces no parseable verdict is a probe error, never
+ * a silent "not logged in".
+ */
+export interface ClaudeAuthStatusProbe {
+  loggedIn: boolean;
+  authed: boolean;
+  authMethod: string | null;
+  probeError: string | null;
+  /** True only when the result came from the bounded LKG grace window. */
+  stale?: boolean;
+  /** Age of the LKG auth verdict in milliseconds, when `stale` is true. */
+  staleAgeMs?: number;
+}
 
 /**
  * Auth-status is a read of one vendor-owned store.  A daemon can ask for the
@@ -18,11 +35,84 @@ export const CLAUDE_AUTH_STATUS_CACHE_TTL_MS = 60_000;
 export const CLAUDE_AUTH_STATUS_TOTAL_TIMEOUT_MS = 10_000;
 const CLAUDE_AUTH_STATUS_RETRY_DELAY_MS = 50;
 
-export interface ClaudeAuthStatusProbeOptions {
+interface ClaudeAuthStatusCoordinatorOptions {
   env: Record<string, string | null | undefined>;
   configDir: string;
   abortSignal?: AbortSignal;
   runCapture?: typeof runCapture;
+}
+
+export function redactClaudeDoctorDetail(text: string): string {
+  return redactSecrets(text).slice(0, 500);
+}
+
+export function claudeAuthSourceReadiness(input: {
+  native: ClaudeAuthStatusProbe;
+  oauthAvailable: boolean;
+  oauthVerification: "passed" | "failed" | "not_run";
+  oauthDetail: string;
+  apiKeyAvailable: boolean;
+  apiKeyVerification: "passed" | "failed" | "not_run";
+  apiKeyDetail: string;
+}): AuthSourceReadiness[] {
+  const nativeReady =
+    input.native.authed && input.native.probeError === null && input.native.stale !== true;
+  const nativeAvailability =
+    input.native.probeError || input.native.stale
+      ? "unknown"
+      : input.native.loggedIn
+        ? "available"
+        : "unavailable";
+  const nativeVerification = nativeReady
+    ? "passed"
+    : input.native.probeError || input.native.stale || !input.native.loggedIn
+      ? "not_run"
+      : "failed";
+  return [
+    {
+      source: "native_session",
+      availability: nativeAvailability,
+      verification: nativeVerification,
+      detail: nativeReady
+        ? "vendor status confirmed authMethod=claude.ai in the exact run environment"
+        : input.native.stale
+          ? `auth-status probe is stale; using last-known-good native session${
+              input.native.staleAgeMs === undefined ? "" : ` (${input.native.staleAgeMs}ms old)`
+            }`
+          : input.native.probeError
+            ? `auth-status probe failed: ${redactClaudeDoctorDetail(input.native.probeError)}`
+            : input.native.loggedIn
+              ? `Claude is logged in via ${input.native.authMethod ?? "unknown"}, not claude.ai`
+              : "official native Claude session is not logged in",
+    },
+    {
+      source: "oauth_token_env",
+      availability: input.oauthAvailable ? "available" : "unavailable",
+      verification: input.oauthVerification,
+      detail: input.oauthDetail,
+    },
+    {
+      source: "api_key_env",
+      availability: input.apiKeyAvailable ? "available" : "unavailable",
+      verification: input.apiKeyVerification,
+      detail: input.apiKeyDetail,
+    },
+  ];
+}
+
+export function staleClaudeAuthStatusEvent(sessionId: string, ageMs?: number): HarnessEvent {
+  return {
+    type: "message",
+    session_id: sessionId,
+    ts: nowIso(),
+    text: `[auth] native auth-status probe stale; using last-known-good session${
+      ageMs === undefined ? "" : ` (${ageMs}ms old)`
+    }`,
+    payload: {
+      auth_status_stale: true,
+      ...(ageMs === undefined ? {} : { auth_status_stale_age_ms: ageMs }),
+    },
+  };
 }
 
 interface CachedAuthStatus {
@@ -106,7 +196,7 @@ async function waitBeforeRetry(delayMs: number, signal?: AbortSignal): Promise<v
 
 async function attempt(
   bin: string,
-  options: ClaudeAuthStatusProbeOptions,
+  options: ClaudeAuthStatusCoordinatorOptions,
   timeoutMs: number,
 ): Promise<ProbeAttempt> {
   const capture = options.runCapture ?? runCapture;
@@ -133,7 +223,7 @@ async function attempt(
 
 async function probeUnshared(
   bin: string,
-  options: ClaudeAuthStatusProbeOptions,
+  options: ClaudeAuthStatusCoordinatorOptions,
   key: string,
 ): Promise<ClaudeAuthStatusProbe> {
   const deadline = Date.now() + CLAUDE_AUTH_STATUS_TOTAL_TIMEOUT_MS;
@@ -202,7 +292,7 @@ async function probeUnshared(
  */
 export async function probeClaudeAuthStatus(
   bin: string,
-  options: ClaudeAuthStatusProbeOptions,
+  options: ClaudeAuthStatusCoordinatorOptions,
 ): Promise<ClaudeAuthStatusProbe> {
   if (options.abortSignal?.aborted) {
     return {
