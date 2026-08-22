@@ -109,6 +109,25 @@ describe("Claude auth-status resilience", () => {
     expect(probe.probeError).toContain("authentication rejected (401)");
   });
 
+  it("does not accept a typed verdict flushed by a signaled child", async () => {
+    let calls = 0;
+    const runCapture = async () => {
+      calls += 1;
+      return result('{"loggedIn":true,"authMethod":"claude.ai"}', {
+        code: null,
+        signal: "SIGKILL",
+      });
+    };
+    const probe = await probeClaudeAuthStatus("/bin/claude", options(runCapture));
+    expect(calls).toBe(2);
+    expect(probe).toMatchObject({
+      loggedIn: false,
+      authed: false,
+      probeError: expect.stringContaining('"loggedIn":true'),
+    });
+    expect(probe.stale).toBeUndefined();
+  });
+
   it("uses the bounded last-known-good verdict only after transport retry fails", async () => {
     let clock = 1_000;
     vi.spyOn(Date, "now").mockImplementation(() => clock);

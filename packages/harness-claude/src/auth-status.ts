@@ -160,6 +160,12 @@ function thrownErrorDetail(err: unknown): string {
 }
 
 function typedVerdict(capture: CaptureResult): ClaudeAuthStatusProbe | null {
+  // A killed/timed-out child may have flushed a complete-looking JSON object
+  // before the signal arrived.  The bytes are not a fresh vendor verdict in
+  // that case.  Keep exit-code semantics separate: `claude auth status` uses
+  // code 1 for a clean logged-out JSON response, so code alone cannot reject
+  // an otherwise complete status result.
+  if (capture.signal !== null) return null;
   try {
     const verdict = JSON.parse(capture.stdout.trim()) as {
       loggedIn?: unknown;
