@@ -10,6 +10,8 @@ import {
 import { parse as parseYaml } from "yaml";
 import { parseAgyEvent } from "./parse.js";
 import { agyPlatformIsolationDetail } from "./index.js";
+import { AGY_CAPABILITY_PROFILE } from "./index.js";
+import { needsPrivatePerProfileKeychain, needsScopedHomeKeychainBridge } from "@claudexor/core";
 
 const FIXTURES = fileURLToPath(new URL("../fixtures", import.meta.url));
 /** W3.8: per-fixture STREAM SEMANTICS expectations, declared next to the
@@ -58,6 +60,15 @@ describe("agy adapter conformance fixtures", () => {
 });
 
 describe("agy platform credential disclosure", () => {
+  it("declares Darwin's private keychain alongside the vendor file fallback", () => {
+    const darwin = AGY_CAPABILITY_PROFILE.auth.credential_transports.filter((transport) =>
+      transport.platforms?.includes("darwin"),
+    );
+    expect(darwin.map((transport) => transport.kind)).toEqual(["config_file", "os_keychain"]);
+    expect(needsPrivatePerProfileKeychain(AGY_CAPABILITY_PROFILE, "darwin")).toBe(true);
+    expect(needsScopedHomeKeychainBridge(AGY_CAPABILITY_PROFILE, "darwin")).toBe(false);
+  });
+
   it("derives Windows OS-user scope and cardinality from the capability profile", () => {
     const detail = agyPlatformIsolationDetail("win32");
     expect(detail).toContain("os_keychain");

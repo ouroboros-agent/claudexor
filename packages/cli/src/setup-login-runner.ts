@@ -5,6 +5,7 @@ import { createInterface } from "node:readline";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { processGroupServiceWithWindowsSupport } from "@claudexor/core";
+import { isAgyProfileKeychainUnsafe, prepareAgyProfileKeychain } from "@claudexor/harness-agy";
 import {
   startCodexDeviceLogin,
   type CodexAppServerConnection,
@@ -47,6 +48,7 @@ export interface SetupLoginRunnerOptions {
   selfPid?: number;
   runnerPath?: string;
   resolvePtyCommand?: typeof resolvePtyWrappedCommand;
+  prepareAgyProfileKeychain?: (home: string) => void;
 }
 
 /**
@@ -117,6 +119,27 @@ export async function runSetupLoginWorker(
   if (!verifyExecutableEvidence(manifest.executable)) {
     persistFailure(manifest, now, permit.issuedAt, "spawn_failed");
     return 1;
+  }
+
+  if (manifest.harness === "agy" && manifest.profileConfigDir) {
+    try {
+      (options.prepareAgyProfileKeychain ?? ((home: string) => prepareAgyProfileKeychain(home)))(
+        manifest.profileConfigDir,
+      );
+    } catch (error) {
+      if (isAgyProfileKeychainUnsafe(error)) {
+        persistFailure(
+          manifest,
+          now,
+          permit.issuedAt,
+          "spawn_failed",
+          error instanceof Error ? error.message : String(error),
+        );
+        return 1;
+      }
+      // A custom operational seam may model a recoverable security-tool
+      // miss; path and identity failures remain unsafe above.
+    }
   }
 
   atomicPrivateJson(manifest.statePath, { ...awaitingPermit, stage: "running" });

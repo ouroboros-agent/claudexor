@@ -312,6 +312,10 @@ pnpm test
   Antigravity on each claimed platform: observe
   awaiting_user -> verifying -> succeeded, typed auth status, background
   recovery, and duplicate-create suppression without logout or credential reads.
+  For Darwin Antigravity, the disposable profile-keychain proof also records
+  unchanged host default/list preferences and host security-plist state, while
+  two profile HOMEs resolve separate vendor items; no file fallback bytes are
+  copied or migrated.
   Windows terminal-input acceptance starts from a console-attached control
   process, proves the production print probe cannot open `CONIN$`, proves the
   bounded ConPTY helper protocol before vendor start, and verifies timeout/

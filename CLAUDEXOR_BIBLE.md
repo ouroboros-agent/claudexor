@@ -395,7 +395,15 @@ invariant or operator decision before proceeding.
   the host OS-Keychain login is retired as a transport (INV-135) — it is
   never probed, bridged, or claimed as a route. Antigravity profile HOME is a
   relocatable credential store only where the vendor actually stores the
-  credential there. On Windows its login credential is an OS-user-scoped
+  credential there. On Darwin, Claudexor may create the empty profile-local
+  `Library/Keychains/login.keychain-db` container before agy starts. The
+  vendor writes and reads its own fixed item, the host Keychain is never
+  bridged. An unsafe profile path refuses the child before SecurityAgent; an
+  operational setup miss leaves the vendor's file fallback available. The
+  empty DB is bootstrapped under a neutral filename before adoption as
+  `login.keychain-db`, avoiding the user search-list side effect of a direct
+  login-keychain create. On
+  Windows its login credential is an OS-user-scoped
   vendor Keychain item: HOME still scopes mutable vendor state, but it does
   not create independent Google identities, so the effective policy permits
   only one enabled binding and deletion leaves the vendor credential unchanged

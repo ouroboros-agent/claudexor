@@ -133,6 +133,7 @@ async function runWorker(manifestPath: string, nativeDir: string): Promise<numbe
     return await runSetupLoginWorker(manifestPath, {
       processGroupService: processGroups(),
       selfPid: 4242,
+      prepareAgyProfileKeychain: () => undefined,
     });
   } finally {
     for (const [key, value] of Object.entries(saved)) {
@@ -207,6 +208,7 @@ describe("external client_pty attach runner", () => {
             selfPid: 4242,
             spawnProcess: spawnProcess as never,
             resolvePtyCommand: terminalResolver,
+            prepareAgyProfileKeychain: () => undefined,
           }),
         ).toBe(0);
       } finally {

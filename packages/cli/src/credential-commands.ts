@@ -30,6 +30,7 @@ import { ensureDaemon } from "./daemon-run.js";
 import { controlApiFetch } from "./live.js";
 import { daemonGet } from "./ops-commands.js";
 import { nativeLoginEnv, nativeLoginSpec } from "./native-login.js";
+import { isAgyProfileKeychainUnsafe, prepareAgyProfileKeychain } from "@claudexor/harness-agy";
 import { credentialProfilePolicyProblem, credentialProfilePolicyState } from "@claudexor/core";
 import { buildRegistry } from "./registry.js";
 import { CliError, renderCliFailure } from "./cli-error.js";
@@ -53,6 +54,7 @@ export interface ProfilesCommandDeps {
   daemonGet?: typeof daemonGet;
   spawnSync?: typeof spawnSync;
   platform?: NodeJS.Platform;
+  prepareAgyProfileKeychain?: (home: string) => void;
 }
 
 /** Injectable only at the process/vendor boundary so policy ordering has a
@@ -183,6 +185,20 @@ export async function profilesCommandWithDeps(
       return printUsageError(json, `no native login command for harness "${harness}"`);
     }
     const configDir = canonicalProfileLoginDir(harness, profile.isolation_locator ?? "");
+    if (harness === "agy") {
+      try {
+        (
+          deps.prepareAgyProfileKeychain ??
+          ((home: string) => prepareAgyProfileKeychain(home, { platform: deps.platform }))
+        )(configDir);
+      } catch (error) {
+        if (isAgyProfileKeychainUnsafe(error)) {
+          return printUsageError(json, error instanceof Error ? error.message : String(error));
+        }
+        // A custom operational seam may model a recoverable security-tool
+        // miss; path and identity failures remain unsafe above.
+      }
+    }
     print(`running ${spec.displayCommand} into ${configDir}`);
     const child = spawnVendor(spec.binary, spec.args, {
       stdio: "inherit",

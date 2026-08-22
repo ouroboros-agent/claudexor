@@ -101,6 +101,7 @@ const CREDENTIAL_FILE_BASENAMES = new Set([
   // The agy token-file basename remains sensitive wherever it is found, even
   // though its presence is not an auth/readiness oracle on every platform.
   "antigravity-oauth-token",
+  "login.keychain-db",
   ".git-credentials",
   ".netrc",
   ".npmrc",
@@ -164,6 +165,13 @@ export class SensitiveResourcePolicy {
         return sensitivePath("credential_store", part, `credential-store path component: ${part}`);
       }
       if (lower === ".config" && parts[index + 1]?.toLowerCase() === "gcloud") {
+        return sensitivePath(
+          "credential_store",
+          `${part}/${parts[index + 1]}`,
+          `credential-store path component: ${part}/${parts[index + 1]}`,
+        );
+      }
+      if (lower === "library" && parts[index + 1]?.toLowerCase() === "keychains") {
         return sensitivePath(
           "credential_store",
           `${part}/${parts[index + 1]}`,

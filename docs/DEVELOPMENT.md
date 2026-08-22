@@ -523,9 +523,11 @@ positive promise instead of relying on a one-time documentation cleanup.
   the macOS login Keychain so the vendor can read the item keyed by that dir.
   Cursor uses the vendor's file credential and SQLite state inside its selected
   Claudexor-owned profile HOME; the ordinary host Keychain login is not a
-  route. Antigravity uses its profile HOME for credentials on Darwin/Linux,
-  while Windows retains the vendor credential at OS-user scope and uses HOME
-  only for relocatable state. Do not read or copy those credential files/tokens
+  route. Antigravity prepares a private `Library/Keychains/login.keychain-db`
+  inside each Darwin profile HOME and leaves the vendor file fallback intact;
+  Linux keeps the profile HOME file route, while Windows retains the vendor
+  credential at OS-user scope and uses HOME only for relocatable state. Do not
+  read or copy those credential files/tokens
   into Claudexor state or an envelope. API keys and the
   Claude setup-token are separate secret-store/env routes with separate typed
   source evidence.

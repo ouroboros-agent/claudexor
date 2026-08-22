@@ -1,5 +1,30 @@
 # Backlog
 
+## 3.8.0 agy private-keychain review advisories (2026-08-22)
+
+These items were independently reproduced during the exact-candidate review.
+They are deliberately outside the correction batch because they are rare
+lifecycle/readability follow-ups, not default-reachable blockers.
+
+- Keychain setup memo identity: configuredKeychains is keyed by path, so an
+  external same-path inode replacement can skip set-keychain-settings until
+  the next creation or failure clears the memo. Profile deletion itself clears
+  the owned directory and the creation path resets the entry. Re-key the memo
+  by inode only at the next keychain touch.
+- Crash-only bootstrap residue: a process dying after the neutral bootstrap is
+  hard-linked to login.keychain-db but before the source unlink can leave a
+  harmless validated alias. Add narrowly scoped cleanup on a later keychain
+  touch; never broaden symlink acceptance.
+- Adoption-race coverage: add a deterministic test for the peer-adopts-and
+  removes-the-bootstrap interleaving (D-AGY-6), while preserving the current
+  no-replace hard-link protocol.
+- Keychain helper readability: simplify the duplicated unlock branch and remove
+  the dead neutral-name substring guard when the next touch can do so without
+  changing call ordering.
+- Capability-gate convergence: the adapter route derives the private-keychain
+  decision from the capability profile, while the lower-level helper's
+  platform guard is intentionally independent. Unify those seams only when
+  the capability owner can be passed without creating a package cycle.
 Explicitly deferred work with a recorded owner decision. Rule: an item leaves
 this file only by shipping or by an owner decision recorded in its row.
 Silent drops are the failure mode this file exists to prevent — the 2.1.0

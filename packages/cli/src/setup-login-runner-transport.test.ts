@@ -277,6 +277,7 @@ async function runWorker(
       resolvePtyCommand,
       processGroupService: fakeProcessGroups(),
       selfPid: 4242,
+      prepareAgyProfileKeychain: () => undefined,
     });
   } finally {
     if (previous === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;

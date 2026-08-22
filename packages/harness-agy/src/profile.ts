@@ -3,6 +3,7 @@ import { canonicalIsolationLocator, providerScrubEnv } from "@claudexor/core";
 import type { CredentialProfile, CredentialProfileStatus } from "@claudexor/schema";
 import { CredentialProfileStatus as CredentialProfileStatusSchema } from "@claudexor/schema";
 import { nowIso, redactSecrets } from "@claudexor/util";
+import { isAgyProfileKeychainUnsafe } from "./keychain.js";
 import { classifyAgyPrintResult, runAgyPrintCommand } from "./print-command.js";
 
 type EnvMap = Record<string, string | null | undefined>;
@@ -81,6 +82,8 @@ export function resolveAgyProfileRoute(
 export interface AgyProfileProbeDeps {
   /** Injectable live probe (tests): print-mode `/model` under the profile env. */
   runModelProbe: (env: EnvMap, abortSignal?: AbortSignal) => Promise<AgyModelProbe>;
+  /** Production adapter seam: prepare the profile before the vendor probe. */
+  prepareProfileKeychain?: (home: string) => void;
 }
 
 export type AgyModelProbe =
@@ -146,6 +149,25 @@ export async function probeAgyCredentialProfile(
       verification: "not_run",
       detail: route.refusal,
     });
+  let keychainSetupWarning: string | null = null;
+  try {
+    deps.prepareProfileKeychain?.(route.home);
+  } catch (error) {
+    if (isAgyProfileKeychainUnsafe(error)) {
+      return CredentialProfileStatusSchema.parse({
+        ...base,
+        availability: "unavailable",
+        verification: "not_run",
+        detail: redactSecrets(error instanceof Error ? error.message : String(error)).slice(0, 300),
+      });
+    }
+    // A custom operational seam may model a recoverable security-tool miss.
+    // Keep the vendor file fallback and disclose the degraded container on
+    // the profile status rather than presenting a completely clean proof.
+    keychainSetupWarning = redactSecrets(
+      error instanceof Error ? error.message : String(error),
+    ).slice(0, 300);
+  }
   const probe = await deps.runModelProbe(route.env, abortSignal);
   if (probe.kind === "authenticated")
     return CredentialProfileStatusSchema.parse({
@@ -153,7 +175,11 @@ export async function probeAgyCredentialProfile(
       availability: "available",
       verification: "passed",
       verification_source: "vendor",
-      detail: `Antigravity accepted the named binding${probe.modelId ? ` (model ${probe.modelId})` : ""}; whether the credential is backed by a keyring or file is not inferred`,
+      detail:
+        `Antigravity accepted the named binding${probe.modelId ? ` (model ${probe.modelId})` : ""}; whether the credential is backed by a keyring or file is not inferred` +
+        (keychainSetupWarning
+          ? `; private profile keychain setup degraded: ${keychainSetupWarning}`
+          : ""),
       last_verified_at: nowIso(),
     });
   if (probe.kind === "unauthenticated")
