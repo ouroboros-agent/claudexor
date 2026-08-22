@@ -419,6 +419,8 @@ describe("Claude credential-profile doctor probe (INV-135)", () => {
     expect(status).toMatchObject({
       availability: "unknown",
       verification: "not_run",
+      stale: true,
+      stale_age_ms: 17,
       detail: "auth-status probe is stale; using last-known-good claude.ai login (17ms old)",
     });
     expect(status.last_verified_at).toBeNull();

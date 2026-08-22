@@ -1277,9 +1277,10 @@ export class Orchestrator {
           probe: profileProbe,
           // `verification: passed` from the local store only means a login file
           // is present. The poller's authenticated vendor call is the only
-          // liveness evidence we have, and admission is the surface that must
-          // act on it — otherwise the run dispatches into a revoked token.
+          // liveness evidence; admission must act on it or dispatch may use a revoked token.
           quota: vendorQuota,
+          // Only an explicit/bound route may consume bounded stale LKG evidence.
+          allowStale: explicitPin !== null || input.threadAccountBindings?.[id] === candidateId,
         });
         if (verdict === "available") {
           profileAdmitted = true;

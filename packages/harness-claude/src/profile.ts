@@ -117,6 +117,12 @@ export async function probeClaudeCredentialProfile(
           ...base,
           availability: probe.stale ? "unknown" : "available",
           verification: probe.stale ? "not_run" : "passed",
+          ...(probe.stale
+            ? {
+                stale: true,
+                ...(probe.staleAgeMs === undefined ? {} : { stale_age_ms: probe.staleAgeMs }),
+              }
+            : {}),
           detail: probe.stale
             ? `auth-status probe is stale; using last-known-good claude.ai login${
                 probe.staleAgeMs === undefined ? "" : ` (${probe.staleAgeMs}ms old)`

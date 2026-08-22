@@ -547,9 +547,11 @@ typed, process-local stale observation for at most one minute. Claudexor-handled
 logout, login, profile, or secret mutations clear that observation (including
 an in-flight probe); an external vendor login/logout may remain visible for the
 bounded grace window. Stale evidence is never reported as a fresh passed login
-and does not alter the selected profile or paid-route policy. This absorbs a
-probe failure only; it does not claim to serialize the vendor's OAuth refresh
-or to repair a revoked credential.
+and does not alter profile selection or paid-route policy: an already explicit
+pin or durable thread binding may keep its exact config-dir route alive for
+this bounded grace, while unpinned pool/rotation selection remains fresh-only.
+This absorbs a probe failure only; it does not claim to serialize the vendor's
+OAuth refresh or to repair a revoked credential.
 Adapters declare the physical credential transport they support (`config_file`,
 `env_var`, `oauth_token_env`, `os_keychain`, `http_header`, or `none`) plus the
 containment strategy that keeps it honest. A transport may be platform-scoped;

@@ -54,6 +54,10 @@ export async function selectedProfileAvailability(input: {
    * it. Omitting it admits on the LOCAL store alone — which is the reading of
    * `verification: passed` that let a run dispatch into a revoked token. */
   quota?: VendorQuotaObservations | null;
+  /** Only an already selected profile (explicit pin or durable binding) may
+   * consume the adapter's bounded stale observation. Pool/rotation selection
+   * remains fresh-only. */
+  allowStale?: boolean;
 }): Promise<string | null> {
   if (!input.profileId) return null;
   let profile: CredentialProfile;
@@ -67,7 +71,7 @@ export async function selectedProfileAvailability(input: {
     await probeCredentialProfileStatus(profile, input.probe),
     input.quota,
   );
-  return profileStatusAdmits(profile, result)
+  return profileStatusAdmits(profile, result, { allowStale: input.allowStale === true })
     ? "available"
     : (result.detail ?? `${result.availability}/${result.verification}`);
 }
@@ -182,12 +186,19 @@ export function vendorVerifiedProfileStatus(
 /** One readiness predicate shared by run admission and accounts projection. */
 export function profileStatusAdmits(
   profile: Pick<CredentialProfile, "credential_kind">,
-  result: { availability: string; verification: string },
+  result: { availability: string; verification: string; stale?: boolean },
+  options: { allowStale?: boolean } = {},
 ): boolean {
   const verificationAdmits =
     result.verification === "passed" ||
     (profile.credential_kind === "api_key" && result.verification === "not_run");
-  return result.availability === "available" && verificationAdmits;
+  const staleSelectedRoute =
+    options.allowStale === true &&
+    profile.credential_kind === "config_dir_login" &&
+    result.stale === true &&
+    result.availability === "unknown" &&
+    result.verification === "not_run";
+  return (result.availability === "available" && verificationAdmits) || staleSelectedRoute;
 }
 
 /** One fail-closed profile doctor wrapper shared by Accounts and runtime

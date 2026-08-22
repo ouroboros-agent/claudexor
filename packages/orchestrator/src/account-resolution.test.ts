@@ -182,6 +182,27 @@ describe("explicit api_key preference (Q3=A paid election)", () => {
     expect(context.apiKeyRouteNoted()).toBe(false);
     expect(context.events).toHaveLength(0);
   });
+
+  it("keeps a bound config-dir route during the adapter's bounded stale grace", async () => {
+    const bound = profileRow({ profile_id: "bound" });
+    const context = ctx({
+      registry: [bound, profileRow({ profile_id: "other" })],
+      boundProfileId: "bound",
+      probe: async (profile) => ({
+        profile_id: profile.profile_id,
+        harness_id: profile.harness_id,
+        availability: "unknown" as const,
+        verification: "not_run" as const,
+        verification_source: "local_store" as const,
+        stale: true,
+        stale_age_ms: 42,
+        detail: "auth-status probe is stale",
+        last_verified_at: null,
+      }),
+    });
+    await expect(resolveAccountForRun(context)).resolves.toBe(bound);
+    expect(context.events).toHaveLength(0);
+  });
 });
 
 describe("bound-row A7 unusable ledger (thread stickiness)", () => {

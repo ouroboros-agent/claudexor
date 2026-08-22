@@ -137,6 +137,37 @@ describe("selectedProfileAvailability", () => {
     expect(returned).toContain("credential rejected");
     expect(returned).not.toContain(token);
   });
+
+  it("admits stale readiness only when an already selected route opts in", async () => {
+    const stale = {
+      profile_id: "work",
+      harness_id: "claude",
+      availability: "unknown" as const,
+      verification: "not_run" as const,
+      verification_source: "local_store" as const,
+      stale: true,
+      stale_age_ms: 42,
+      detail: "auth-status probe is stale",
+      last_verified_at: null,
+    };
+    await expect(
+      selectedProfileAvailability({
+        registry: [work],
+        profileId: "work",
+        harnessId: "claude",
+        probe: async () => stale,
+      }),
+    ).resolves.toBe("auth-status probe is stale");
+    await expect(
+      selectedProfileAvailability({
+        registry: [work],
+        profileId: "work",
+        harnessId: "claude",
+        allowStale: true,
+        probe: async () => stale,
+      }),
+    ).resolves.toBe("available");
+  });
 });
 
 describe("profileStatusAdmits", () => {
@@ -156,6 +187,27 @@ describe("profileStatusAdmits", () => {
     expect(profileStatusAdmits(work, { availability: "unknown", verification: "not_run" })).toBe(
       false,
     );
+    expect(
+      profileStatusAdmits(work, {
+        availability: "unknown",
+        verification: "not_run",
+        stale: true,
+      }),
+    ).toBe(false);
+    expect(
+      profileStatusAdmits(
+        work,
+        { availability: "unknown", verification: "not_run", stale: true },
+        { allowStale: true },
+      ),
+    ).toBe(true);
+    expect(
+      profileStatusAdmits(
+        { credential_kind: "api_key" },
+        { availability: "unknown", verification: "not_run", stale: true },
+        { allowStale: true },
+      ),
+    ).toBe(false);
   });
 
   it("turns a throwing profile probe into fail-closed readiness", async () => {

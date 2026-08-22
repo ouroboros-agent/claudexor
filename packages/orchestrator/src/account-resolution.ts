@@ -394,6 +394,9 @@ export async function resolveAccountForRun(
         harnessId,
         probe: ctx.probe,
         quota,
+        // A durable binding is already selected, like an explicit pin. Pool
+        // rotation below remains fresh-only.
+        allowStale: true,
       });
       const breach = profileHeadroomBreach(
         snapshots,
