@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -174,7 +174,12 @@ describe("claudexor profiles login machine output", () => {
   it("prepares an agy profile before the direct vendor login spawn", async () => {
     const root = mkdtempSync(join(tmpdir(), "claudexor-agy-login-"));
     const previous = process.env.CLAUDEXOR_CONFIG_DIR;
+    const previousBin = process.env.CLAUDEXOR_AGY_BIN;
     process.env.CLAUDEXOR_CONFIG_DIR = root;
+    const fakeAgy = join(root, "agy");
+    writeFileSync(fakeAgy, "#!/bin/sh\nexit 0\n");
+    chmodSync(fakeAgy, 0o755);
+    process.env.CLAUDEXOR_AGY_BIN = fakeAgy;
     const locator = join(root, "profiles", "agy-work");
     mkdirSync(locator, { recursive: true, mode: 0o700 });
     const agyRow = row("agy", "work");
@@ -229,6 +234,8 @@ describe("claudexor profiles login machine output", () => {
     } finally {
       if (previous === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
       else process.env.CLAUDEXOR_CONFIG_DIR = previous;
+      if (previousBin === undefined) delete process.env.CLAUDEXOR_AGY_BIN;
+      else process.env.CLAUDEXOR_AGY_BIN = previousBin;
       rmSync(root, { recursive: true, force: true });
     }
   });
