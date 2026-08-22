@@ -50,6 +50,7 @@ import { type ResourceAttachmentRef } from "@claudexor/schema";
 import { scheduleStartupRetention } from "./retention-service.js";
 import { controlServices } from "./control-services.js";
 import { AuthReadinessService } from "@claudexor/gateway";
+import { clearClaudeAuthStatusCache } from "@claudexor/harness-claude";
 import { buildGateway } from "./registry.js";
 import { createSetupJobManager } from "./setup-jobs.js";
 import { invalidateStatusProjections } from "./status-projection-cache.js";
@@ -448,6 +449,7 @@ export async function main(): Promise<void> {
         rootDir: daemonDir(),
         store,
         onCredentialStateMayHaveChanged: (harness) => {
+          clearClaudeAuthStatusCache();
           authReadiness.invalidate(harness);
           // The poll-surface projections embed harness/profile status; a
           // login/logout makes them stale NOW, not a TTL from now.

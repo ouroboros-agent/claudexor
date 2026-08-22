@@ -79,6 +79,31 @@ describe("Claude setup-token readiness", () => {
       verification: "passed",
     });
   });
+
+  it("projects a stale last-known-good native probe as unknown, not passed", () => {
+    const sources = claudeAuthSourceReadiness({
+      native: {
+        loggedIn: true,
+        authed: true,
+        authMethod: "claude.ai",
+        probeError: null,
+        stale: true,
+        staleAgeMs: 321,
+      },
+      oauthAvailable: false,
+      oauthVerification: "not_run",
+      oauthDetail: "none",
+      apiKeyAvailable: false,
+      apiKeyVerification: "not_run",
+      apiKeyDetail: "none",
+    });
+    expect(sources[0]).toMatchObject({
+      source: "native_session",
+      availability: "unknown",
+      verification: "not_run",
+      detail: "auth-status probe is stale; using last-known-good native session (321ms old)",
+    });
+  });
 });
 
 function spec(over: Partial<HarnessRunSpec> = {}): HarnessRunSpec {
@@ -240,7 +265,8 @@ describe("probeAuthStatus (JSON verdict beats exit code; probe failures are dist
     expect(env.HOME).toBe("/scoped/home");
     expect(env.CLAUDE_CONFIG_DIR).toBe(defaultNativeClaudeConfigDir());
     expect(env.ANTHROPIC_API_KEY).toBeNull();
-    expect(captured?.abortSignal).toBe(controller.signal);
+    expect(captured?.abortSignal).toBeInstanceOf(AbortSignal);
+    expect(captured?.abortSignal).not.toBe(controller.signal);
     expect(captured?.cancelSignal).toBe("SIGTERM");
     expect(captured?.cancelKillDelayMs).toBe(0);
   });
@@ -365,6 +391,46 @@ describe("Claude scoped-HOME doctor honesty (INV-067)", () => {
     expect(reason).toContain("Accounts → Claude → Login");
     expect(reason).not.toContain("claude auth login --claudeai");
     expect(reason).not.toContain("setup-token");
+  });
+
+  it("does not turn a stale native probe into a login remedy", async () => {
+    const adapter = createClaudeAdapter({
+      detectVersion: async () => "2.1.165",
+      probeReadonlyProfile: readonlySupported,
+      probeAuthStatus: async () => ({
+        loggedIn: true,
+        authed: true,
+        authMethod: "claude.ai",
+        probeError: null,
+        stale: true,
+        staleAgeMs: 55,
+      }),
+      anthropicApiKey: () => null,
+      claudeOAuthToken: () => null,
+    });
+    const report = await adapter.doctor({ cwd: "/repo", authPreference: "auto", fresh: true });
+    expect(report.status).toBe("degraded");
+    expect(report.reasons.join(" ")).toContain("auth-status probe is stale");
+    expect(report.reasons.join(" ")).not.toContain("Native setup");
+  });
+
+  it("does not turn an unknown native probe into a login remedy", async () => {
+    const adapter = createClaudeAdapter({
+      detectVersion: async () => "2.1.165",
+      probeReadonlyProfile: readonlySupported,
+      probeAuthStatus: async () => ({
+        loggedIn: false,
+        authed: false,
+        authMethod: null,
+        probeError: "auth status timed out",
+      }),
+      anthropicApiKey: () => null,
+      claudeOAuthToken: () => null,
+    });
+    const report = await adapter.doctor({ cwd: "/repo", authPreference: "auto", fresh: true });
+    expect(report.status).toBe("degraded");
+    expect(report.reasons.join(" ")).toContain("native-session probe failed");
+    expect(report.reasons.join(" ")).not.toContain("Native setup");
   });
 });
 

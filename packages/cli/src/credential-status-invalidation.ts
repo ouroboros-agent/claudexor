@@ -10,6 +10,7 @@
  */
 import { loadConfig } from "@claudexor/config";
 import { invalidateDoctorCache } from "@claudexor/core";
+import { clearClaudeAuthStatusCache } from "@claudexor/harness-claude";
 import type { QuotaRegistry } from "@claudexor/daemon";
 import { noProjectRepoRoot } from "@claudexor/util";
 import { invalidateStatusProjections } from "./status-projection-cache.js";
@@ -24,6 +25,10 @@ export function bustCredentialStatusCaches(
   quotaRegistry: () => QuotaRegistry,
   subject?: CredentialMutationSubject,
 ): void {
+  // Auth-status keeps a short process-local LKG only to survive a transient
+  // probe transport error. Any explicit credential mutation must invalidate it
+  // before status/probe consumers can observe the changed store.
+  clearClaudeAuthStatusCache();
   invalidateDoctorCache();
   invalidateStatusProjections();
   quotaRegistry().noteCredentialChange();
