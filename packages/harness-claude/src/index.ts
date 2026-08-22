@@ -297,7 +297,10 @@ export function createClaudeAdapter(deps: Partial<ClaudeRuntimeDeps> = {}): Harn
       // rather than declaring one version's list for every version.
       const efforts = await runtime.probeEffortLevels();
       const native = await runtime.probeAuthStatus(BIN, { env: claudeNativeEnv() });
-      const authed = native.authed;
+      // A stale result is only bounded last-known-good evidence for an
+      // already selected profile.  Discovery must not advertise it as a
+      // currently authenticated default route.
+      const authed = native.authed && native.stale !== true;
       const oauthTokenAvailable = runtime.claudeOAuthToken() !== null;
       const authModes = [
         ...(authed || oauthTokenAvailable ? ["local_session"] : []),
@@ -820,7 +823,10 @@ async function* runClaude(
     // back to API-key auth. Preserve the exact selected subscription source so a
     // native session can never be silently replaced by an OAuth-token env route.
     const trySub = (): boolean => {
-      if (native.authed) {
+      // The process-local LKG grace belongs to explicit profile routes.  The
+      // unprofiled/default ladder must not let a stale native verdict mask the
+      // OAuth/API fallback or claim that the default session is live.
+      if (native.authed && native.stale !== true) {
         subscriptionSource = "native_session";
         return true;
       }

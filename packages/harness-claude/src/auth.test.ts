@@ -538,6 +538,26 @@ describe("Claude transport-aware source selection", () => {
     });
   });
 
+  it("does not advertise a stale native verdict as the default discovery route", async () => {
+    const adapter = createClaudeAdapter({
+      detectVersion: async () => "2.1.165",
+      probeReadonlyProfile: readonlySupported,
+      probeAuthStatus: async () => ({
+        loggedIn: true,
+        authed: true,
+        authMethod: "claude.ai",
+        probeError: null,
+        stale: true,
+      }),
+      anthropicApiKey: () => null,
+      claudeOAuthToken: () => "oauth-token",
+    });
+    await expect(adapter.discover()).resolves.toMatchObject({
+      capability_profile: { auth: { preferred_source: "oauth_token_env" } },
+      auth_modes: ["local_session"],
+    });
+  });
+
   it("never injects an OAuth token when exact native auth was selected", async () => {
     let cliOptions: CliRunLoopOptions | undefined;
     const adapter = createClaudeAdapter({
@@ -765,6 +785,43 @@ describe("Claude transport-aware source selection", () => {
     expect(cliOptions?.env?.CLAUDE_CONFIG_DIR).toBe("/scoped/config");
     expect(cliOptions?.env?.CLAUDE_CODE_OAUTH_TOKEN).toBe("oauth-token");
     expect(cliOptions?.env?.ANTHROPIC_API_KEY).toBeNull();
+  });
+
+  it("does not treat a stale unprofiled native verdict as a live subscription", async () => {
+    let cliOptions: CliRunLoopOptions | undefined;
+    const adapter = createClaudeAdapter({
+      detectVersion: async () => "2.1.165",
+      probeReadonlyProfile: readonlySupported,
+      probeAuthStatus: async () => ({
+        loggedIn: true,
+        authed: true,
+        authMethod: "claude.ai",
+        probeError: null,
+        stale: true,
+        staleAgeMs: 42,
+      }),
+      anthropicApiKey: () => "api-key",
+      claudeOAuthToken: () => "oauth-token",
+      runCliHarness: async function* (options: CliRunLoopOptions): AsyncGenerator<HarnessEvent> {
+        cliOptions = options;
+        yield {
+          type: "completed",
+          session_id: options.spec.session_id,
+          ts: "2026-01-01T00:00:00.000Z",
+        };
+      },
+    });
+    const events: HarnessEvent[] = [];
+    for await (const event of adapter.run(spec({ auth_preference: "auto" }))) events.push(event);
+
+    expect(cliOptions?.env?.CLAUDE_CODE_OAUTH_TOKEN).toBe("oauth-token");
+    expect(cliOptions?.env?.ANTHROPIC_API_KEY).toBeNull();
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "message",
+        payload: { auth_status_stale: true, auth_status_stale_age_ms: 42 },
+      }),
+    );
   });
 
   it("reports a typed wrong native auth method as available but failed", () => {

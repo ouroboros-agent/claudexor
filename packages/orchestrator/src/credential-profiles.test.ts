@@ -107,6 +107,44 @@ describe("selectedProfileAvailability", () => {
     expect(presenceOnly).toBe("available");
   });
 
+  it("rejects a live credential ledger verdict before stale LKG admission or another probe", async () => {
+    let probes = 0;
+    const verdict = await selectedProfileAvailability({
+      registry: [work],
+      profileId: "work",
+      harnessId: "claude",
+      allowStale: true,
+      unusable: [
+        {
+          harness_id: "claude",
+          profile_id: "work",
+          model: null,
+          code: "auth_revoked",
+          source: "vendor_poller",
+          detail: "vendor rejected the profile",
+          observed_at: "2026-01-01T00:00:00.000Z",
+          expires_at: "2099-01-01T00:00:00.000Z",
+        },
+      ],
+      probe: async () => {
+        probes += 1;
+        return {
+          profile_id: "work",
+          harness_id: "claude",
+          availability: "unknown" as const,
+          verification: "not_run" as const,
+          verification_source: "local_store" as const,
+          stale: true,
+          stale_age_ms: 42,
+          detail: "last-known-good",
+          last_verified_at: null,
+        };
+      },
+    });
+    expect(verdict).toContain("credential is unusable (auth_revoked)");
+    expect(probes).toBe(0);
+  });
+
   it("fails closed and redacts both thrown and returned probe diagnostics", async () => {
     const token = `sk-${"a".repeat(48)}`;
     const thrown = await selectedProfileAvailability({

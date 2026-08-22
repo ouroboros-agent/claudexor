@@ -2,6 +2,7 @@ import type {
   AuthPreference,
   CredentialProfile,
   CredentialProfileStatus,
+  CredentialUnusableObservation,
   HarnessEvent,
   QuotaAbsence,
   QuotaSnapshot,
@@ -11,6 +12,7 @@ import {
   quotaSourceTraits,
 } from "@claudexor/schema";
 import { redactSecrets } from "@claudexor/util";
+import { liveUnusableFor } from "./credential-cooldown.js";
 export {
   effectiveLimitAction,
   limitSubjectRoute,
@@ -54,6 +56,10 @@ export async function selectedProfileAvailability(input: {
    * it. Omitting it admits on the LOCAL store alone — which is the reading of
    * `verification: passed` that let a run dispatch into a revoked token. */
   quota?: VendorQuotaObservations | null;
+  /** Live typed credential failures are stronger than a local LKG status.
+   * Admission must reject the row before probing or dispatching it. */
+  unusable?: readonly CredentialUnusableObservation[];
+  model?: string | null;
   /** Only an already selected profile (explicit pin or durable binding) may
    * consume the adapter's bounded stale observation. Pool/rotation selection
    * remains fresh-only. */
@@ -65,6 +71,15 @@ export async function selectedProfileAvailability(input: {
     profile = resolveCredentialProfile(input.registry, input.profileId, input.harnessId);
   } catch (error) {
     return error instanceof Error ? error.message : String(error);
+  }
+  const dead = liveUnusableFor(
+    input.unusable ?? [],
+    input.harnessId,
+    profile.profile_id,
+    input.model,
+  );
+  if (dead) {
+    return `credential profile "${profile.profile_id}" credential is unusable (${dead.code})`;
   }
   if (!input.probe) return `harness "${input.harnessId}" has no profile probe`;
   const result = vendorVerifiedProfileStatus(
