@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -170,6 +170,68 @@ describe("claudexor profiles login machine output", () => {
       }
     },
   );
+
+  it("prepares an agy profile before the direct vendor login spawn", async () => {
+    const root = mkdtempSync(join(tmpdir(), "claudexor-agy-login-"));
+    const previous = process.env.CLAUDEXOR_CONFIG_DIR;
+    process.env.CLAUDEXOR_CONFIG_DIR = root;
+    const locator = join(root, "profiles", "agy-work");
+    mkdirSync(locator, { recursive: true, mode: 0o700 });
+    const agyRow = row("agy", "work");
+    const listing = {
+      profiles: [{ ...agyRow, profile: { ...agyRow.profile, isolation_locator: locator } }],
+      harnessAccounts: [],
+      accountPools: [],
+    };
+    const order: string[] = [];
+    const spawnSync = vi.fn(() => {
+      order.push("spawn");
+      return { status: 0, signal: null, stdout: "", stderr: "" } as never;
+    });
+    const prepare = vi.fn((home: string) => {
+      expect(home).toBe(realpathSync(locator));
+      expect(order).toEqual([]);
+      order.push("prepare");
+    });
+    let gets = 0;
+    try {
+      const code = await profilesCommandWithDeps(
+        parseArgs(["profiles", "login", "agy", "work"]),
+        false,
+        {
+          daemonGet: async () => {
+            gets += 1;
+            return gets === 1
+              ? listing
+              : {
+                  ...listing,
+                  profiles: [
+                    {
+                      ...listing.profiles[0],
+                      status: {
+                        profile_id: "work",
+                        harness_id: "agy",
+                        availability: "available",
+                        verification: "passed",
+                      },
+                    },
+                  ],
+                };
+          },
+          spawnSync,
+          prepareAgyProfileKeychain: prepare,
+        },
+      );
+      expect(code).toBe(0);
+      expect(order).toEqual(["prepare", "spawn"]);
+      expect(prepare).toHaveBeenCalledOnce();
+      expect(spawnSync).toHaveBeenCalledOnce();
+    } finally {
+      if (previous === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = previous;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("removeProfileFromRegistry (INV-135 removal owner)", () => {

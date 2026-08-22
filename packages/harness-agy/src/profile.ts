@@ -3,6 +3,7 @@ import { canonicalIsolationLocator, providerScrubEnv } from "@claudexor/core";
 import type { CredentialProfile, CredentialProfileStatus } from "@claudexor/schema";
 import { CredentialProfileStatus as CredentialProfileStatusSchema } from "@claudexor/schema";
 import { nowIso, redactSecrets } from "@claudexor/util";
+import { isAgyProfileKeychainUnsafe } from "./keychain.js";
 import { classifyAgyPrintResult, runAgyPrintCommand } from "./print-command.js";
 
 type EnvMap = Record<string, string | null | undefined>;
@@ -81,6 +82,8 @@ export function resolveAgyProfileRoute(
 export interface AgyProfileProbeDeps {
   /** Injectable live probe (tests): print-mode `/model` under the profile env. */
   runModelProbe: (env: EnvMap, abortSignal?: AbortSignal) => Promise<AgyModelProbe>;
+  /** Production adapter seam: prepare the profile before the vendor probe. */
+  prepareProfileKeychain?: (home: string) => void;
 }
 
 export type AgyModelProbe =
@@ -146,6 +149,20 @@ export async function probeAgyCredentialProfile(
       verification: "not_run",
       detail: route.refusal,
     });
+  try {
+    deps.prepareProfileKeychain?.(route.home);
+  } catch (error) {
+    if (isAgyProfileKeychainUnsafe(error)) {
+      return CredentialProfileStatusSchema.parse({
+        ...base,
+        availability: "unavailable",
+        verification: "not_run",
+        detail: redactSecrets(error instanceof Error ? error.message : String(error)).slice(0, 300),
+      });
+    }
+    // A custom operational seam may model a recoverable security-tool miss;
+    // path and identity failures from the production helper remain unsafe.
+  }
   const probe = await deps.runModelProbe(route.env, abortSignal);
   if (probe.kind === "authenticated")
     return CredentialProfileStatusSchema.parse({

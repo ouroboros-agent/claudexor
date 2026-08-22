@@ -559,10 +559,19 @@ retired transport (INV-135 unified accounts): it is never probed, bridged, or
 claimed as a route, and a cursor native session is probed only in an env that
 explicitly selects the vendor file store. Claude exposes only its narrow
 host Keychain context; Codex keeps its separate vendor credential file outside
-every envelope. Antigravity uses a config-file credential inside the named HOME
-on Darwin/Linux, but on Windows the credential is an OS-user-scoped vendor
-Keychain item: the named HOME scopes mutable vendor state without claiming an
-independent Google identity. No route copies a vendor
+every envelope. Antigravity uses the named HOME on every profile. On Darwin
+the adapter prepares a private profile-local
+`Library/Keychains/login.keychain-db` before the vendor child; an unsafe
+profile path refuses the child before it can trigger SecurityAgent, while an
+operational setup miss leaves the vendor's config-file fallback available.
+The implementation creates the DB first under a neutral bootstrap filename
+and adopts the canonical name, avoiding Apple's user search-list side effect
+for a direct `create-keychain .../login.keychain-db` call. It never bridges the
+host Keychain or copies credential bytes.
+Linux keeps the config-file/HOME route.
+On Windows the credential is an OS-user-scoped vendor Keychain item: the named
+HOME scopes mutable vendor state without claiming an independent Google
+identity. No route copies a vendor
 credential file into an envelope. Separate fallback routes may materialize only
 their selected source: Codex API-key auth seeds a temporary scoped `auth.json`,
 Claude injects either the stored setup token or `ANTHROPIC_API_KEY`, and Cursor

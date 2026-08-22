@@ -17,18 +17,26 @@ import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
 import {
   HarnessUnavailableError,
   harnessPlatform,
+  needsPrivatePerProfileKeychain,
   promptWithInstructions,
   runCapture,
   runCliHarness,
 } from "@claudexor/core";
 import { CLAUDEXOR_VERSION, nowIso, redactSecrets } from "@claudexor/util";
 import { parseAgyEvent } from "./parse.js";
-import { AGY_BIN, probeAgyCredentialProfile, resolveAgyProfileRoute } from "./profile.js";
+import { isAgyProfileKeychainUnsafe, prepareAgyProfileKeychain } from "./keychain.js";
+import {
+  AGY_BIN,
+  defaultAgyModelProbe,
+  probeAgyCredentialProfile,
+  resolveAgyProfileRoute,
+} from "./profile.js";
 import { AGY_VENDOR_CLI_VERSION } from "./vendor-cli-version.js";
 // The package publishes only what other packages consume. The profile probe,
 // the route resolver and the stream parser are reached through the adapter
 // this file returns, so re-exporting them would be a dead public surface.
 export { AGY_BIN, agyProfileRunEnv, canonicalAgyProfileHome } from "./profile.js";
+export { isAgyProfileKeychainUnsafe, prepareAgyProfileKeychain } from "./keychain.js";
 export {
   classifyAgyPrintResult,
   runAgyPrintCommand,
@@ -106,7 +114,8 @@ export const AGY_MANAGED_LOGIN = { stdin: "terminal" } as const;
 /**
  * Static auth/profile policy. Windows Credential Manager is scoped to the OS
  * user, not the profile HOME, so only one enabled binding is honest there.
- * Darwin/Linux retain the legacy profile-scoped, unbounded defaults.
+ * Darwin keeps both the vendor file fallback and its private profile-local
+ * keychain; Linux retains the legacy profile-scoped file route.
  */
 export const AGY_CAPABILITY_PROFILE: HarnessCapabilityProfile =
   HarnessCapabilityProfileSchema.parse({
@@ -118,7 +127,19 @@ export const AGY_CAPABILITY_PROFILE: HarnessCapabilityProfile =
           source: "native_session",
           kind: "config_file",
           relocatable_by: ["HOME"],
-          platforms: ["darwin", "linux"],
+          platforms: ["linux"],
+        },
+        {
+          source: "native_session",
+          kind: "config_file",
+          relocatable_by: ["HOME"],
+          platforms: ["darwin"],
+        },
+        {
+          source: "native_session",
+          kind: "os_keychain",
+          relocatable_by: ["HOME"],
+          platforms: ["darwin"],
         },
         {
           source: "native_session",
@@ -139,7 +160,9 @@ export const AGY_CAPABILITY_PROFILE: HarnessCapabilityProfile =
       managed_login: AGY_MANAGED_LOGIN,
     },
     access_control: { readonly_mechanism: "permission_deny" },
-    isolation: { supported_containment: ["env_or_file_injection"] },
+    isolation: {
+      supported_containment: ["env_or_file_injection", "private_per_profile_keychain"],
+    },
     attachment_inputs: [],
   });
 
@@ -179,7 +202,18 @@ const AGY_ENABLED_INTENTS = [
   "audit",
 ] as const;
 
-export function createAgyAdapter(): HarnessAdapter {
+export interface AgyAdapterOptions {
+  /** Test seam; production prepares the declared private Darwin keychain. */
+  prepareProfileKeychain?: (home: string, platform?: NodeJS.Platform) => void;
+}
+
+export function createAgyAdapter(options: AgyAdapterOptions = {}): HarnessAdapter {
+  const prepareProfileKeychain =
+    options.prepareProfileKeychain ??
+    ((home: string, platform = process.platform): void => {
+      if (!needsPrivatePerProfileKeychain(AGY_CAPABILITY_PROFILE, platform)) return;
+      prepareAgyProfileKeychain(home, { platform });
+    });
   return {
     id: "agy",
     capabilityProfile: AGY_CAPABILITY_PROFILE,
@@ -235,10 +269,11 @@ export function createAgyAdapter(): HarnessAdapter {
         version !== null && installedSemver !== AGY_VENDOR_CLI_VERSION
           ? `installed agy "${version}" differs from the verified ${AGY_VENDOR_CLI_VERSION}; the platform credential transport and profile policy are re-proven per version (R-2')`
           : null;
-      // Л-24 + INV-067: config-file identity isolation is live-proven only on
-      // macOS. Linux retains that declared transport without a live multi-
-      // account proof. Windows has a different effective policy altogether:
-      // the vendor credential is OS-user-scoped and HOME scopes state only.
+      // Л-24 + INV-067: Darwin's profile-local keychain plus vendor fallback
+      // preserves the proven profile identity route. Linux retains the
+      // config-file transport without a live multi-account proof. Windows has
+      // a different effective policy altogether: the vendor credential is
+      // OS-user-scoped and HOME scopes state only.
       const platformProof = agyPlatformIsolationDetail();
       const requestedSource = spec.authSource;
       if (requestedSource !== undefined && requestedSource !== "native_session") {
@@ -327,11 +362,11 @@ export function createAgyAdapter(): HarnessAdapter {
     },
 
     run(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
-      return runAgy(spec);
+      return runAgy(spec, prepareProfileKeychain);
     },
 
     review(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
-      return runAgy(spec);
+      return runAgy(spec, prepareProfileKeychain);
     },
 
     // INV-135: pinned routing is admitted by THIS probe (there is no default
@@ -339,12 +374,22 @@ export function createAgyAdapter(): HarnessAdapter {
     async probeCredentialProfile(profile, abortSignal) {
       // The signal must reach the live probe: dropping it left an aborted
       // doctor sweep waiting out the probe's own 30s timeout.
-      return probeAgyCredentialProfile(profile, undefined, abortSignal);
+      return probeAgyCredentialProfile(
+        profile,
+        {
+          runModelProbe: defaultAgyModelProbe,
+          prepareProfileKeychain: (home) => prepareProfileKeychain(home),
+        },
+        abortSignal,
+      );
     },
   };
 }
 
-async function* runAgy(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
+async function* runAgy(
+  spec: HarnessRunSpec,
+  prepareProfileKeychain: (home: string, platform?: NodeJS.Platform) => void,
+): AsyncIterable<HarnessEvent> {
   const profile = spec.credential_profile;
   // Л-4: no engine-default credential — an unpinned agy run has nothing to
   // route. Typed stream refusal (error then completed), the one refusal
@@ -365,6 +410,25 @@ async function* runAgy(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
     yield { type: "error", session_id: spec.session_id, ts: nowIso(), error: route.refusal };
     yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
     return;
+  }
+
+  // Path and identity failures are unsafe and stop before the vendor child.
+  // A recoverable security-tool miss keeps agy's own file fallback available;
+  // a custom test seam may model that same operational degradation.
+  try {
+    prepareProfileKeychain(route.home);
+  } catch (error) {
+    if (isAgyProfileKeychainUnsafe(error)) {
+      yield {
+        type: "error",
+        session_id: spec.session_id,
+        ts: nowIso(),
+        error: redactSecrets(error instanceof Error ? error.message : String(error)).slice(0, 300),
+      };
+      yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
+      return;
+    }
+    // The vendor probe/run remains the final transport authority.
   }
 
   const args = ["-p", promptWithInstructions(spec), "--output-format", "stream-json"];

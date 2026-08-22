@@ -751,10 +751,17 @@ input/output/cache-read tokens; `thinking_tokens` has no schema home and is
 dropped rather than folded into output. No typed rate-limit path exists. The CLI has no config-dir env var
 (upstream #155), so a named identity is a Claudexor-owned `HOME` — which also
 relocates the vendor's conversation and cache state, so one profile HOME holds
-every thread's vendor state. Credential custody is platform-shaped: on
-Darwin/Linux the credential transport is scoped with that HOME; on Windows the
-vendor credential is OS-user-scoped, so Claudexor permits one enabled binding
-and does not claim per-HOME Google identity isolation. Doctor `/model` and quota
+every thread's vendor state. Credential custody is platform-shaped: on Linux
+the config-file credential is scoped with that HOME. On Darwin the adapter
+also prepares a private profile-local `Library/Keychains/login.keychain-db`
+before an agy child; an unsafe profile path refuses the child before it can
+trigger SecurityAgent, while an operational setup miss leaves the vendor's
+file fallback available. The DB is bootstrapped under a neutral filename
+before adoption as `login.keychain-db`, so the `security` create operation does
+not add a profile path to the host user's search list. It never
+bridges the host Keychain or copies credential bytes. On Windows the vendor
+credential is OS-user-scoped, so Claudexor permits one enabled binding and does
+not claim per-HOME Google identity isolation. Doctor `/model` and quota
 `/quota` share one bounded, console-free print runner and exact auth-response
 classifier; local token-file presence is not readiness.
 

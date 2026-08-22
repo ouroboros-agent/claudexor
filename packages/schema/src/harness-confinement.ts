@@ -63,12 +63,13 @@ export const ContainmentKind = z
   .enum([
     "env_or_file_injection",
     "scoped_home_keychain_bridge",
+    "private_per_profile_keychain",
     "host_user_context",
     "process_sandbox",
     "container",
   ])
   .describe(
-    "Isolation containment level an adapter supports for run environments, from env/file injection through scoped-HOME keychain bridging to process sandboxes and containers.",
+    "Isolation containment level an adapter supports for run environments, from env/file injection through scoped-HOME keychain bridging or a private per-profile keychain to process sandboxes and containers.",
   );
 export type ContainmentKind = z.infer<typeof ContainmentKind>;
 

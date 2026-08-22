@@ -14,6 +14,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { HarnessRunSpec, type CredentialProfile } from "@claudexor/schema";
 import { claudexorOwnedRoot } from "@claudexor/util";
 import { createAgyAdapter } from "./index.js";
+import { AgyProfileKeychainError } from "./keychain.js";
 import {
   agyProfileRunEnv,
   agyTokenPath,
@@ -87,7 +88,10 @@ describe("agy profile route and vendor probe", () => {
     const { home } = fixture(
       '#!/bin/sh\nprintf \'%s\\n\' \'{"status":"SUCCESS","command":{"data":{"id":"gemini-3.7-flash-high"}}}\'\n',
     );
-    const status = await probeAgyCredentialProfile(profile(home));
+    const status = await probeAgyCredentialProfile(profile(home), {
+      runModelProbe: defaultAgyModelProbe,
+      prepareProfileKeychain: () => undefined,
+    });
     expect(status).toMatchObject({
       availability: "available",
       verification: "passed",
@@ -103,7 +107,10 @@ describe("agy profile route and vendor probe", () => {
     );
     mkdirSync(join(home, ".gemini", "antigravity-cli"), { recursive: true });
     writeFileSync(agyTokenPath(home), "stale", { mode: 0o600 });
-    const status = await probeAgyCredentialProfile(profile(home));
+    const status = await probeAgyCredentialProfile(profile(home), {
+      runModelProbe: defaultAgyModelProbe,
+      prepareProfileKeychain: () => undefined,
+    });
     expect(status).toMatchObject({
       availability: "unavailable",
       verification: "failed",
@@ -113,8 +120,43 @@ describe("agy profile route and vendor probe", () => {
 
   it("keeps malformed/non-auth/exit failures unknown instead of declaring logout", async () => {
     const { home } = fixture("#!/bin/sh\nprintf 'not-json\\n'\nexit 7\n");
-    const status = await probeAgyCredentialProfile(profile(home));
+    const status = await probeAgyCredentialProfile(profile(home), {
+      runModelProbe: defaultAgyModelProbe,
+      prepareProfileKeychain: () => undefined,
+    });
     expect(status).toMatchObject({ availability: "unknown", verification: "not_run" });
+  });
+
+  it("refuses a probe when the profile keychain path is unsafe", async () => {
+    const { home } = fixture("#!/bin/sh\nexit 0\n");
+    let probed = false;
+    const status = await probeAgyCredentialProfile(profile(home), {
+      prepareProfileKeychain: () => {
+        throw new AgyProfileKeychainError("profile keychain is unsafe", { unsafe: true });
+      },
+      runModelProbe: async () => {
+        probed = true;
+        return { kind: "authenticated", modelId: "gemini-test" };
+      },
+    });
+    expect(status).toMatchObject({ availability: "unavailable", verification: "not_run" });
+    expect(probed).toBe(false);
+  });
+
+  it("keeps a recoverable keychain-tool miss on the vendor fallback path", async () => {
+    const { home } = fixture("#!/bin/sh\nexit 0\n");
+    let probed = false;
+    const status = await probeAgyCredentialProfile(profile(home), {
+      prepareProfileKeychain: () => {
+        throw new AgyProfileKeychainError("security tool unavailable");
+      },
+      runModelProbe: async () => {
+        probed = true;
+        return { kind: "authenticated", modelId: "gemini-test" };
+      },
+    });
+    expect(status).toMatchObject({ availability: "available", verification: "passed" });
+    expect(probed).toBe(true);
   });
 
   it("runs the real adapter path without a token-file admission gate", async () => {
@@ -123,7 +165,7 @@ printf '%s\n' '{"event":"init","conversation_id":"c1","init":{"model":"gemini-3.
 printf '%s\n' '{"event":"result","result":{"status":"SUCCESS","response":"ok","usage":{"input_tokens":1,"output_tokens":1,"cache_read_tokens":0}}}'
 `);
     const events = [];
-    for await (const event of createAgyAdapter().run(
+    for await (const event of createAgyAdapter({ prepareProfileKeychain: () => undefined }).run(
       HarnessRunSpec.parse({
         session_id: "ses",
         cwd: home,
@@ -137,6 +179,31 @@ printf '%s\n' '{"event":"result","result":{"status":"SUCCESS","response":"ok","u
     }
     expect(events.some((event) => event.type === "started")).toBe(true);
     expect(events.some((event) => event.type === "message" && event.final)).toBe(true);
+  });
+
+  it("refuses the run before the vendor when the private path is unsafe", async () => {
+    const { root, home } = fixture('#!/bin/sh\ntouch "$RUN_SENTINEL"\nexit 0\n');
+    const sentinel = join(root, "vendor-spawned");
+    const events = [];
+    for await (const event of createAgyAdapter({
+      prepareProfileKeychain: () => {
+        throw new AgyProfileKeychainError("unsafe", { unsafe: true });
+      },
+    }).run(
+      HarnessRunSpec.parse({
+        session_id: "ses-unsafe",
+        cwd: home,
+        prompt: "hello",
+        intent: "explain",
+        access: "readonly",
+        env: { RUN_SENTINEL: sentinel },
+        credential_profile: profile(home),
+      }),
+    )) {
+      events.push(event);
+    }
+    expect(existsSync(sentinel)).toBe(false);
+    expect(events.map((event) => event.type)).toEqual(["error", "completed"]);
   });
 
   it("gives print probes neither stdin tty nor /dev/tty, leaving the browser sentinel untouched", async () => {

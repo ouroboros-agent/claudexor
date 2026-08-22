@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { HarnessCapabilityProfile } from "@claudexor/schema";
-import { needsScopedHomeKeychainBridge } from "./capabilities.js";
+import { needsPrivatePerProfileKeychain, needsScopedHomeKeychainBridge } from "./capabilities.js";
 
 function profile(platforms?: Array<"darwin" | "linux" | "win32">) {
   return HarnessCapabilityProfile.parse({
@@ -31,5 +31,28 @@ describe("needsScopedHomeKeychainBridge", () => {
     const legacy = profile();
     expect(needsScopedHomeKeychainBridge(legacy, "linux")).toBe(true);
     expect(needsScopedHomeKeychainBridge(legacy, "freebsd")).toBe(false);
+  });
+});
+
+describe("needsPrivatePerProfileKeychain", () => {
+  it("recognizes only the explicit private containment on its declared platform", () => {
+    const profile = HarnessCapabilityProfile.parse({
+      auth: {
+        supported_sources: ["native_session"],
+        credential_transports: [
+          {
+            source: "native_session",
+            kind: "os_keychain",
+            relocatable_by: ["HOME"],
+            platforms: ["darwin"],
+          },
+        ],
+      },
+      isolation: { supported_containment: ["private_per_profile_keychain"] },
+    });
+    expect(needsPrivatePerProfileKeychain(profile, "darwin")).toBe(true);
+    expect(needsPrivatePerProfileKeychain(profile, "linux")).toBe(false);
+    expect(needsPrivatePerProfileKeychain(profile, "win32")).toBe(false);
+    expect(needsScopedHomeKeychainBridge(profile, "darwin")).toBe(false);
   });
 });

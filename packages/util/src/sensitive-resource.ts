@@ -93,6 +93,7 @@ const CREDENTIAL_STORE_PARTS = new Set([
   ".gemini",
   ".gnupg",
   ".kube",
+  "keychains",
   ".openai",
   ".ssh",
 ]);
@@ -101,6 +102,7 @@ const CREDENTIAL_FILE_BASENAMES = new Set([
   // The agy token-file basename remains sensitive wherever it is found, even
   // though its presence is not an auth/readiness oracle on every platform.
   "antigravity-oauth-token",
+  "login.keychain-db",
   ".git-credentials",
   ".netrc",
   ".npmrc",

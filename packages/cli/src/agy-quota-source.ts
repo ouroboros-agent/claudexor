@@ -9,6 +9,8 @@ import {
   agyProfileRunEnv,
   canonicalAgyProfileHome,
   classifyAgyPrintResult,
+  isAgyProfileKeychainUnsafe,
+  prepareAgyProfileKeychain,
   runAgyPrintCommand,
   type AgyPrintClassification,
 } from "@claudexor/harness-agy";
@@ -25,7 +27,12 @@ import { noProjectRepoRoot, redactSecrets } from "@claudexor/util";
  * throw: one account's failure must never blind the others.
  */
 export async function refreshAgyQuota(
-  options: { bin?: string; baseEnv?: NodeJS.ProcessEnv; platform?: NodeJS.Platform } = {},
+  options: {
+    bin?: string;
+    baseEnv?: NodeJS.ProcessEnv;
+    platform?: NodeJS.Platform;
+    prepareProfileKeychain?: (home: string) => void;
+  } = {},
 ): Promise<QuotaRefreshResult> {
   const bin = options.bin ?? AGY_BIN();
   const snapshots: QuotaSnapshot[] = [];
@@ -40,6 +47,29 @@ export async function refreshAgyQuota(
       const home = candidate.home;
       try {
         const env = agyProfileRunEnv(home, options.baseEnv ?? process.env);
+        const prepare =
+          options.prepareProfileKeychain ??
+          ((profileHome: string): void =>
+            prepareAgyProfileKeychain(profileHome, { platform: options.platform }));
+        const prepareFailure = (): QuotaAbsence | null => {
+          try {
+            prepare(home);
+            return null;
+          } catch (error) {
+            if (!isAgyProfileKeychainUnsafe(error)) {
+              // A custom operational seam may model a recoverable
+              // security-tool miss; path and identity failures remain unsafe.
+              return null;
+            }
+            return agyAbsence(
+              candidate.subjectId,
+              "refresh_failed",
+              redactSecrets(error instanceof Error ? error.message : String(error)).slice(0, 300),
+            );
+          }
+        };
+        const beforeQuota = prepareFailure();
+        if (beforeQuota) return { absence: beforeQuota };
         const parsed = await readAgyQuota(bin, env, options.platform);
         if (parsed.kind === "auth_revoked")
           return { absence: agyAbsence(candidate.subjectId, "auth_revoked", parsed.detail) };
@@ -47,6 +77,8 @@ export async function refreshAgyQuota(
           return { absence: agyAbsence(candidate.subjectId, "refresh_failed", parsed.detail) };
         // Which window governs a run that names no model depends on the model
         // this profile is actually set to, which the vendor answers for free.
+        const beforeModel = prepareFailure();
+        if (beforeModel) return { absence: beforeModel };
         const selected = await readAgySelectedModel(bin, env, options.platform);
         return {
           snapshot: {

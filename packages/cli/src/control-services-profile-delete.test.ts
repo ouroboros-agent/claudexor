@@ -103,6 +103,23 @@ describe("deleteCredentialProfile (INV-135 delete service)", () => {
     expect(receipt.cleanupWarning).toBeUndefined();
   });
 
+  it("removes an agy private keychain with the owned profile HOME", async () => {
+    const { profile } = registerConfigDirProfile({ harnessId: "agy", profileId: "work" });
+    const locator = profile.isolation_locator as string;
+    const keychains = join(locator, "Library", "Keychains");
+    mkdirSync(keychains, { recursive: true, mode: 0o700 });
+    const keychain = join(keychains, "login.keychain-db");
+    writeFileSync(keychain, "private-keychain-fixture", { mode: 0o600 });
+    expect(existsSync(keychain)).toBe(true);
+    const receipt = (await servicesWithJobs([]).deleteCredentialProfile({
+      harnessId: "agy",
+      profileId: "work",
+    })) as { removed: boolean; credentialCleanup: string };
+    expect(receipt.removed).toBe(true);
+    expect(receipt.credentialCleanup).toBe("config_dir_removed");
+    expect(existsSync(locator)).toBe(false);
+  });
+
   it("refuses with a typed 409 while a login job for the account is active", async () => {
     registerConfigDirProfile({ harnessId: "claude", profileId: "work" });
     const services = servicesWithJobs([{ jobId: "setup-1", state: "running", profileId: "work" }]);

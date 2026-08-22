@@ -88,6 +88,9 @@ describe("refreshAgyQuota", () => {
     for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
   });
 
+  const refresh = (options: Parameters<typeof refreshAgyQuota>[0] = {}) =>
+    refreshAgyQuota({ prepareProfileKeychain: () => undefined, ...options });
+
   /** A config dir with one enabled agy profile, plus a fake `agy` on disk. */
   function scaffold(options: { token: boolean; script: string }): { bin: string } {
     const root = mkdtempSync(join(tmpdir(), "claudexor-agy-quota-"));
@@ -144,7 +147,7 @@ describe("refreshAgyQuota", () => {
       token: true,
       script: `#!/bin/sh\ncommand -v node >/dev/null || { echo '{"status":"ERROR","error":"no PATH"}'; exit 0; }\ncase "$2" in\n"/model") cat <<'JSON'\n${MODEL_ENVELOPE("gemini-3.7-flash-high")}\nJSON\n;;\n*) cat <<'JSON'\n${ENVELOPE}\nJSON\n;;\nesac\n`,
     });
-    const out = await refreshAgyQuota({ bin });
+    const out = await refresh({ bin });
     expect(out.absences ?? []).toEqual([]);
     expect(out.snapshots).toHaveLength(1);
     expect(out.snapshots[0]).toMatchObject({
@@ -155,6 +158,28 @@ describe("refreshAgyQuota", () => {
       id: "gemini-weekly",
       used_ratio: 0.75,
     });
+  });
+
+  it("prepares the profile before each quota child", async () => {
+    const { bin } = scaffold({
+      token: true,
+      script: `#!/bin/sh
+case "$2" in
+"/model") printf '%s\n' '${MODEL_ENVELOPE("gemini-3.7-flash-high")}' ;;
+*) printf '%s\n' '${ENVELOPE}' ;;
+esac
+`,
+    });
+    let preparations = 0;
+    const out = await refresh({
+      bin,
+      prepareProfileKeychain: () => {
+        preparations += 1;
+      },
+    });
+    expect(out.absences ?? []).toEqual([]);
+    expect(out.snapshots).toHaveLength(1);
+    expect(preparations).toBe(2);
   });
 
   it("uses the vendor as the auth oracle when no token file exists", async () => {
@@ -171,7 +196,7 @@ JSON
 esac
 `,
     });
-    const out = await refreshAgyQuota({ bin });
+    const out = await refresh({ bin });
     expect(out.absences ?? []).toEqual([]);
     expect(out.snapshots).toHaveLength(1);
     expect(readFileSync(`${bin}.spawned`, "utf8")).toBe("");
@@ -179,7 +204,7 @@ esac
 
   it("reports an unspawnable binary as a typed absence instead of throwing", async () => {
     const { bin } = scaffold({ token: true, script: "#!/bin/sh\n" });
-    const out = await refreshAgyQuota({ bin: `${bin}-does-not-exist` });
+    const out = await refresh({ bin: `${bin}-does-not-exist` });
     expect(out.snapshots).toEqual([]);
     expect(out.absences?.[0]).toMatchObject({ reason: "refresh_failed" });
   });
@@ -193,7 +218,7 @@ esac
       script: `#!/bin/sh\nsleep 30 &\ncat <<'JSON'\n${ENVELOPE}\nJSON\nexit 0\n`,
     });
     const out = await Promise.race([
-      refreshAgyQuota({ bin }),
+      refresh({ bin }),
       new Promise((_, reject) => setTimeout(() => reject(new Error("wedged")), 10_000)),
     ]);
     expect((out as { snapshots: unknown[] }).snapshots).toHaveLength(1);
@@ -204,7 +229,7 @@ esac
       token: true,
       script: `#!/bin/sh\necho '{"status":"ERROR","error":"authentication required. Run agy to log in"}'\n`,
     });
-    const out = await refreshAgyQuota({ bin });
+    const out = await refresh({ bin });
     expect(out.absences?.[0]).toMatchObject({ reason: "auth_revoked" });
   });
 
@@ -214,7 +239,7 @@ esac
       script:
         '#!/bin/sh\necho \'{"status":"ERROR","error":"authentication service network unavailable"}\'\n',
     });
-    const out = await refreshAgyQuota({ bin });
+    const out = await refresh({ bin });
     expect(out.absences?.[0]).toMatchObject({ reason: "refresh_failed" });
   });
 
@@ -246,7 +271,7 @@ esac
         "",
       ].join("\n"),
     );
-    const out = await refreshAgyQuota({ bin, platform: "win32" });
+    const out = await refresh({ bin, platform: "win32" });
     expect(out.snapshots).toEqual([]);
     expect(out.absences?.map((item) => [item.subject.subject_id, item.reason]).sort()).toEqual([
       ["prof-a", "credential_profile_ambiguous"],
@@ -266,7 +291,7 @@ esac
       "    enabled: false",
     );
     writeFileSync(join(root, "config.yaml"), yaml);
-    const out = await refreshAgyQuota({ bin, platform: "win32" });
+    const out = await refresh({ bin, platform: "win32" });
     expect(out).toEqual({ snapshots: [], absences: [] });
     expect(existsSync(`${bin}.spawned`)).toBe(false);
   });
@@ -343,6 +368,9 @@ describe("refreshAgyQuota bare-route scoping", () => {
     for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
   });
 
+  const refresh = (options: Parameters<typeof refreshAgyQuota>[0] = {}) =>
+    refreshAgyQuota({ prepareProfileKeychain: () => undefined, ...options });
+
   function scaffoldWithModel(selected: string | null): { bin: string } {
     const root = mkdtempSync(join(tmpdir(), "claudexor-agy-scope-"));
     roots.push(root);
@@ -399,7 +427,7 @@ describe("refreshAgyQuota bare-route scoping", () => {
   }
 
   const flags = async (selected: string | null): Promise<Record<string, boolean | undefined>> => {
-    const out = await refreshAgyQuota({ bin: scaffoldWithModel(selected).bin });
+    const out = await refresh({ bin: scaffoldWithModel(selected).bin });
     return Object.fromEntries(
       out.snapshots[0]!.constraints.map((c) => [c.id, c.applies_to_unspecified_model]),
     );
