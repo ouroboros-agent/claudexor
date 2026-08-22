@@ -13,15 +13,20 @@ on:
         required: true
         type: string
       review_attestation_b64:
-        description: Base64 signed schema-v6 full-context owner-review attestation (Cursor operator panel); required for publish unless the exact v3.8.0 waiver is true
+        description: Base64 signed schema-v6 full-context owner-review attestation (Cursor operator panel); required for publish unless the exact one-release v3.8.0 or v3.8.1 waiver applies
         required: false
         type: string
+      waive_cursor_review:
+        description: One-release owner waiver for the v3.8.1 Cursor review attestation only; requires an empty review attestation and both signed runtime manifests
+        required: false
+        type: boolean
+        default: false
       runtime_manifest_b64:
-        description: Base64 owner-signed runtime-update manifest (D-2); required for publish unless the exact v3.8.0 waiver is true
+        description: Base64 owner-signed runtime-update manifest (D-2); required for every publish except the exact v3.8.0 waiver
         required: false
         type: string
       remote_runtime_manifest_b64:
-        description: Base64 owner-signed four-target SSH runtime manifest; required for publish unless the exact v3.8.0 waiver is true
+        description: Base64 owner-signed four-target SSH runtime manifest; required for every publish except the exact v3.8.0 waiver
         required: false
         type: string
       skip_custom_ed25519:
@@ -41,6 +46,7 @@ env:
   RELEASE_MODE_INPUT: ${{ inputs.mode }}
   RELEASE_REF_INPUT: ${{ inputs.ref }}
   REVIEW_ATTESTATION_B64_INPUT: ${{ inputs.review_attestation_b64 }}
+  WAIVE_CURSOR_REVIEW_INPUT: ${{ inputs.waive_cursor_review }}
   RUNTIME_MANIFEST_B64_INPUT: ${{ inputs.runtime_manifest_b64 }}
   REMOTE_RUNTIME_MANIFEST_B64_INPUT: ${{ inputs.remote_runtime_manifest_b64 }}
   SKIP_CUSTOM_ED25519_INPUT: ${{ inputs.skip_custom_ed25519 }}
@@ -769,8 +775,9 @@ jobs:
           # D-2/A-5: candidate keeps the UNSIGNED manifest in its internal
           # artifact (owner normally signs it offline). Publish either ships
           # only the OWNER-SIGNED manifest after fail-closed verification
-          # against the PROMOTED candidate closure, or, for the exact v3.8.0
-          # waiver, ships no canonical manifest at all.
+          # against the PROMOTED candidate closure. The v3.8.0 waiver omits
+          # both runtime manifests; the v3.8.1 review-only waiver still
+          # requires and ships both owner-signed manifests.
           if [ "$RELEASE_MODE_INPUT" = publish ]; then
             if [ "$SKIP_CUSTOM_ED25519_INPUT" != true ]; then
               signed="$RUNNER_TEMP/runtime-manifest.signed.json"
@@ -817,8 +824,14 @@ jobs:
               "$RUNNER_TEMP/remote-runtimes" "$VERSION" \
               > "$assets/Claudexor-remote-runtime-$VERSION.spdx.json"
           fi
-          if [ "$RELEASE_MODE_INPUT" = publish ] && [ "$SKIP_CUSTOM_ED25519_INPUT" != true ]; then
+          if [ "$RELEASE_MODE_INPUT" = publish ] && [ "$SKIP_CUSTOM_ED25519_INPUT" != true ] && [ "$WAIVE_CURSOR_REVIEW_INPUT" != true ]; then
             cp "$RUNNER_TEMP/review-attestation.json" "$assets/REVIEW_ATTESTATION.json"
+          fi
+          if [ "$WAIVE_CURSOR_REVIEW_INPUT" = true ]; then
+            test ! -e "$assets/REVIEW_ATTESTATION.json" || {
+              echo "::error::waive_cursor_review must omit REVIEW_ATTESTATION.json from final publish assets"
+              exit 1
+            }
           fi
           if [ "$SKIP_CUSTOM_ED25519_INPUT" = true ]; then
             for name in REVIEW_ATTESTATION.json runtime-manifest.json remote-runtime-manifest.json; do
@@ -1158,6 +1171,11 @@ jobs:
                 exit 1
               }
             done
+          elif [ "$WAIVE_CURSOR_REVIEW_INPUT" = true ]; then
+            test ! -e "release-assets/REVIEW_ATTESTATION.json" || {
+              echo "::error::waive_cursor_review requires REVIEW_ATTESTATION.json to be absent"
+              exit 1
+            }
           else
             cmp "$RUNNER_TEMP/expected-review-attestation.json" release-assets/REVIEW_ATTESTATION.json
           fi

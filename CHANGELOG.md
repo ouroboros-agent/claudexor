@@ -9,6 +9,10 @@ Release history for Claudexor. The current version is declared in the root
   without changing the host default keychain, native-HOME behavior, or
   multi-account separation. The release also carries the pending daemon
   concurrency and native delegated-access changes already merged on `main`.
+  Publication uses the owner-approved one-release `waive_cursor_review`
+  exception because the required Cursor review lanes were unavailable; both
+  signed runtime manifests and all other release and provenance gates remain
+  required, and no formal Cursor attestation is claimed.
 - **v3.8.0** (2026-08-20): a host embedding Claudexor can finish `Connect` for
   a vendor CLI that is not installed yet. `claudexor harness install` gains an
   explicit `--target local`: npm-pinned vendors install into the managed

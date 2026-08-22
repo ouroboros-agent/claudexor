@@ -361,6 +361,15 @@ pnpm test
   DMG/ZIP signing and notarization, npm publication, SBOMs, GitHub artifact
   provenance, and npm provenance remain required. Every other version and the
   default `false` path retain the normal schema-v6 and signed-manifest gates.
+- One-release review-only exception for 3.8.1: the owner-authorized publish may
+  set `waive_cursor_review: true` when the required Cursor Fable/Sol lanes are
+  unavailable. The review input must be empty, both owner-signed runtime
+  manifests must be supplied and verified, and the final assets must omit only
+  `REVIEW_ATTESTATION.json`. This does not create or claim a formal Cursor
+  review; exact candidate provenance, signed/notarized app bytes, both runtime
+  signatures, SBOMs, npm/GitHub provenance, and every other release gate still
+  apply. The verifier rejects this waiver for all versions except 3.8.1 and
+  rejects combining it with `skip_custom_ed25519`.
 - The shared engine closure remains one artifact and one signed authority for
   app updates and host embedding. Its archive entries are only regular files
   or directories; internal dependency links are materialized with their
@@ -373,7 +382,7 @@ pnpm test
   full Node toolchain; POSIX local harness installation additionally proves the
   exact adjacent npm entrypoint without PATH fallback. A Windows support claim has a native
   extract/probe/handshake/graceful-stop smoke receipt.
-- Except for the explicit 3.8.0 waiver above, the publish input is an annotated
+- Except for the explicit 3.8.0 and 3.8.1 waivers above, the publish input is an annotated
   stable tag on exact `origin/main` plus a signed schema-v6 attestation. It binds
   the candidate SHA/tree/version, exact
   full-gate receipt, sealed evidence manifest/diff/wave, and the two required
