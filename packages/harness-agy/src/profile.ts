@@ -149,6 +149,7 @@ export async function probeAgyCredentialProfile(
       verification: "not_run",
       detail: route.refusal,
     });
+  let keychainSetupWarning: string | null = null;
   try {
     deps.prepareProfileKeychain?.(route.home);
   } catch (error) {
@@ -160,8 +161,12 @@ export async function probeAgyCredentialProfile(
         detail: redactSecrets(error instanceof Error ? error.message : String(error)).slice(0, 300),
       });
     }
-    // A custom operational seam may model a recoverable security-tool miss;
-    // path and identity failures from the production helper remain unsafe.
+    // A custom operational seam may model a recoverable security-tool miss.
+    // Keep the vendor file fallback and disclose the degraded container on
+    // the profile status rather than presenting a completely clean proof.
+    keychainSetupWarning = redactSecrets(
+      error instanceof Error ? error.message : String(error),
+    ).slice(0, 300);
   }
   const probe = await deps.runModelProbe(route.env, abortSignal);
   if (probe.kind === "authenticated")
@@ -170,7 +175,11 @@ export async function probeAgyCredentialProfile(
       availability: "available",
       verification: "passed",
       verification_source: "vendor",
-      detail: `Antigravity accepted the named binding${probe.modelId ? ` (model ${probe.modelId})` : ""}; whether the credential is backed by a keyring or file is not inferred`,
+      detail:
+        `Antigravity accepted the named binding${probe.modelId ? ` (model ${probe.modelId})` : ""}; whether the credential is backed by a keyring or file is not inferred` +
+        (keychainSetupWarning
+          ? `; private profile keychain setup degraded: ${keychainSetupWarning}`
+          : ""),
       last_verified_at: nowIso(),
     });
   if (probe.kind === "unauthenticated")

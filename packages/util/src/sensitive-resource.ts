@@ -93,7 +93,6 @@ const CREDENTIAL_STORE_PARTS = new Set([
   ".gemini",
   ".gnupg",
   ".kube",
-  "keychains",
   ".openai",
   ".ssh",
 ]);
@@ -166,6 +165,13 @@ export class SensitiveResourcePolicy {
         return sensitivePath("credential_store", part, `credential-store path component: ${part}`);
       }
       if (lower === ".config" && parts[index + 1]?.toLowerCase() === "gcloud") {
+        return sensitivePath(
+          "credential_store",
+          `${part}/${parts[index + 1]}`,
+          `credential-store path component: ${part}/${parts[index + 1]}`,
+        );
+      }
+      if (lower === "library" && parts[index + 1]?.toLowerCase() === "keychains") {
         return sensitivePath(
           "credential_store",
           `${part}/${parts[index + 1]}`,

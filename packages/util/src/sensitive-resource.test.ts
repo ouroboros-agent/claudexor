@@ -30,6 +30,7 @@ describe("SensitiveResourcePolicy hostile corpus", () => {
     ".env.template",
     "docs/environment.md",
     "keys/id_ed25519.pub",
+    "repo/src/keychains/Item.swift",
     "src/gcloud/client.ts",
     "packages/secrets/src/index.ts",
   ])("does not confuse a safe template/public path with a secret: %s", (path) => {

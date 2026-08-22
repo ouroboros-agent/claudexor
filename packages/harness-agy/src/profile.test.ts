@@ -156,6 +156,7 @@ describe("agy profile route and vendor probe", () => {
       },
     });
     expect(status).toMatchObject({ availability: "available", verification: "passed" });
+    expect(status.detail).toContain("private profile keychain setup degraded");
     expect(probed).toBe(true);
   });
 
