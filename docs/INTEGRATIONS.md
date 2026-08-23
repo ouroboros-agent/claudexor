@@ -10,7 +10,7 @@ changing Claudexor.
 
 | Surface | Current role | Stability |
 |---|---|---|
-| CLI | Human and automation entrypoint: run verbs (init, ask — `--deep-scan` for the research sweep — agent — `--delegate` for the delegation belt — best-of, plan, create), run inspection/recovery (inspect, follow, retry, run-again, apply, decision, review), ops (project, models, harness, doctor, quota, plugin, daemon, gc, auth, secrets, profiles, settings, trust, setup, remote, release), and agent introspection (capabilities, about, `help --json`). | Stable contract: the verb/flag surface (`help --json`) and `--json` output keys on run paths (add-only). JSON support exists on primary machine-readable paths, not every subcommand. |
+| CLI | Human and automation entrypoint: run verbs (init, ask — `--deep-scan` for the research sweep — agent — `--delegate` for the delegation belt — best-of, plan, create), run inspection/recovery (inspect, follow, retry, run-again, apply, decision, review), ops (project, models, harness, doctor, quota, accounts, plugin, daemon, gc, auth, secrets, profiles, settings, trust, setup, remote, release), and agent introspection (capabilities, about, `help --json`). | Stable contract: the verb/flag surface (`help --json`) and `--json` output keys on run paths (add-only). JSON support exists on primary machine-readable paths, not every subcommand. |
 | Daemon and control API | Local durable queue, run list/detail, artifacts, SSE events, settings, harness status, secrets metadata, apply, and run control. | Stable contract: endpoints and DTOs per `docs/reference/endpoints.json` + generated schemas (add-only fields). Loopback + bearer token only. |
 | MCP server | Exposes Claudexor tools to MCP clients. | Stable contract: the tool set with input/output schemas. Tool list follows the implementation, not old docs. |
 | ACP server | Lets compatible editors or agents talk to Claudexor as a local agent surface. | Experimental (may change in minors, disclosed in the CHANGELOG). |
@@ -331,6 +331,8 @@ The implemented tools include `claudexor_ask` (with `deepScan`), `claudexor_run`
 `claudexor_status`, `claudexor_capabilities`
 (the derived AgentCapabilityCatalog: per-harness live capabilities, modes,
 the mutability matrix, run-control keys), and the read-only recovery tools
+`claudexor_accounts` (the server-authored credential-profile/readiness/quota
+snapshot, including freshness and `next_up` state),
 `claudexor_runs`, `claudexor_inspect`, `claudexor_run_status`,
 `claudexor_run_result`, `claudexor_run_cancel`,
 `claudexor_run_interactions`, `claudexor_answer_interaction`,
