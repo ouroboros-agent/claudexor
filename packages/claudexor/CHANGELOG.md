@@ -1,5 +1,15 @@
 # claudexor
 
+## 3.8.2
+
+### Patch Changes
+
+- Make reviewer routing agents-first: preserve optional credential-profile
+  identity through reviewer surfaces, expose the read-only accounts doorway, and
+  disclose unavailable reviewer families instead of silently dropping them.
+- Updated dependencies [fc15ea8]
+  - @claudexor/cli@3.8.2
+
 ## 3.8.1
 
 ### Patch Changes

@@ -3,6 +3,12 @@
 Release history for Claudexor. The current version is declared in the root
 `package.json` (the version SSOT); tags `v*` correspond to GitHub Releases.
 
+- **v3.8.2** (2026-08-23): reviewer routing now preserves the selected
+  credential profile through every reviewer surface, exposes a read-only
+  accounts view, and discloses unavailable reviewer families instead of
+  silently dropping them. Transient Claude native auth-status transport
+  failures stay typed as unknown with bounded retry and last-known-good
+  disclosure rather than appearing as a logout.
 - **v3.8.1** (2026-08-22): profile-scoped Antigravity runs now create and use
   a private macOS keychain under each profile HOME before the vendor touches
   Keychain Services. This removes the recurring “Keychain not found” dialog

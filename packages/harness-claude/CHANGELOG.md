@@ -1,5 +1,16 @@
 # @claudexor/harness-claude
 
+## 3.8.2
+
+### Patch Changes
+
+- fc15ea8: Keep transient Claude native auth-status transport failures typed as unknown,
+  with bounded retry and last-known-good disclosure instead of a false logout.
+  - @claudexor/core@3.8.2
+  - @claudexor/schema@3.8.2
+  - @claudexor/secrets@3.8.2
+  - @claudexor/util@3.8.2
+
 ## 3.8.1
 
 ### Patch Changes
