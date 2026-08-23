@@ -12,10 +12,10 @@ script) setting Claudexor up on this machine, follow this sequence in order.
 It is strict: skipping a step is how the 2026-07-21 incident happened.
 
 1. **Confirm the CLI and daemon.** `claudexor --version`, then
-   `claudexor doctor --json`. Doctor is the aggregate, harness-level source of
-   truth for what is already working; it does not prove that a particular
-   credential profile, model route, or setup transport is ready. Do not infer
-   readiness from a binary being on `PATH` or from a host/default login.
+   `claudexor doctor --json`. Doctor is the aggregate/default-store projection;
+   it does not prove or veto a particular credential profile, model route, or
+   setup transport. Do not infer readiness from a binary being on `PATH` or
+   from a host/default login.
 2. **Read the Accounts doorway before choosing a reviewer account.** Run
    `claudexor accounts --json` (or call the read-only `claudexor_accounts` MCP
    tool). It is one daemon-authored snapshot of registered profiles, readiness,

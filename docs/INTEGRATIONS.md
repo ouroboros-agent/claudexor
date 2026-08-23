@@ -460,13 +460,13 @@ managed Copilot host. Generated Claude Code, Codex, Cursor, and OpenCode
 integrations keep their existing ownership and repair semantics and are never
 replaced automatically by the portable plugin.
 
-The bundled Skill starts with doctor-backed status and read-only tools. It may
-request mutating run tools only for explicit implementation intent, and MCP
-does not expose patch application. A host may use the ordinary CLI delivery
-path only after an explicit user request and a server-owned eligible apply
-verdict. Credentials remain in the existing `claudexor auth login` and
-`claudexor secrets set` flows; risk acceptance and overrides remain human
-decisions.
+The bundled Skill starts with the aggregate/default doctor projection, the
+Accounts snapshot, and read-only tools. It may request mutating run tools only
+for explicit implementation intent, and MCP does not expose patch application.
+A host may use the ordinary CLI delivery path only after an explicit user
+request and a server-owned eligible apply verdict. Credentials remain in the
+existing `claudexor auth login` and `claudexor secrets set` flows; risk
+acceptance and overrides remain human decisions.
 
 The public MCP Registry descriptor is `server.json`. It points to the executable
 `claudexor` npm package and supplies fixed `mcp serve` package arguments for the
@@ -633,12 +633,15 @@ soft-deny below has no fixture at all (it is sourced to an upstream report).
 Every claim below is re-verified when the pinned vendor version moves.
 
 Discovery/manifests describe static capabilities and possible auth sources.
-Doctor output is the readiness source: UI status, routing, reviewer selection,
-and live controls must rely on doctor status, enabled intents, and smoke checks.
-Auto-routing and reviewer pools take only doctor-OK harnesses. OpenCode and the
-raw-API adapter currently report `degraded` even with a key (no isolated smoke
-proves their routes yet), so they are skipped by auto-pools and selectable only
-explicitly; explicitly selecting an `unavailable` harness fails loudly.
+Doctor output is the aggregate/default-route readiness source: UI default
+status and profile-less live controls rely on doctor status, enabled intents,
+and smoke checks. Auto-routing and reviewer pools take doctor-OK default routes
+plus harnesses with enabled account rows; a selected row is admitted only after
+its exact profile probe. Only a genuinely profile-less/default fallback depends
+on aggregate doctor. OpenCode and the raw-API adapter currently report
+`degraded` even with a key (no isolated smoke proves their default routes yet),
+so they are skipped by auto-pools unless a supported exact profile route proves
+ready, and explicitly selecting an `unavailable` route fails loudly.
 
 Adapters must translate native I/O into Claudexor events and artifacts. They must
 not orchestrate, arbitrate, manage budgets, or decide review policy.

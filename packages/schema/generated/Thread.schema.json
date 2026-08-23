@@ -127,7 +127,7 @@
             "type": "string"
           },
           "default": [],
-          "description": "Sticky eligible harness pool for the thread (races run one candidate per pool member); empty = the engine auto-pools doctor-ok harnesses."
+          "description": "Sticky eligible harness pool for the thread (races run one candidate per pool member); empty = the engine auto-pools doctor-OK default routes plus harnesses with enabled account rows, and selected rows still require exact profile preflight."
         },
         "workspace": {
           "type": "object",

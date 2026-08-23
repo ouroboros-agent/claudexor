@@ -248,7 +248,7 @@ function skillText(host: PluginHost, runtime: RuntimePaths): string {
     "",
     "Prefer these routes:",
     "",
-    "- MCP tool `claudexor_status` to check available harnesses.",
+    "- MCP tool `claudexor_status` to inspect the aggregate/default harness projection.",
     "- MCP tool `claudexor_capabilities` for the full machine-readable catalog (harness health, modes, mutability matrix).",
     "- MCP tool `claudexor_accounts` for the read-only atomic Accounts snapshot (profiles, readiness, quota freshness, and next-up routing identity).",
     "- MCP tool `claudexor_ask` for read-only answers (deepScan:true for bounded multi-scout research synthesis).",

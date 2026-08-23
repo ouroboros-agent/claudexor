@@ -294,7 +294,9 @@ A thread carries sticky routing so the chat surface stays a thin gateway: a
 the pool size). A turn inherits both unless its request overrides them
 (`POST /v2/threads/:id/turns` accepts `primaryHarness` / `harnesses`); precedence is
 **turn body > thread sticky > engine default** (config `routing.primary_harness`,
-auto-pool of doctor-ok harnesses). All ordering/validation stays in the engine —
+otherwise an auto-pool of doctor-OK default routes plus harnesses with enabled
+account rows; a selected row must pass exact profile preflight). All
+ordering/validation stays in the engine —
 `primaryHarness` is only pinned first, and an EXPLICITLY-selected primary outside
 the selected pool fails loudly (the engine rejects it). A single-item explicit
 pool infers itself as the primary (no duplicate `--primary-harness` needed); a
@@ -3216,10 +3218,12 @@ code touching one of these areas must honor it or change it explicitly here.
 - Isolated-thread worktrees are pinned by persistent `claudexor/thread-*`
   branches. Journal SHA is a checked cache; successful apply advances the
   branch, and explicit trash/restore/purge owns its retention lifecycle.
-- Explicit reviewer panels accept only doctor-OK routes: a degraded route (key
-  present but unproven by isolated smoke) is refused even when the user names
-  it — reviewer verdicts must ride proven routes, unlike candidates where
-  explicit selection admits degraded.
+- Explicit reviewer panels accept only proven routes: an unprofiled/default
+  entry requires doctor-OK readiness, while a profiled entry requires its exact
+  profile probe even when aggregate/default doctor is unavailable. A degraded
+  raw default route (key present but unproven by isolated smoke) is refused even
+  when the user names it — reviewer verdicts must ride proven routes, unlike
+  candidates where explicit selection admits degraded.
 - A credential profile cannot bootstrap a raw-API instance whose own key is
   absent: raw-API discovery is key-gated (an instance without its configured
   key is not a route, so no manifest exists for the profile probe to

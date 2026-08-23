@@ -1,6 +1,6 @@
 ---
 name: claudexor
-description: Use the local Claudexor control plane for harness-agnostic coding work across Claude Code, Codex, Cursor, and OpenCode. Use when a task benefits from doctor-backed harness selection, quota-aware account rotation, shared thread context, read-only planning or research, best-of-N execution, or cross-harness review.
+description: Use the local Claudexor control plane for harness-agnostic coding work across Claude Code, Codex, Cursor, and OpenCode. Use when a task benefits from route-aware harness and account selection, quota-aware account rotation, shared thread context, read-only planning or research, best-of-N execution, or cross-harness review.
 ---
 
 # Claudexor
