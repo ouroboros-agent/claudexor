@@ -314,7 +314,7 @@ describe("plugin lifecycle", () => {
                   line.includes('"command"') ||
                   line.includes('"longDescription"') ||
                   line.includes("MCP run tools enqueue work") ||
-                  line.includes("Readiness is route- and profile-specific") ||
+                  line.includes("Readiness has separate owners") ||
                   line.includes("Do not claim live thread parity"),
               ),
           ];
@@ -334,13 +334,13 @@ describe("plugin lifecycle", () => {
         ".claude/skills/claudexor/commands/claudexor.md": [
           `<!-- ${MANAGED_VERSION_MARKER} -->`,
           "MCP run tools enqueue work and return a durable run handle, not terminal output or a live thread. Follow the handle with `claudexor_run_status`/`claudexor_run_result` (or the CLI) before claiming the answer, completion, or applyability.",
-          "Readiness is route- and profile-specific: `claudexor_status`/doctor is aggregate harness health, `claudexor_accounts` is the server-authored profile readiness/quota snapshot, and `claudexor_capabilities` plus `claudexor models --harness <id>` provide declared transport/setup and model truth. `available` source material or an installed binary is not `passed` route readiness; `unknown/not_run`, stale quota, unavailable model inventory, or an unavailable setup transport is uncertainty/refusal, not permission to guess or silently switch accounts.",
+          "Readiness has separate owners: `claudexor_status`/doctor is aggregate unpinned harness health, `claudexor_accounts` is the server-authored exact-profile readiness/quota snapshot, `claudexor_capabilities` declares setup transport, and `claudexor models --harness <id>` is unpinned harness/default discovery rather than a named profile entitlement. For a named profile, strict pinned run/reviewer preflight owns model admission and result telemetry owns the observed profile/model route. `unknown/not_run`, stale quota, or unavailable inventory is uncertainty/refusal; `external_terminal` means the supported client terminal attach path and is not itself unreadiness.",
           "Do not claim live thread parity through MCP. Ask for an explicit repo path if the target project is ambiguous.",
         ],
         ".claude/skills/claudexor/skills/claudexor/SKILL.md": [
           `<!-- ${MANAGED_VERSION_MARKER} -->`,
           "MCP run tools enqueue work and return a durable run handle, not terminal output or a live thread. Follow the handle with `claudexor_run_status`/`claudexor_run_result` (or the CLI) before claiming the answer, completion, or applyability.",
-          "Readiness is route- and profile-specific: `claudexor_status`/doctor is aggregate harness health, `claudexor_accounts` is the server-authored profile readiness/quota snapshot, and `claudexor_capabilities` plus `claudexor models --harness <id>` provide declared transport/setup and model truth. `available` source material or an installed binary is not `passed` route readiness; `unknown/not_run`, stale quota, unavailable model inventory, or an unavailable setup transport is uncertainty/refusal, not permission to guess or silently switch accounts.",
+          "Readiness has separate owners: `claudexor_status`/doctor is aggregate unpinned harness health, `claudexor_accounts` is the server-authored exact-profile readiness/quota snapshot, `claudexor_capabilities` declares setup transport, and `claudexor models --harness <id>` is unpinned harness/default discovery rather than a named profile entitlement. For a named profile, strict pinned run/reviewer preflight owns model admission and result telemetry owns the observed profile/model route. `unknown/not_run`, stale quota, or unavailable inventory is uncertainty/refusal; `external_terminal` means the supported client terminal attach path and is not itself unreadiness.",
         ],
         ".codex/plugins/claudexor/.codex-plugin/plugin.json": [
           '  "description": "Claudexor control plane host integration (claudexor:managed host-plugin-lifecycle)",',
@@ -357,7 +357,7 @@ describe("plugin lifecycle", () => {
         ".codex/plugins/claudexor/skills/claudexor/SKILL.md": [
           `<!-- ${MANAGED_VERSION_MARKER} -->`,
           "MCP run tools enqueue work and return a durable run handle, not terminal output or a live thread. Follow the handle with `claudexor_run_status`/`claudexor_run_result` (or the CLI) before claiming the answer, completion, or applyability.",
-          "Readiness is route- and profile-specific: `claudexor_status`/doctor is aggregate harness health, `claudexor_accounts` is the server-authored profile readiness/quota snapshot, and `claudexor_capabilities` plus `claudexor models --harness <id>` provide declared transport/setup and model truth. `available` source material or an installed binary is not `passed` route readiness; `unknown/not_run`, stale quota, unavailable model inventory, or an unavailable setup transport is uncertainty/refusal, not permission to guess or silently switch accounts.",
+          "Readiness has separate owners: `claudexor_status`/doctor is aggregate unpinned harness health, `claudexor_accounts` is the server-authored exact-profile readiness/quota snapshot, `claudexor_capabilities` declares setup transport, and `claudexor models --harness <id>` is unpinned harness/default discovery rather than a named profile entitlement. For a named profile, strict pinned run/reviewer preflight owns model admission and result telemetry owns the observed profile/model route. `unknown/not_run`, stale quota, or unavailable inventory is uncertainty/refusal; `external_terminal` means the supported client terminal attach path and is not itself unreadiness.",
         ],
         ".cursor/plugins/local/claudexor/.cursor-plugin/plugin.json": [
           '  "description": "Claudexor control plane host integration (claudexor:managed host-plugin-lifecycle)",',
@@ -367,7 +367,7 @@ describe("plugin lifecycle", () => {
         ".cursor/plugins/local/claudexor/commands/claudexor.md": [
           `<!-- ${MANAGED_VERSION_MARKER} -->`,
           "MCP run tools enqueue work and return a durable run handle, not terminal output or a live thread. Follow the handle with `claudexor_run_status`/`claudexor_run_result` (or the CLI) before claiming the answer, completion, or applyability.",
-          "Readiness is route- and profile-specific: `claudexor_status`/doctor is aggregate harness health, `claudexor_accounts` is the server-authored profile readiness/quota snapshot, and `claudexor_capabilities` plus `claudexor models --harness <id>` provide declared transport/setup and model truth. `available` source material or an installed binary is not `passed` route readiness; `unknown/not_run`, stale quota, unavailable model inventory, or an unavailable setup transport is uncertainty/refusal, not permission to guess or silently switch accounts.",
+          "Readiness has separate owners: `claudexor_status`/doctor is aggregate unpinned harness health, `claudexor_accounts` is the server-authored exact-profile readiness/quota snapshot, `claudexor_capabilities` declares setup transport, and `claudexor models --harness <id>` is unpinned harness/default discovery rather than a named profile entitlement. For a named profile, strict pinned run/reviewer preflight owns model admission and result telemetry owns the observed profile/model route. `unknown/not_run`, stale quota, or unavailable inventory is uncertainty/refusal; `external_terminal` means the supported client terminal attach path and is not itself unreadiness.",
           "Do not claim live thread parity through MCP. Ask for an explicit repo path if the target project is ambiguous.",
         ],
         ".cursor/plugins/local/claudexor/mcp.json": [
@@ -379,7 +379,7 @@ describe("plugin lifecycle", () => {
         ".config/opencode/commands/claudexor.md": [
           `<!-- ${MANAGED_VERSION_MARKER} -->`,
           "MCP run tools enqueue work and return a durable run handle, not terminal output or a live thread. Follow the handle with `claudexor_run_status`/`claudexor_run_result` (or the CLI) before claiming the answer, completion, or applyability.",
-          "Readiness is route- and profile-specific: `claudexor_status`/doctor is aggregate harness health, `claudexor_accounts` is the server-authored profile readiness/quota snapshot, and `claudexor_capabilities` plus `claudexor models --harness <id>` provide declared transport/setup and model truth. `available` source material or an installed binary is not `passed` route readiness; `unknown/not_run`, stale quota, unavailable model inventory, or an unavailable setup transport is uncertainty/refusal, not permission to guess or silently switch accounts.",
+          "Readiness has separate owners: `claudexor_status`/doctor is aggregate unpinned harness health, `claudexor_accounts` is the server-authored exact-profile readiness/quota snapshot, `claudexor_capabilities` declares setup transport, and `claudexor models --harness <id>` is unpinned harness/default discovery rather than a named profile entitlement. For a named profile, strict pinned run/reviewer preflight owns model admission and result telemetry owns the observed profile/model route. `unknown/not_run`, stale quota, or unavailable inventory is uncertainty/refusal; `external_terminal` means the supported client terminal attach path and is not itself unreadiness.",
           "Do not claim live thread parity through MCP. Ask for an explicit repo path if the target project is ambiguous.",
         ],
         ".config/opencode/plugins/claudexor.js": [
@@ -389,7 +389,7 @@ describe("plugin lifecycle", () => {
         ".config/opencode/skills/claudexor/SKILL.md": [
           `<!-- ${MANAGED_VERSION_MARKER} -->`,
           "MCP run tools enqueue work and return a durable run handle, not terminal output or a live thread. Follow the handle with `claudexor_run_status`/`claudexor_run_result` (or the CLI) before claiming the answer, completion, or applyability.",
-          "Readiness is route- and profile-specific: `claudexor_status`/doctor is aggregate harness health, `claudexor_accounts` is the server-authored profile readiness/quota snapshot, and `claudexor_capabilities` plus `claudexor models --harness <id>` provide declared transport/setup and model truth. `available` source material or an installed binary is not `passed` route readiness; `unknown/not_run`, stale quota, unavailable model inventory, or an unavailable setup transport is uncertainty/refusal, not permission to guess or silently switch accounts.",
+          "Readiness has separate owners: `claudexor_status`/doctor is aggregate unpinned harness health, `claudexor_accounts` is the server-authored exact-profile readiness/quota snapshot, `claudexor_capabilities` declares setup transport, and `claudexor models --harness <id>` is unpinned harness/default discovery rather than a named profile entitlement. For a named profile, strict pinned run/reviewer preflight owns model admission and result telemetry owns the observed profile/model route. `unknown/not_run`, stale quota, or unavailable inventory is uncertainty/refusal; `external_terminal` means the supported client terminal attach path and is not itself unreadiness.",
         ],
       });
 

@@ -22,10 +22,10 @@ Claudexor installation; they do not provide accounts or remote model access.
 
 Start read-only unless the user explicitly asked to change or create files.
 
-1. Call `claudexor_status` before choosing a harness. Treat a harness as usable
-   for a requested intent only when its doctor-backed status is `ok` and that
-   intent is enabled; this aggregate harness status does not prove a named
-   credential profile or host/default login.
+1. Call `claudexor_status` before choosing an unpinned harness route. Treat
+   that route as usable for a requested intent only when its doctor-backed
+   status is `ok` and that intent is enabled. This aggregate/default status
+   neither proves nor vetoes a named credential profile.
 2. Call `claudexor_accounts` before choosing an account or reviewer identity.
    It is a read-only atomic snapshot of registered profiles, readiness, quota
    freshness, and the daemon's `next_up` routing projection. `available/passed`
@@ -37,12 +37,15 @@ Start read-only unless the user explicitly asked to change or create files.
    strict and never falls back, while an omitted id uses the canonical account
    pool.
 3. Call `claudexor_capabilities` when the task depends on the current modes,
-   mutability, controls, models, setup transport, or tool surface. For a
-   concrete harness model list, use `claudexor models --harness <id>` through
-   the CLI; `source: none` or an unavailable inventory is an honest refusal,
-   not permission to guess a model. A declared `setupLogin` transport of
-   `external_terminal` means the host must provide that client transport;
-   never silently treat it as `in_app`.
+   mutability, controls, models, setup transport, or tool surface. The CLI
+   `claudexor models --harness <id>` is unpinned harness/default discovery, not
+   a named profile's entitlement; `source: none` or an unavailable inventory
+   is an honest refusal, not permission to guess. For a named profile, let the
+   strict pinned run/reviewer preflight admit the model and verify observed
+   profile/model telemetry afterward. A declared `setupLogin` transport of
+   `external_terminal` means the host must provide the supported client
+   terminal attach path; it is not itself unreadiness and must not be silently
+   treated as `in_app`.
 4. Use `claudexor_ask` for read-only answers and bounded research, or
    `claudexor_plan` for a read-only implementation plan.
 5. Only for explicit implementation intent, use `claudexor_run`,

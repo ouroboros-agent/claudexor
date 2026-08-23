@@ -193,6 +193,29 @@ describe("cursor auth status parsing", () => {
     expect(calls).toEqual([["status", "--format", "json"]]);
   });
 
+  it("keeps successful unrecognized profile JSON and diagnostics unknown", async () => {
+    for (const result of [
+      {
+        code: 0,
+        signal: null,
+        stdout: JSON.stringify({ unexpected: "shape" }),
+        stderr: "Logged in as unrelated@example.com",
+      },
+      { code: 0, signal: null, stdout: "not-json\nLogged in as unrelated@example.com", stderr: "" },
+    ]) {
+      await expect(
+        probeCursorNativeAuth(
+          { AGENT_CLI_CREDENTIAL_STORE: "file", CURSOR_CONFIG_DIR: "/tmp/profile/.cursor" },
+          undefined,
+          async () => result,
+        ),
+      ).resolves.toEqual({
+        kind: "unknown",
+        error: "cursor-agent status returned unrecognized JSON output (0)",
+      });
+    }
+  });
+
   it("bounds and redacts thrown probe errors before returning typed unknown evidence", async () => {
     const secret = `sk-${"x".repeat(80)}`;
     const result = await probeCursorNativeAuth(undefined, undefined, async () => {

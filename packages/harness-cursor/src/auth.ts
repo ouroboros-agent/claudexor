@@ -74,6 +74,15 @@ export async function probeCursorNativeAuth(
     if (profileScoped) {
       const jsonObservation = cursorJsonStatusObservation(result.stdout);
       if (jsonObservation) return jsonObservation;
+      // A successful JSON-capable probe owns the profile-scoped evidence. If
+      // its output is malformed or an unknown shape, do not reinterpret stdout
+      // or stderr through the legacy text grammar: diagnostics can mention an
+      // unrelated host account. Text parsing is reached only through the
+      // explicit unsupported-JSON fallback above.
+      return {
+        kind: "unknown",
+        error: `cursor-agent status returned unrecognized JSON output (${result.code})`,
+      };
     }
     const authenticated = cursorAuthenticatedObservation(text);
     if (authenticated) return authenticated;
