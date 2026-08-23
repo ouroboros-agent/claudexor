@@ -227,6 +227,12 @@ function hostFallbackCommands(runtime: RuntimePaths): string[] {
  * `/claudexor:claudexor` (QA-029A) — plain `/claudexor` is NOT an alias. */
 const CLAUDE_SLASH_COMMAND = "/claudexor:claudexor";
 
+const MCP_RUN_HANDLE_GUIDANCE =
+  "MCP run tools enqueue work and return a durable run handle, not terminal output or a live thread. Follow the handle with `claudexor_run_status`/`claudexor_run_result` (or the CLI) before claiming the answer, completion, or applyability.";
+
+const READINESS_GUIDANCE =
+  "Readiness is route- and profile-specific: `claudexor_status`/doctor is aggregate harness health, `claudexor_accounts` is the server-authored profile readiness/quota snapshot, and `claudexor_capabilities` plus `claudexor models --harness <id>` provide declared transport/setup and model truth. `available` source material or an installed binary is not `passed` route readiness; `unknown/not_run`, stale quota, unavailable model inventory, or an unavailable setup transport is uncertainty/refusal, not permission to guess or silently switch accounts.";
+
 function skillText(host: PluginHost, runtime: RuntimePaths): string {
   return [
     "---",
@@ -256,9 +262,11 @@ function skillText(host: PluginHost, runtime: RuntimePaths): string {
     "",
     ...hostFallbackCommands(runtime).map((command) => `\`${command}\``),
     "",
-    "MCP support is one-shot and honest: tools return the final Claudexor output, not a live Claudexor thread. Use an explicit `repoPath` when the host cwd may not be the target project.",
+    MCP_RUN_HANDLE_GUIDANCE,
+    "Use an explicit `repoPath` when the host cwd may not be the target project.",
     "",
-    "Readiness semantics: a harness is usable only when `claudexor_status` reports it `ok` (doctor-backed), and a named account is usable only when `claudexor_accounts` reports its profile `available/passed`. An installed binary, a stored key, or an auth file alone is NOT readiness. `unknown/not_run` or stale account evidence means uncertainty, not absence; inspect it and ask the human before starting login or OAuth. Reviewer identity: an omitted profile uses the canonical model-first account pool; a structured reviewer entry may carry strict `credentialProfileId` and never silently falls back. Use `--reviewer-panel-json '<array>'` for pinned CLI entries; the compact `--reviewer-panel` spelling remains unpinned.",
+    READINESS_GUIDANCE,
+    "A harness is usable only when its doctor-backed status is `ok` and it exposes the requested intent. A named account is usable only when its exact `claudexor_accounts` row is `available/passed`; never use aggregate doctor status or a host/default login as proof for another profile. Reviewer identity: an omitted profile uses the canonical model-first account pool; a structured reviewer entry may carry strict `credentialProfileId` and never silently falls back. Use `--reviewer-panel-json '<array>'` for pinned CLI entries; the compact `--reviewer-panel` spelling remains unpinned.",
     "Setup and login prerequisites (version check, plugin status/repair, and logging in ONLY via `claudexor auth login <harness>` — never a bare vendor login) are the strict sequence in docs/AGENT_ONBOARDING.md (Install And Login). Do not initiate login merely because a readiness probe is unknown; get explicit human authorization.",
     "",
     "Host timeouts: mutating tools can run for many minutes and hosts often cap tool calls. The `runId:` trailer arrives in EVERY result — if the host times out, the run continues daemon-side; recover it with `claudexor_inspect` or the CLI.",
@@ -302,6 +310,9 @@ function commandText(host: PluginHost, runtime: RuntimePaths): string {
       (command) => `- \`${command.replace('"..."', '"$ARGUMENTS"')}\``,
     ),
     "",
+    MCP_RUN_HANDLE_GUIDANCE,
+    READINESS_GUIDANCE,
+    "",
     "Do not claim live thread parity through MCP. Ask for an explicit repo path if the target project is ambiguous.",
     "",
     // QA-029A: this command file is only reached AFTER a correct invocation, but
@@ -336,6 +347,7 @@ function readmeText(host: PluginHost, runtime: RuntimePaths): string {
           "",
         ]
       : []),
+    MCP_RUN_HANDLE_GUIDANCE,
     "Long-running MCP tools (claudexor_run, claudexor_best_of, claudexor_create) are daemon-tracked: every result carries a `runId:` trailer, so a call abandoned by a host timeout stays recoverable via `claudexor inspect <runId>` / `claudexor follow <runId>`.",
     "",
   ].join("\n");
@@ -371,7 +383,7 @@ function manifest(kind: "claude" | "codex" | "cursor"): string {
         displayName: "Claudexor",
         shortDescription: "Harness-agnostic coding through the local Claudexor CLI.",
         longDescription:
-          "Use Claudexor for local planning, runs, races, and review through generated skills and one-shot MCP tools.",
+          "Use Claudexor for local planning, runs, races, and review through generated skills and durable-handle MCP tools.",
         developerName: "Claudexor",
         category: "Productivity",
         capabilities: ["Productivity"],

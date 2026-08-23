@@ -448,25 +448,33 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
   return [
     mk(
       "claudexor_ask",
-      "One-shot read-only answer through Claudexor; pass deepScan:true for a bounded multi-scout research sweep with synthesis. Returns final output, not a live thread.",
+      "Enqueue a read-only Claudexor answer; pass deepScan:true for a bounded multi-scout research sweep with synthesis. Returns a durable run handle, not terminal output; use claudexor_run_status/result for the final answer.",
       { mode: "ask" },
     ),
     mk(
       "claudexor_run",
-      "One-shot Agent-mode Claudexor run; returns the final WorkProduct summary plus runId.",
+      "Enqueue an Agent-mode Claudexor run. Returns a durable run handle plus any immediate start facts; use claudexor_run_status/result for the terminal WorkProduct.",
       { mode: "agent" },
     ),
     mk(
       "claudexor_best_of",
-      "One-shot best-of-N Claudexor run with cross-family review.",
+      "Enqueue a best-of-N Claudexor run with cross-family review. Returns a durable run handle; use claudexor_run_status/result for terminal output.",
       { mode: "agent", race: true },
       2,
     ),
-    mk("claudexor_plan", "One-shot read-only Claudexor implementation plan.", { mode: "plan" }),
-    mk("claudexor_create", "One-shot create-from-scratch Claudexor run.", {
-      mode: "agent",
-      create: true,
-    }),
+    mk(
+      "claudexor_plan",
+      "Enqueue a read-only Claudexor implementation plan. Returns a durable run handle; use claudexor_run_status/result for the final plan.",
+      { mode: "plan" },
+    ),
+    mk(
+      "claudexor_create",
+      "Enqueue a create-from-scratch Claudexor run. Returns a durable run handle; use claudexor_run_status/result for terminal output.",
+      {
+        mode: "agent",
+        create: true,
+      },
+    ),
     {
       name: "claudexor_status",
       description:

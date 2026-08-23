@@ -324,8 +324,11 @@ the declared JSON Schemas. Claudexor's semantic checks (absolute `repoPath`,
 the inline-secret fence, reviewer-panel shapes) run inside the tool handlers
 and surface as `isError` tool results.
 
-MCP Tasks remain experimental and are not advertised. Run tools return a
-daemon-bound durable handle instead of holding a tool call open until terminal.
+MCP Tasks remain experimental and are not advertised. Run tools enqueue work
+and return a daemon-bound durable handle instead of holding a tool call open
+until terminal. The initial result is not terminal output or proof of
+completion; follow the handle with the status/result tools before claiming an
+answer, finished work, or applyability.
 The implemented tools include `claudexor_ask` (with `deepScan`), `claudexor_run`,
 `claudexor_best_of`, `claudexor_plan`, `claudexor_create`,
 `claudexor_status`, `claudexor_capabilities`
@@ -492,8 +495,12 @@ Native sessions remain in vendor-owned stores rather than being copied into
 Claudexor state or envelopes. Codex points native runs at a Claudexor-dedicated
 `CODEX_HOME` and forces the vendor's file credential store, isolating it from
 the operator's ordinary Codex CLI/app Keychain session. Claude points at the
-vendor config and uses the macOS login Keychain; Cursor uses its Keychain-backed native
-state. Claudexor's API-key store and Claude setup-token source are separate
+vendor config and uses the macOS login Keychain; Cursor uses the vendor's own
+file credential store under the selected Claudexor-owned profile HOME with
+`AGENT_CLI_CREDENTIAL_STORE=file`, while its mutable config/session state stays
+in the profile's scoped `CURSOR_CONFIG_DIR`/`CURSOR_DATA_DIR`. The host Cursor
+OS-Keychain login is retired and is never probed, bridged, or claimed as a
+route. Claudexor's API-key store and Claude setup-token source are separate
 routes with their own typed readiness and route-specific injection.
 
 ## ACP
