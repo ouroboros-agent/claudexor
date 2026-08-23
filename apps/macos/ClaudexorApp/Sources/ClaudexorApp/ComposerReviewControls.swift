@@ -51,6 +51,10 @@ struct ComposerReviewDraft: Equatable {
         } == true
     }
 
+    var hasValidReviewerJSON: Bool {
+        ComposerOptionParser.parseReviewerPanelJSON(reviewerText) != nil
+    }
+
     var reviewerWireToken: String? {
         ComposerOptionParser.reviewerWireToken(
             harness: pickerHarness,

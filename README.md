@@ -437,6 +437,7 @@ registry row.
 
 ```bash
 claudexor profiles                         # every account per harness + the informational next-up verdict
+claudexor accounts --json                  # read-only snapshot doorway for agents, with freshness/quota state
 claudexor auth login claude                # bootstrap sugar: sign into the claude-default row
 claudexor profiles add claude work         # register another account
 claudexor profiles login claude work       # the vendor's own login, scoped to the row's dir

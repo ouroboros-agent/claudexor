@@ -143,10 +143,10 @@ struct ThreadsScreen: View {
         guard !t.isEmpty else { return false }
         return ComposerOptionParser.parseNonnegativeFiniteDouble(t) == nil
     }
-
     var reviewerPanelInvalid: Bool {
         guard runControlApplicability.reviewers.applicable else { return false }
         if reviewerPanelStructuredInvalid { return true }
+        if reviewDraft.hasValidReviewerJSON { return false }
         let tokens = reviewerPanelTokens
         return reviewDraft.reviewerPickerIncomplete
             || (!tokens.isEmpty && tokens.count != reviewerPanelEntries.count)

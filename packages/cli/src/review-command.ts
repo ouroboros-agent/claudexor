@@ -138,6 +138,7 @@ export async function reviewCommand(args: ParsedArgs, json: boolean): Promise<nu
         providers: result.distinctProviders,
         blockers: blockers.length,
         findings: result.findings,
+        ignoredSettings: result.ignoredSettings,
         reviewSpendUsd: result.reviewSpendUsd,
         artifactsDir: result.artifactsDir,
       });
@@ -146,6 +147,7 @@ export async function reviewCommand(args: ParsedArgs, json: boolean): Promise<nu
         `reviewers: ${result.distinctProviders.join(", ") || "none"} (cross-family verified: ${result.crossFamilyVerified})`,
       );
       for (const f of result.findings) print(`  [${f.severity}] ${f.claim}`);
+      for (const detail of result.ignoredSettings) print(`  [ignored] ${detail}`);
       print(
         ok
           ? "review: PASS"

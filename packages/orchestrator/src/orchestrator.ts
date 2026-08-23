@@ -676,7 +676,7 @@ export class Orchestrator {
   /** Scoped DIFF review — thin delegate; mechanics live in diffReview.ts. */
   async reviewDiff(input: DiffReviewInput): Promise<DiffReviewResult> {
     return runDiffReview(input, {
-      resolveReviewers: (root, pref) => this.resolveReviewers(root, pref),
+      resolveReviewers: this.resolveReviewers.bind(this),
       reviewScoped: (i) => this.reviewScoped(i),
       execRootOf: (root) => this.execRootOf({ repoRoot: root } as RunInput),
       envInheritance: (root) => envInheritance(this.config(root)),

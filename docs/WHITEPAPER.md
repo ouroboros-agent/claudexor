@@ -82,7 +82,8 @@ through the quota-aware pool of enabled ready rows, an unpinned conversation
 stays sticky on its account and switches only with a disclosed lane change,
 and an explicit pin is strict — that account or a typed refusal.
 Selecting an account never narrows the harness pool; choosing a strategy
-never pins an account. Quota is read per account from the vendor's own
+never implicitly pins an account, while an explicit reviewer-slot pin does.
+Quota is read per account from the vendor's own
 surfaces, model-scoped windows and typed model-family rejections apply only to
 their declared aliases, advisory warnings do not become cooldowns, absence is
 typed and explained, and unknown never renders as zero.

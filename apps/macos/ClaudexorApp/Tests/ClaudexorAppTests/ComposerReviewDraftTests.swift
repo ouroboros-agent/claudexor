@@ -44,4 +44,12 @@ import Testing
         )
         #expect(draft.hasPinnedReviewerJSON)
     }
+
+    @Test func validPinnedReviewerJSONOwnsSendValidityDespiteCommas() {
+        let draft = ComposerReviewDraft(
+            reviewerText: "[{\"harness\":\"claude\",\"model\":\"claude-opus-5\",\"credentialProfileId\":\"review-a\"}]",
+            pickerModel: "stale-picker-value"
+        )
+        #expect(draft.hasValidReviewerJSON)
+    }
 }
