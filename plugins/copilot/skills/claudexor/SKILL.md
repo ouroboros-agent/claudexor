@@ -62,7 +62,7 @@ Only when the user explicitly requests delivery and the server-owned
 Claudexor CLI apply path under its normal command permission.
 
 For an explicit reviewer panel, pass entries such as
-`{"harness":"cursor","model":"grok-4.6","credentialProfileId":"review-cursor"}`.
+`{"harness":"cursor","model":"cursor-grok-4.6-high","credentialProfileId":"review-cursor"}`.
 The CLI equivalent is `--reviewer-panel-json '<array>'`; the legacy compact
 `--reviewer-panel` form stays unpinned and should not be extended with an
 escaping-sensitive profile syntax. After review, verify the observed profile
