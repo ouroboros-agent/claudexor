@@ -129,14 +129,16 @@ describe.skipIf(process.platform !== "win32")("Win32 ConPTY helper integration",
 
       try {
         ({ helperPid, vendorPid, descendantPid } = await observedPids);
+        const treePids = [workerPid, helperPid, vendorPid, descendantPid];
+        expect(treePids.every(pidAlive)).toBe(true);
         const termination = killWindowsProcessTree(workerPid);
         expect(termination.pid).toBe(workerPid);
-        // taskkill can return 255 when one enumerated child exits during the
-        // kill. The exact postcondition below remains the authority; a wholly
-        // absent root before the call would not exercise this path.
+        // taskkill can return a non-zero aggregate result when one enumerated
+        // member exits during /T. Root liveness owns not_found; the exact
+        // four-process postcondition below remains the whole-tree authority.
         expect(termination.status).not.toBe("not_found");
         await withTimeout(finished, 10_000, "worker tree taskkill");
-        await expectPidsGone([workerPid, helperPid, vendorPid, descendantPid]);
+        await expectPidsGone(treePids);
       } finally {
         cleanupPids([workerPid, helperPid, vendorPid, descendantPid]);
       }

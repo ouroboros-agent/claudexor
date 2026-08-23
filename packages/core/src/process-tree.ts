@@ -87,7 +87,10 @@ export type WindowsKillTreeResult =
 /**
  * `taskkill /PID <pid> /T /F` via an absolute System32 path (mirrors the pinned
  * `PATH` used for `ps` above — a poisoned PATH must not pick the killer).
- * Exit 0 = the enumerated tree was terminated; exit 128 = no such process.
+ * `taskkill /T` reports one aggregate exit while members of the tree can exit
+ * during its walk, so a non-zero exit cannot prove the root was absent before
+ * the command. Root liveness owns that distinction; whole-tree death remains
+ * separately unprovable on Windows and is disclosed by the reap owner below.
  */
 export function killWindowsProcessTree(
   pid: number,
@@ -103,10 +106,12 @@ export function killWindowsProcessTree(
     });
     return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
   },
+  probeAlive: (pid: number) => boolean = defaultProbePidAlive,
 ): WindowsKillTreeResult {
   if (!Number.isSafeInteger(pid) || pid <= 0) {
     return { status: "failed", pid, detail: "invalid pid" };
   }
+  if (!probeAlive(pid)) return { status: "not_found", pid };
   const systemRoot = process.env["SystemRoot"] || "C:\\Windows";
   const taskkill = `${systemRoot}\\System32\\taskkill.exe`;
   let out: { status: number | null; stdout: string; stderr: string };
@@ -120,7 +125,11 @@ export function killWindowsProcessTree(
     };
   }
   if (out.status === 0) return { status: "killed", pid };
-  if (out.status === 128) return { status: "not_found", pid };
+  // A non-zero aggregate result can mean one enumerated member disappeared
+  // while /T was terminating the tree. If the pre-call-live root is now gone,
+  // the root operation succeeded; descendants remain covered by D21's typed
+  // no-whole-tree-proof disclosure rather than inferred from this exit code.
+  if (!probeAlive(pid)) return { status: "killed", pid };
   return {
     status: "failed",
     pid,
