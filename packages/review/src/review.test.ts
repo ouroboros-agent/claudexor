@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { HarnessAdapter } from "@claudexor/core";
-import type { ProviderFamily } from "@claudexor/schema";
+import type { CredentialProfile, ProviderFamily } from "@claudexor/schema";
 import {
   ConformanceReport,
   ConvergencePredicate,
@@ -828,12 +828,45 @@ describe("gates", () => {
 
 describe("route proof", () => {
   it("verified with observed model, unverified without", () => {
+    const observed = buildRouteProof(
+      {
+        harness_id: "x",
+        provider_family: "openai",
+        credential_profile_id: "review-a",
+      },
+      {
+        model_id: "gpt",
+        credential_profile_id: "review-a",
+        evidence_source: "stream_event",
+      },
+    );
+    expect(observed.status).toBe("verified");
+    expect(observed.requested.credential_profile_id).toBe("review-a");
+    expect(observed.observed.credential_profile_id).toBe("review-a");
     expect(
       buildRouteProof(
-        { harness_id: "x", provider_family: "openai" },
+        {
+          harness_id: "x",
+          provider_family: "openai",
+          credential_profile_id: "review-a",
+        },
         { model_id: "gpt", evidence_source: "stream_event" },
       ).status,
-    ).toBe("verified");
+    ).toBe("unverified");
+    expect(
+      buildRouteProof(
+        {
+          harness_id: "x",
+          provider_family: "openai",
+          credential_profile_id: "review-a",
+        },
+        {
+          model_id: "gpt",
+          credential_profile_id: "other-profile",
+          evidence_source: "stream_event",
+        },
+      ).status,
+    ).toBe("unverified");
     expect(
       buildRouteProof(
         { harness_id: "x", provider_family: "openai" },
@@ -1840,6 +1873,7 @@ describe("reviewEngine", () => {
 
   it("times out a stalled reviewer and forwards abort to the adapter", async () => {
     let childSignal: AbortSignal | undefined;
+    let scratchHome = "";
     const artifactsDir = reapMk(join(tmpdir(), "claudexor-review-artifacts-"));
     const adapter: HarnessAdapter = {
       id: "stalled-reviewer",
@@ -1860,6 +1894,7 @@ describe("reviewEngine", () => {
         });
       },
       async *run(spec) {
+        scratchHome = spec.env?.HOME ?? "";
         const ts = new Date().toISOString();
         yield { type: "started", session_id: spec.session_id, ts, observed_model: "stalled-model" };
         const signal = spec.extra["abortSignal"] as AbortSignal | undefined;
@@ -1882,6 +1917,8 @@ describe("reviewEngine", () => {
       artifactsDir,
     });
     expect(childSignal?.aborted).toBe(true);
+    expect(scratchHome).not.toBe("");
+    expect(existsSync(scratchHome)).toBe(false);
     expect(res.findings[0]?.severity).toBe("INSUFFICIENT_EVIDENCE");
     expect(res.findings[0]?.claim).toContain("timed out");
     expect(res.routeProofs[0]?.status).toBe("verified");
@@ -3528,6 +3565,93 @@ describe("reviewEngine", () => {
       "utf8",
     );
     expect(transcript).not.toContain("[auth]");
+  });
+
+  it("gives parallel pinned reviewer slots distinct scratch homes and preserves profile identity", async () => {
+    const { cwd: candidateRoot, evidenceDir } = makeReviewWorkspace(
+      "claudexor-review-profile-isolation-candidate-",
+    );
+    const artifactsDir = reapMk(join(tmpdir(), "claudexor-review-artifacts-"));
+    const homes = new Map<string, string>();
+    const profile = (id: string, harness: string): CredentialProfile => ({
+      profile_id: id,
+      harness_id: harness,
+      display_name: id,
+      credential_kind: "config_dir_login",
+      isolation_locator: `/tmp/${harness}-${id}`,
+      secret_ref: null,
+      enabled: true,
+      created_at: null,
+    });
+    const reviewer = (
+      id: string,
+      family: ProviderFamily,
+      pinned: CredentialProfile,
+    ): ReviewerSpec => {
+      const adapter: HarnessAdapter = {
+        id,
+        async discover() {
+          return HarnessManifest.parse({
+            id,
+            display_name: id,
+            kind: "local_cli",
+            provider_family: family,
+            capabilities: { review: true, structured_output: true },
+          });
+        },
+        async doctor() {
+          return ConformanceReport.parse({
+            harness_id: id,
+            status: "ok",
+            enabled_intents: ["review"],
+          });
+        },
+        async *run(spec) {
+          homes.set(id, spec.env?.HOME ?? "");
+          expect(spec.credential_profile?.profile_id).toBe(pinned.profile_id);
+          const ts = new Date().toISOString();
+          yield {
+            type: "started",
+            session_id: spec.session_id,
+            ts,
+            observed_model: `${id}-model`,
+            credential_profile_id: pinned.profile_id,
+          };
+          yield { type: "message", session_id: spec.session_id, ts, text: "[]\n" };
+          yield { type: "completed", session_id: spec.session_id, ts };
+        },
+      };
+      return { adapter, providerFamily: family, credentialProfile: pinned };
+    };
+
+    const res = await reviewCandidate({
+      candidateLabel: "Candidate A",
+      diff: "diff --git a/x.ts b/x.ts\n@@ -1 +1 @@\n-old\n+new\n",
+      evidenceDir,
+      artifactsDir,
+      cwd: candidateRoot,
+      reviewers: [
+        reviewer("profile-review-a", "openai", profile("a", "profile-review-a")),
+        reviewer("profile-review-b", "anthropic", profile("b", "profile-review-b")),
+      ],
+    });
+
+    expect(res.findings).toEqual([]);
+    expect(homes.get("profile-review-a")).toBeTruthy();
+    expect(homes.get("profile-review-b")).toBeTruthy();
+    expect(homes.get("profile-review-a")).not.toBe(homes.get("profile-review-b"));
+    expect(res.routeProofs[0]?.observed.credential_profile_id).toBe("a");
+    expect(res.routeProofs[1]?.observed.credential_profile_id).toBe("b");
+    const metadataA = readFileSync(
+      join(artifactsDir, "01-profile-review-a", "metadata.json"),
+      "utf8",
+    );
+    const metadataB = readFileSync(
+      join(artifactsDir, "02-profile-review-b", "metadata.json"),
+      "utf8",
+    );
+    expect(metadataA).toContain('"credential_profile_id": "a"');
+    expect(metadataB).toContain('"credential_profile_id": "b"');
   });
 
   it("does not persist evidence symlinks that resolve outside the source evidence dir", async () => {

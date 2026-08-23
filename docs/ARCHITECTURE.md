@@ -2174,8 +2174,13 @@ automatic Agent selector uses provider-family
 diversity plus optional per-family `reviewerModels` / `reviewerEfforts` hints.
 For release and dogfood gates, the `reviewerPanel` field on
 `ControlRunStartRequest` carries an
-ordered list of explicit `{ harness, model?, effort? }` entries. The CLI spells
-this panel as `--reviewer-panel` with comma-separated `harness=model:effort` entries
+ordered list of explicit `{ harness, model?, effort?, credentialProfileId? }`
+entries. An omitted profile uses the canonical model-first account pool. An
+explicit `credentialProfileId` is strict: an unknown, disabled, mismatched,
+unready, or quota-blocked row fails the explicit panel and never falls back to
+another identity. Automatic panels disclose and skip a family whose pool is
+unavailable. The CLI spells an unpinned panel as `--reviewer-panel` with
+comma-separated `harness=model:effort` entries
 (model and effort optional), e.g.
 `--reviewer-panel "claude=claude-opus-4-8:max,cursor=gemini-3.1-pro"`. That panel is
 used verbatim: repeated harness ids are allowed for multi-model Cursor passes,
@@ -2191,7 +2196,13 @@ Same-family panels are allowed for diagnostics and repeated-model comparison,
 but they do not make a clean verified review gate by themselves: the gate still
 requires at least two distinct observed provider families. UI clients may
 send the same DTO but must not invent reviewer readiness outside doctor/status
-and declared intent.
+and declared intent. The round-trippable CLI spelling for pinned entries is
+`--reviewer-panel-json '<array>'`; MCP, ACP, and the macOS client carry the same
+`credentialProfileId` field. Every reviewer slot receives a disposable generic
+scratch/state HOME, while the adapter-owned profile credential store remains the
+identity authority. Route proof, findings, and reviewer telemetry record the
+requested/effective profile plus any profile id emitted by the harness, so a
+requested pin cannot be mistaken for observed identity.
 
 Reviewer prompts always review code through the normal patch contract. The
 retired standalone Plan-review subject has no runtime or surface representation.

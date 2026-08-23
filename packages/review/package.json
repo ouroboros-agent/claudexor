@@ -24,7 +24,8 @@
     "@claudexor/context": "workspace:*",
     "@claudexor/core": "workspace:*",
     "@claudexor/schema": "workspace:*",
-    "@claudexor/util": "workspace:*"
+    "@claudexor/util": "workspace:*",
+    "@claudexor/workspace": "workspace:*"
   },
   "repository": {
     "type": "git",

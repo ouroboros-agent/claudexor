@@ -53,6 +53,7 @@ export const AGENT_MODE_FLAGS: readonly string[] = [
   "deny-path",
   "output-schema",
   "reviewer-panel",
+  "reviewer-panel-json",
   "reviewer-model",
   "reviewer-effort",
   "in-place",
@@ -184,6 +185,11 @@ export const CLI_FLAGS: readonly CliFlagSpec[] = [
     "reviewer-panel",
     "<list>",
     'Explicit reviewers, e.g. "claude=claude-opus-4-8:max,cursor=gemini-3.1-pro,cursor=gemini-3.5-flash,cursor=gpt-5.5-extra-high"',
+  ),
+  valueFlag(
+    "reviewer-panel-json",
+    "'<json-array>'",
+    "Structured reviewer entries as a JSON array; use credentialProfileId for a strict per-slot account pin",
   ),
   valueFlag(
     "reviewer-model",

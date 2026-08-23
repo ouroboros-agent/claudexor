@@ -477,7 +477,12 @@ pnpm test
   `protectedPathApprovals`) instead of relying on prompt prose or repo config.
 - When the required review gate names exact reviewers or repeated models from
   the same harness, use the explicit `reviewerPanel` / `--reviewer-panel` path
-  and verify the per-reviewer telemetry records every requested entry separately.
+  (use `--reviewer-panel-json` when a slot carries `credentialProfileId`) and
+  verify the per-reviewer telemetry records every requested/effective profile,
+  any harness-reported profile id, and model separately. A named profile must
+  fail before spawn if it is
+  unknown, disabled, unready, or quota-blocked; an unpinned slot may use the
+  canonical pool only when its selected identity is disclosed.
 - Reviewer panels and protected-path approvals are Agent-only. Ask and Plan
   must reject them at the schema boundary; use Council when a Plan needs
   multi-harness critique, never the retired standalone Plan-review path.

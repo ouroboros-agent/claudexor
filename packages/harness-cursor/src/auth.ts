@@ -26,7 +26,10 @@ export async function probeCursorNativeAuth(
   capture: typeof runCapture = runCapture,
 ): Promise<CursorStatusObservation> {
   try {
-    const result = await capture(BIN, ["status"], {
+    const profileScoped = Boolean(
+      env?.["AGENT_CLI_CREDENTIAL_STORE"] || env?.["CURSOR_CONFIG_DIR"],
+    );
+    const result = await capture(BIN, profileScoped ? ["status", "--format", "json"] : ["status"], {
       env,
       timeoutMs: 10_000,
       abortSignal,
@@ -35,10 +38,32 @@ export async function probeCursorNativeAuth(
     });
     const text = `${result.stdout}\n${result.stderr}`;
     if (result.code !== 0) {
+      // Older Cursor binaries may reject the JSON status flag. One bounded
+      // text retry preserves profile-scoped readiness without treating a
+      // failed JSON probe as proof that the account is logged out.
+      if (profileScoped) {
+        const fallback = await capture(BIN, ["status"], {
+          env,
+          timeoutMs: 10_000,
+          abortSignal,
+          cancelSignal: "SIGTERM",
+          cancelKillDelayMs: 0,
+        });
+        const fallbackText = `${fallback.stdout}\n${fallback.stderr}`;
+        if (fallback.code === 0) {
+          const observed = cursorAuthenticatedObservation(fallbackText);
+          if (observed) return observed;
+          if (cursorStatusLoggedOut(fallbackText)) return { kind: "loggedOut" };
+        }
+      }
       return {
         kind: "unknown",
         error: `cursor-agent status failed (${result.code ?? result.signal ?? "unknown result"})`,
       };
+    }
+    if (profileScoped) {
+      const jsonObservation = cursorJsonStatusObservation(result.stdout);
+      if (jsonObservation) return jsonObservation;
     }
     const authenticated = cursorAuthenticatedObservation(text);
     if (authenticated) return authenticated;
@@ -55,6 +80,39 @@ export async function probeCursorNativeAuth(
       error: redactSecrets(err instanceof Error ? err.message : String(err)).slice(0, 500),
     };
   }
+}
+
+/**
+ * Profile-scoped Cursor status supports a machine-readable form. Keep the
+ * parser deliberately allowlisted: a successful JSON blob with an unfamiliar
+ * shape is still unknown evidence, never an authenticated account.
+ */
+function cursorJsonStatusObservation(text: string): CursorStatusObservation | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(text.trim());
+  } catch {
+    return null;
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const verdict = ["authenticated", "isAuthenticated", "loggedIn", "logged_in"].find(
+    (key) => typeof record[key] === "boolean",
+  );
+  if (!verdict) return null;
+  if (record[verdict] !== true) return { kind: "loggedOut" };
+  const candidates = [
+    record.email,
+    (record.account as Record<string, unknown> | null)?.email,
+    (record.user as Record<string, unknown> | null)?.email,
+  ];
+  const email = candidates.find(
+    (candidate): candidate is string =>
+      typeof candidate === "string" &&
+      candidate.length <= MAX_CURSOR_ACCOUNT_EMAIL_LENGTH &&
+      /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(candidate),
+  );
+  return email ? { kind: "authenticated", email } : { kind: "authenticated" };
 }
 
 export function cursorStatusAuthenticated(code: number | null, text: string): boolean {

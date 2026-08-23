@@ -254,7 +254,8 @@ function reviewerEfforts(
 
 /** Ordered explicit reviewer panel from `--reviewer-panel "claude=claude-opus-4-8:max,cursor=gpt-5.5-extra-high"`. */
 function reviewerPanel(args: ParsedArgs): ControlReviewerPanelEntry[] | undefined {
-  return parseReviewerPanelFlags(flagValues(args, "reviewer-panel"));
+  // prettier-ignore
+  return parseReviewerPanelFlags(flagValues(args, "reviewer-panel"), flagValues(args, "reviewer-panel-json"));
 }
 
 async function orchestrate(

@@ -108,6 +108,56 @@ describe("cursor auth status parsing", () => {
     expect(JSON.stringify(result)).not.toContain("private@example.com");
   });
 
+  it("uses the profile-scoped JSON status shape, including an explicit logged-out verdict", async () => {
+    const calls: string[][] = [];
+    const capture = async (_bin: string, argv: string[]) => {
+      calls.push(argv);
+      return {
+        code: 0,
+        signal: null,
+        stdout: JSON.stringify({ authenticated: true, account: { email: "profile@example.com" } }),
+        stderr: "",
+      };
+    };
+    await expect(
+      probeCursorNativeAuth(
+        { AGENT_CLI_CREDENTIAL_STORE: "file", CURSOR_CONFIG_DIR: "/tmp/profile/.cursor" },
+        undefined,
+        capture as never,
+      ),
+    ).resolves.toEqual({ kind: "authenticated", email: "profile@example.com" });
+    expect(calls).toEqual([["status", "--format", "json"]]);
+
+    await expect(
+      probeCursorNativeAuth(
+        { AGENT_CLI_CREDENTIAL_STORE: "file", CURSOR_CONFIG_DIR: "/tmp/profile/.cursor" },
+        undefined,
+        async () => ({
+          code: 0,
+          signal: null,
+          stdout: JSON.stringify({ authenticated: false }),
+          stderr: "",
+        }),
+      ),
+    ).resolves.toEqual({ kind: "loggedOut" });
+  });
+
+  it("falls back once to text status when a profile-scoped binary rejects JSON output", async () => {
+    const calls: string[][] = [];
+    const result = await probeCursorNativeAuth(
+      { AGENT_CLI_CREDENTIAL_STORE: "file", CURSOR_CONFIG_DIR: "/tmp/profile/.cursor" },
+      undefined,
+      (async (_bin: string, argv: string[]) => {
+        calls.push(argv);
+        return argv.includes("--format")
+          ? { code: 2, signal: null, stdout: "", stderr: "unknown option --format" }
+          : { code: 0, signal: null, stdout: "Logged in as fallback@example.com\n", stderr: "" };
+      }) as never,
+    );
+    expect(result).toEqual({ kind: "authenticated", email: "fallback@example.com" });
+    expect(calls).toEqual([["status", "--format", "json"], ["status"]]);
+  });
+
   it("bounds and redacts thrown probe errors before returning typed unknown evidence", async () => {
     const secret = `sk-${"x".repeat(80)}`;
     const result = await probeCursorNativeAuth(undefined, undefined, async () => {

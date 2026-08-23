@@ -5,7 +5,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "@claudexor/config";
 import { noProjectRepoRoot } from "@claudexor/util";
 import { parseArgs } from "./args.js";
-import { profilesCommand, profilesCommandWithDeps } from "./credential-commands.js";
+import {
+  accountsCommandWithDeps,
+  profilesCommand,
+  profilesCommandWithDeps,
+} from "./credential-commands.js";
 import { removeProfileFromRegistry } from "./profile-registration.js";
 
 // `profiles add` is the ONLY subcommand that does not talk to the daemon —
@@ -238,6 +242,66 @@ describe("claudexor profiles login machine output", () => {
       else process.env.CLAUDEXOR_AGY_BIN = previousBin;
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("claudexor accounts snapshot (read-only agent doorway)", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const snapshot = {
+    profiles: [
+      {
+        profile: {
+          profile_id: "work",
+          harness_id: "claude",
+          display_name: "work",
+          credential_kind: "config_dir_login",
+          isolation_locator: "/tmp/claudexor-review-profile",
+        },
+        status: {
+          profile_id: "work",
+          harness_id: "claude",
+          availability: "available",
+          verification: "passed",
+        },
+        identity: null,
+      },
+    ],
+    harnesses: [{ id: "claude", status: "ok" }],
+    git: { status: "available", version: null, detail: null, remediation: null },
+    quota: { snapshots: [], refreshed_at: null },
+    quotaEventCursor: "q-1",
+    accountPools: [{ harness_id: "claude", next_up: { kind: "profile", profileId: "work" } }],
+  };
+
+  it("prints the daemon-owned snapshot in JSON without probing or mutating", async () => {
+    let stdout = "";
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(((chunk: unknown) => {
+      stdout += String(chunk);
+      return true;
+    }) as never);
+    const get = vi.fn(async () => snapshot);
+
+    const code = await accountsCommandWithDeps(
+      parseArgs(["accounts", "snapshot", "--json"]),
+      true,
+      { daemonGet: get },
+    );
+
+    expect(code).toBe(0);
+    expect(get).toHaveBeenCalledOnce();
+    expect(get).toHaveBeenCalledWith("/credential-profiles?snapshot=true");
+    expect(JSON.parse(stdout)).toMatchObject({ quotaEventCursor: "q-1" });
+    expect(write).toHaveBeenCalledOnce();
+  });
+
+  it("rejects an unknown positional without contacting the daemon", async () => {
+    const get = vi.fn(async () => snapshot);
+    const code = await accountsCommandWithDeps(parseArgs(["accounts", "other", "--json"]), true, {
+      daemonGet: get,
+    });
+    expect(code).toBe(2);
+    expect(get).not.toHaveBeenCalled();
   });
 });
 

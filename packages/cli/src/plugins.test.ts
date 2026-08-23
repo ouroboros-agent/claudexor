@@ -262,6 +262,9 @@ describe("plugin lifecycle", () => {
       );
       expect(claudeSkill.startsWith("---\nname: claudexor\n")).toBe(true);
       expect(claudeSkill).toContain(`---\n<!-- ${MANAGED_VERSION_MARKER} -->\n# Claudexor`);
+      expect(claudeSkill).toContain("claudexor_accounts");
+      expect(claudeSkill).toContain("credentialProfileId");
+      expect(claudeSkill).toContain("unknown/not_run");
       const cursorCommand = readFileSync(
         join(home, ".cursor", "plugins", "local", "claudexor", "commands", "claudexor.md"),
         "utf8",

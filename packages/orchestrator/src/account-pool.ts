@@ -77,11 +77,13 @@ export function rankAccountPool(args: {
   harnessId: string;
   snapshots: readonly QuotaSnapshot[];
   readyProfileIds: ReadonlySet<string>;
+  excludedProfileIds?: ReadonlySet<string>;
   headroomThreshold: number;
   model?: string | null;
 }): PoolCandidate[] {
   const candidates: PoolCandidate[] = [];
   for (const profile of accountPoolRows(args.registry, args.harnessId)) {
+    if (args.excludedProfileIds?.has(profile.profile_id)) continue;
     if (!args.readyProfileIds.has(profile.profile_id)) continue;
     const breach = profileHeadroomBreach(
       args.snapshots,

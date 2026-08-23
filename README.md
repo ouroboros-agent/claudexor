@@ -252,10 +252,14 @@ Two Agent-only power knobs shape review; Ask and Plan reject both, and Council
 is the explicit multi-harness critique path for Plan:
 
 - **Reviewers** — pick exactly who reviews a change. Pass `--reviewer-panel` a
-  comma-separated list of `harness=model:effort` entries (model and effort are
-  optional); repeat a harness to review through several models. Example:
-  `--reviewer-panel "claude=claude-opus-4-8:max,cursor=gemini-3.1-pro"`. Omitted, the
-  engine chooses a cross-family panel automatically.
+  comma-separated list of unpinned `harness=model:effort` entries (model and
+  effort are optional); repeat a harness to review through several models. For
+  a deterministic account per slot, use the round-trippable
+  `--reviewer-panel-json '<array>'` form with `credentialProfileId`. Example:
+  `--reviewer-panel-json '[{"harness":"cursor","model":"grok-4.6","credentialProfileId":"review-cursor"}]'`.
+  An omitted profile uses the canonical account pool; a named profile is strict
+  and never silently falls back. Omitted entirely, the engine chooses a
+  cross-family panel automatically and discloses families it skips.
 - **Approvals** — mark paths that must clear a human before a change touching
   them can be applied. Set canonical repo-relative globs in the versioned
   `.claudexor/config.yaml` (empty by default):
@@ -433,6 +437,7 @@ registry row.
 
 ```bash
 claudexor profiles                         # every account per harness + the informational next-up verdict
+claudexor accounts --json                  # read-only snapshot doorway for agents, with freshness/quota state
 claudexor auth login claude                # bootstrap sugar: sign into the claude-default row
 claudexor profiles add claude work         # register another account
 claudexor profiles login claude work       # the vendor's own login, scoped to the row's dir
@@ -509,7 +514,8 @@ per thread. An explicit one-harness pool infers that harness as primary unless
 The thread remembers its primary, pool, and (since 2.1) its
 credential profile; the engine owns routing, surfaces only send the choice.
 Reviewer panels are explicit when needed (`--reviewer-panel
-"claude=claude-opus-4-8:max,cursor=gemini-3.5-flash"`); a clean verified
+"claude=claude-opus-4-8:max,cursor=gemini-3.5-flash"` or the structured
+`--reviewer-panel-json` form); a clean verified
 review/apply gate requires at least two distinct observed provider families.
 
 Native harness auth is preferred where readiness-proven; API keys are fallback

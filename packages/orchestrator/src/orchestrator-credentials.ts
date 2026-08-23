@@ -8,6 +8,7 @@
  * reads over the host's config and deps.
  */
 import type {
+  AuthPreference,
   CredentialProfile,
   CredentialUnusableObservation,
   HarnessRunSpec,
@@ -16,17 +17,41 @@ import type {
 } from "@claudexor/schema";
 import type { loadConfig } from "@claudexor/config";
 import type { AdapterRegistry, HarnessAdapter } from "@claudexor/core";
-import { credentialProfilePolicyProblem, credentialProfilePolicyState } from "@claudexor/core";
+import {
+  HarnessUnavailableError,
+  credentialProfilePolicyProblem,
+  credentialProfilePolicyState,
+} from "@claudexor/core";
 import type { EventLog } from "@claudexor/event-log";
 import { PoolRouteFlags, resolveAccountForRun } from "./account-resolution.js";
 import { currentSubjectProber, readyProfilesForRotation } from "./credential-differential.js";
 import {
   resolveCredentialProfile,
+  probeCredentialProfileStatus,
+  profileStatusAdmits,
+  vendorVerifiedProfileStatus,
   type ProfilePolicy,
   type VendorQuotaObservations,
 } from "./credential-profiles.js";
 import type { TransientFailureObservation } from "./transientClassify.js";
 import type { RunInput } from "./orchestrator.js";
+
+/** Model-first reviewer account resolution input, without a fabricated RunInput. */
+export interface ReviewerProfileResolutionInput {
+  repoRoot: string;
+  harnessId: string;
+  model: string | null;
+  authPreference: AuthPreference;
+  credentialProfileId: string | null;
+  excludedProfileIds?: ReadonlySet<string>;
+}
+
+export function reviewerProfileResolver(
+  credentials: OrchestratorCredentials,
+  repoRoot: string,
+): (input: Omit<ReviewerProfileResolutionInput, "repoRoot">) => Promise<CredentialProfile | null> {
+  return (input) => credentials.preflightReviewerProfile({ repoRoot, ...input });
+}
 
 /** The slice of the Orchestrator this cluster reads; accessor functions so the
  * host can defer to deps assigned after this field initializes. */
@@ -196,7 +221,82 @@ export class OrchestratorCredentials {
     };
   }
 
-  /** Thin wrapper over the ONE account-resolution owner (account-resolution.ts). */
+  /** Resolve one reviewer slot through the ordinary account-pool owner. */
+  async preflightReviewerProfile(
+    input: ReviewerProfileResolutionInput,
+  ): Promise<CredentialProfile | null> {
+    const adapter = this.host.registry().get(input.harnessId);
+    const registry = this.host.config(input.repoRoot)?.global.credential_profiles ?? [];
+    const profileCardinality = credentialProfilePolicyState({ adapter, registry });
+    if (profileCardinality.ambiguous)
+      throw credentialProfilePolicyProblem(profileCardinality, "credential_profile_ambiguous");
+    let pinnedProfile: CredentialProfile | null = null;
+    if (input.credentialProfileId) {
+      try {
+        pinnedProfile = resolveCredentialProfile(
+          registry,
+          input.credentialProfileId,
+          input.harnessId,
+        );
+      } catch (error) {
+        throw new HarnessUnavailableError(error instanceof Error ? error.message : String(error));
+      }
+    }
+    if (input.credentialProfileId && !pinnedProfile) {
+      throw new HarnessUnavailableError(
+        `reviewer credential profile "${input.credentialProfileId}" is unknown, disabled, or belongs to another harness (${input.harnessId})`,
+      );
+    }
+    const quota = this.vendorQuotaObservations();
+    // The reviewer preflight must prove an explicit pin before any model
+    // inventory call. The ordinary resolver intentionally keeps this probe
+    // optional for legacy run admission; this caller opts into the stricter
+    // reviewer contract without changing ordinary runs.
+    if (pinnedProfile) {
+      const status = vendorVerifiedProfileStatus(
+        await probeCredentialProfileStatus(
+          pinnedProfile,
+          adapter?.probeCredentialProfile?.bind(adapter),
+        ),
+        quota,
+      );
+      if (!profileStatusAdmits(pinnedProfile, status)) {
+        throw new HarnessUnavailableError(
+          `reviewer credential profile "${pinnedProfile.profile_id}" (${input.harnessId}) is not ready: ${status.detail ?? `${status.availability}/${status.verification}`}`,
+        );
+      }
+    }
+    const defaultRoute =
+      input.authPreference === "api_key"
+        ? "api_key"
+        : input.authPreference === "subscription"
+          ? "local_session"
+          : null;
+    return resolveAccountForRun({
+      harnessId: input.harnessId,
+      registry,
+      policy: this.profilePolicy(input.repoRoot, input.harnessId),
+      profileCardinality,
+      snapshots: this.host.quotaSnapshots(),
+      quota,
+      unusable: this.host.credentialUnusable(),
+      probe: adapter?.probeCredentialProfile?.bind(adapter),
+      pinnedProfile,
+      excludedProfileIds: input.excludedProfileIds,
+      boundProfileId: null,
+      threadId: null,
+      model: input.model,
+      defaultRoute,
+      nativeCredentialsDisabled: this.nativeCredentialsDisabled(input.repoRoot, input.harnessId),
+      authPreference: input.authPreference,
+      // Reviewer resolution has no ordinary RunInput identity to retain. The
+      // selected profile is returned directly; explicit api_key remains in the
+      // auth preference and therefore needs no pool flag.
+      notePoolApiKeyRoute: () => {},
+      emit: () => {},
+    });
+  }
+
   async preflightProfile(
     input: RunInput,
     harnessId: string,

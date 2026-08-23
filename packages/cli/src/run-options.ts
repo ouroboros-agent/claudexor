@@ -11,6 +11,7 @@ import {
   parseReviewerEffortMap,
   parseReviewerModelMap,
   parseReviewerPanel,
+  parseReviewerPanelJson,
 } from "./reviewer-options.js";
 
 /**
@@ -91,8 +92,19 @@ export function parseTestCommandFlags(
 
 export function parseReviewerPanelFlags(
   values: Array<string | boolean>,
+  jsonValues: Array<string | boolean> = [],
 ): ControlReviewerPanelEntry[] | undefined {
   const strings = stringFlagValues(values, "reviewer-panel");
+  const structured = stringFlagValues(jsonValues, "reviewer-panel-json");
+  if (strings.length > 0 && structured.length > 0) {
+    throw new Error("--reviewer-panel and --reviewer-panel-json cannot be used together");
+  }
+  if (structured.length > 0) {
+    if (structured.length !== 1) {
+      throw new Error("invalid --reviewer-panel-json value (provide exactly one JSON array)");
+    }
+    return parseReviewerPanelJson(structured[0]);
+  }
   return parseReviewerPanel(
     strings.length > 0 ? strings.join(",") : undefined,
     snapshotAdvertisedEfforts(),

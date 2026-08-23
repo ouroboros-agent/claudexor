@@ -26,7 +26,7 @@ describe("ACP run-control applicability", () => {
     expect(
       validateRunControls({
         mode: "agent",
-        reviewerPanel: [{ harness: "codex" }],
+        reviewerPanel: [{ harness: "codex", credentialProfileId: "reviewer-a" }],
         protectedPathApprovals: [{ path: "test/**" }],
       }),
     ).toBeNull();

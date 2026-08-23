@@ -480,7 +480,12 @@ describe("Control API schemas", () => {
       mode: "agent",
       scope: { kind: "project", root: "/repo" },
       reviewerPanel: [
-        { harness: "claude", model: "claude-opus-4-8", effort: "max" },
+        {
+          harness: "claude",
+          model: "claude-opus-4-8",
+          effort: "max",
+          credentialProfileId: "reviewer-a",
+        },
         { harness: "cursor", model: "gemini-3.1-pro" },
         { harness: "cursor", model: "gemini-3.5-flash" },
       ],
@@ -494,7 +499,12 @@ describe("Control API schemas", () => {
       ephemeral: false,
     });
     expect(req.reviewerPanel).toEqual([
-      { harness: "claude", model: "claude-opus-4-8", effort: "max" },
+      {
+        harness: "claude",
+        model: "claude-opus-4-8",
+        effort: "max",
+        credentialProfileId: "reviewer-a",
+      },
       { harness: "cursor", model: "gemini-3.1-pro" },
       { harness: "cursor", model: "gemini-3.5-flash" },
     ]);

@@ -31,7 +31,7 @@ import {
 import { type ParsedArgs, flagBool, flagStr } from "./args.js";
 import { harnessListPath, requestedHarnesses, unknownHarnesses } from "./ops-harness-selection.js";
 import { CliError, controlProblemError, renderCliFailure, usageError } from "./cli-error.js";
-import { profilesCommand, secretsCommand } from "./credential-commands.js";
+import { accountsCommand, profilesCommand, secretsCommand } from "./credential-commands.js";
 import { CLI_DAEMON_LAUNCH_SOURCES, launchDetachedDaemon } from "./daemon-launch.js";
 import { reportDaemonStartReady } from "./daemon-start-report.js";
 import {
@@ -93,6 +93,8 @@ export function dispatchOpsCommand(
       return secretsCommand(args, json);
     case "profiles":
       return profilesCommand(args, json);
+    case "accounts":
+      return accountsCommand(args, json);
     default:
       return undefined;
   }

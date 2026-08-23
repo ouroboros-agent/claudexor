@@ -166,6 +166,7 @@ describe("command registry — the one owner of the CLI surface", () => {
       "deny-path",
       "output-schema",
       "reviewer-panel",
+      "reviewer-panel-json",
       "reviewer-model",
       "reviewer-effort",
       "in-place",

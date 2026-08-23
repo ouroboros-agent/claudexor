@@ -6,7 +6,11 @@ import {
   rotateSpecOnTypedLimit,
   selectedProfileAvailability,
 } from "./credential-profiles.js";
-import { OrchestratorCredentials, rotatedSpecInLaneHome } from "./orchestrator-credentials.js";
+import {
+  OrchestratorCredentials,
+  reviewerProfileResolver,
+  rotatedSpecInLaneHome,
+} from "./orchestrator-credentials.js";
 import { accountPoolRows } from "./account-pool.js";
 import { writeRunTelemetryArtifact } from "./runTelemetryWriter.js";
 import {
@@ -672,7 +676,7 @@ export class Orchestrator {
   /** Scoped DIFF review — thin delegate; mechanics live in diffReview.ts. */
   async reviewDiff(input: DiffReviewInput): Promise<DiffReviewResult> {
     return runDiffReview(input, {
-      resolveReviewers: (root, pref) => this.resolveReviewers(root, pref),
+      resolveReviewers: this.resolveReviewers.bind(this),
       reviewScoped: (i) => this.reviewScoped(i),
       execRootOf: (root) => this.execRootOf({ repoRoot: root } as RunInput),
       envInheritance: (root) => envInheritance(this.config(root)),
@@ -803,12 +807,12 @@ export class Orchestrator {
         registry: this.deps.registry,
         harnessSettings: this.config(cwd)?.global.harnesses ?? {},
         authPreferenceFor: (id) => this.authPreferenceForHarness(cwd, id, runAuthPreference),
+        resolveReviewerProfile: reviewerProfileResolver(this.credentials, cwd),
         onIgnoredSetting,
       },
       { reviewerModels: this.deps.reviewerModels, reviewerEfforts: this.deps.reviewerEfforts },
     );
   }
-
   /**
    * Resolve reviewers INSIDE a strategy, after run-dir creation: an explicit
    * panel whose harness/model/effort fails validation ends the run through
@@ -881,6 +885,7 @@ export class Orchestrator {
         registry: this.deps.registry,
         harnessSettings: this.config(cwd)?.global.harnesses ?? {},
         authPreferenceFor: (id) => this.authPreferenceForHarness(cwd, id, runAuthPreference),
+        resolveReviewerProfile: reviewerProfileResolver(this.credentials, cwd),
       },
       panel,
     );
@@ -4432,14 +4437,12 @@ export class Orchestrator {
   private reviewScoped(
     input: Omit<Parameters<typeof reviewCandidate>[0], "env">,
   ): ReturnType<typeof reviewCandidate> {
-    const reviewHome = new WorkspaceManager(input.cwd).readOnlyHomeEnv();
     return reviewCandidate({
       ...input,
       reviewerTimeoutMs: input.reviewerTimeoutMs ?? reviewerTimeoutMs(this.config(input.cwd)),
       transientRetryPolicy:
         input.transientRetryPolicy ?? transientRetryPolicy(this.config(input.cwd)),
-      env: reviewHome.env,
-    }).finally(() => reviewHome.dispose());
+    });
   }
 
   private async reviewRuns(
