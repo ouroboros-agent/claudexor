@@ -197,34 +197,23 @@ function recoveryVerbLine(): string {
     : (parts[0] ?? "");
 }
 
-/** POSIX single-quote shell quoting so a runtime path containing spaces (or any
- * other shell metacharacter) survives copy-paste into a terminal intact. */
+/** POSIX single-quote shell quoting for safely copied runtime paths. */
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
-/** The EXECUTABLE absolute CLI prefix, derived from the SAME validated runtime
- * paths the MCP descriptor uses (bundled Node + dist cli.js), shell-quoted.
- * QA-029B: the generated fallback must be a command that actually runs, never a
- * bare `claudexor` that exits 127 because it is not on the user's terminal PATH. */
+/** QA-029B: validated bundled Node + CLI prefix, never a PATH-dependent bare command. */
 function absoluteCliPrefix(runtime: RuntimePaths): string {
   return `${shellQuote(runtime.nodePath)} ${shellQuote(runtime.cliPath)}`;
 }
 
-/** Render the registry's canonical fallback templates (`claudexor ask "..."`, …)
- * as executable absolute commands by swapping the bare leading `claudexor` token
- * for the absolute Node+CLI prefix (the registry owns the verb/flag grammar; only
- * the prefix is install-specific). The replacement is a FUNCTION, not a string, so
- * a `$` in a nodePath/cliPath isn't read as a `String.replace` `$&`/`$$` pattern. */
+/** Make registry fallback templates executable with the validated absolute CLI prefix. */
 function hostFallbackCommands(runtime: RuntimePaths): string[] {
   const prefix = absoluteCliPrefix(runtime);
   return hostFallbackExamples().map((example) => example.replace(/^claudexor\b/, () => prefix));
 }
 
-/** The exact Claude slash invocation for the generated skills-directory plugin.
- * Claude Code namespaces plugin skills as `/plugin-name:skill-name`; both the
- * manifest name and the skill name are `claudexor`, so the real command is
- * `/claudexor:claudexor` (QA-029A) — plain `/claudexor` is NOT an alias. */
+/** Exact Claude plugin skill invocation; plain `/claudexor` is not an alias (QA-029A). */
 const CLAUDE_SLASH_COMMAND = "/claudexor:claudexor";
 
 const MCP_RUN_HANDLE_GUIDANCE =
@@ -315,8 +304,7 @@ function commandText(host: PluginHost, runtime: RuntimePaths): string {
     "",
     "Do not claim live thread parity through MCP. Ask for an explicit repo path if the target project is ambiguous.",
     "",
-    // QA-029A: this command file is only reached AFTER a correct invocation, but
-    // it still records the exact grammar so a reader learns the canonical name.
+    // QA-029A: retain the exact invocation grammar in the generated command.
     ...(host === "claude"
       ? [
           `Explicit invocation: \`${CLAUDE_SLASH_COMMAND} <request>\` — natural-language activation also works; plain \`/claudexor\` is not an alias.`,
@@ -337,8 +325,6 @@ function readmeText(host: PluginHost, runtime: RuntimePaths): string {
     "",
     "It packages Claudexor instructions and MCP configuration for the host. All orchestration remains in the local Claudexor CLI and engine.",
     "",
-    // QA-029A/B: state the exact Claude slash command and an executable fallback
-    // right where a user reads how to invoke the plugin.
     ...(host === "claude"
       ? [
           `Explicit invocation: \`${CLAUDE_SLASH_COMMAND} <request>\` (natural-language activation also works; plain \`/claudexor\` is not an alias).`,

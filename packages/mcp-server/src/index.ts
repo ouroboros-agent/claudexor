@@ -102,16 +102,8 @@ const RUN_STRATEGY_PROPERTIES = {
 };
 
 /**
- * Claudexor's MCP surface on the official TypeScript SDK v2.
- *
- * The SDK owns the protocol core: version negotiation (2025-11-25 down to
- * 2024-10-07 — Cursor's 2025-06-18 handshake keeps working), CONCURRENT
- * request dispatch (a multi-minute race no longer blocks ping/tools/list —
- * the old hand-rolled loop awaited every call inline), structural argument
- * validation against the declared JSON Schemas.
- * This module stays a THIN surface: tool descriptors, Claudexor's semantic
- * argument checks (the parts a JSON Schema cannot express), and translation
- * between runner results and MCP shapes. No business logic.
+ * Thin MCP v2 SDK surface: negotiation, concurrent dispatch, schema validation,
+ * Claudexor semantic checks, and runner-shape translation; no business logic.
  */
 
 export interface McpToolContext {

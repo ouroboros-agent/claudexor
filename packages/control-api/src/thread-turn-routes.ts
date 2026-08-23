@@ -341,8 +341,7 @@ export function handleThreadTurnCreate(
       // Sticky routing inheritance (thin gateway — pure DTO passthrough, the
       // engine's orderPool/resolveCandidateAdapters owns all ordering): pool/
       // primary precedence is per-turn body > thread sticky > omit (engine then
-      // auto-pools doctor-OK default routes plus enabled account rows / falls
-      // back to config primary; selected rows still require exact preflight).
+      // auto-pools doctor-OK defaults plus exact-profile-ready account rows / falls back to config primary).
       // The pool THIS turn routes/races over: a per-turn override, else the
       // thread's sticky pool, else omit.
       const turnPool = Array.isArray(body["harnesses"])
