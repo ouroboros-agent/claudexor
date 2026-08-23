@@ -312,6 +312,7 @@ describe("plugin lifecycle", () => {
                   line.includes('"mcpServers"') ||
                   line.includes('"experimental.chat.system.transform"') ||
                   line.includes('"command"') ||
+                  line.includes('"longDescription"') ||
                   line.includes("MCP run tools enqueue work") ||
                   line.includes("Readiness is route- and profile-specific") ||
                   line.includes("Do not claim live thread parity"),
