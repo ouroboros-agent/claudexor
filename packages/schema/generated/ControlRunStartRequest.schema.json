@@ -454,16 +454,20 @@
               "effort": {
                 "$ref": "#/definitions/ControlRunStartRequest/properties/effort",
                 "description": "Per-reviewer effort hint, passed to that harness only."
+              },
+              "credentialProfileId": {
+                "$ref": "#/definitions/ControlRunStartRequest/properties/harnesses/items",
+                "description": "Per-reviewer credential profile id; explicit pins are strict and never fall back."
               }
             },
             "required": [
               "harness"
             ],
             "additionalProperties": false,
-            "description": "One reviewer of an explicit reviewer panel — a harness plus optional model and effort. The CLI spells one entry `harness=model:effort` (e.g. `claude=claude-opus-4-8:max`)."
+            "description": "One reviewer of an explicit reviewer panel — a harness plus optional model, effort, and strict credentialProfileId. Compact entries are unpinned; structured JSON carries pins."
           },
           "minItems": 1,
-          "description": "Explicit Agent reviewer panel — who reviews the change, one entry per reviewer as `harness=model:effort` (CLI `--reviewer-panel \"claude=claude-opus-4-8:max,cursor=gemini-3.1-pro\"`). Duplicate harness entries are kept so one provider can review through several models; overrides the legacy reviewerModels/reviewerEfforts maps."
+          "description": "Explicit Agent reviewer panel — who reviews the change, one entry per reviewer as `harness=model:effort` (CLI `--reviewer-panel`, unpinned) or structured `--reviewer-panel-json` with optional strict credentialProfileId. Duplicate harness entries are kept so one provider can review through several models; overrides the legacy reviewerModels/reviewerEfforts maps."
         },
         "authPreference": {
           "type": "string",

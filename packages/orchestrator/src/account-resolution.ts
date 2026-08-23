@@ -91,6 +91,8 @@ export interface AccountResolutionContext {
   boundProfileId: string | null;
   threadId: string | null;
   model: string | null;
+  /** Reviewer-only model incompatibility exclusions for this selection epoch. */
+  excludedProfileIds?: ReadonlySet<string>;
   /** Default-route estimate of the legacy unprofiled ladder (no-rows harnesses). */
   defaultRoute: "local_session" | "api_key" | null;
   /** Whether the legacy native login is excluded (`native_credentials_enabled: false`). */
@@ -199,17 +201,19 @@ function poolExhaustionCandidates(ctx: AccountResolutionContext, ready: Readonly
       // Label precedence mirrors PR-A's rotationExhaustionCandidates: a
       // not-ready row is not a POOL MEMBER, so its windows never join the
       // earliest-reset fold (an unready row's reset promises no reopen).
-      const rejected = !row.enabled
-        ? "disabled"
-        : dead
-          ? "credential_unusable"
-          : !ready.has(row.profile_id)
-            ? "not_ready"
-            : breach
-              ? "headroom_exceeded"
-              : block
-                ? "cooldown"
-                : "not_selected";
+      const rejected = ctx.excludedProfileIds?.has(row.profile_id)
+        ? "model_incompatible"
+        : !row.enabled
+          ? "disabled"
+          : dead
+            ? "credential_unusable"
+            : !ready.has(row.profile_id)
+              ? "not_ready"
+              : breach
+                ? "headroom_exceeded"
+                : block
+                  ? "cooldown"
+                  : "not_selected";
       return {
         profile_id: row.profile_id,
         rejected,
@@ -260,6 +264,7 @@ export async function resolveAccountForRun(
       probe: ctx.probe,
       quota,
       unusable: ctx.unusable,
+      excluded: ctx.excludedProfileIds,
       model,
     });
   if (ctx.pinnedProfile) {
@@ -452,6 +457,7 @@ export async function resolveAccountForRun(
     harnessId,
     snapshots,
     readyProfileIds,
+    excludedProfileIds: ctx.excludedProfileIds,
     headroomThreshold: policy.headroom_threshold,
     model,
   });

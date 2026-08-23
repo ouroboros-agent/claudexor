@@ -14,18 +14,27 @@ It is strict: skipping a step is how the 2026-07-21 incident happened.
 1. **Confirm the CLI and daemon.** `claudexor --version`, then
    `claudexor doctor --json`. Doctor is the source of truth for what is
    already working; do not infer readiness from a binary being on `PATH`.
-2. **Inspect the host plugin BEFORE touching anything.**
+2. **Read the Accounts doorway before choosing a reviewer account.** Run
+   `claudexor accounts --json` (or call the read-only `claudexor_accounts` MCP
+   tool). It is one daemon-authored snapshot of registered profiles, readiness,
+   quota freshness, and `next_up`; do not reconstruct a pool by joining
+   `doctor`, `quota`, and profile-list responses yourself. `available/passed`
+   is usable evidence, while `unknown/not_run` or stale data is an honest
+   uncertainty, not proof that an account is absent. An agent may inspect and
+   select an existing profile, but must not start login, OAuth, or account
+   changes from an unknown row without the human's explicit instruction.
+3. **Inspect the host plugin BEFORE touching anything.**
    `claudexor plugin status <host> --json`. Read the state
    (missing/partial/installed/registered/drifted/blocked) first — never
    hand-edit, move, or delete a generated plugin file to "fix" it.
-3. **Repair drift or version skew with the tool, not your hands.** If status
+4. **Repair drift or version skew with the tool, not your hands.** If status
    is `drifted`/`blocked`, or a surface reports a version skew between the
    installed artifacts and the running CLI, run
    `claudexor plugin repair <host>` (or `plugin repair all`) and reload the
    host. Generated files carry Claudexor ownership markers, so repair is safe
    and idempotent; deleting them by hand only turns a repairable state into a
    spawn failure.
-4. **Log in ONLY through Claudexor.** Use `claudexor auth login <harness>` for
+5. **Log in ONLY through Claudexor.** Use `claudexor auth login <harness>` for
    a supported default/bootstrap account, or
    `claudexor profiles login <harness> <profile-id>` when the harness requires
    a named binding (Antigravity does). Claudexor runs the vendor CLI's own
@@ -46,17 +55,17 @@ It is strict: skipping a step is how the 2026-07-21 incident happened.
    user (Bible INV-067). To remove a row, use `claudexor profiles remove`;
    that removes the binding and data Claudexor owns, while a typed receipt
    tells you when a vendor-owned OS-user credential was left unchanged.
-5. **Wait for verified readiness — process exit is not readiness.** A login is
+6. **Wait for verified readiness — process exit is not readiness.** A login is
    done only when `claudexor auth status` (or `claudexor doctor`) reports that
    harness ready; a zero vendor exit code is provisional until the targeted
    probe passes. Do not stop or restart the daemon while a login is pending:
    interactive logins survive an ordinary daemon restart, but do not lean on
    that mid-flow.
-6. **Never hand-edit `~/.claudexor*/config.yaml`.** A schema-parse error
+7. **Never hand-edit `~/.claudexor*/config.yaml`.** A schema-parse error
    (`config_invalid`) means version skew, not a value you should patch by
    hand — report it and stop. The remedy is to inspect the named path against
    the current schema or restore the newest sibling backup, never a blind edit.
-7. **Stop and ask the human** on the triggers listed in "When to ask the
+8. **Stop and ask the human** on the triggers listed in "When to ask the
    human" below — the setup-specific ones (unowned-file conflicts, a
    login/repair that does not converge, an unknown-config-key daemon error, a
    write-mode run against a large non-git folder) are there.
@@ -82,6 +91,26 @@ It is strict: skipping a step is how the 2026-07-21 incident happened.
    `ok` — an installed binary or a stored key alone is NOT readiness.
 5. **Run something read-only.** `claudexor ask "what does this repo do?" --json`.
 
+### Reviewer identity and account pins
+
+An omitted reviewer profile uses the daemon's canonical, quota-aware account
+pool. A structured reviewer entry may carry `credentialProfileId` to make one
+slot deterministic, for example:
+
+```json
+[{"harness":"claude","model":"claude-opus-5","credentialProfileId":"review-a"}]
+```
+
+Use `--reviewer-panel-json '<array>'` on the CLI, the same `credentialProfileId`
+field in MCP/ACP `reviewerPanel` entries, or the macOS composer's structured
+JSON field. A pinned profile is strict: an unknown, disabled, mismatched,
+unready, or quota-blocked profile fails that explicit panel rather than silently
+rotating to another identity. Automatic panels may omit a family whose pool is
+unavailable, but the omission is disclosed in the run evidence. After a run,
+trust the route proof and observed profile telemetry, not the requested text
+alone. The compact `--reviewer-panel` spelling remains available for unpinned
+entries; do not invent an `@profile` mini-grammar.
+
 ## CLI vs MCP vs control API
 
 - **CLI** is the primary surface. `--json` gives exactly one machine object on
@@ -104,6 +133,8 @@ It is strict: skipping a step is how the 2026-07-21 incident happened.
   `claudexor_run_cancel`, `claudexor_run_interactions`, and
   `claudexor_answer_interaction` to continue. A cancel or answer is successful
   only after the `/v2` control API acknowledges it.
+  Use the read-only `claudexor_accounts` tool to inspect account/profile state
+  before selecting a pinned reviewer; it never starts authentication.
 - **ACP** (`claudexor acp serve`, stdio) uses stable protocol version 1 through
   the official TypeScript SDK. ACP session IDs are daemon thread IDs, so
   `session/list`, `session/load`, `session/resume`, `session/close`, prompts,

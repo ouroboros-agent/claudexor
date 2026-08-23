@@ -64,6 +64,21 @@ describe("run option parsing", () => {
     expect(() => parseReviewerPanelFlags([true])).toThrow(/invalid --reviewer-panel value/);
   });
 
+  it("accepts a structured pinned panel and rejects mixed spellings", () => {
+    expect(
+      parseReviewerPanelFlags(
+        [],
+        ['[{"harness":"claude","model":"opus","credentialProfileId":"review-a"}]'],
+      ),
+    ).toEqual([{ harness: "claude", model: "opus", credentialProfileId: "review-a" }]);
+    expect(() => parseReviewerPanelFlags(["claude"], ['[{"harness":"cursor"}]'])).toThrow(
+      /cannot be used together/,
+    );
+    expect(() => parseReviewerPanelFlags([], [true])).toThrow(
+      /invalid --reviewer-panel-json value/,
+    );
+  });
+
   it("aggregates repeated reviewer model and effort flags", () => {
     expect(parseReviewerModelFlags(["openai=gpt-4o", "anthropic=claude-haiku"])).toEqual({
       openai: "gpt-4o",

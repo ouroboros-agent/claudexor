@@ -98,7 +98,7 @@ async function wireToolCall(tools: McpTool[], name: string, args: Record<string,
 }
 
 describe("Claudexor MCP server (SDK v2)", () => {
-  it("negotiates the client's 2025-06-18 era, lists 17 tools, and answers PING during a slow call", async () => {
+  it("negotiates the client's 2025-06-18 era, lists 18 tools, and answers PING during a slow call", async () => {
     const tools = defaultClaudexorTools(async (p) => {
       if (p.mode === "agent") {
         await sleep(500);
@@ -135,7 +135,7 @@ describe("Claudexor MCP server (SDK v2)", () => {
     const init = w.responses.find((r) => r.id === "init");
     expect(init?.result?.protocolVersion).toBe("2025-06-18");
     expect(init?.result?.serverInfo?.name).toBe("claudexor");
-    expect(w.responses.find((r) => r.id === 2)?.result?.tools).toHaveLength(17);
+    expect(w.responses.find((r) => r.id === 2)?.result?.tools).toHaveLength(18);
     const call = w.responses.find((r) => r.id === 3);
     expect(call?.result?.content?.[0]?.text).toContain("slow done");
   });
@@ -477,6 +477,7 @@ describe("Claudexor MCP server (SDK v2)", () => {
     expect(byName["claudexor_apply_check"]?.annotations?.readOnlyHint).toBe(true);
     expect(byName["claudexor_run_status"]?.annotations?.readOnlyHint).toBe(true);
     expect(byName["claudexor_run_result"]?.annotations?.readOnlyHint).toBe(true);
+    expect(byName["claudexor_accounts"]?.annotations?.readOnlyHint).toBe(true);
     expect(byName["claudexor_run_cancel"]?.annotations).toMatchObject({
       readOnlyHint: false,
       destructiveHint: true,
@@ -714,6 +715,12 @@ describe("Claudexor MCP server (SDK v2)", () => {
     expect(schema?.properties?.reviewerPanel?.type).toBe("array");
     expect(schema?.properties?.reviewerPanel?.minItems).toBe(1);
     expect(schema?.properties?.reviewerPanel?.items?.properties?.authPreference).toBeUndefined();
+    expect(schema?.properties?.reviewerPanel?.items?.properties?.credentialProfileId).toMatchObject(
+      {
+        type: "string",
+        minLength: 1,
+      },
+    );
     expect(schema?.properties?.model?.type).toBe("string");
     expect(schema?.properties?.model?.minLength).toBe(1);
     expect(schema?.properties?.harness?.minLength).toBe(1);
@@ -776,6 +783,50 @@ describe("Claudexor MCP server (SDK v2)", () => {
       access: "workspace_write",
       protectedPathApprovals: [{ path: "test/**" }],
     });
+  });
+
+  it("exposes the read-only Accounts doorway and returns the server snapshot unchanged", async () => {
+    const snapshot = {
+      profiles: [
+        {
+          profile: {
+            profile_id: "work",
+            harness_id: "claude",
+            display_name: "work",
+            credential_kind: "config_dir_login",
+            isolation_locator: "/tmp/claudexor-review-profile",
+          },
+          status: {
+            profile_id: "work",
+            harness_id: "claude",
+            availability: "available",
+            verification: "passed",
+          },
+          identity: null,
+        },
+      ],
+      harnesses: [{ id: "claude", status: "ok" }],
+      git: { status: "available", version: null, detail: null, remediation: null },
+      quota: { snapshots: [], refreshed_at: null },
+      quotaEventCursor: "q-1",
+      accountPools: [{ harness_id: "claude", next_up: { kind: "profile", profileId: "work" } }],
+    };
+    const tools = defaultClaudexorTools(async (params) => {
+      expect(params).toEqual({ mode: "__accounts" });
+      return snapshot;
+    });
+    const accounts = tools.find((tool) => tool.name === "claudexor_accounts");
+    expect(accounts?.annotations?.readOnlyHint).toBe(true);
+    expect(accounts?.outputSchema?.anyOf).toBeUndefined();
+    expect(accounts?.outputSchema?.properties).toMatchObject({
+      harnesses: expect.any(Object),
+      git: expect.any(Object),
+      quota: expect.any(Object),
+      quotaEventCursor: expect.any(Object),
+      profiles: expect.any(Object),
+    });
+    const result = await accounts!.handler({}, {});
+    expect(result).toMatchObject({ structured: snapshot });
   });
 
   it("REFUSES to serve when the plugin artifact version does not match the CLI", async () => {

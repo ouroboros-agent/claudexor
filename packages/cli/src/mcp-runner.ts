@@ -28,6 +28,7 @@ import {
   projectRecoveryRunDetail,
 } from "./mcp-run-projections.js";
 import { readRunDetailResponse } from "./run-detail-response.js";
+import { catalogQuery } from "./mcp-catalog-query.js";
 
 export interface SurfaceRunnerHooks {
   onEvent?: (event: any) => void;
@@ -64,7 +65,7 @@ export interface McpSurfaceRunnerOptions {
  */
 export function mcpSurfaceRunner(options: McpSurfaceRunnerOptions = {}) {
   return async (p: any, hooks?: SurfaceRunnerHooks) => {
-    if (p?.mode === "__status" || p?.mode === "__capabilities") {
+    if (p?.mode === "__status" || p?.mode === "__capabilities" || p?.mode === "__accounts") {
       return catalogQuery(p.mode, options.requireExistingDaemon === true);
     }
     if (
@@ -235,24 +236,6 @@ export function mcpSurfaceRunner(options: McpSurfaceRunnerOptions = {}) {
       }
       throw error;
     }
-  };
-}
-
-async function catalogQuery(mode: "__status" | "__capabilities", beltContext = false) {
-  const connection = beltContext ? await connectDaemonIfRunning() : await ensureDaemon();
-  if (!connection) throw new Error(BELT_DAEMON_LOST);
-  const { addr } = connection;
-  const path = mode === "__status" ? "/harnesses" : "/agent-capabilities";
-  const response = await controlApiFetch(addr, path);
-  const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-  if (!response.ok) throw new Error(`control API ${path} failed (HTTP ${response.status})`);
-  if (mode === "__capabilities") return body;
-  const harnesses = Array.isArray(body["harnesses"])
-    ? (body["harnesses"] as Record<string, unknown>[])
-    : [];
-  return {
-    ...body,
-    available: harnesses.filter((item) => item["status"] === "ok").map((item) => item["id"]),
   };
 }
 

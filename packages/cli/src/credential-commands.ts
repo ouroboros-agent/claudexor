@@ -11,6 +11,7 @@ import {
   ControlCredentialProfileDeleteResponse,
   ControlCredentialProfileUpdateResponse,
   ControlCredentialProfilesResponse,
+  ControlCredentialProfilesSnapshotResponse,
   ControlSecretListResponse,
   ControlSecretMutationResponse,
   ControlSecretSetRequest,
@@ -48,6 +49,63 @@ async function stdinText(): Promise<string> {
  */
 export async function profilesCommand(args: ParsedArgs, json: boolean): Promise<number> {
   return profilesCommandWithDeps(args, json);
+}
+
+/**
+ * Read-only agent doorway over the server-owned atomic Accounts snapshot.
+ * Unlike `profiles`, this never mutates or starts authentication and never
+ * rebuilds routing facts on the client. The daemon's snapshot is the SSOT for
+ * readiness, quota freshness, and `next_up`.
+ */
+export async function accountsCommand(args: ParsedArgs, json: boolean): Promise<number> {
+  return accountsCommandWithDeps(args, json);
+}
+
+export interface AccountsCommandDeps {
+  daemonGet?: typeof daemonGet;
+}
+
+export async function accountsCommandWithDeps(
+  args: ParsedArgs,
+  json: boolean,
+  deps: AccountsCommandDeps = {},
+): Promise<number> {
+  const sub = args._[1];
+  if (sub !== undefined && sub !== "snapshot") {
+    return printUsageError(json, "usage: claudexor accounts [snapshot] [--json]");
+  }
+  const get = deps.daemonGet ?? daemonGet;
+  const snapshot = ControlCredentialProfilesSnapshotResponse.parse(
+    await get("/credential-profiles?snapshot=true"),
+  );
+  if (json) {
+    printJson(snapshot);
+    return 0;
+  }
+  print(`Accounts snapshot: quota cursor ${snapshot.quotaEventCursor}`);
+  print(`  quota refreshed_at: ${snapshot.quota.refreshed_at ?? "unknown"}`);
+  print(`  git: ${snapshot.git.status}`);
+  if (snapshot.profiles.length === 0) {
+    print("  no registered credential profiles");
+  } else {
+    for (const { profile, status, identity } of snapshot.profiles) {
+      const state = profile.enabled ? status.availability : "disabled";
+      const principal = identity?.email ? ` (${identity.email})` : "";
+      print(`  ${profile.harness_id}/${profile.profile_id}: ${state}${principal}`);
+      if (status.detail) print(`    ${status.detail}`);
+    }
+  }
+  for (const pool of snapshot.accountPools) {
+    const next = pool.next_up;
+    const label =
+      next.kind === "profile"
+        ? next.profileId
+        : next.kind === "api_key_route"
+          ? "API key route"
+          : `none (${next.reason})`;
+    print(`  next up ${pool.harness_id}: ${label}`);
+  }
+  return 0;
 }
 
 export interface ProfilesCommandDeps {

@@ -4632,7 +4632,12 @@ describe("DaemonControlApiServer", () => {
       mode: "agent",
       scope: { kind: "project", root: record.runDir, context: "auto" },
       reviewerPanel: [
-        { harness: "claude", model: "claude-opus-4.8", effort: "max" },
+        {
+          harness: "claude",
+          model: "claude-opus-4.8",
+          effort: "max",
+          credentialProfileId: "review-a",
+        },
         { harness: "cursor", model: "gemini-3.5-flash" },
       ],
       protectedPathApprovals: [
@@ -4644,12 +4649,22 @@ describe("DaemonControlApiServer", () => {
         await apiFetch(`${base}/runs/run-d1`, { headers: { authorization: `Bearer ${token}` } })
       ).json()) as {
         summary: {
-          reviewerPanel?: { harness: string; model?: string; effort?: string }[];
+          reviewerPanel?: {
+            harness: string;
+            model?: string;
+            effort?: string;
+            credentialProfileId?: string;
+          }[];
           protectedPathApprovals?: { path: string; reason?: string }[];
         };
       };
       expect(detail.summary.reviewerPanel).toEqual([
-        { harness: "claude", model: "claude-opus-4.8", effort: "max" },
+        {
+          harness: "claude",
+          model: "claude-opus-4.8",
+          effort: "max",
+          credentialProfileId: "review-a",
+        },
         { harness: "cursor", model: "gemini-3.5-flash" },
       ]);
       expect(detail.summary.protectedPathApprovals).toEqual([
@@ -4973,7 +4988,12 @@ describe("DaemonControlApiServer", () => {
           mode: "agent",
           scope: { kind: "project", root: panelRoot },
           reviewerPanel: [
-            { harness: "claude", model: "claude-opus-4-8", effort: "max" },
+            {
+              harness: "claude",
+              model: "claude-opus-4-8",
+              effort: "max",
+              credentialProfileId: "review-a",
+            },
             { harness: "cursor", model: "gemini-3.1-pro" },
             { harness: "cursor", model: "gemini-3.5-flash" },
             { harness: "cursor", model: "gpt-5.5-xhigh-1M" },
@@ -4983,7 +5003,12 @@ describe("DaemonControlApiServer", () => {
       expect(valid.status).toBe(200);
       expect(enqueued).toMatchObject({
         reviewerPanel: [
-          { harness: "claude", model: "claude-opus-4-8", effort: "max" },
+          {
+            harness: "claude",
+            model: "claude-opus-4-8",
+            effort: "max",
+            credentialProfileId: "review-a",
+          },
           { harness: "cursor", model: "gemini-3.1-pro" },
           { harness: "cursor", model: "gemini-3.5-flash" },
           { harness: "cursor", model: "gpt-5.5-xhigh-1M" },

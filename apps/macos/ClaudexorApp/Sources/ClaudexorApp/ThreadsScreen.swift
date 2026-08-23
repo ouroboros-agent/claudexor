@@ -146,11 +146,11 @@ struct ThreadsScreen: View {
 
     var reviewerPanelInvalid: Bool {
         guard runControlApplicability.reviewers.applicable else { return false }
+        if reviewerPanelStructuredInvalid { return true }
         let tokens = reviewerPanelTokens
         return reviewDraft.reviewerPickerIncomplete
             || (!tokens.isEmpty && tokens.count != reviewerPanelEntries.count)
     }
-
     var protectedApprovalsInvalid: Bool {
         guard runControlApplicability.protectedPathApprovals.applicable else { return false }
         let tokens = protectedApprovalTokens

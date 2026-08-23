@@ -1,5 +1,6 @@
 import { isAbsolute } from "node:path";
 import agentCapabilityCatalogSchemaRaw from "@claudexor/schema/generated/AgentCapabilityCatalog.schema.json" with { type: "json" };
+import accountsSnapshotSchemaRaw from "@claudexor/schema/generated/ControlCredentialProfilesSnapshotResponse.schema.json" with { type: "json" };
 import mcpRunToolResultSchemaRaw from "@claudexor/schema/generated/McpRunToolResult.schema.json" with { type: "json" };
 import mcpRunHandleResultSchemaRaw from "@claudexor/schema/generated/McpRunHandleResult.schema.json" with { type: "json" };
 import paidBudgetSchemaRaw from "@claudexor/schema/generated/PaidBudget.schema.json" with { type: "json" };
@@ -25,7 +26,8 @@ import { assertNoInlineSecretValues, errorCode } from "@claudexor/util";
 import { journalRecoveryTools } from "./recovery-tools.js";
 import { formatRunResult, structuredRunResult } from "./run-result-format.js";
 import { assertNoPluginArtifactSkew } from "./plugin-skew.js";
-
+import { accountsTool } from "./accounts-tool.js";
+import { reviewerPanelEntrySchema } from "./reviewer-panel-schema.js";
 // Inline generated refs once at load; the SDK requires self-contained schemas.
 function inlineJsonSchemaRefs(schema: Record<string, unknown>): Record<string, unknown> {
   const resolvePointer = (pointer: string): unknown => {
@@ -63,7 +65,6 @@ function inlineJsonSchemaRefs(schema: Record<string, unknown>): Record<string, u
   };
   return resolve(schema, []) as Record<string, unknown>;
 }
-
 const mcpRunToolResultSchema = inlineJsonSchemaRefs(
   mcpRunToolResultSchemaRaw as Record<string, unknown>,
 );
@@ -74,6 +75,9 @@ const testCommandInvocationSchema = inlineJsonSchemaRefs(testCommandInvocationSc
 const paidBudgetSchema = inlineJsonSchemaRefs(paidBudgetSchemaRaw);
 const agentCapabilityCatalogSchema = inlineJsonSchemaRefs(
   agentCapabilityCatalogSchemaRaw as Record<string, unknown>,
+);
+const accountsSnapshotSchema = inlineJsonSchemaRefs(
+  accountsSnapshotSchemaRaw as Record<string, unknown>,
 );
 const RUN_STRATEGY_PROPERTIES = {
   ask: {
@@ -338,11 +342,7 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
               items: {
                 type: "object",
                 additionalProperties: false,
-                properties: {
-                  harness: { type: "string", minLength: 1 },
-                  model: { type: "string", minLength: 1 },
-                  effort: effortJsonSchema("Effort for this reviewer entry."),
-                },
+                properties: reviewerPanelEntrySchema,
                 required: ["harness"],
               },
             },
@@ -502,6 +502,7 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
         };
       },
     },
+    accountsTool(runner, accountsSnapshotSchema),
     // Read-only daemon projections let hosts recover lost run handles.
     {
       name: "claudexor_runs",
@@ -645,5 +646,4 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
     ...journalRecoveryTools(runner, formatRunResult),
   ];
 }
-
 export * from "./delegation-belt.js";

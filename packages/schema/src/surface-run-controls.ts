@@ -68,7 +68,7 @@ export function validateSurfaceRunControls(obj: Record<string, unknown>): string
     for (const entry of obj.reviewerPanel) {
       if (!isPlainRecord(entry)) return "reviewerPanel entries must be objects";
       const keys = Object.keys(entry);
-      const allowed = new Set(["harness", "model", "effort"]);
+      const allowed = new Set(["harness", "model", "effort", "credentialProfileId"]);
       for (const key of keys) if (!allowed.has(key)) return `unknown reviewerPanel field: ${key}`;
       if (typeof entry.harness !== "string" || entry.harness.trim() === "") {
         return "reviewerPanel[].harness must be a non-empty string";
@@ -85,6 +85,11 @@ export function validateSurfaceRunControls(obj: Record<string, unknown>): string
       ) {
         return "reviewerPanel[].effort must be a valid effort value";
       }
+      const profileError = validateOptionalNonEmptyString(
+        entry.credentialProfileId,
+        "reviewerPanel[].credentialProfileId",
+      );
+      if (profileError) return profileError;
     }
   }
   const modelsError = validateFamilyStringMap(obj.reviewerModels, "reviewerModels");

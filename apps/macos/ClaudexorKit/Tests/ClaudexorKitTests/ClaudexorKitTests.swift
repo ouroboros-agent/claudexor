@@ -175,6 +175,24 @@ import Testing
         ]) == "claude=opus:max, codex")
     }
 
+    @Test func structuredReviewerPanelJSONRoundTripsCredentialPins() throws {
+        let entries = [
+            ReviewerPanelEntry(
+                harness: "cursor", model: "grok-4.6", credentialProfileId: "review-cursor"),
+            ReviewerPanelEntry(harness: "claude", effort: "high"),
+        ]
+        let raw = try #require(ComposerOptionParser.reviewerPanelJSON(entries))
+        #expect(raw.contains("credentialProfileId"))
+        #expect(ComposerOptionParser.parseReviewerPanelJSON(raw) == entries)
+        #expect(ComposerOptionParser.parseReviewerPanelJSON("[{bad json") == nil)
+        #expect(ComposerOptionParser.parseReviewerPanelJSON(
+            "[{\"harness\":\"cursor\",\"credential_profile_id\":\"review-cursor\"}]"
+        ) == nil)
+        #expect(ComposerOptionParser.parseReviewerPanelJSON(
+            "[{\"harness\":\"cursor\",\"unexpected\":true}]"
+        ) == nil)
+    }
+
     @Test func approvalListEditorBuildsEntries() throws {
         #expect(ComposerOptionParser.protectedApprovalWireToken(
             path: "test/**", reason: "test update") == "test/**:test update")

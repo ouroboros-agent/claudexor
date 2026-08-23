@@ -28,4 +28,19 @@ describe("surface run-control applicability", () => {
       }),
     ).toBeNull();
   });
+
+  it("accepts and validates the optional strict reviewer profile identity", () => {
+    expect(
+      validateSurfaceRunControls({
+        mode: "agent",
+        reviewerPanel: [{ harness: "cursor", credentialProfileId: "work" }],
+      }),
+    ).toBeNull();
+    expect(
+      validateSurfaceRunControls({
+        mode: "agent",
+        reviewerPanel: [{ harness: "cursor", credentialProfileId: "   " }],
+      }),
+    ).toMatch(/credentialProfileId.*non-empty/i);
+  });
 });

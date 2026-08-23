@@ -31,9 +31,7 @@ import { makeControlRunRetrySchemas } from "./control-run-retry.js";
 import { ControlAuthRoute } from "./control-auth-route.js";
 import { DelegatedChildRunIds, RunDelegationInfo } from "./delegation.js";
 import { HARNESS_INACTIVITY_TIMEOUT_DEFAULT_MS, InteractionTimeoutValue } from "./config.js";
-
 export { RunExecution } from "./control-run-execution.js";
-
 export const ControlReviewerPanelEntry = z
   .object({
     /** Explicit reviewer harness id. Repeated harness ids are allowed so one
@@ -49,13 +47,15 @@ export const ControlReviewerPanelEntry = z
     effort: EffortHint.optional().describe(
       "Per-reviewer effort hint, passed to that harness only.",
     ),
+    credentialProfileId: NonBlankString.optional().describe(
+      "Per-reviewer credential profile id; explicit pins are strict and never fall back.",
+    ),
   })
   .strict()
   .describe(
-    "One reviewer of an explicit reviewer panel — a harness plus optional model and effort. The CLI spells one entry `harness=model:effort` (e.g. `claude=claude-opus-4-8:max`).",
+    "One reviewer of an explicit reviewer panel — a harness plus optional model, effort, and strict credentialProfileId. Compact entries are unpinned; structured JSON carries pins.",
   );
 export type ControlReviewerPanelEntry = z.infer<typeof ControlReviewerPanelEntry>;
-
 export const ControlRunStartRequest = z
   .object({
     prompt: z.string().default("").describe("The user's prompt for the run."),
@@ -246,7 +246,7 @@ export const ControlRunStartRequest = z
       .min(1)
       .optional()
       .describe(
-        'Explicit Agent reviewer panel — who reviews the change, one entry per reviewer as `harness=model:effort` (CLI `--reviewer-panel "claude=claude-opus-4-8:max,cursor=gemini-3.1-pro"`). Duplicate harness entries are kept so one provider can review through several models; overrides the legacy reviewerModels/reviewerEfforts maps.',
+        "Explicit Agent reviewer panel — who reviews the change, one entry per reviewer as `harness=model:effort` (CLI `--reviewer-panel`, unpinned) or structured `--reviewer-panel-json` with optional strict credentialProfileId. Duplicate harness entries are kept so one provider can review through several models; overrides the legacy reviewerModels/reviewerEfforts maps.",
       ),
     /** Per-run auth route override (subscription/api_key/auto). */
     authPreference: AuthPreference.optional().describe("Per-run auth route override."),

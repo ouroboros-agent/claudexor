@@ -24,11 +24,18 @@ Start read-only unless the user explicitly asked to change or create files.
 
 1. Call `claudexor_status` before choosing a harness. Treat a harness as usable
    only when its doctor-backed status is `ok`; otherwise report its reasons.
-2. Call `claudexor_capabilities` when the task depends on the current modes,
+2. Call `claudexor_accounts` before choosing an account or reviewer identity.
+   It is a read-only atomic snapshot of registered profiles, readiness, quota
+   freshness, and the daemon's `next_up` routing projection. `unknown` or
+   `not_run` means uncertain, not absent. Never initiate login or OAuth merely
+   because a row is unknown; ask the user for explicit authority. An explicit
+   reviewer `credentialProfileId` is strict and never falls back, while an
+   omitted id uses the canonical account pool.
+3. Call `claudexor_capabilities` when the task depends on the current modes,
    mutability, controls, models, or tool surface.
-3. Use `claudexor_ask` for read-only answers and bounded research, or
+4. Use `claudexor_ask` for read-only answers and bounded research, or
    `claudexor_plan` for a read-only implementation plan.
-4. Only for explicit implementation intent, use `claudexor_run`,
+5. Only for explicit implementation intent, use `claudexor_run`,
    `claudexor_best_of`, or `claudexor_create`. Pass an absolute `repoPath`
    whenever the target repository could be ambiguous.
 
@@ -42,6 +49,13 @@ Use `claudexor_apply_check` to dry-check delivery. MCP does not apply a patch.
 Only when the user explicitly requests delivery and the server-owned
 `applyEligibility.eligible` value is true may the host invoke the ordinary
 Claudexor CLI apply path under its normal command permission.
+
+For an explicit reviewer panel, pass entries such as
+`{"harness":"cursor","model":"grok-4.6","credentialProfileId":"review-cursor"}`.
+The CLI equivalent is `--reviewer-panel-json '<array>'`; the legacy compact
+`--reviewer-panel` form stays unpinned and should not be extended with an
+escaping-sensitive profile syntax. After review, verify the observed profile
+and route proof in the result artifacts.
 
 Use `claudexor_journal_recovery` for read-only journal inspection, validation,
 or export. `claudexor_quarantine_journal` is destructive: invoke it only after

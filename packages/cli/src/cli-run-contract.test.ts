@@ -54,7 +54,14 @@ describe("run-command pre-daemon machine contract", () => {
       {
         verb: "ask",
         present: ["--deep-scan", "--n", "--output-schema", "--attach"],
-        absent: ["--attempts", "--council", "--test", "--in-place", "--reviewer-panel"],
+        absent: [
+          "--attempts",
+          "--council",
+          "--test",
+          "--in-place",
+          "--reviewer-panel",
+          "--reviewer-panel-json",
+        ],
       },
       {
         verb: "plan",
@@ -68,6 +75,7 @@ describe("run-command pre-daemon machine contract", () => {
           "--deny-path",
           "--output-schema",
           "--reviewer-panel",
+          "--reviewer-panel-json",
           "--reviewer-model",
           "--reviewer-effort",
           "--in-place",

@@ -386,13 +386,17 @@
                       "maxLength": 32,
                       "pattern": "^[a-z0-9]+(?:[_-][a-z0-9]+)*$",
                       "description": "Per-reviewer effort hint, passed to that harness only."
+                    },
+                    "credentialProfileId": {
+                      "$ref": "#/definitions/ControlRunListResponse/properties/runs/items/properties/reviewerPanel/items/properties/model",
+                      "description": "Per-reviewer credential profile id; explicit pins are strict and never fall back."
                     }
                   },
                   "required": [
                     "harness"
                   ],
                   "additionalProperties": false,
-                  "description": "One reviewer of an explicit reviewer panel — a harness plus optional model and effort. The CLI spells one entry `harness=model:effort` (e.g. `claude=claude-opus-4-8:max`)."
+                  "description": "One reviewer of an explicit reviewer panel — a harness plus optional model, effort, and strict credentialProfileId. Compact entries are unpinned; structured JSON carries pins."
                 },
                 "description": "Explicit reviewer panel used for the run."
               },
