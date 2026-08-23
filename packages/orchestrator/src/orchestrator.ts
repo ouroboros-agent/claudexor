@@ -1061,12 +1061,8 @@ export class Orchestrator {
       probeIds.length > 0 ? await this.gateway.statusAll({ cwd: input.repoRoot }, probeIds) : [];
     const statusById = new Map(statuses.map((s) => [s.id, s]));
     if (!ids || ids.length === 0) {
-      // INV-135 (round-18 BLOCK): an explicit credential profile NAMES its
-      // harness — the implicit pool is exactly the profile's enabled
-      // harness(es) from the registry, and the profile probe (below) is the
-      // auth verdict. Deriving the pool from default doctor-OK status would
-      // exclude a valid profile whose default store is logged out while
-      // keeping unrelated harnesses that later fail profile resolution.
+      // INV-135: a profile names its enabled harness(es); its scoped probe is
+      // authoritative even when the default store is logged out.
       const profilePool = input.credentialProfileId
         ? [
             ...new Set(
@@ -1080,10 +1076,8 @@ export class Orchestrator {
       if (profilePool.length > 0) {
         ids = profilePool;
       } else if (input.credentialProfileId) {
-        // Fable-checkpoint NIT: an unknown/disabled profile id must refuse
-        // HERE, not fall through to the default auto-pool — that would run on
-        // the DEFAULT credentials while the caller explicitly named an
-        // account, surfacing later as a per-harness "not registered" error.
+        // A named unknown/disabled profile refuses here; it never falls
+        // through and runs on default credentials.
         const registered = (this.config(input.repoRoot)?.global.credential_profiles ?? []).filter(
           (p) => p.profile_id === input.credentialProfileId,
         );
@@ -1443,10 +1437,8 @@ export class Orchestrator {
         `no harness can perform '${intent}' for this mode${dropped.length ? ` (skipped: ${dropped.join(", ")})` : ""}`,
       );
     }
-    // Quota admission must use the account that will actually spawn. In
-    // particular, an opt-in default-subject rotation has to select its ready
-    // profile before the budget router filters the exhausted default away.
-    // The same resolved profile is reused by the first spec build below.
+    // Quota admission resolves the spawning account before budget routing;
+    // the first spec build reuses that exact profile.
     const quotaPrepared = await Promise.all(
       pool.map(async (routed) => {
         const model = input.models?.[routed.adapter.id] ?? routed.settings?.defaultModel ?? null;
@@ -1460,18 +1452,14 @@ export class Orchestrator {
             routed.authRouteEstimate,
           );
         } catch (err) {
-          // Q3=A: ONE harness's exhausted account pool must not kill an AUTO
-          // multi-harness run — the lane drops with the typed disclosure and a
-          // surviving sibling serves. An EXPLICIT pool (and the last remaining
-          // auto lane) keeps the typed `credential_pool_exhausted` terminal so
-          // its code + earliest reset reach failure.yaml intact.
+          // AUTO drops typed lane-local unavailability only when a sibling
+          // survives; an empty pool preserves its original refusal. Explicit is strict.
           if (
             !explicitPool &&
             pool.length > 1 &&
-            (err as { code?: string }).code === "credential_pool_exhausted"
+            declaredFailure(err).category === "harness_unavailable"
           ) {
-            dropLane(routed.adapter.id, "credential", safeErrorMessage(err));
-            return null;
+            return { prepared: null, refused: { routed, error: err } };
           }
           throw err;
         }
@@ -1487,12 +1475,26 @@ export class Orchestrator {
               : routed.authRouteEstimate === "local_session"
                 ? ("vendor_native" as const)
                 : null;
-        return { ...routed, quotaAdmission: { model, profile, route } };
+        return {
+          prepared: { ...routed, quotaAdmission: { model, profile, route } },
+          refused: null,
+        };
       }),
     );
-    const quotaPreparedPool = quotaPrepared.filter(
-      (routed): routed is NonNullable<typeof routed> => routed !== null,
+    const quotaPreparedPool = quotaPrepared.flatMap((result) =>
+      result.prepared ? [result.prepared] : [],
     );
+    const quotaRefusals = quotaPrepared.flatMap((result) =>
+      result.refused ? [result.refused] : [],
+    );
+    if (quotaPreparedPool.length === 0 && quotaRefusals.length > 0) {
+      const primaryRefusal = input.primaryHarness
+        ? quotaRefusals.find(({ routed }) => routed.adapter.id === input.primaryHarness)
+        : undefined;
+      throw (primaryRefusal ?? quotaRefusals[0])!.error;
+    }
+    for (const { routed, error } of quotaRefusals)
+      dropLane(routed.adapter.id, "credential", safeErrorMessage(error));
     const ordered = this.orderPool(quotaPreparedPool, input, intent, statusById, ledger, runId);
     if (ordered.length === 0) {
       throw new HarnessUnavailableError(
@@ -1504,23 +1506,16 @@ export class Orchestrator {
     const selectionOrder = ordered;
     const out: RoutedAdapter[] = [];
     if (droppedLanes.length > 0 && !allowDuplicateFill) {
-      // QA-043: lanes were dropped from an AUTO best-of pool (an explicit pool
-      // would have thrown at the drop). NEVER refill a dropped lane's slot by
-      // duplicating a surviving harness — that manufactures a self-race that
-      // masks the omission. Clamp to distinct survivors and disclose below.
-      // (Deep-scan sets allowDuplicateFill: its width is scout coverage, not
-      // harness diversity, so a dropped lane must not cut the scout count.)
+      // QA-043: do not hide an AUTO omission by self-racing a survivor.
+      // Deep-scan opts out because its width represents scout coverage.
       for (let i = 0; i < Math.min(n, selectionOrder.length); i++)
         out.push(selectionOrder[i] as RoutedAdapter);
     } else {
-      // No lane was dropped: a pool smaller than `n` is an intentional
-      // best-of-N on the available harness(es) (e.g. explicit `--harness codex
-      // -n 3`), so the historical width fill is preserved.
+      // Without a drop, preserve intentional best-of-N self-races.
       for (let i = 0; i < n; i++)
         out.push(selectionOrder[i % selectionOrder.length] as RoutedAdapter);
     }
-    // Disclose an auto-pool omission / width clamp once, with the
-    // requested-vs-effective route receipt (never silent — QA-043).
+    // Disclose the requested-vs-effective AUTO pool once (QA-043).
     emitPoolDegraded(log, {
       requestedHarnesses: ids,
       effectiveHarnesses: [...new Set(out.map((lane) => lane.adapter.id))],
