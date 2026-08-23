@@ -158,6 +158,64 @@ describe("cursor auth status parsing", () => {
     expect(calls).toEqual([["status", "--format", "json"], ["status"]]);
   });
 
+  it("does not turn a signalled JSON probe into authenticated text fallback", async () => {
+    const calls: string[][] = [];
+    const result = await probeCursorNativeAuth(
+      { AGENT_CLI_CREDENTIAL_STORE: "file", CURSOR_CONFIG_DIR: "/tmp/profile/.cursor" },
+      undefined,
+      (async (_bin: string, argv: string[]) => {
+        calls.push(argv);
+        return argv.includes("--format")
+          ? { code: null, signal: "SIGTERM", stdout: "", stderr: "unknown option --format" }
+          : { code: 0, signal: null, stdout: "Logged in as fallback@example.com\n", stderr: "" };
+      }) as never,
+    );
+    expect(result).toEqual({ kind: "unknown", error: "cursor-agent status failed (SIGTERM)" });
+    expect(calls).toEqual([["status", "--format", "json"]]);
+  });
+
+  it("does not retry an ordinary non-zero probe without explicit JSON-option evidence", async () => {
+    const calls: string[][] = [];
+    const result = await probeCursorNativeAuth(
+      { AGENT_CLI_CREDENTIAL_STORE: "file", CURSOR_CONFIG_DIR: "/tmp/profile/.cursor" },
+      undefined,
+      (async (_bin: string, argv: string[]) => {
+        calls.push(argv);
+        return {
+          code: 2,
+          signal: null,
+          stdout: "",
+          stderr: "status failed: temporary vendor transport error",
+        };
+      }) as never,
+    );
+    expect(result).toEqual({ kind: "unknown", error: "cursor-agent status failed (2)" });
+    expect(calls).toEqual([["status", "--format", "json"]]);
+  });
+
+  it("keeps successful unrecognized profile JSON and diagnostics unknown", async () => {
+    for (const result of [
+      {
+        code: 0,
+        signal: null,
+        stdout: JSON.stringify({ unexpected: "shape" }),
+        stderr: "Logged in as unrelated@example.com",
+      },
+      { code: 0, signal: null, stdout: "not-json\nLogged in as unrelated@example.com", stderr: "" },
+    ]) {
+      await expect(
+        probeCursorNativeAuth(
+          { AGENT_CLI_CREDENTIAL_STORE: "file", CURSOR_CONFIG_DIR: "/tmp/profile/.cursor" },
+          undefined,
+          async () => result,
+        ),
+      ).resolves.toEqual({
+        kind: "unknown",
+        error: "cursor-agent status returned unrecognized JSON output (0)",
+      });
+    }
+  });
+
   it("bounds and redacts thrown probe errors before returning typed unknown evidence", async () => {
     const secret = `sk-${"x".repeat(80)}`;
     const result = await probeCursorNativeAuth(undefined, undefined, async () => {

@@ -6,6 +6,8 @@ import { redactSecrets } from "@claudexor/util";
 const BIN = process.env.CLAUDEXOR_CURSOR_BIN || "cursor-agent";
 const CURSOR_LOGGED_OUT =
   /not logged in|not authenticated|unauthenticated|authentication required|no account|account\s*:\s*(?:none|unknown|not configured|-)(?:\s|$)|authenticated\s*:\s*(?:false|no|none|0)|logged in\s*:\s*(?:false|no|none|0)/i;
+const CURSOR_JSON_STATUS_UNSUPPORTED =
+  /(?:unknown|unrecognized|unsupported|invalid|unimplemented)\s+(?:option|flag|argument)[^\n]*--format|--format[^\n]*(?:unknown|unrecognized|unsupported|invalid|unimplemented)\s+(?:option|flag|argument)|(?:unknown|unrecognized|unsupported|invalid|unimplemented)[^\n]*(?:--format|json status)/i;
 
 const MAX_CURSOR_ACCOUNT_EMAIL_LENGTH = 320;
 
@@ -40,8 +42,16 @@ export async function probeCursorNativeAuth(
     if (result.code !== 0) {
       // Older Cursor binaries may reject the JSON status flag. One bounded
       // text retry preserves profile-scoped readiness without treating a
-      // failed JSON probe as proof that the account is logged out.
-      if (profileScoped) {
+      // failed JSON probe as proof that the account is logged out. A signal,
+      // timeout, or an unrelated non-zero status is unknown transport
+      // evidence, not a capability/format negotiation result.
+      if (
+        profileScoped &&
+        result.signal === null &&
+        typeof result.code === "number" &&
+        result.code !== 0 &&
+        cursorJsonStatusUnsupported(text)
+      ) {
         const fallback = await capture(BIN, ["status"], {
           env,
           timeoutMs: 10_000,
@@ -50,7 +60,7 @@ export async function probeCursorNativeAuth(
           cancelKillDelayMs: 0,
         });
         const fallbackText = `${fallback.stdout}\n${fallback.stderr}`;
-        if (fallback.code === 0) {
+        if (fallback.code === 0 && fallback.signal === null) {
           const observed = cursorAuthenticatedObservation(fallbackText);
           if (observed) return observed;
           if (cursorStatusLoggedOut(fallbackText)) return { kind: "loggedOut" };
@@ -64,6 +74,15 @@ export async function probeCursorNativeAuth(
     if (profileScoped) {
       const jsonObservation = cursorJsonStatusObservation(result.stdout);
       if (jsonObservation) return jsonObservation;
+      // A successful JSON-capable probe owns the profile-scoped evidence. If
+      // its output is malformed or an unknown shape, do not reinterpret stdout
+      // or stderr through the legacy text grammar: diagnostics can mention an
+      // unrelated host account. Text parsing is reached only through the
+      // explicit unsupported-JSON fallback above.
+      return {
+        kind: "unknown",
+        error: `cursor-agent status returned unrecognized JSON output (${result.code})`,
+      };
     }
     const authenticated = cursorAuthenticatedObservation(text);
     if (authenticated) return authenticated;
@@ -80,6 +99,10 @@ export async function probeCursorNativeAuth(
       error: redactSecrets(err instanceof Error ? err.message : String(err)).slice(0, 500),
     };
   }
+}
+
+function cursorJsonStatusUnsupported(text: string): boolean {
+  return CURSOR_JSON_STATUS_UNSUPPORTED.test(text);
 }
 
 /**

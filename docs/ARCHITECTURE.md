@@ -294,7 +294,9 @@ A thread carries sticky routing so the chat surface stays a thin gateway: a
 the pool size). A turn inherits both unless its request overrides them
 (`POST /v2/threads/:id/turns` accepts `primaryHarness` / `harnesses`); precedence is
 **turn body > thread sticky > engine default** (config `routing.primary_harness`,
-auto-pool of doctor-ok harnesses). All ordering/validation stays in the engine —
+otherwise an auto-pool of doctor-OK default routes plus harnesses with enabled
+account rows; a selected row must pass exact profile preflight). All
+ordering/validation stays in the engine —
 `primaryHarness` is only pinned first, and an EXPLICITLY-selected primary outside
 the selected pool fails loudly (the engine rejects it). A single-item explicit
 pool infers itself as the primary (no duplicate `--primary-harness` needed); a
@@ -307,13 +309,15 @@ before the turn is enqueued (so a stale bias never forces routing). Surfaces jus
 set the sticky values (`POST /v2/threads`, `PATCH /v2/threads/:id`) and send DTOs; they
 never route.
 
-Harness availability is determined by discovery + doctor + capabilities:
-`available` alone is not enough. A harness must be `ok`, expose the required
-intent for the selected mode (`explain` for Ask, `audit` for Ask's `--deep-scan`
-sweep,
-`implement` for Agent/repair paths, `plan`, etc.), and support read-only when
-the mode requires it. Surfaces show unavailable/degraded harnesses with reasons,
-but gate them out of launch and routing.
+Harness availability is determined by discovery + route-specific readiness +
+capabilities: `available` alone is not enough. A genuinely profile-less/default
+route must be doctor-`ok`; an exact account row may instead admit its harness
+after that selected profile passes readiness, quota, and model preflight, even
+when the default store is unavailable. Either route must expose the selected
+mode's intent (`explain` for Ask, `audit` for Ask's `--deep-scan` sweep,
+`implement` for Agent/repair paths, `plan`, etc.) and support read-only when the
+mode requires it. Surfaces keep aggregate/default doctor evidence distinct from
+exact-profile evidence and routing gates on the identity actually selected.
 
 Read-only routing additionally re-derives the env-sensitive readiness
 evidence in the run's own resolved context: a read-only run spawns inside a
@@ -3216,10 +3220,12 @@ code touching one of these areas must honor it or change it explicitly here.
 - Isolated-thread worktrees are pinned by persistent `claudexor/thread-*`
   branches. Journal SHA is a checked cache; successful apply advances the
   branch, and explicit trash/restore/purge owns its retention lifecycle.
-- Explicit reviewer panels accept only doctor-OK routes: a degraded route (key
-  present but unproven by isolated smoke) is refused even when the user names
-  it — reviewer verdicts must ride proven routes, unlike candidates where
-  explicit selection admits degraded.
+- Explicit reviewer panels accept only proven routes: an unprofiled/default
+  entry requires doctor-OK readiness, while a profiled entry requires its exact
+  profile probe even when aggregate/default doctor is unavailable. A degraded
+  raw default route (key present but unproven by isolated smoke) is refused even
+  when the user names it — reviewer verdicts must ride proven routes, unlike
+  candidates where explicit selection admits degraded.
 - A credential profile cannot bootstrap a raw-API instance whose own key is
   absent: raw-API discovery is key-gated (an instance without its configured
   key is not a route, so no manifest exists for the profile probe to

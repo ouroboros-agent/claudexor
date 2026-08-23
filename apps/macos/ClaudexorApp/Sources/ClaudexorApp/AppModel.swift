@@ -930,7 +930,7 @@ final class AppModel {
     }
 
     /// Eligible harness pool (Best-of runs this; one candidate per harness): thread
-    /// sticky > global default. Empty => engine auto-pools doctor-ok harnesses.
+    /// sticky > global default. Empty => engine auto-pools doctor-OK or exact-profile-ready lanes.
     var effectiveEligiblePool: [String] {
         let sticky = selectedThreadId == nil ? draftEligiblePool : (currentThread?.eligibleHarnesses ?? [])
         if !sticky.isEmpty { return sticky }
@@ -1319,7 +1319,7 @@ final class AppModel {
         // Best-of width = one candidate per harness in the pool (≥2). A SINGLE-harness
         // pool can't race against itself: send n=1 so the engine single-routes that
         // one harness instead of duplicating it (a wasteful self-race). An EMPTY pool
-        // (auto) keeps the default 2 so the engine auto-pools two doctor-ok harnesses.
+        // (auto) keeps the default 2 so the engine can pool two doctor-OK or exact-profile-ready lanes.
         let raceN: Int?
         if mode == .bestOfN {
             raceN = racePool.count == 1 ? 1 : max(2, racePool.count)

@@ -1095,9 +1095,9 @@ export class Orchestrator {
               : `credential profile "${input.credentialProfileId}" belongs to unavailable harness(es): ${registered.map((p) => p.harness_id).join(", ")}`,
         );
       } else {
-        // Auto-pools take doctor-OK harnesses (BIBLE §2: doctor decides
-        // readiness; a key string or degraded route is visible but not
-        // routable) PLUS harnesses with enabled account rows: the default
+        // Auto-pools take doctor-OK default routes (BIBLE §2: doctor decides
+        // default-route readiness; a key string or degraded route is visible
+        // but not routable) PLUS harnesses with enabled account rows: the default
         // doctor only sees the default store, and a signed-in registry row is
         // invisible to it (cursor after the host-Keychain retirement, or a
         // named-rows-only claude/codex install). Row-bearing lanes still pass
@@ -1113,7 +1113,7 @@ export class Orchestrator {
           .map((s) => s.id);
         if (ids.length === 0) {
           throw new HarnessUnavailableError(
-            "no doctor-ok harness for this mode; install/login codex/claude/cursor/opencode (see `claudexor doctor`), or pass --harness explicitly",
+            "no doctor-OK default route or enabled account row for this mode; inspect `claudexor doctor` and `claudexor accounts`, or pass --harness explicitly",
           );
         }
       }

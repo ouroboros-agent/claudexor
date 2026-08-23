@@ -435,7 +435,7 @@ describe("killWindowsProcessTree", () => {
 
   it("invokes taskkill /PID <pid> /T /F from System32 and reports killed on exit 0", () => {
     calls = [];
-    const result = killWindowsProcessTree(4242, run(0));
+    const result = killWindowsProcessTree(4242, run(0), () => true);
     expect(result).toEqual({ status: "killed", pid: 4242 });
     expect(calls).toHaveLength(1);
     expect(calls[0]?.cmd.toLowerCase()).toContain("system32");
@@ -443,19 +443,43 @@ describe("killWindowsProcessTree", () => {
     expect(calls[0]?.args).toEqual(["/PID", "4242", "/T", "/F"]);
   });
 
-  it("maps exit 128 to not_found (the process was already gone)", () => {
+  it("reports not_found only when the root is absent before taskkill", () => {
     calls = [];
-    expect(killWindowsProcessTree(4242, run(128))).toEqual({ status: "not_found", pid: 4242 });
+    expect(killWindowsProcessTree(4242, run(0), () => false)).toEqual({
+      status: "not_found",
+      pid: 4242,
+    });
+    expect(calls).toHaveLength(0);
   });
 
-  it("reports failed with detail on any other exit and on a thrown spawn", () => {
+  it.each([128, 255])(
+    "uses the live root postcondition after aggregate taskkill exit %i",
+    (status) => {
+      calls = [];
+      const probes = [true, false];
+      expect(killWindowsProcessTree(4242, run(status), () => probes.shift() ?? false)).toEqual({
+        status: "killed",
+        pid: 4242,
+      });
+
+      const failed = killWindowsProcessTree(4242, run(status), () => true);
+      expect(failed.status).toBe("failed");
+      expect(failed.status === "failed" && failed.detail).toContain(`taskkill exited ${status}`);
+    },
+  );
+
+  it("reports failed with detail on any other live-root exit and on a thrown spawn", () => {
     calls = [];
-    const failed = killWindowsProcessTree(4242, run(1, "Access is denied."));
+    const failed = killWindowsProcessTree(4242, run(1, "Access is denied."), () => true);
     expect(failed.status).toBe("failed");
     expect(failed.status === "failed" && failed.detail).toContain("Access is denied.");
-    const thrown = killWindowsProcessTree(4242, () => {
-      throw new Error("spawn blew up");
-    });
+    const thrown = killWindowsProcessTree(
+      4242,
+      () => {
+        throw new Error("spawn blew up");
+      },
+      () => true,
+    );
     expect(thrown.status).toBe("failed");
   });
 

@@ -125,9 +125,12 @@ pnpm test
   detection, winners, or tests-passed.
 - If a native surface is discovered but not wired to active runs, expose it as a
   capability note only; do not enable live input/steering controls.
-- Treat manifest auth sources as source availability only. Readiness, run
-  routing, Auth UI status, and reviewer eligibility must come from doctor status,
-  enabled intents, and smoke/conformance checks.
+- Treat manifest auth sources as source availability only. Aggregate/default
+  readiness and Auth UI default status come from doctor status, enabled intents,
+  and smoke/conformance checks; a selected account route comes from its exact
+  Accounts row plus profile probe. Run and reviewer pools may consider a
+  doctor-OK default route or a harness with enabled account rows, but the chosen
+  route must pass its corresponding readiness proof before spawn.
 - Fixture rule: when an adapter's native stream parsing changes, refresh or add
   a recorded fixture under `packages/harness-<id>/fixtures/` and keep the
   conformance parity test green (typed tool_call/tool_result with status,

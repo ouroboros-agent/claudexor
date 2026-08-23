@@ -3654,6 +3654,142 @@ describe("reviewEngine", () => {
     expect(metadataB).toContain('"credential_profile_id": "b"');
   });
 
+  it("isolates duplicate same-harness slots and cleans a failed sibling independently", async () => {
+    const { cwd: candidateRoot, evidenceDir } = makeReviewWorkspace(
+      "claudexor-review-duplicate-isolation-candidate-",
+    );
+    const artifactsDir = reapMk(join(tmpdir(), "claudexor-review-artifacts-"));
+    const profile = (id: string): CredentialProfile => ({
+      profile_id: id,
+      harness_id: "same-harness-reviewer",
+      display_name: id,
+      credential_kind: "config_dir_login",
+      isolation_locator: `/tmp/same-harness-${id}`,
+      secret_ref: null,
+      enabled: true,
+      created_at: null,
+    });
+    const seen = new Map<
+      string,
+      { home: string; claudeConfig: string; cwd: string; profile: string }
+    >();
+    let failReady!: () => void;
+    const failedReviewerReady = new Promise<void>((resolve) => {
+      failReady = resolve;
+    });
+    let failRelease!: () => void;
+    const allowFailedReviewerToExit = new Promise<void>((resolve) => {
+      failRelease = resolve;
+    });
+    let failedCleanupObservedWhileSuccessRunning = false;
+    const adapter: HarnessAdapter = {
+      id: "same-harness-reviewer",
+      async discover() {
+        return HarnessManifest.parse({
+          id: "same-harness-reviewer",
+          display_name: "same harness",
+          kind: "local_cli",
+          provider_family: "openai",
+          capabilities: { review: true, structured_output: true },
+        });
+      },
+      async doctor() {
+        return ConformanceReport.parse({
+          harness_id: "same-harness-reviewer",
+          status: "ok",
+          enabled_intents: ["review"],
+        });
+      },
+      async *run(spec) {
+        const profileId = spec.credential_profile?.profile_id ?? "missing";
+        const home = spec.env?.HOME ?? "";
+        const claudeConfig = spec.env?.CLAUDE_CONFIG_DIR ?? "";
+        seen.set(profileId, {
+          home,
+          claudeConfig,
+          cwd: spec.cwd,
+          profile: spec.credential_profile?.isolation_locator ?? "",
+        });
+        const ts = new Date().toISOString();
+        yield {
+          type: "started",
+          session_id: spec.session_id,
+          ts,
+          observed_model: `same-harness-${profileId}`,
+          credential_profile_id: profileId,
+        };
+        if (profileId === "failed") {
+          failReady();
+          await allowFailedReviewerToExit;
+          throw new Error("intentional sibling failure");
+        }
+
+        await failedReviewerReady;
+        failRelease();
+        for (let attempt = 0; attempt < 100; attempt += 1) {
+          const failed = seen.get("failed");
+          if (
+            failed &&
+            !existsSync(failed.home) &&
+            !existsSync(failed.cwd) &&
+            existsSync(home) &&
+            existsSync(spec.cwd)
+          ) {
+            failedCleanupObservedWhileSuccessRunning = true;
+            break;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+        yield {
+          type: "message",
+          session_id: spec.session_id,
+          ts: new Date().toISOString(),
+          text: "[]\n",
+        };
+        yield { type: "completed", session_id: spec.session_id, ts: new Date().toISOString() };
+      },
+    };
+
+    const res = await reviewCandidate({
+      candidateLabel: "Candidate A",
+      diff: "diff --git a/x.ts b/x.ts\n@@ -1 +1 @@\n-old\n+new\n",
+      evidenceDir,
+      artifactsDir,
+      cwd: candidateRoot,
+      reviewers: [
+        { adapter, providerFamily: "openai", credentialProfile: profile("failed") },
+        { adapter, providerFamily: "openai", credentialProfile: profile("successful") },
+      ],
+      transientRetryPolicy: { maxRetries: 0, initialDelayMs: 0, maxDelayMs: 0 },
+    });
+
+    const failed = seen.get("failed");
+    const successful = seen.get("successful");
+    expect(failed).toBeDefined();
+    expect(successful).toBeDefined();
+    expect(failed?.home).not.toBe(successful?.home);
+    expect(failed?.claudeConfig).not.toBe(successful?.claudeConfig);
+    expect(failed?.cwd).not.toBe(successful?.cwd);
+    expect(failed?.profile).not.toBe(successful?.profile);
+    expect(failedCleanupObservedWhileSuccessRunning).toBe(true);
+    expect(existsSync(failed?.home ?? "")).toBe(false);
+    expect(existsSync(failed?.cwd ?? "")).toBe(false);
+    expect(existsSync(successful?.home ?? "")).toBe(false);
+    expect(existsSync(successful?.cwd ?? "")).toBe(false);
+    expect(res.findings).toHaveLength(1);
+    expect(res.findings[0]?.severity).toBe("INSUFFICIENT_EVIDENCE");
+    expect(res.findings[0]?.claim).toContain("intentional sibling failure");
+    expect(res.routeProofs[0]?.requested.credential_profile_id).toBe("failed");
+    expect(res.routeProofs[1]?.observed.credential_profile_id).toBe("successful");
+    expect(res.healthyProviders).toEqual(["openai"]);
+    expect(
+      readFileSync(join(artifactsDir, "01-same-harness-reviewer", "metadata.json"), "utf8"),
+    ).toContain('"reviewer_workspace_cleanup": "removed"');
+    expect(
+      readFileSync(join(artifactsDir, "02-same-harness-reviewer", "metadata.json"), "utf8"),
+    ).toContain('"reviewer_workspace_cleanup": "removed"');
+  });
+
   it("does not persist evidence symlinks that resolve outside the source evidence dir", async () => {
     const { cwd: candidateRoot, evidenceDir } = makeReviewWorkspace(
       "claudexor-review-evidence-symlink-candidate-",

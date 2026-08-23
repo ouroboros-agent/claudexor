@@ -472,6 +472,16 @@ describe("Claudexor MCP server (SDK v2)", () => {
     await w2.close();
     const list = w2.responses.find((r) => r.id === 2)?.result?.tools as Array<Record<string, any>>;
     const byName = Object.fromEntries(list.map((t) => [t.name, t]));
+    for (const name of [
+      "claudexor_ask",
+      "claudexor_plan",
+      "claudexor_run",
+      "claudexor_best_of",
+      "claudexor_create",
+    ]) {
+      expect(byName[name]?.description).toContain("durable run handle");
+      expect(byName[name]?.description).not.toContain("Returns final output");
+    }
     expect(byName["claudexor_ask"]?.annotations?.readOnlyHint).toBe(true);
     expect(byName["claudexor_run"]?.annotations?.readOnlyHint).toBe(false);
     expect(byName["claudexor_apply_check"]?.annotations?.readOnlyHint).toBe(true);

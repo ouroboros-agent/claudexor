@@ -12,17 +12,21 @@ script) setting Claudexor up on this machine, follow this sequence in order.
 It is strict: skipping a step is how the 2026-07-21 incident happened.
 
 1. **Confirm the CLI and daemon.** `claudexor --version`, then
-   `claudexor doctor --json`. Doctor is the source of truth for what is
-   already working; do not infer readiness from a binary being on `PATH`.
+   `claudexor doctor --json`. Doctor is the aggregate/default-store projection;
+   it does not prove or veto a particular credential profile, model route, or
+   setup transport. Do not infer readiness from a binary being on `PATH` or
+   from a host/default login.
 2. **Read the Accounts doorway before choosing a reviewer account.** Run
    `claudexor accounts --json` (or call the read-only `claudexor_accounts` MCP
    tool). It is one daemon-authored snapshot of registered profiles, readiness,
    quota freshness, and `next_up`; do not reconstruct a pool by joining
    `doctor`, `quota`, and profile-list responses yourself. `available/passed`
-   is usable evidence, while `unknown/not_run` or stale data is an honest
-   uncertainty, not proof that an account is absent. An agent may inspect and
-   select an existing profile, but must not start login, OAuth, or account
-   changes from an unknown row without the human's explicit instruction.
+   on the exact named row is usable route evidence, while `unknown/not_run` or
+   stale data is an honest uncertainty, not proof that an account is absent. Do
+   not substitute aggregate doctor status, another profile's probe, or the host
+   vendor login for that row. An agent may inspect and select an existing
+   profile, but must not start login, OAuth, or account changes from an unknown
+   row without the human's explicit instruction.
 3. **Inspect the host plugin BEFORE touching anything.**
    `claudexor plugin status <host> --json`. Read the state
    (missing/partial/installed/registered/drifted/blocked) first — never
@@ -55,12 +59,20 @@ It is strict: skipping a step is how the 2026-07-21 incident happened.
    user (Bible INV-067). To remove a row, use `claudexor profiles remove`;
    that removes the binding and data Claudexor owns, while a typed receipt
    tells you when a vendor-owned OS-user credential was left unchanged.
-6. **Wait for verified readiness — process exit is not readiness.** A login is
-   done only when `claudexor auth status` (or `claudexor doctor`) reports that
-   harness ready; a zero vendor exit code is provisional until the targeted
-   probe passes. Do not stop or restart the daemon while a login is pending:
-   interactive logins survive an ordinary daemon restart, but do not lean on
-   that mid-flow.
+6. **Wait for verified readiness — process exit is not readiness.** A named
+   login is ready only when its exact row in `claudexor accounts` reports
+   `available/passed`; the aggregate/default doctor neither proves nor vetoes
+   that profile. A zero vendor exit code or source-material `available` value
+   remains provisional until the targeted profile-scoped probe passes. Before
+   claiming a specific profile/model route, let the strict pinned run or
+   reviewer preflight admit it, then verify the observed profile/model route
+   evidence in the result. `claudexor models --harness <id> --json` is
+   default-route discovery, not a named profile's entitlement; an
+   unavailable inventory stays unknown and must not be guessed. Read the setup
+   mode from `claudexor capabilities --json`: `external_terminal` means use the
+   supported `client_pty`/terminal attach path and is not itself unreadiness.
+   Do not stop or restart the daemon while a login is pending: interactive
+   logins survive an ordinary daemon restart, but do not lean on that mid-flow.
 7. **Never hand-edit `~/.claudexor*/config.yaml`.** A schema-parse error
    (`config_invalid`) means version skew, not a value you should patch by
    hand — report it and stop. The remedy is to inspect the named path against
@@ -79,16 +91,24 @@ It is strict: skipping a step is how the 2026-07-21 incident happened.
    `delivery` | `ops`), stability, and recovery verbs.
 3. **Learn what works RIGHT NOW.** `claudexor capabilities --json` — the
    derived AgentCapabilityCatalog: per-harness doctor status and intents,
-   model truth, the mutability matrix, run-control keys, MCP tool names, and
-   the run-apply-state vocabulary (runApplyStates), including each current
-   harness's effective `setupLogin` mode. Use `in_app` as daemon transport and
-   `external_terminal` as `client_pty`; do not infer a harness-specific
-   mechanism from the global setup operation. The same catalog is served at
-   `GET /v2/agent-capabilities` on the daemon and by the MCP
+   model-inventory source, the mutability matrix, run-control keys, MCP tool
+   names, and the run-apply-state vocabulary (runApplyStates), including each
+   current harness's effective `setupLogin` mode. Use `in_app` as daemon
+   transport and `external_terminal` as `client_pty`; do not infer a
+   harness-specific mechanism from the global setup operation. The same
+   catalog is served at `GET /v2/agent-capabilities` on the daemon and by the MCP
    `claudexor_capabilities` tool.
 4. **Check harness health.** `claudexor doctor` (human) or
-   `claudexor doctor --json`. A harness is usable when its doctor status is
-   `ok` — an installed binary or a stored key alone is NOT readiness.
+   `claudexor doctor --json`. Doctor is the aggregate/default-store projection,
+   not a universal admission veto. An unpinned request first uses the canonical
+   Accounts pool and may select a ready exact profile even when default doctor
+   is unavailable; only a genuinely profile-less/default fallback depends on
+   doctor status `ok` and the requested intent. A named profile uses its exact
+   Accounts row and strict pinned preflight; aggregate/default doctor status
+   cannot prove or veto it. An installed binary, a stored key, or another
+   profile's successful probe is not readiness. Use capabilities for setup
+   transport and `models` only for default-route discovery; accept a selected
+   profile route only from its preflight and observed result telemetry.
 5. **Run something read-only.** `claudexor ask "what does this repo do?" --json`.
 
 ### Reviewer identity and account pins
@@ -128,8 +148,9 @@ entries; do not invent an `@profile` mini-grammar.
   envelope. `claudexor <cmd> --help` (or `--help --json`) prints that command's
   scoped usage; `claudexor help --json` is the full machine catalog.
 - **MCP** (`claudexor mcp serve`, stdio) uses durable handles while MCP Tasks
-  remain experimental. A run tool returns `{runId, runDir, status}` after the
-  daemon binds the run; use `claudexor_run_status`, `claudexor_run_result`,
+  remain experimental. A run tool enqueues work and returns `{runId, runDir,
+  status}` after the daemon binds the run, not terminal output; use
+  `claudexor_run_status`, `claudexor_run_result`,
   `claudexor_run_cancel`, `claudexor_run_interactions`, and
   `claudexor_answer_interaction` to continue. A cancel or answer is successful
   only after the `/v2` control API acknowledges it.
