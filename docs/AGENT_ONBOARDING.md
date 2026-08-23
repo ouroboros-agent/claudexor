@@ -67,7 +67,7 @@ It is strict: skipping a step is how the 2026-07-21 incident happened.
    claiming a specific profile/model route, let the strict pinned run or
    reviewer preflight admit it, then verify the observed profile/model route
    evidence in the result. `claudexor models --harness <id> --json` is
-   unpinned harness/default discovery, not a named profile's entitlement; an
+   default-route discovery, not a named profile's entitlement; an
    unavailable inventory stays unknown and must not be guessed. Read the setup
    mode from `claudexor capabilities --json`: `external_terminal` means use the
    supported `client_pty`/terminal attach path and is not itself unreadiness.
@@ -99,14 +99,16 @@ It is strict: skipping a step is how the 2026-07-21 incident happened.
    catalog is served at `GET /v2/agent-capabilities` on the daemon and by the MCP
    `claudexor_capabilities` tool.
 4. **Check harness health.** `claudexor doctor` (human) or
-   `claudexor doctor --json`. An unpinned route is usable for a requested
-   intent only when its doctor status is `ok` and that intent is enabled. A
-   named profile instead uses its exact Accounts row and strict pinned
-   preflight; aggregate/default doctor status cannot prove or veto it. An
-   installed binary, a stored key, or another profile's successful probe is
-   not readiness. Use capabilities for setup transport and `models` only for
-   unpinned harness/default discovery; accept a named route only from its
-   pinned preflight and observed result telemetry.
+   `claudexor doctor --json`. Doctor is the aggregate/default-store projection,
+   not a universal admission veto. An unpinned request first uses the canonical
+   Accounts pool and may select a ready exact profile even when default doctor
+   is unavailable; only a genuinely profile-less/default fallback depends on
+   doctor status `ok` and the requested intent. A named profile uses its exact
+   Accounts row and strict pinned preflight; aggregate/default doctor status
+   cannot prove or veto it. An installed binary, a stored key, or another
+   profile's successful probe is not readiness. Use capabilities for setup
+   transport and `models` only for default-route discovery; accept a selected
+   profile route only from its preflight and observed result telemetry.
 5. **Run something read-only.** `claudexor ask "what does this repo do?" --json`.
 
 ### Reviewer identity and account pins

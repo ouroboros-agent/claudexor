@@ -648,8 +648,10 @@ Host integrations are managed by `claudexor plugin
 install|status|doctor|repair|uninstall <cursor|claude|codex|opencode|all>`.
 They install user-global host-native artifacts plus MCP wiring while keeping
 Claudexor as the orchestration owner. Codex is registered in the personal plugin
-marketplace and still requires enablement from Codex Plugins. MCP tools are
-one-shot final-output calls, not live Claudexor thread parity.
+marketplace and still requires enablement from Codex Plugins. MCP run tools
+enqueue work and return a durable run handle; follow it with the status/result
+tools before claiming terminal output. They do not provide live Claudexor thread
+parity.
 
 You can ask an agent host with shell access to install the integration for
 itself. Paste something like this into Cursor, Claude Code, Codex, or OpenCode:

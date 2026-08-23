@@ -22,10 +22,12 @@ Claudexor installation; they do not provide accounts or remote model access.
 
 Start read-only unless the user explicitly asked to change or create files.
 
-1. Call `claudexor_status` before choosing an unpinned harness route. Treat
-   that route as usable for a requested intent only when its doctor-backed
-   status is `ok` and that intent is enabled. This aggregate/default status
-   neither proves nor vetoes a named credential profile.
+1. Call `claudexor_status` to inspect the aggregate/default-store projection,
+   but do not use it as a universal admission veto. An unpinned request may be
+   admitted by the canonical account pool through a ready exact profile even
+   when default doctor is unavailable; only a genuinely profile-less/default
+   fallback requires doctor status `ok` and the requested intent. Aggregate
+   status neither proves nor vetoes a pooled or explicitly named profile.
 2. Call `claudexor_accounts` before choosing an account or reviewer identity.
    It is a read-only atomic snapshot of registered profiles, readiness, quota
    freshness, and the daemon's `next_up` routing projection. `available/passed`
@@ -38,7 +40,7 @@ Start read-only unless the user explicitly asked to change or create files.
    pool.
 3. Call `claudexor_capabilities` when the task depends on the current modes,
    mutability, controls, models, setup transport, or tool surface. The CLI
-   `claudexor models --harness <id>` is unpinned harness/default discovery, not
+   `claudexor models --harness <id>` is default-route discovery, not
    a named profile's entitlement; `source: none` or an unavailable inventory
    is an honest refusal, not permission to guess. For a named profile, let the
    strict pinned run/reviewer preflight admit the model and verify observed
