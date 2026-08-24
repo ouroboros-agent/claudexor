@@ -696,8 +696,9 @@ block/lifecycle frames never do — the complete message always follows.
 Plumbing: other `system` subtypes and `control_response`/`control_cancel_request`
 frames are recognized and consumed, never timeline events.
 
-**Codex** — wire: `codex exec --json … [-i <img>… --] "<prompt>"` (resume:
-`codex exec resume <id> --json`; sandbox rides `-c sandbox_mode` on resume).
+**Codex** — wire: `codex exec --json … [-i <img>… --] -` with the one-shot
+prompt on stdin (resume: `codex exec resume <id> --json … -`; sandbox rides
+`-c sandbox_mode` on resume).
 Events: `thread.started` → `started` (thread id = `native_session_id`);
 `turn.started` → `started` (a lifecycle boundary — deliberately NOT
 `thinking`: mapping it there once planted junk blocks at the top of every
@@ -715,9 +716,10 @@ as `error`/`turn.failed` with typed `rate_limit` (`resets_at`) and
 `transient` enrichment — there is no separate status event.
 
 **Cursor** — wire: `cursor-agent -p --output-format stream-json <sandbox
-args> [--stream-partial-output] "<prompt>"` (no native system-prompt flag —
-instructions ride a delimited prompt prefix; full access is refused
-pre-spawn). Events: `system/init` → `started` (session id under
+args> [--stream-partial-output]` with the composed prompt on piped stdin (no
+positional prompt or native system-prompt flag — instructions ride a delimited
+prompt prefix; full access is refused pre-spawn). Events: `system/init` →
+`started` (session id under
 `chatId`/`chat_id`/`session_id`, version-tolerant); `assistant` →
 `message` — with `--stream-partial-output`, a frame with `timestamp_ms` and
 no `model_call_id` is a NEW-TEXT delta (flagged), `timestamp_ms` +

@@ -306,7 +306,8 @@ export function codexExecArgs(
     args.push("-c", `developer_instructions=${tomlBasicString(spec.instructions)}`);
   args.push(...codexWebArgs(spec.external_context_policy ?? "auto"));
   // ALL `-c` config overrides BEFORE `-i` (variadic) so they can't be eaten as
-  // image paths; then images, then `--`, then the prompt. See resume branch.
+  // image paths; then images, then `--`, then the `-` stdin-prompt operand.
+  // See resume branch.
   args.push(
     ...codexBrowserArgs(spec.browser, spec.external_context_policy, spec.extra_mcp_servers),
   );
