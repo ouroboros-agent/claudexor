@@ -37,6 +37,15 @@ function runtimeFixture(initialBlocked: string[]) {
     activatePrepared: vi.fn(),
     recoverAfterStartup: vi.fn(),
   } as unknown as ProjectPartitions;
+  const normalPlane = {
+    requested: () => false,
+    armQuotaPolling: vi.fn(),
+    beginPidSnapshots: vi.fn(),
+    migrateAccounts: vi.fn(),
+    startSetup: vi.fn(async () => {}),
+    quarantineGhosts: vi.fn(),
+    scheduleRetention: vi.fn(),
+  };
   const runtime = createStartupAdmissionRuntime({
     admission,
     grant: { advanceFloor: vi.fn() },
@@ -48,19 +57,12 @@ function runtimeFixture(initialBlocked: string[]) {
       recordFailure: vi.fn(),
       close: vi.fn(),
     },
-    normalPlane: {
-      requested: () => false,
-      armQuotaPolling: vi.fn(),
-      beginPidSnapshots: vi.fn(),
-      migrateAccounts: vi.fn(),
-      startSetup: vi.fn(async () => {}),
-      quarantineGhosts: vi.fn(),
-      scheduleRetention: vi.fn(),
-    },
+    normalPlane,
   });
   return {
     runtime,
     messages,
+    normalPlane,
     partitions,
     setLiveBlocked: (blocked: string[]) => {
       liveBlocked = [...blocked];
@@ -125,5 +127,67 @@ describe("startup admission recovery verdict ordering", () => {
     expect(frozenStartup).toHaveBeenCalledTimes(1);
     expect(fixture.partitions.refreshPreparation).toHaveBeenCalledTimes(1);
     expect(fixture.messages.at(-1)).toContain(`recovery required: ${first})`);
+  });
+
+  it("lets delayed startup use its frozen verdict when an overlapping live read fails", async () => {
+    const first = "project:first";
+    const fixture = runtimeFixture([first]);
+    const quarantine = fixture.runtime.wrapQuarantineWithReopen(async () => {
+      fixture.setLiveRefreshError(new Error("live preparation unavailable"));
+      return { ok: true };
+    });
+
+    const recovery = quarantine(first, {});
+    const frozenStartup = vi.fn(() => [first]);
+    const delayedStartup = Promise.resolve().then(() =>
+      fixture.runtime.runAdmissionCompletion(frozenStartup),
+    );
+
+    await expect(Promise.all([recovery, delayedStartup])).resolves.toEqual([
+      { ok: true },
+      "recovery_only",
+    ]);
+    expect(frozenStartup).toHaveBeenCalledTimes(1);
+    expect(fixture.partitions.refreshPreparation).toHaveBeenCalledTimes(1);
+    expect(fixture.messages.at(-1)).toContain(`recovery required: ${first})`);
+  });
+
+  it("publishes a successful live verdict before its flight can clear", async () => {
+    const first = "project:first";
+    const second = "project:second";
+    const fixture = runtimeFixture([first, second]);
+    const quarantine = fixture.runtime.wrapQuarantineWithReopen(async () => {
+      fixture.setLiveBlocked([second]);
+      return { ok: true };
+    });
+
+    const recovery = quarantine(first, {});
+    const frozenStartup = vi.fn(() => [first, second]);
+    let gate: Promise<unknown> = Promise.resolve();
+    for (let step = 0; step < 4; step += 1) gate = gate.then(() => undefined);
+    const delayedStartup = gate.then(() => fixture.runtime.runAdmissionCompletion(frozenStartup));
+
+    await expect(Promise.all([recovery, delayedStartup])).resolves.toEqual([
+      { ok: true },
+      "recovery_only",
+    ]);
+    expect(frozenStartup).not.toHaveBeenCalled();
+    expect(fixture.partitions.refreshPreparation).toHaveBeenCalled();
+    expect(fixture.messages.at(-1)).toContain(`recovery required: ${second})`);
+    expect(fixture.messages.at(-1)).not.toContain(first);
+  });
+
+  it("shares completion failures without replaying normal-plane duties", async () => {
+    const fixture = runtimeFixture([]);
+    fixture.normalPlane.startSetup.mockRejectedValue(new Error("setup failed"));
+    const frozenStartup = vi.fn(() => []);
+
+    const first = fixture.runtime.runAdmissionCompletion(frozenStartup);
+    const second = fixture.runtime.runAdmissionCompletion(frozenStartup);
+
+    await expect(first).rejects.toThrow("setup failed");
+    await expect(second).rejects.toThrow("setup failed");
+    expect(frozenStartup).toHaveBeenCalledTimes(1);
+    expect(fixture.normalPlane.startSetup).toHaveBeenCalledTimes(1);
   });
 });
