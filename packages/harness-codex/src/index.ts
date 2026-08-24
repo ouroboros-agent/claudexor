@@ -424,9 +424,9 @@ export function createCodexAdapter(deps: Partial<CodexRuntimeDeps> = {}): Harnes
           effort_levels_verified_against: efforts.live
             ? version
             : CODEX_EFFORT_SNAPSHOT_VERIFIED_AGAINST,
-          // Explicit models outside this verified list fail before native execution.
-          // Current + still-API-available ids per the vendor Codex models page,
-          // verified against the installed CLI recorded below.
+          // Explicit models outside this verified union fail before native execution.
+          // Membership is account-scoped, so retain still-route-visible ids and add
+          // every model advertised by the pinned CLI captures recorded below.
           known_models: [
             "gpt-5.6",
             "gpt-5.6-sol",
@@ -436,6 +436,7 @@ export function createCodexAdapter(deps: Partial<CodexRuntimeDeps> = {}): Harnes
             "gpt-5.4",
             "gpt-5.4-mini",
             "gpt-5.3-codex-spark",
+            "gpt-5.2",
           ],
           known_models_verified_against: CODEX_VENDOR_CLI_VERSION,
         },

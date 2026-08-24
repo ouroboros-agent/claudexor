@@ -41,10 +41,13 @@ export interface CodexEffortCatalog {
 }
 
 /**
- * Recorded fallback, captured from a live `model/list` on the CLI version
- * stamped below. Used ONLY when the live probe cannot answer; it is a snapshot
- * of vendor state, never an allow-list this repo maintains by hand.
- * (`defaultModel` is the entry that carried `isDefault: true` in that capture.)
+ * Recorded fallback coverage, built from live account-scoped `model/list`
+ * captures on the CLI version stamped below. Presence is a union, not a claim
+ * that every account advertises every model: the freshness gate requires each
+ * live entry to be represented exactly while permitting snapshot-only entries.
+ * Used ONLY when the live probe cannot answer; it is vendor evidence, never an
+ * allow-list this repo maintains by hand. (`defaultModel` is the entry that
+ * carried `isDefault: true` in every capture used here.)
  */
 export const CODEX_EFFORT_SNAPSHOT: CodexEffortCatalog = {
   models: {
@@ -61,6 +64,7 @@ export const CODEX_EFFORT_SNAPSHOT: CodexEffortCatalog = {
     "gpt-5.4": { levels: ["low", "medium", "high", "xhigh"], default: "medium" },
     "gpt-5.4-mini": { levels: ["low", "medium", "high", "xhigh"], default: "medium" },
     "gpt-5.3-codex-spark": { levels: ["low", "medium", "high", "xhigh"], default: "high" },
+    "gpt-5.2": { levels: ["low", "medium", "high", "xhigh"], default: "medium" },
   },
   defaultModel: "gpt-5.6-sol",
 };

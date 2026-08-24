@@ -376,7 +376,10 @@ discover what is really advertised at discovery time and fall back to a
 recorded snapshot (stamped vendor data, kept in its captured order) when a
 probe cannot answer, so a probe failure costs freshness, never the run; both
 probes are cached, and `scripts/model-hints-freshness.mjs` WARNS when the live
-ladders disagree with the snapshot. Effort ceilings are per MODEL, not per
+ladders disagree with the snapshot. Codex model membership is account-scoped,
+so its recorded fallback covers the union of verified account catalogs: every
+live model must match its recorded ladder/default, while a recorded-only model
+does not make another account stale. Effort ceilings are per MODEL, not per
 harness (gpt-5.6-sol takes `ultra`, gpt-5.4 stops at `xhigh`), so
 `effortLevelsForModel` narrows the harness-wide merged ladder for the routed
 model. The shared normalizer then passes an ADVERTISED level through verbatim,
