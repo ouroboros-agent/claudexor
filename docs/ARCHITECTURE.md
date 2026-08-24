@@ -492,6 +492,11 @@ the argv prompt only instructs the harness to read it, and the file is removed
 before every diff/gate/review (including native retries). This prevents
 `spawn E2BIG` without truncating evidence or polluting the candidate patch.
 
+One-shot Codex and Cursor prompts use the vendors' stdin contracts through the
+shared CLI run loop; prompt bytes never ride their process argv. One-shot stdin
+and a bidirectional session are exclusive owners of the same pipe. Adapters
+without a verified prompt-stdin contract retain their vendor-specific transport.
+
 Disposable candidate envelopes also preserve bounded raster outputs before
 cleanup (PNG/JPEG/WebP/GIF, 16 MiB each / 32 MiB total) under the attempt's
 run-artifact tree. The winner's copies materialize at the run root so relative

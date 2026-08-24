@@ -290,12 +290,11 @@ export function codexExecArgs(
     args.push(...nodeReplArgs);
     const imageArgs = codexImageArgs(spec.attachments);
     args.push(...imageArgs);
-    // `codex exec -i/--image <FILE>...` is VARIADIC, so a positional prompt placed
-    // right after it is swallowed as another "image" — the model then receives no
-    // prompt and never sees the attachment (the v0.13 "I don't see the image" bug).
-    // LIVE-VERIFIED on codex 0.142: `-i <path> -- "<prompt>"` => image IS described.
+    // `codex exec -i/--image <FILE>...` is VARIADIC, so terminate it before the
+    // documented `-` stdin-prompt operand. Prompt bytes never ride argv (large
+    // agent-first packets otherwise fail at spawn with E2BIG).
     if (imageArgs.length > 0) args.push("--");
-    args.push(spec.prompt);
+    args.push("-");
     return args;
   }
   const args = ["exec", "--json", ...CODEX_FILE_AUTH_ARGS, ...CODEX_PROJECT_DOC_FALLBACK_ARGS];
@@ -315,7 +314,7 @@ export function codexExecArgs(
   const imageArgs = codexImageArgs(spec.attachments);
   args.push(...imageArgs);
   if (imageArgs.length > 0) args.push("--");
-  args.push(spec.prompt);
+  args.push("-");
   return args;
 }
 
@@ -775,6 +774,7 @@ async function* runCodex(
       bin: BIN,
       args,
       spec,
+      input: spec.prompt,
       env,
       label: "codex",
       redact: redactSecrets,

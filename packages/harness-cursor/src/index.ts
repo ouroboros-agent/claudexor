@@ -378,7 +378,9 @@ async function* runCursor(
   if (spec.resume_session_id) args.push("--resume", spec.resume_session_id);
   // Cursor has no native system-prompt flag; layer instructions as a delimited
   // prompt prefix (the engine already withheld them from synthesis/reviewers).
-  args.push(promptWithInstructions(spec));
+  // Its headless CLI reads a piped prompt when no positional prompt is present;
+  // keeping the bytes off argv avoids the platform command-size ceiling.
+  const input = promptWithInstructions(spec);
   // INV-135 strict profile routing lives in profile.ts; the callback resolves
   // the engine-default credential ladder for profile-less (or API-key) runs.
   const profile = spec.credential_profile;
@@ -447,6 +449,7 @@ async function* runCursor(
     bin: BIN,
     args,
     spec,
+    input,
     env,
     label: "cursor-agent",
     redact: redactSecrets,

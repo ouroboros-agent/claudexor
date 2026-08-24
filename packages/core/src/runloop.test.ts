@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
 import { HarnessRunSpec, type HarnessEvent } from "@claudexor/schema";
 import { runCliHarness } from "./runloop.js";
 import type { ChildStdin } from "./proc.js";
@@ -44,6 +45,67 @@ rl.once('line', () => {
   setTimeout(() => process.exit(17), 10);
 });
 `;
+
+describe("runCliHarness one-shot input", () => {
+  it("delivers a multi-megabyte Unicode prompt byte-exactly through stdin", async () => {
+    const input = `snowman=☃\n${"x".repeat(1_760_000)}\nend`;
+    const expected = {
+      bytes: Buffer.byteLength(input),
+      sha256: createHash("sha256").update(input).digest("hex"),
+      argvHasInput: false,
+    };
+    let observed: unknown;
+    const child = [
+      "const chunks = []",
+      "process.stdin.on('data', (chunk) => chunks.push(chunk))",
+      "process.stdin.on('end', () => {",
+      "  const input = Buffer.concat(chunks)",
+      "  const sha256 = require('node:crypto').createHash('sha256').update(input).digest('hex')",
+      "  const argvHasInput = process.argv.includes(input.toString('utf8'))",
+      "  console.log(JSON.stringify({ bytes: input.length, sha256, argvHasInput }))",
+      "})",
+    ].join(";");
+
+    const events: HarnessEvent[] = [];
+    for await (const event of runCliHarness({
+      bin: process.execPath,
+      args: ["-e", child],
+      input,
+      spec: spec(),
+      parseEvent: (obj) => {
+        observed = obj;
+        return [];
+      },
+    })) {
+      events.push(event);
+    }
+
+    expect(observed).toEqual(expected);
+    expect(events.at(-1)?.type).toBe("completed");
+    expect(events.at(-1)?.payload?.["exit_code"]).toBe(0);
+  }, 15_000);
+
+  it("refuses competing one-shot and bidirectional stdin owners before spawn", async () => {
+    const collect = async (): Promise<void> => {
+      for await (const _event of runCliHarness({
+        bin: process.execPath,
+        args: ["-e", "process.exit(0)"],
+        input: "one shot",
+        spec: spec(),
+        parseEvent: () => [],
+        session: {
+          initialStdin: "session frame",
+          matches: () => false,
+          handle: async function* () {},
+        },
+      })) {
+        // drain
+      }
+    };
+
+    await expect(collect()).rejects.toThrow(/mutually exclusive stdin owners/);
+  });
+});
 
 describe("runCliHarness session mode", () => {
   it("writes the initial frame, routes control frames to the handler, and closes stdin on the result frame", async () => {

@@ -283,7 +283,8 @@ describe("ensureCodexApiAuth", () => {
     });
     expect(args.slice(0, 4)).toEqual(["exec", "resume", "th-123", "--json"]);
     expect(args).toContain(CODEX_FILE_AUTH_OVERRIDE);
-    expect(args[args.length - 1]).toBe("follow up");
+    expect(args[args.length - 1]).toBe("-");
+    expect(args).not.toContain("follow up");
   });
 
   it("forwards model and reasoning effort as separate Codex config", () => {
@@ -313,7 +314,7 @@ describe("ensureCodexApiAuth", () => {
       'model_reasoning_effort="xhigh"',
       "-c",
       'web_search="cached"',
-      "review",
+      "-",
     ]);
   });
 });
@@ -571,6 +572,8 @@ describe("Codex transport-aware native doctor", () => {
     expect(cliOptions?.env?.HOME).toBe("/scoped/home");
     expect(cliOptions?.env?.CODEX_HOME).toBe(defaultNativeCodexHome());
     expect(cliOptions?.env?.OPENAI_API_KEY).toBeNull();
+    expect(cliOptions?.input).toBe("review");
+    expect(cliOptions?.args).not.toContain("review");
   });
 });
 

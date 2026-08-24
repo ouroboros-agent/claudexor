@@ -47,6 +47,8 @@ export interface CliRunLoopOptions {
   bin: string;
   args: string[];
   spec: HarnessRunSpec;
+  /** One-shot stdin payload. Mutually exclusive with the bidirectional session owner. */
+  input?: string;
   /**
    * Translate one parsed JSON stdout object into normalized events.
    * Return `null` for UNRECOGNIZED shapes (counted as dropped) and `[]` for
@@ -83,6 +85,9 @@ export interface CliRunLoopOptions {
 }
 
 export async function* runCliHarness(opts: CliRunLoopOptions): AsyncGenerator<HarnessEvent> {
+  if (opts.input !== undefined && opts.session !== undefined) {
+    throw new Error("runCliHarness input and session are mutually exclusive stdin owners");
+  }
   const { spec } = opts;
   const label = opts.label ?? opts.bin;
   const redact = opts.redact ?? ((text: string): string => text);
@@ -113,6 +118,7 @@ export async function* runCliHarness(opts: CliRunLoopOptions): AsyncGenerator<Ha
       env: opts.env,
       inheritEnv: spec.env_inheritance,
       abortSignal,
+      ...(opts.input !== undefined ? { input: opts.input } : {}),
       ...(opts.reap ? { reap: opts.reap } : {}),
       onTerminationUnconfirmed: (info) => {
         terminationUnconfirmed = { survivors: info.survivors, unresolved: info.unresolved };
