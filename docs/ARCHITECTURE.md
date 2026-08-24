@@ -284,6 +284,10 @@ dropped lane's slot by duplicating a surviving harness (the self-race class that
 faked Best-of diversity): effective width clamps to distinct survivors and the
 omission is disclosed once via a `route.pool.degraded` event carrying the
 requested-vs-effective harnesses/width and every dropped lane's typed stage. A
+profile id shared across harnesses creates an implicit AUTO pool: a typed quota
+refusal removes only that lane while a sibling survives, whereas an explicit
+pool remains strict and an exhausted primary keeps its original typed terminal
+if no fallback survives admission and ordering. A
 pool smaller than `N` with NO drops is still a legitimate best-of-N on the
 available harness(es); deep-scan likewise repeats a surviving harness for scout
 coverage, since its width is distinct slices, not distinct harnesses.

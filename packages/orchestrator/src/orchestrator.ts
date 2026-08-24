@@ -1487,21 +1487,22 @@ export class Orchestrator {
     const quotaRefusals = quotaPrepared.flatMap((result) =>
       result.refused ? [result.refused] : [],
     );
+    const primaryQuotaRefusal = input.primaryHarness
+      ? quotaRefusals.find(({ routed }) => routed.adapter.id === input.primaryHarness)
+      : undefined;
     if (quotaPreparedPool.length === 0 && quotaRefusals.length > 0) {
-      const primaryRefusal = input.primaryHarness
-        ? quotaRefusals.find(({ routed }) => routed.adapter.id === input.primaryHarness)
-        : undefined;
-      throw (primaryRefusal ?? quotaRefusals[0])!.error;
+      throw (primaryQuotaRefusal ?? quotaRefusals[0])!.error;
     }
     for (const { routed, error } of quotaRefusals)
       dropLane(routed.adapter.id, "credential", safeErrorMessage(error));
     const ordered = this.orderPool(quotaPreparedPool, input, intent, statusById, ledger, runId);
     if (ordered.length === 0) {
+      if (primaryQuotaRefusal) throw primaryQuotaRefusal.error;
       throw new HarnessUnavailableError(
         `no harness remains eligible for '${intent}' after budget and quota routing`,
       );
     }
-    emitPrimaryDivergence(log, input.primaryHarness, ordered, quotaPreparedPool, dropped);
+    emitPrimaryDivergence(log, input.primaryHarness, ordered, pool, dropped);
     const n = input.n ?? ordered.length;
     const selectionOrder = ordered;
     const out: RoutedAdapter[] = [];

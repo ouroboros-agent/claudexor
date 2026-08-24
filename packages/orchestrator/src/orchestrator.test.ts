@@ -4229,9 +4229,16 @@ describe("Orchestrator", () => {
           join(result.runDir, "context", "task.yaml"),
         );
         expect(task?.routing_models).toEqual({ claude: "claude-opus-5" });
-        expect(events.some((event) => event.type === "route.primary.diverged")).toBe(
-          exhausted === "claude",
-        );
+        const divergence = events.find((event) => event.type === "route.primary.diverged");
+        if (exhausted === "claude") {
+          expect(divergence?.payload).toMatchObject({
+            requested: "claude",
+            effective: "codex",
+            reason: "quota_exhausted",
+          });
+        } else {
+          expect(divergence).toBeUndefined();
+        }
       } finally {
         if (previousConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
         else process.env.CLAUDEXOR_CONFIG_DIR = previousConfigDir;
@@ -4277,6 +4284,122 @@ describe("Orchestrator", () => {
         code: "subscription_window_exhausted",
         resetsAt: claudeReset,
       });
+    } finally {
+      if (previousConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = previousConfigDir;
+    }
+  });
+
+  it("preserves the primary quota refusal when fallback policy removes the last sibling", async () => {
+    const repo = await initRepo();
+    const configDir = reapMk(join(tmpdir(), "claudexor-duplicate-profile-policy-empty-"));
+    const previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
+    process.env.CLAUDEXOR_CONFIG_DIR = configDir;
+    writeFileSync(
+      join(configDir, "config.yaml"),
+      [
+        "routing:",
+        "  paid_fallback: never",
+        "credential_profiles:",
+        "  - profile_id: shared",
+        "    harness_id: codex",
+        "    display_name: Codex shared",
+        "    credential_kind: api_key",
+        "    secret_ref: 'openai:shared'",
+        "  - profile_id: shared",
+        "    harness_id: claude",
+        "    display_name: Claude shared",
+        "    credential_kind: config_dir_login",
+        `    isolation_locator: '${join(configDir, "claude-home")}'`,
+        "",
+      ].join("\n"),
+    );
+    try {
+      const launches: Array<{ harness: string; model: string | null }> = [];
+      const resetsAt = "2099-08-24T02:30:00.000Z";
+      const result = await new Orchestrator({
+        registry: new Map([
+          ["codex", duplicateProfileAskAdapter("codex", launches)],
+          ["claude", duplicateProfileAskAdapter("claude", launches)],
+        ]),
+        reviewers: [],
+        quotaSnapshots: () => [spentProfileSnapshot("claude", "shared", resetsAt)],
+      }).run({
+        repoRoot: repo,
+        prompt: "inspect the repository",
+        mode: "ask",
+        primaryHarness: "claude",
+        model: "claude-opus-5",
+        credentialProfileId: "shared",
+      });
+
+      expect(legacyOutcome(result)).toBe("failed");
+      expect(launches).toEqual([]);
+      const failure = new ArtifactStore(repo).readYaml<Record<string, unknown>>(
+        join(result.runDir, "final", "failure.yaml"),
+      );
+      expect(failure).toMatchObject({
+        category: "harness_unavailable",
+        code: "subscription_window_exhausted",
+        resetsAt,
+      });
+    } finally {
+      if (previousConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = previousConfigDir;
+    }
+  });
+
+  it.each([
+    {
+      label: "unexpected",
+      error: new Error("unexpected credential preflight failure"),
+    },
+    {
+      label: "configuration",
+      error: Object.assign(new Error("bad credential routing configuration"), {
+        category: "config_error",
+      }),
+    },
+  ])("does not degrade a $label preflight error in an implicit pool", async ({ error }) => {
+    const repo = await initRepo();
+    const configDir = reapMk(join(tmpdir(), "claudexor-duplicate-profile-error-"));
+    const previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
+    process.env.CLAUDEXOR_CONFIG_DIR = configDir;
+    writeDuplicateProfileConfig(configDir, "shared");
+    try {
+      const launches: Array<{ harness: string; model: string | null }> = [];
+      const orchestrator = new Orchestrator({
+        registry: new Map([
+          ["codex", duplicateProfileAskAdapter("codex", launches)],
+          ["claude", duplicateProfileAskAdapter("claude", launches)],
+        ]),
+        reviewers: [],
+      });
+      const target = orchestrator as unknown as {
+        credentials: {
+          preflightProfile: (...args: unknown[]) => Promise<unknown>;
+        };
+      };
+      const original = target.credentials.preflightProfile.bind(target.credentials);
+      target.credentials.preflightProfile = async (...args: unknown[]) => {
+        if (args[1] === "codex") throw error;
+        return original(...args);
+      };
+
+      const result = await orchestrator.run({
+        repoRoot: repo,
+        prompt: "inspect the repository",
+        mode: "ask",
+        primaryHarness: "claude",
+        model: "claude-opus-5",
+        credentialProfileId: "shared",
+      });
+
+      expect(legacyOutcome(result)).toBe("failed");
+      expect(launches).toEqual([]);
+      expect(readFileSync(join(result.runDir, "final", "failure.yaml"), "utf8")).toContain(
+        error.message,
+      );
     } finally {
       if (previousConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
       else process.env.CLAUDEXOR_CONFIG_DIR = previousConfigDir;
