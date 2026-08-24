@@ -3,12 +3,22 @@
 Release history for Claudexor. The current version is declared in the root
 `package.json` (the version SSOT); tags `v*` correspond to GitHub Releases.
 
-- **v3.8.2** (2026-08-23): reviewer routing now preserves the selected
+- **v3.8.2** (2026-08-24): reviewer routing now preserves the selected
   credential profile through every reviewer surface, exposes a read-only
   accounts view, and discloses unavailable reviewer families instead of
   silently dropping them. Transient Claude native auth-status transport
   failures stay typed as unknown with bounded retry and last-known-good
-  disclosure rather than appearing as a logout.
+  disclosure rather than appearing as a logout. Startup recovery now keeps
+  the frozen pre-admission verdict as its fail-closed fallback until a live
+  post-quarantine re-verdict succeeds, and a delayed startup completion can no
+  longer overwrite that newer recovery state or duplicate normal-plane work.
+  Release verification now treats Codex model and effort catalogs as
+  account-scoped: every live ladder and default must match the recorded union,
+  while models advertised only by another account no longer create false
+  drift; `gpt-5.2` is admitted when the pinned CLI advertises it. The
+  Git-heavy orchestration and shared-workspace raw-patch regressions are split
+  into isolated scenarios so contention and cross-case state cannot consume a
+  composite timeout or manufacture a refusal failure.
 - **v3.8.1** (2026-08-22): profile-scoped Antigravity runs now create and use
   a private macOS keychain under each profile HOME before the vendor touches
   Keychain Services. This removes the recurring “Keychain not found” dialog
