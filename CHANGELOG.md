@@ -16,9 +16,9 @@ Release history for Claudexor. The current version is declared in the root
   account-scoped: every live ladder and default must match the recorded union,
   while models advertised only by another account no longer create false
   drift; `gpt-5.2` is admitted when the pinned CLI advertises it. The
-  Git-heavy orchestration and shared-workspace raw-patch regressions are split
-  into isolated scenarios so contention and cross-case state cannot consume a
-  composite timeout or manufacture a refusal failure.
+  Git-heavy orchestration and raw-patch regressions are split into independent
+  tests so their combined work cannot exhaust one composite timeout; every
+  scenario keeps its original production call and assertion.
 - **v3.8.1** (2026-08-22): profile-scoped Antigravity runs now create and use
   a private macOS keychain under each profile HOME before the vendor touches
   Keychain Services. This removes the recurring “Keychain not found” dialog
