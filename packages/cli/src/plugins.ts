@@ -370,6 +370,7 @@ function manifest(kind: "claude" | "codex" | "cursor"): string {
         shortDescription: "Harness-agnostic coding through the local Claudexor CLI.",
         longDescription:
           "Use Claudexor for local planning, runs, races, and review through generated skills and durable-handle MCP tools.",
+        defaultPrompt: ["Use Claudexor for harness-agnostic planning, execution, and review."],
         developerName: "Claudexor",
         category: "Productivity",
         capabilities: ["Productivity"],

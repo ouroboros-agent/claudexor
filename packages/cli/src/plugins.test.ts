@@ -218,6 +218,9 @@ describe("plugin lifecycle", () => {
       );
       expect(codexManifest.skills).toBe("./skills/");
       expect(codexManifest.mcpServers).toBe("./.mcp.json");
+      expect(codexManifest.interface.defaultPrompt).toEqual([
+        "Use Claudexor for harness-agnostic planning, execution, and review.",
+      ]);
       expect(
         existsSync(join(home, ".codex", "plugins", "claudexor", "commands", "claudexor.md")),
       ).toBe(false);
