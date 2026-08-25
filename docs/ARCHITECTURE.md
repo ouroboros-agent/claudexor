@@ -376,7 +376,10 @@ discover what is really advertised at discovery time and fall back to a
 recorded snapshot (stamped vendor data, kept in its captured order) when a
 probe cannot answer, so a probe failure costs freshness, never the run; both
 probes are cached, and `scripts/model-hints-freshness.mjs` WARNS when the live
-ladders disagree with the snapshot. Effort ceilings are per MODEL, not per
+ladders disagree with the snapshot. Codex model membership is account-scoped,
+so its recorded fallback covers the union of verified account catalogs: every
+live model must match its recorded ladder/default, while a recorded-only model
+does not make another account stale. Effort ceilings are per MODEL, not per
 harness (gpt-5.6-sol takes `ultra`, gpt-5.4 stops at `xhigh`), so
 `effortLevelsForModel` narrows the harness-wide merged ladder for the routed
 model. The shared normalizer then passes an ADVERTISED level through verbatim,
@@ -488,6 +491,11 @@ temporarily as `.claudexor-synthesis-input.md` inside the synthesis envelope,
 the argv prompt only instructs the harness to read it, and the file is removed
 before every diff/gate/review (including native retries). This prevents
 `spawn E2BIG` without truncating evidence or polluting the candidate patch.
+
+One-shot Codex and Cursor prompts use the vendors' stdin contracts through the
+shared CLI run loop; prompt bytes never ride their process argv. One-shot stdin
+and a bidirectional session are exclusive owners of the same pipe. Adapters
+without a verified prompt-stdin contract retain their vendor-specific transport.
 
 Disposable candidate envelopes also preserve bounded raster outputs before
 cleanup (PNG/JPEG/WebP/GIF, 16 MiB each / 32 MiB total) under the attempt's

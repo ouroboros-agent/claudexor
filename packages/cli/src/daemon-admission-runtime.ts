@@ -165,15 +165,37 @@ export function createStartupAdmissionRuntime(input: {
   };
 
   let admissionCompletion: Promise<DaemonServingMode> | null = null;
+  let frozenVerdictSuperseded = false;
+  const liveBlockedPartitions = (): string[] =>
+    recoveryBlockedPartitions({
+      globalPreparation: { inspection: input.global.inspect() },
+      partitionsPreparation: input.partitions.refreshPreparation(),
+    });
   const runAdmissionCompletion = (
     blockedPartitions: () => string[],
+    supersedesFrozenVerdict = false,
   ): Promise<DaemonServingMode> => {
     if (input.admission.snapshot() === "normal") return Promise.resolve("normal");
-    admissionCompletion ??= (async () => {
+    if (!admissionCompletion) {
+      // Resolve the read-only verdict before it enters the mutation flight. A
+      // throwing live inspection owns no slot, so a concurrent delayed startup
+      // can still use its authoritative frozen receipt. Once completion starts,
+      // every caller shares its success or failure without replaying duties.
+      let resolvedBlockedPartitions: string[];
       try {
+        resolvedBlockedPartitions = (
+          frozenVerdictSuperseded ? liveBlockedPartitions : blockedPartitions
+        )();
+      } catch (error) {
+        return Promise.reject(error);
+      }
+      const completion = Promise.resolve().then(async () => {
         const servingMode = await completeStartupAdmission({
           grant: input.grant,
-          blockedPartitions: blockedPartitions(),
+          // Once a recovery mutation succeeds, the stage-2 startup snapshot
+          // predates operator-authorized state. A late startup completion must
+          // not overwrite the live re-verdict with those stale blockers.
+          blockedPartitions: resolvedBlockedPartitions,
           global: {
             // A manager already reopened by a recovery-route quarantine
             // (openGeneration) is live authority; only still-prepared state
@@ -200,11 +222,18 @@ export function createStartupAdmissionRuntime(input: {
           },
         });
         if (servingMode === "normal") await onNormalAdmission();
+        // Publish successful LIVE freshness before this Promise can resolve
+        // and clear its slot. Delayed startup can then never observe both a
+        // vacant flight and the pre-mutation frozen verdict as authoritative.
+        if (supersedesFrozenVerdict) frozenVerdictSuperseded = true;
         return servingMode;
-      } finally {
-        admissionCompletion = null;
-      }
-    })();
+      });
+      admissionCompletion = completion;
+      const clearCompletion = (): void => {
+        if (admissionCompletion === completion) admissionCompletion = null;
+      };
+      void completion.then(clearCompletion, clearCompletion);
+    }
     return admissionCompletion;
   };
 
@@ -217,12 +246,7 @@ export function createStartupAdmissionRuntime(input: {
         await joined.catch(() => {});
         continue;
       }
-      const servingMode = await runAdmissionCompletion(() =>
-        recoveryBlockedPartitions({
-          globalPreparation: { inspection: input.global.inspect() },
-          partitionsPreparation: input.partitions.refreshPreparation(),
-        }),
-      );
+      const servingMode = await runAdmissionCompletion(liveBlockedPartitions, true);
       if (servingMode !== "normal") return; // partitions still block: stay protected
     }
   };

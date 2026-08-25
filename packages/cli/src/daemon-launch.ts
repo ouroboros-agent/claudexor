@@ -113,12 +113,12 @@ function canonicalLogRemedy(): string {
   }
 }
 
-interface PreAuthorityStderrCapture {
+export interface PreAuthorityStderrCapture {
   evidence(): DaemonLaunchStderrEvidence;
   destroyAndDiscard(): void;
 }
 
-function capturePreAuthorityStderr(stream: Readable | null): PreAuthorityStderrCapture {
+export function capturePreAuthorityStderr(stream: Readable | null): PreAuthorityStderrCapture {
   let chunks: Buffer[] = [];
   let retainedBytes = 0;
   let observedBytes = 0;

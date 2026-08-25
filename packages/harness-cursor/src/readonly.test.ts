@@ -95,14 +95,16 @@ describe("cursor readonly access dispatches onto Ask mode", () => {
 
 async function runCollecting(
   runSpec: HarnessRunSpec,
-): Promise<{ events: HarnessEvent[]; args: string[] | null }> {
+): Promise<{ events: HarnessEvent[]; args: string[] | null; input: string | null }> {
   let captured: string[] | null = null;
+  let input: string | null = null;
   const adapter = createCursorAdapter({
     detectVersion: async () => "cursor-test",
     nativeAuthOk: async () => ({ kind: "authenticated" }),
     cursorApiKey: () => null,
     runCliHarness: async function* (opts: CliRunLoopOptions): AsyncGenerator<HarnessEvent> {
       captured = [...opts.args];
+      input = opts.input ?? null;
       yield {
         type: "completed",
         session_id: opts.spec.session_id,
@@ -112,8 +114,34 @@ async function runCollecting(
   });
   const events: HarnessEvent[] = [];
   for await (const ev of adapter.run(runSpec)) events.push(ev);
-  return { events, args: captured };
+  return { events, args: captured, input };
 }
+
+describe("cursor one-shot prompt transport", () => {
+  it("keeps prompt bytes out of argv and composes instructions on stdin for resume", async () => {
+    const prompt = "review the frozen packet";
+    const { args, input } = await runCollecting(
+      spec({
+        access: "readonly",
+        prompt,
+        instructions: "Return one verdict.",
+        resume_session_id: "cursor-thread-1",
+      }),
+    );
+    expect(args).not.toBeNull();
+    const argv = args as unknown as string[];
+    expect(argv).not.toContain(prompt);
+    expect(argv).not.toContain(input);
+    expect(argv.slice(argv.indexOf("--resume"), argv.indexOf("--resume") + 2)).toEqual([
+      "--resume",
+      "cursor-thread-1",
+    ]);
+    expect(modesOf(argv)).toEqual(["ask"]);
+    expect(input).toBe(
+      "[SYSTEM INSTRUCTIONS]\nReturn one verdict.\n[END SYSTEM INSTRUCTIONS]\n\n" + prompt,
+    );
+  });
+});
 
 describe("cursor trusted full access", () => {
   it("maps full to --force --sandbox disabled --trust", async () => {
