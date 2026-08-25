@@ -21,7 +21,11 @@ Release history for Claudexor. The current version is declared in the root
   scenario keeps its original production call and assertion. Codex and Cursor
   one-shot prompts now use their native stdin contracts instead of process argv,
   so large agent-first review packets no longer fail before model startup with
-  `spawn E2BIG`.
+  `spawn E2BIG`. Publication uses the owner-approved one-release
+  `waive_cursor_review` exception to avoid repeating the full-context review
+  already completed during release work in a different execution setup; both
+  signed runtime manifests and every other release and provenance gate remain
+  required, and no schema-v6 review attestation is claimed.
 - **v3.8.1** (2026-08-22): profile-scoped Antigravity runs now create and use
   a private macOS keychain under each profile HOME before the vendor touches
   Keychain Services. This removes the recurring “Keychain not found” dialog

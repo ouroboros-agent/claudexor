@@ -311,26 +311,46 @@ describe("one-release custom Ed25519 waiver", () => {
   });
 });
 
-describe("one-release Cursor review waiver", () => {
+describe("version-scoped Cursor review waiver", () => {
   const signedRuntimeInputs = {
     RUNTIME_MANIFEST_B64_INPUT: "e30=",
     REMOTE_RUNTIME_MANIFEST_B64_INPUT: "e30=",
     WAIVE_CURSOR_REVIEW_INPUT: "true",
   };
 
-  it("accepts only v3.8.1 with an empty review attestation and both runtime inputs", () => {
-    withPublishFixture("3.8.1", (fixture) => {
+  it.each(["3.8.1", "3.8.2"])(
+    "accepts v%s with an empty review attestation and both runtime inputs",
+    (version) => {
+      withPublishFixture(version, (fixture) => {
+        const reviewPath = resolve(fixture.fixture, "review-attestation.json");
+        const outputPath = resolve(fixture.fixture, "github-output");
+        const result = verifyPublish(fixture, {
+          ...signedRuntimeInputs,
+          REVIEW_ATTESTATION_PATH: reviewPath,
+          GITHUB_OUTPUT: outputPath,
+        });
+
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain(`release input OK: publish ${fixture.candidateSha}`);
+        expect(readFileSync(outputPath, "utf8")).toContain("waive_cursor_review=true");
+        expect(existsSync(reviewPath)).toBe(false);
+      });
+    },
+  );
+
+  it("keeps the normal v3.8.2 publish path fail-closed when review is empty", () => {
+    withPublishFixture("3.8.2", (fixture) => {
       const reviewPath = resolve(fixture.fixture, "review-attestation.json");
-      const outputPath = resolve(fixture.fixture, "github-output");
       const result = verifyPublish(fixture, {
-        ...signedRuntimeInputs,
         REVIEW_ATTESTATION_PATH: reviewPath,
-        GITHUB_OUTPUT: outputPath,
+        RUNTIME_MANIFEST_B64_INPUT: "e30=",
+        REMOTE_RUNTIME_MANIFEST_B64_INPUT: "e30=",
       });
 
-      expect(result.status).toBe(0);
-      expect(result.stdout).toContain(`release input OK: publish ${fixture.candidateSha}`);
-      expect(readFileSync(outputPath, "utf8")).toContain("waive_cursor_review=true");
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        "release input rejected: publish mode requires a base64-encoded review attestation",
+      );
       expect(existsSync(reviewPath)).toBe(false);
     });
   });
@@ -363,13 +383,13 @@ describe("one-release Cursor review waiver", () => {
     });
   });
 
-  it("rejects the waiver for every package version except v3.8.1", () => {
-    withPublishFixture("3.8.0", (fixture) => {
+  it.each(["3.8.0", "3.8.3"])("rejects the waiver for package version %s", (version) => {
+    withPublishFixture(version, (fixture) => {
       const result = verifyPublish(fixture, signedRuntimeInputs);
 
       expect(result.status).toBe(1);
       expect(result.stderr).toContain(
-        "release input rejected: waive_cursor_review is authorized only for package version 3.8.1",
+        "release input rejected: waive_cursor_review is authorized only for package versions 3.8.1 and 3.8.2",
       );
     });
   });
