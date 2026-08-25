@@ -99,8 +99,8 @@ if (mode === "publish" && tag !== `v${version}`)
 if (skipCustomEd25519 && version !== "3.8.0") {
   fail(["skip_custom_ed25519 is authorized only for package version 3.8.0"]);
 }
-if (waiveCursorReview && version !== "3.8.1") {
-  fail(["waive_cursor_review is authorized only for package version 3.8.1"]);
+if (waiveCursorReview && !["3.8.1", "3.8.2"].includes(version)) {
+  fail(["waive_cursor_review is authorized only for package versions 3.8.1 and 3.8.2"]);
 }
 
 let attestationText = "";
