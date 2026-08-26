@@ -7,6 +7,7 @@ import { encodeJournalPayload } from "./append-batch.js";
 import {
   COMPACTED_SNAPSHOT,
   HASH_BYTES,
+  MAX_COMPACTED_LOGICAL_BYTES,
   MAX_PAYLOAD_BYTES,
   ZERO_HASH,
   encodeFrame,
@@ -34,12 +35,34 @@ export function compactJournalFile(input: {
   now: () => Date;
 }): JournalCompactionResult | null {
   if (input.entries.length === 0) return null;
-  const logical: CompactedRecord[] = input.entries.map((record) => ({
-    time: record.time,
-    type: record.type,
-    payload: cloneJson(record.payload),
-  }));
-  const compressed = gzipSync(Buffer.from(JSON.stringify(logical)));
+  let logical: CompactedRecord[];
+  try {
+    logical = input.entries.map((record) => ({
+      time: record.time,
+      type: record.type,
+      payload: cloneJson(record.payload),
+    }));
+  } catch (error) {
+    if (isCompactionCapacityError(error)) return null;
+    throw error;
+  }
+  let serialized: string;
+  try {
+    const value = JSON.stringify(logical);
+    if (value === undefined) return null;
+    serialized = value;
+  } catch (error) {
+    if (isCompactionCapacityError(error)) return null;
+    throw error;
+  }
+  if (Buffer.byteLength(serialized, "utf8") > MAX_COMPACTED_LOGICAL_BYTES) return null;
+  let compressed: Buffer;
+  try {
+    compressed = gzipSync(Buffer.from(serialized));
+  } catch (error) {
+    if (isCompactionCapacityError(error)) return null;
+    throw error;
+  }
   const payload: CompactedSnapshotPayload = {
     version: 1,
     count: logical.length,
@@ -60,6 +83,26 @@ export function compactJournalFile(input: {
   };
   const frame = encodeFrame(header, payloadBytes);
   if (frame.length >= input.knownFileBytes) return null;
+  const frameHash = frame.subarray(frame.length - HASH_BYTES).toString("hex");
+  // Materialize the replacement records before the rename. If cloning a
+  // payload fails, the existing journal must remain the authoritative file.
+  let records: JournalRecord[];
+  try {
+    records = logical.map((record, index) => ({
+      partition: input.partition,
+      epoch,
+      seq: index + 1,
+      previousFrameHash: index === 0 ? ZERO_HASH : frameHash,
+      frameHash,
+      time: record.time,
+      type: record.type,
+      payload: cloneJson(record.payload),
+      byteOffset: 0,
+    }));
+  } catch (error) {
+    if (isCompactionCapacityError(error)) return null;
+    throw error;
+  }
   const temp = `${input.path}.${randomUUID()}.compact`;
   const tempFd = openSync(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
   try {
@@ -69,18 +112,6 @@ export function compactJournalFile(input: {
   }
   renameSync(temp, input.path);
   fsyncDirectory(dirname(input.path));
-  const frameHash = frame.subarray(frame.length - HASH_BYTES).toString("hex");
-  const records = logical.map((record, index) => ({
-    partition: input.partition,
-    epoch,
-    seq: index + 1,
-    previousFrameHash: index === 0 ? ZERO_HASH : frameHash,
-    frameHash,
-    time: record.time,
-    type: record.type,
-    payload: cloneJson(record.payload),
-    byteOffset: 0,
-  }));
   return {
     receipt: {
       beforeBytes: input.knownFileBytes,
@@ -93,6 +124,16 @@ export function compactJournalFile(input: {
     previousFrameHash: frameHash,
     knownFileBytes: frame.length,
   };
+}
+
+function isCompactionCapacityError(error: unknown): boolean {
+  if (error instanceof RangeError && error.message === "Invalid string length") return true;
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === "ERR_BUFFER_TOO_LARGE"
+  );
 }
 
 function cloneJson<T>(value: T): T {

@@ -10,7 +10,7 @@ import {
 import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DurableJournal,
   JournalAppendUncertainError,
@@ -60,6 +60,75 @@ describe("DurableJournal", () => {
     });
     expect(journal.compact()).toBeNull();
     expect(journal.state().status).toBe("ready");
+    journal.close();
+  });
+
+  it("keeps a ready journal when compacted snapshot serialization hits the string limit", () => {
+    const journal = openJournal();
+    const internals = journal as unknown as {
+      entries: Array<{ time: string; type: string; payload: unknown }>;
+      knownFileBytes: number;
+    };
+    internals.entries.push({
+      time: "2026-01-01T00:00:00.000Z",
+      type: "oversized.history",
+      payload: { value: 1 },
+    });
+    internals.knownFileBytes = Number.MAX_SAFE_INTEGER;
+    const before = readFileSync(journal.path);
+    const originalStringify = JSON.stringify;
+    const stringify = vi.spyOn(JSON, "stringify").mockImplementation((value, replacer, space) => {
+      if (
+        Array.isArray(value) &&
+        value.length === 1 &&
+        (value[0] as { type?: unknown } | undefined)?.type === "oversized.history"
+      ) {
+        throw new RangeError("Invalid string length");
+      }
+      return originalStringify(value, replacer, space);
+    });
+    try {
+      expect(journal.compact()).toBeNull();
+      expect(readFileSync(journal.path)).toEqual(before);
+      expect(journal.state()).toMatchObject({ status: "ready" });
+    } finally {
+      stringify.mockRestore();
+    }
+    journal.close();
+  });
+
+  it("keeps a ready journal when one logical payload cannot be cloned", () => {
+    const journal = openJournal();
+    const internals = journal as unknown as {
+      entries: Array<{ time: string; type: string; payload: unknown }>;
+      knownFileBytes: number;
+    };
+    internals.entries.push({
+      time: "2026-01-01T00:00:00.000Z",
+      type: "oversized.payload",
+      payload: { capacityMarker: true },
+    });
+    internals.knownFileBytes = Number.MAX_SAFE_INTEGER;
+    const before = readFileSync(journal.path);
+    const originalStringify = JSON.stringify;
+    const stringify = vi.spyOn(JSON, "stringify").mockImplementation((value, replacer, space) => {
+      if (
+        value !== null &&
+        typeof value === "object" &&
+        !Array.isArray(value) &&
+        (value as { capacityMarker?: unknown }).capacityMarker === true
+      ) {
+        throw new RangeError("Invalid string length");
+      }
+      return originalStringify(value, replacer, space);
+    });
+    try {
+      expect(journal.compact()).toBeNull();
+      expect(readFileSync(journal.path)).toEqual(before);
+      expect(journal.state()).toMatchObject({ status: "ready" });
+    } finally {
+      stringify.mockRestore();
+    }
     journal.close();
   });
 

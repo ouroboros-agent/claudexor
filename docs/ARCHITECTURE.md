@@ -186,6 +186,10 @@ at every wire boundary.
   directory-entry flushes are tolerated to fail (`fsyncDirectory`), so a Windows
   crash can resurrect a completed append's intent file and recovery will then
   discard that acknowledged frame (disclosed, loud in the journal record).
+  Compacted snapshots keep their gzip framing but replay logical records one at
+  a time. Replay bounds decompressed output, and opportunistic compaction leaves
+  the existing frames untouched when a replacement cannot be materialized within
+  that bound, so a large valid history remains readable and startup stays ready.
 - `packages/daemon`: durable local queue (Unix socket on POSIX, named pipe on win32) and journal projections for commands, projects, and threads.
 - `packages/cli`: thin command surface plus local host-integration lifecycle
   (`claudexor plugin`) for generated Claude Code/Codex/Cursor/OpenCode
