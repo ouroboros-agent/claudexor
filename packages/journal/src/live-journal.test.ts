@@ -6,10 +6,11 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { DurableJournal, journalPartitionDirectory } from "./index.js";
@@ -29,12 +30,16 @@ describe.skipIf(!sourcePath)("large live journal dogfood", () => {
     expect(replay.records.length).toBeGreaterThanOrEqual(200_000);
     const first = replay.records[0];
     const last = replay.records.at(-1);
-    expect(first).toMatchObject({ seq: 1, partition });
+    expect(first?.seq).toBe(1);
+    expect(first?.partition).toBe(partition);
     expect(last?.seq).toBe(replay.records.length);
+    expect(last?.partition).toBe(partition);
 
     const sourceDir = dirname(source);
     expect(existsSync(join(sourceDir, "append.pending.json"))).toBe(false);
-    const tempRoot = mkdtempSync(join(homedir(), ".claudexor-journal-live-test-"));
+    const tempRoot = realpathSync.native(
+      mkdtempSync(join(tmpdir(), ".claudexor-journal-live-test-")),
+    );
     chmodSync(tempRoot, 0o700);
     try {
       const journalRoot = join(tempRoot, "journal");
@@ -62,13 +67,15 @@ describe.skipIf(!sourcePath)("large live journal dogfood", () => {
         expect(prepared.state().status).toBe("ready");
         expect(prepared.currentSequence()).toBe(last?.seq);
         const preparedTail = prepared.records(prepared.currentSequence() - 1)[0];
-        expect(preparedTail).toMatchObject({ seq: last?.seq, partition });
+        expect(preparedTail?.seq).toBe(last?.seq);
+        expect(preparedTail?.partition).toBe(partition);
 
         prepared.activatePrepared();
         expect(prepared.state().status).toBe("ready");
         expect(prepared.currentSequence()).toBe(last?.seq);
         const activatedTail = prepared.records(prepared.currentSequence() - 1)[0];
-        expect(activatedTail).toMatchObject({ seq: last?.seq, partition });
+        expect(activatedTail?.seq).toBe(last?.seq);
+        expect(activatedTail?.partition).toBe(partition);
       } finally {
         prepared.close();
       }

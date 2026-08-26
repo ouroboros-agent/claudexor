@@ -63,13 +63,27 @@ export function compactJournalFile(input: {
     if (isCompactionCapacityError(error)) return null;
     throw error;
   }
-  const payload: CompactedSnapshotPayload = {
-    version: 1,
-    count: logical.length,
-    encoding: "gzip-base64",
-    data: compressed.toString("base64"),
-  };
-  const payloadBytes = encodeJournalPayload(payload);
+  // A base64 representation plus its JSON envelope is always larger than the
+  // compressed bytes, so this snapshot cannot fit the frame payload. Avoid
+  // creating an unnecessarily large string before returning the no-op.
+  if (compressed.length > MAX_PAYLOAD_BYTES) return null;
+  // Base64 and payload JSON are also materialization steps. Keep them inside
+  // the same capacity boundary so an otherwise readable journal remains the
+  // authoritative file when either conversion hits a runtime limit.
+  let payload: CompactedSnapshotPayload;
+  let payloadBytes: Buffer;
+  try {
+    payload = {
+      version: 1,
+      count: logical.length,
+      encoding: "gzip-base64",
+      data: compressed.toString("base64"),
+    };
+    payloadBytes = encodeJournalPayload(payload);
+  } catch (error) {
+    if (isCompactionCapacityError(error)) return null;
+    throw error;
+  }
   if (payloadBytes.length > MAX_PAYLOAD_BYTES) return null;
   const epoch = randomUUID();
   const header: FrameHeader = {
@@ -127,12 +141,18 @@ export function compactJournalFile(input: {
 }
 
 function isCompactionCapacityError(error: unknown): boolean {
-  if (error instanceof RangeError && error.message === "Invalid string length") return true;
+  if (
+    error instanceof RangeError &&
+    (error.message === "Invalid string length" ||
+      ("code" in error && error.code === "ERR_STRING_TOO_LONG"))
+  ) {
+    return true;
+  }
   return (
     typeof error === "object" &&
     error !== null &&
     "code" in error &&
-    error.code === "ERR_BUFFER_TOO_LARGE"
+    (error.code === "ERR_BUFFER_TOO_LARGE" || error.code === "ERR_STRING_TOO_LONG")
   );
 }
 

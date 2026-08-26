@@ -132,6 +132,34 @@ describe("DurableJournal", () => {
     journal.close();
   });
 
+  it("keeps a ready journal when compacted payload materialization hits the string limit", () => {
+    const journal = openJournal();
+    const internals = journal as unknown as {
+      entries: Array<{ time: string; type: string; payload: unknown }>;
+      knownFileBytes: number;
+    };
+    internals.entries.push({
+      time: "2026-01-01T00:00:00.000Z",
+      type: "oversized.compacted.payload",
+      payload: { capacityMarker: true },
+    });
+    internals.knownFileBytes = Number.MAX_SAFE_INTEGER;
+    const before = readFileSync(journal.path);
+    const originalToString = Buffer.prototype.toString;
+    Buffer.prototype.toString = function (encoding?: BufferEncoding, start?: number, end?: number) {
+      if (encoding === "base64") throw new RangeError("Invalid string length");
+      return originalToString.call(this, encoding, start, end);
+    };
+    try {
+      expect(journal.compact()).toBeNull();
+      expect(readFileSync(journal.path)).toEqual(before);
+      expect(journal.state()).toMatchObject({ status: "ready" });
+    } finally {
+      Buffer.prototype.toString = originalToString;
+    }
+    journal.close();
+  });
+
   it("replays an fsynced hash chain and resumes an epoch-bound cursor at N+1", () => {
     const journal = openJournal();
     const first = journal.append("setup.job.saved", { id: "one" });
