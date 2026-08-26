@@ -1,5 +1,14 @@
 # @claudexor/harness-opencode
 
+## 3.8.3
+
+### Patch Changes
+
+- @claudexor/core@3.8.3
+- @claudexor/schema@3.8.3
+- @claudexor/secrets@3.8.3
+- @claudexor/util@3.8.3
+
 ## 3.8.2
 
 ### Patch Changes
