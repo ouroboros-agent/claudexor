@@ -9,6 +9,10 @@ const PREFIX_BYTES = PREFIX_CORE_BYTES + PREFIX_CHECKSUM_BYTES;
 export const HASH_BYTES = 32;
 const MAX_HEADER_BYTES = 64 * 1024;
 export const MAX_PAYLOAD_BYTES = 16 * 1024 * 1024;
+// A compacted frame's physical payload is bounded, but gzip expansion is not.
+// Keep replay fail-closed before an unbounded allocation while retaining
+// headroom for the large snapshots already produced by the journal.
+export const MAX_COMPACTED_LOGICAL_BYTES = 512 * 1024 * 1024;
 export const ZERO_HASH = "0".repeat(64);
 export const COMPACTED_SNAPSHOT = "journal.compacted_snapshot";
 
@@ -205,21 +209,100 @@ function decodeCompactedSnapshot(
     throw new Error("record count mismatch");
   }
   if (typeof payload.data !== "string") throw new Error("encoded data is missing");
-  const decoded = JSON.parse(gunzipSync(Buffer.from(payload.data, "base64")).toString("utf8"));
-  if (!Array.isArray(decoded) || decoded.length !== payload.count)
-    throw new Error("invalid records");
-  return decoded.map((record) => {
-    if (
-      !isRecord(record) ||
-      typeof record.time !== "string" ||
-      typeof record.type !== "string" ||
-      !record.type ||
-      record.type === COMPACTED_SNAPSHOT
-    ) {
-      throw new Error("invalid logical record");
-    }
-    return { time: record.time, type: record.type, payload: record.payload };
+  const decoded = gunzipSync(Buffer.from(payload.data, "base64"), {
+    maxOutputLength: MAX_COMPACTED_LOGICAL_BYTES,
   });
+  return parseCompactedRecords(decoded, payload.count as number);
+}
+
+function parseCompactedRecords(bytes: Buffer, count: number): CompactedRecord[] {
+  let cursor = skipJsonWhitespace(bytes, 0);
+  if (bytes[cursor] !== 0x5b) throw new Error("invalid records");
+  cursor += 1;
+  const records: CompactedRecord[] = [];
+  for (let index = 0; index < count; index += 1) {
+    cursor = skipJsonWhitespace(bytes, cursor);
+    const end = scanCompactedRecord(bytes, cursor);
+    let value: unknown;
+    try {
+      // Parse one logical record at a time. Converting the complete decompressed
+      // array to a JavaScript string is what overflows on large valid journals.
+      value = JSON.parse(bytes.subarray(cursor, end).toString("utf8"));
+    } catch {
+      throw new Error("invalid records");
+    }
+    records.push(validateCompactedRecord(value));
+    cursor = skipJsonWhitespace(bytes, end);
+    const separator = bytes[cursor];
+    if (index + 1 < count) {
+      if (separator !== 0x2c) throw new Error("invalid records");
+      cursor += 1;
+    } else {
+      if (separator !== 0x5d) throw new Error("invalid records");
+      cursor += 1;
+    }
+  }
+  cursor = skipJsonWhitespace(bytes, cursor);
+  if (cursor !== bytes.length) throw new Error("invalid records");
+  return records;
+}
+
+function validateCompactedRecord(record: unknown): CompactedRecord {
+  if (
+    !isRecord(record) ||
+    typeof record.time !== "string" ||
+    typeof record.type !== "string" ||
+    !record.type ||
+    record.type === COMPACTED_SNAPSHOT
+  ) {
+    throw new Error("invalid logical record");
+  }
+  return { time: record.time, type: record.type, payload: record.payload };
+}
+
+function scanCompactedRecord(bytes: Buffer, start: number): number {
+  if (bytes[start] !== 0x7b) throw new Error("invalid records");
+  const stack: number[] = [];
+  let inString = false;
+  let escaped = false;
+  for (let cursor = start; cursor < bytes.length; cursor += 1) {
+    const value = bytes[cursor];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (value === 0x5c) escaped = true;
+      else if (value === 0x22) inString = false;
+      continue;
+    }
+    if (value === 0x22) {
+      inString = true;
+      continue;
+    }
+    if (value === 0x7b || value === 0x5b) {
+      stack.push(value);
+      continue;
+    }
+    if (value !== 0x7d && value !== 0x5d) continue;
+    const opening = stack.pop();
+    if ((value === 0x7d && opening !== 0x7b) || (value === 0x5d && opening !== 0x5b)) {
+      throw new Error("invalid records");
+    }
+    if (stack.length === 0) return cursor + 1;
+  }
+  throw new Error("invalid records");
+}
+
+function skipJsonWhitespace(bytes: Buffer, start: number): number {
+  let cursor = start;
+  while (
+    cursor < bytes.length &&
+    (bytes[cursor] === 0x20 ||
+      bytes[cursor] === 0x09 ||
+      bytes[cursor] === 0x0a ||
+      bytes[cursor] === 0x0d)
+  ) {
+    cursor += 1;
+  }
+  return cursor;
 }
 
 function encodeJson(value: unknown): Buffer {
