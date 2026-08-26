@@ -3,6 +3,10 @@
 Release history for Claudexor. The current version is declared in the root
 `package.json` (the version SSOT); tags `v*` correspond to GitHub Releases.
 
+- **v3.8.3** (2026-08-26): large compacted journal snapshots now replay
+  record-by-record without materializing one whole-array JavaScript string,
+  while decompression and opportunistic compaction remain bounded and fail
+  back to the existing journal instead of entering recovery-only mode.
 - **v3.8.2** (2026-08-24): reviewer routing now preserves the selected
   credential profile through every reviewer surface, exposes a read-only
   accounts view, and discloses unavailable reviewer families instead of
