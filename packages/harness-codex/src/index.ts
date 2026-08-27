@@ -290,12 +290,11 @@ export function codexExecArgs(
     args.push(...nodeReplArgs);
     const imageArgs = codexImageArgs(spec.attachments);
     args.push(...imageArgs);
-    // `codex exec -i/--image <FILE>...` is VARIADIC, so a positional prompt placed
-    // right after it is swallowed as another "image" — the model then receives no
-    // prompt and never sees the attachment (the v0.13 "I don't see the image" bug).
-    // LIVE-VERIFIED on codex 0.142: `-i <path> -- "<prompt>"` => image IS described.
+    // `codex exec -i/--image <FILE>...` is VARIADIC, so terminate it before the
+    // documented `-` stdin-prompt operand. Prompt bytes never ride argv (large
+    // agent-first packets otherwise fail at spawn with E2BIG).
     if (imageArgs.length > 0) args.push("--");
-    args.push(spec.prompt);
+    args.push("-");
     return args;
   }
   const args = ["exec", "--json", ...CODEX_FILE_AUTH_ARGS, ...CODEX_PROJECT_DOC_FALLBACK_ARGS];
@@ -307,7 +306,8 @@ export function codexExecArgs(
     args.push("-c", `developer_instructions=${tomlBasicString(spec.instructions)}`);
   args.push(...codexWebArgs(spec.external_context_policy ?? "auto"));
   // ALL `-c` config overrides BEFORE `-i` (variadic) so they can't be eaten as
-  // image paths; then images, then `--`, then the prompt. See resume branch.
+  // image paths; then images, then `--`, then the `-` stdin-prompt operand.
+  // See resume branch.
   args.push(
     ...codexBrowserArgs(spec.browser, spec.external_context_policy, spec.extra_mcp_servers),
   );
@@ -315,7 +315,7 @@ export function codexExecArgs(
   const imageArgs = codexImageArgs(spec.attachments);
   args.push(...imageArgs);
   if (imageArgs.length > 0) args.push("--");
-  args.push(spec.prompt);
+  args.push("-");
   return args;
 }
 
@@ -424,9 +424,9 @@ export function createCodexAdapter(deps: Partial<CodexRuntimeDeps> = {}): Harnes
           effort_levels_verified_against: efforts.live
             ? version
             : CODEX_EFFORT_SNAPSHOT_VERIFIED_AGAINST,
-          // Explicit models outside this verified list fail before native execution.
-          // Current + still-API-available ids per the vendor Codex models page,
-          // verified against the installed CLI recorded below.
+          // Explicit models outside this verified union fail before native execution.
+          // Membership is account-scoped, so retain still-route-visible ids and add
+          // every model advertised by the pinned CLI captures recorded below.
           known_models: [
             "gpt-5.6",
             "gpt-5.6-sol",
@@ -436,6 +436,7 @@ export function createCodexAdapter(deps: Partial<CodexRuntimeDeps> = {}): Harnes
             "gpt-5.4",
             "gpt-5.4-mini",
             "gpt-5.3-codex-spark",
+            "gpt-5.2",
           ],
           known_models_verified_against: CODEX_VENDOR_CLI_VERSION,
         },
@@ -774,6 +775,7 @@ async function* runCodex(
       bin: BIN,
       args,
       spec,
+      input: spec.prompt,
       env,
       label: "codex",
       redact: redactSecrets,

@@ -1,11 +1,13 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   CLI_DAEMON_LAUNCH_SOURCES,
   DAEMON_LAUNCH_SOURCE_ENV,
+  capturePreAuthorityStderr,
   daemonLaunchEnvironment,
   launchDetachedDaemon,
 } from "./daemon-launch.js";
@@ -61,6 +63,21 @@ describe("bounded caller-side daemon launch adapter", () => {
       [DAEMON_LAUNCH_SOURCE_ENV]: "cli_ensure_daemon",
     });
     expect(base).toEqual({ HOME: "/tmp/home", KEEP_ME: "yes" });
+  });
+
+  it("retains stderr after the parent-side data handler observes it", async () => {
+    const stream = new PassThrough();
+    const capture = capturePreAuthorityStderr(stream);
+    const observed = new Promise<void>((resolve) => stream.once("data", () => resolve()));
+
+    stream.write("parent-observed stderr\n");
+    await observed;
+
+    expect(capture.evidence()).toMatchObject({
+      kind: "retained",
+      message: expect.stringContaining("parent-observed stderr"),
+    });
+    capture.destroyAndDiscard();
   });
 
   it("makes a real missing-module import failure visible without forging the daemon-owned log", async () => {
@@ -162,8 +179,8 @@ describe("bounded caller-side daemon launch adapter", () => {
       entry,
       [
         'const fs = require("node:fs");',
-        `fs.writeFileSync(${JSON.stringify(started)}, "started");`,
         `process.stderr.on("error", (error) => { fs.writeFileSync(${JSON.stringify(pipeClosed)}, error.code || "error"); process.exit(0); });`,
+        `fs.writeFileSync(${JSON.stringify(started)}, "started");`,
         'setInterval(() => process.stderr.write("pre-authority stderr\\n"), 10);',
         "setTimeout(() => process.exit(2), 5000);",
       ].join("\n"),
@@ -175,7 +192,6 @@ describe("bounded caller-side daemon launch adapter", () => {
     });
     try {
       await waitForFile(started);
-      await delay(30);
       launch.markReady();
       await waitForFileContent(pipeClosed, "EPIPE");
       expect(readFileSync(pipeClosed, "utf8")).toBe("EPIPE");
@@ -195,8 +211,8 @@ describe("bounded caller-side daemon launch adapter", () => {
       entry,
       [
         'const fs = require("node:fs");',
-        `fs.writeFileSync(${JSON.stringify(started)}, "started");`,
         `process.stderr.on("error", (error) => { fs.writeFileSync(${JSON.stringify(pipeClosed)}, error.code || "error"); process.exit(0); });`,
+        `fs.writeFileSync(${JSON.stringify(started)}, "started");`,
         'setInterval(() => process.stderr.write("waiting for readiness\\n"), 10);',
         "setTimeout(() => process.exit(2), 5000);",
       ].join("\n"),
@@ -208,11 +224,9 @@ describe("bounded caller-side daemon launch adapter", () => {
     });
     try {
       await waitForFile(started);
-      await delay(30);
       const error = launch.callerError("socket_wait", 1);
       expect(launch.failure()).toMatchObject({
         kind: "startup_timeout",
-        stderr: { kind: "retained", message: expect.stringContaining("waiting for readiness") },
       });
       expect(JSON.stringify(error.context)).toContain("startup_timeout");
       await waitForFileContent(pipeClosed, "EPIPE");

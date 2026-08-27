@@ -16,6 +16,7 @@
  */
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { compareRecordedEfforts } from "./lib/model-hints-effort-drift.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const strict = process.argv.includes("--strict");
@@ -83,13 +84,20 @@ for (const adapter of buildRegistry({ includeFakes: false }).values()) {
 const EFFORT_SNAPSHOTS = {
   codex: {
     module: "packages/harness-codex/dist/effort-probe.js",
+    accountScoped: true,
     read: (m) =>
       Object.fromEntries(
-        Object.entries(m.CODEX_EFFORT_SNAPSHOT.models).map(([id, v]) => [id, v.levels.join(",")]),
+        Object.entries(m.CODEX_EFFORT_SNAPSHOT.models).map(([id, v]) => [
+          id,
+          `${v.levels.join(",")}|${v.default ?? ""}`,
+        ]),
       ),
     live: (caps) =>
       Object.fromEntries(
-        Object.entries(caps.model_effort_levels ?? {}).map(([id, v]) => [id, v.levels.join(",")]),
+        Object.entries(caps.model_effort_levels ?? {}).map(([id, v]) => [
+          id,
+          `${v.levels.join(",")}|${v.default ?? ""}`,
+        ]),
       ),
   },
   claude: {
@@ -142,9 +150,15 @@ for (const [id, spec] of Object.entries(EFFORT_SNAPSHOTS)) {
     continue;
   }
   const live = spec.live(caps);
-  const drifted = [...new Set([...Object.keys(snapshot), ...Object.keys(live)])].filter(
-    (key) => snapshot[key] !== live[key],
-  );
+  const comparison = compareRecordedEfforts(snapshot, live, {
+    accountScoped: spec.accountScoped === true,
+  });
+  const drifted = comparison.drifted;
+  if (spec.accountScoped === true && comparison.recordedOnly.length > 0) {
+    console.log(
+      `model-hints: ${id} — recorded fallback also covers account-scoped models absent from this route: ${comparison.recordedOnly.join(", ")}`,
+    );
+  }
   if (drifted.length > 0) {
     warnings.push(
       `${id}: live effort ladders disagree with the recorded snapshot for ${drifted.join(", ")} — re-record the snapshot from the current CLI`,

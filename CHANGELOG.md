@@ -3,12 +3,33 @@
 Release history for Claudexor. The current version is declared in the root
 `package.json` (the version SSOT); tags `v*` correspond to GitHub Releases.
 
-- **v3.8.2** (2026-08-23): reviewer routing now preserves the selected
+- **v3.8.3** (2026-08-26): large compacted journal snapshots now replay
+  record-by-record without materializing one whole-array JavaScript string,
+  while decompression and opportunistic compaction remain bounded and fail
+  back to the existing journal instead of entering recovery-only mode.
+- **v3.8.2** (2026-08-24): reviewer routing now preserves the selected
   credential profile through every reviewer surface, exposes a read-only
   accounts view, and discloses unavailable reviewer families instead of
   silently dropping them. Transient Claude native auth-status transport
   failures stay typed as unknown with bounded retry and last-known-good
-  disclosure rather than appearing as a logout.
+  disclosure rather than appearing as a logout. Startup recovery now keeps
+  the frozen pre-admission verdict as its fail-closed fallback until a live
+  post-quarantine re-verdict succeeds, and a delayed startup completion can no
+  longer overwrite that newer recovery state or duplicate normal-plane work.
+  Release verification now treats Codex model and effort catalogs as
+  account-scoped: every live ladder and default must match the recorded union,
+  while models advertised only by another account no longer create false
+  drift; `gpt-5.2` is admitted when the pinned CLI advertises it. The
+  Git-heavy orchestration and raw-patch regressions are split into independent
+  tests so their combined work cannot exhaust one composite timeout; every
+  scenario keeps its original production call and assertion. Codex and Cursor
+  one-shot prompts now use their native stdin contracts instead of process argv,
+  so large agent-first review packets no longer fail before model startup with
+  `spawn E2BIG`. Publication uses the owner-approved one-release
+  `waive_cursor_review` exception to avoid repeating the full-context review
+  already completed during release work in a different execution setup; both
+  signed runtime manifests and every other release and provenance gate remain
+  required, and no schema-v6 review attestation is claimed.
 - **v3.8.1** (2026-08-22): profile-scoped Antigravity runs now create and use
   a private macOS keychain under each profile HOME before the vendor touches
   Keychain Services. This removes the recurring “Keychain not found” dialog

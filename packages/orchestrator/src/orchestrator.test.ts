@@ -400,6 +400,28 @@ function diffImplementer(
   };
 }
 
+function nativeEstimatedImplementer(id: string): HarnessAdapter {
+  const base = diffImplementer(id);
+  return {
+    ...base,
+    async *run(spec) {
+      for await (const event of base.run(spec)) {
+        yield {
+          ...event,
+          credential_route: "vendor_native" as const,
+          ...(event.usage ? { usage: { ...event.usage, estimated: true } } : {}),
+        };
+      }
+    },
+  };
+}
+
+function assertExactCashDecision(runDir: string): void {
+  const decision = readFileSync(join(runDir, "arbitration", "decision.yaml"), "utf8");
+  expect(decision).toMatch(/estimated: false/);
+  expect(decision).toMatch(/valuation_knowledge: estimated/);
+}
+
 function blockAttemptPatchPersistence(repo: string, attemptId: string): void {
   const runsDir = join(projectRuntimeDir(repo), "runs");
   const runId = readdirSync(runsDir)[0];
@@ -984,31 +1006,10 @@ describe("Orchestrator", () => {
     );
   });
 
-  it("takes decision cash certainty from the ledger on race, convergence, and no-work paths", async () => {
-    const nativeEstimated = (id: string): HarnessAdapter => {
-      const base = diffImplementer(id);
-      return {
-        ...base,
-        async *run(spec) {
-          for await (const event of base.run(spec)) {
-            yield {
-              ...event,
-              credential_route: "vendor_native" as const,
-              ...(event.usage ? { usage: { ...event.usage, estimated: true } } : {}),
-            };
-          }
-        },
-      };
-    };
-    const assertExactCashDecision = (runDir: string) => {
-      const decision = readFileSync(join(runDir, "arbitration", "decision.yaml"), "utf8");
-      expect(decision).toMatch(/estimated: false/);
-      expect(decision).toMatch(/valuation_knowledge: estimated/);
-    };
-
+  it("takes race decision cash certainty from the ledger", async () => {
     const raceRepo = await initRepo();
     const race = await new Orchestrator({
-      registry: new Map([["native", nativeEstimated("native")]]),
+      registry: new Map([["native", nativeEstimatedImplementer("native")]]),
       reviewers: reviewers(),
     }).run({
       repoRoot: raceRepo,
@@ -1018,10 +1019,12 @@ describe("Orchestrator", () => {
       n: 2,
     });
     assertExactCashDecision(race.runDir);
+  });
 
+  it("takes convergence decision cash certainty from the ledger", async () => {
     const convergenceRepo = await initRepo();
     const convergence = await new Orchestrator({
-      registry: new Map([["native", nativeEstimated("native")]]),
+      registry: new Map([["native", nativeEstimatedImplementer("native")]]),
       reviewers: reviewers(),
     }).run({
       repoRoot: convergenceRepo,
@@ -1031,7 +1034,9 @@ describe("Orchestrator", () => {
       attempts: 2,
     });
     assertExactCashDecision(convergence.runDir);
+  });
 
+  it("takes no-work decision cash certainty from the ledger", async () => {
     const failedPaid: HarnessAdapter = {
       ...realLikeAdapter("paid-failure"),
       async *run(spec) {
@@ -1065,7 +1070,7 @@ describe("Orchestrator", () => {
     expect(readFileSync(join(noWork.runDir, "arbitration", "decision.yaml"), "utf8")).toMatch(
       /estimated: true/,
     );
-  }, 30_000);
+  });
 
   it("preserves mixed-route settlement when convergence persistence fails", async () => {
     const repo = await initRepo();

@@ -229,6 +229,7 @@ describe("codex effort probe degrades gracefully", () => {
     // `isDefault: true` rode gpt-5.6-sol in that capture (live-verified 0.144.1).
     expect(CODEX_EFFORT_SNAPSHOT.defaultModel).toBe("gpt-5.6-sol");
     expect(Object.keys(CODEX_EFFORT_SNAPSHOT.models).sort()).toEqual([
+      "gpt-5.2",
       "gpt-5.3-codex-spark",
       "gpt-5.4",
       "gpt-5.4-mini",
@@ -298,6 +299,9 @@ describe("the effort probe is cached, not re-spawned per call", () => {
     ]);
     expect(manifest.capabilities.effort_levels_verified_against).toBe("0.144.1");
     expect(manifest.capabilities.known_models_verified_against).toBe(CODEX_VENDOR_CLI_VERSION);
+    expect(manifest.capabilities.known_models).toEqual(
+      expect.arrayContaining(Object.keys(CODEX_EFFORT_SNAPSHOT.models)),
+    );
     clearCodexEffortCache();
   });
 
