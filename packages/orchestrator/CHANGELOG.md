@@ -1,5 +1,27 @@
 # @claudexor/orchestrator
 
+## 3.8.4
+
+### Patch Changes
+
+- Preserve typed quota failures for exhausted implicit profile lanes while
+  allowing a surviving sibling harness to continue an automatic pool run.
+  - @claudexor/arbitration@3.8.4
+  - @claudexor/artifact-store@3.8.4
+  - @claudexor/budget@3.8.4
+  - @claudexor/config@3.8.4
+  - @claudexor/context@3.8.4
+  - @claudexor/core@3.8.4
+  - @claudexor/delivery@3.8.4
+  - @claudexor/event-log@3.8.4
+  - @claudexor/gateway@3.8.4
+  - @claudexor/policy@3.8.4
+  - @claudexor/review@3.8.4
+  - @claudexor/schema@3.8.4
+  - @claudexor/synthesis@3.8.4
+  - @claudexor/util@3.8.4
+  - @claudexor/workspace@3.8.4
+
 ## 3.8.3
 
 ### Patch Changes

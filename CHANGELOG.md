@@ -3,6 +3,10 @@
 Release history for Claudexor. The current version is declared in the root
 `package.json` (the version SSOT); tags `v*` correspond to GitHub Releases.
 
+- **v3.8.4** (2026-08-28): implicit profile pools now drop only the typed
+  quota-exhausted lane when a sibling harness can continue, while explicit
+  pools remain strict and an exhausted primary preserves its typed terminal
+  failure when no fallback survives admission.
 - **v3.8.3** (2026-08-26): large compacted journal snapshots now replay
   record-by-record without materializing one whole-array JavaScript string,
   while decompression and opportunistic compaction remain bounded and fail
