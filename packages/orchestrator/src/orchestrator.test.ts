@@ -35,6 +35,7 @@ import type {
   HarnessEvent,
   HarnessRunSpec,
   ProviderFamily,
+  QuotaSnapshot,
 } from "@claudexor/schema";
 import { ConformanceReport, HarnessManifest, RunFacts, makeOutcomeFacts } from "@claudexor/schema";
 import { hashJson, noProjectRepoRoot, projectRuntimeDir, sha256 } from "@claudexor/util";
@@ -730,6 +731,87 @@ function askAdapter(
       }
     },
   };
+}
+
+function writeDuplicateProfileConfig(configDir: string, profileId: string): void {
+  writeFileSync(
+    join(configDir, "config.yaml"),
+    [
+      "credential_profiles:",
+      `  - profile_id: ${profileId}`,
+      "    harness_id: codex",
+      "    display_name: Codex shared",
+      "    credential_kind: config_dir_login",
+      `    isolation_locator: '${join(configDir, "codex-home")}'`,
+      `  - profile_id: ${profileId}`,
+      "    harness_id: claude",
+      "    display_name: Claude shared",
+      "    credential_kind: config_dir_login",
+      `    isolation_locator: '${join(configDir, "claude-home")}'`,
+      "",
+    ].join("\n"),
+  );
+}
+
+function spentProfileSnapshot(
+  harness: "claude" | "codex",
+  profileId: string,
+  resetsAt: string,
+): QuotaSnapshot {
+  return {
+    subject: {
+      harness,
+      credential_route: "vendor_native",
+      plan_label: null,
+      subject_id: profileId,
+    },
+    constraints: [
+      {
+        id: "five_hour",
+        label: "5 hour",
+        used_ratio: 0.97,
+        window_seconds: 18_000,
+        resets_at: resetsAt,
+        cooldown_until: null,
+      },
+    ],
+    source: harness === "claude" ? "claude_oauth_usage" : "codex_app_server",
+    observed_at: new Date().toISOString(),
+    freshness: "fresh",
+  };
+}
+
+function duplicateProfileAskAdapter(
+  id: "claude" | "codex",
+  launches: Array<{ harness: string; model: string | null }>,
+): HarnessAdapter {
+  const adapter = askAdapter(
+    id,
+    function* (sessionId) {
+      const ts = new Date().toISOString();
+      yield { type: "started", session_id: sessionId, ts, credential_route: "vendor_native" };
+      yield { type: "message", session_id: sessionId, ts, text: `from ${id}` };
+      yield { type: "completed", session_id: sessionId, ts };
+    },
+    id === "claude" ? "anthropic" : "openai",
+  );
+  const discover = adapter.discover.bind(adapter);
+  adapter.discover = async () => {
+    const manifest = await discover();
+    return HarnessManifest.parse({
+      ...manifest,
+      capabilities: {
+        ...manifest.capabilities,
+        known_models: id === "claude" ? ["claude-opus-5"] : ["gpt-5.6-sol"],
+      },
+    });
+  };
+  const run = adapter.run.bind(adapter);
+  adapter.run = (spec) => {
+    launches.push({ harness: id, model: spec.model_hint ?? null });
+    return run(spec);
+  };
+  return adapter;
 }
 
 function nativeAskAdapter(id: string, observe: (spec: HarnessRunSpec) => void): HarnessAdapter {
@@ -4100,6 +4182,271 @@ describe("Orchestrator", () => {
       });
       expect(legacyOutcome(res), res.summary).toBe("success");
       expect(answered).toEqual(["asker"]);
+    } finally {
+      if (previousConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = previousConfigDir;
+    }
+  });
+
+  it.each([
+    { exhausted: "codex" as const, survivor: "claude" as const },
+    { exhausted: "claude" as const, survivor: "codex" as const },
+  ])(
+    "an implicit duplicate profile drops an exhausted $exhausted lane and runs $survivor",
+    async ({ exhausted, survivor }) => {
+      const repo = await initRepo();
+      const configDir = reapMk(join(tmpdir(), "claudexor-duplicate-profile-auto-"));
+      const previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
+      process.env.CLAUDEXOR_CONFIG_DIR = configDir;
+      writeDuplicateProfileConfig(configDir, "shared");
+      try {
+        const launches: Array<{ harness: string; model: string | null }> = [];
+        const events: Array<{ type: string; payload: Record<string, unknown> }> = [];
+        const result = await new Orchestrator({
+          registry: new Map([
+            ["codex", duplicateProfileAskAdapter("codex", launches)],
+            ["claude", duplicateProfileAskAdapter("claude", launches)],
+          ]),
+          reviewers: [],
+          quotaSnapshots: () => [
+            spentProfileSnapshot(exhausted, "shared", "2099-08-24T01:00:00.000Z"),
+          ],
+        }).run({
+          repoRoot: repo,
+          prompt: "inspect the repository",
+          mode: "ask",
+          primaryHarness: "claude",
+          model: "claude-opus-5",
+          credentialProfileId: "shared",
+          onEvent: (event) => events.push(event),
+        });
+
+        expect(legacyOutcome(result), result.summary).toBe("success");
+        expect(launches).toEqual([
+          { harness: survivor, model: survivor === "claude" ? "claude-opus-5" : null },
+        ]);
+        const degraded = events.find((event) => event.type === "route.pool.degraded");
+        expect(degraded?.payload).toMatchObject({
+          effective_harnesses: [survivor],
+          dropped_lanes: [expect.objectContaining({ harness_id: exhausted, stage: "credential" })],
+        });
+        const task = new ArtifactStore(repo).readYaml<{ routing_models: Record<string, string> }>(
+          join(result.runDir, "context", "task.yaml"),
+        );
+        expect(task?.routing_models).toEqual({ claude: "claude-opus-5" });
+        const divergence = events.find((event) => event.type === "route.primary.diverged");
+        if (exhausted === "claude") {
+          expect(divergence?.payload).toMatchObject({
+            requested: "claude",
+            effective: "codex",
+            reason: "quota_exhausted",
+          });
+        } else {
+          expect(divergence).toBeUndefined();
+        }
+      } finally {
+        if (previousConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+        else process.env.CLAUDEXOR_CONFIG_DIR = previousConfigDir;
+      }
+    },
+  );
+
+  it("an implicit duplicate profile preserves the primary typed refusal when every lane is exhausted", async () => {
+    const repo = await initRepo();
+    const configDir = reapMk(join(tmpdir(), "claudexor-duplicate-profile-empty-"));
+    const previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
+    process.env.CLAUDEXOR_CONFIG_DIR = configDir;
+    writeDuplicateProfileConfig(configDir, "shared");
+    try {
+      const launches: Array<{ harness: string; model: string | null }> = [];
+      const claudeReset = "2099-08-24T02:00:00.000Z";
+      const result = await new Orchestrator({
+        registry: new Map([
+          ["codex", duplicateProfileAskAdapter("codex", launches)],
+          ["claude", duplicateProfileAskAdapter("claude", launches)],
+        ]),
+        reviewers: [],
+        quotaSnapshots: () => [
+          spentProfileSnapshot("codex", "shared", "2099-08-24T01:00:00.000Z"),
+          spentProfileSnapshot("claude", "shared", claudeReset),
+        ],
+      }).run({
+        repoRoot: repo,
+        prompt: "inspect the repository",
+        mode: "ask",
+        primaryHarness: "claude",
+        model: "claude-opus-5",
+        credentialProfileId: "shared",
+      });
+
+      expect(legacyOutcome(result)).toBe("failed");
+      expect(launches).toEqual([]);
+      const failure = new ArtifactStore(repo).readYaml<Record<string, unknown>>(
+        join(result.runDir, "final", "failure.yaml"),
+      );
+      expect(failure).toMatchObject({
+        category: "harness_unavailable",
+        code: "subscription_window_exhausted",
+        resetsAt: claudeReset,
+      });
+    } finally {
+      if (previousConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = previousConfigDir;
+    }
+  });
+
+  it("preserves the primary quota refusal when fallback policy removes the last sibling", async () => {
+    const repo = await initRepo();
+    const configDir = reapMk(join(tmpdir(), "claudexor-duplicate-profile-policy-empty-"));
+    const previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
+    process.env.CLAUDEXOR_CONFIG_DIR = configDir;
+    writeFileSync(
+      join(configDir, "config.yaml"),
+      [
+        "routing:",
+        "  paid_fallback: never",
+        "credential_profiles:",
+        "  - profile_id: shared",
+        "    harness_id: codex",
+        "    display_name: Codex shared",
+        "    credential_kind: api_key",
+        "    secret_ref: 'openai:shared'",
+        "  - profile_id: shared",
+        "    harness_id: claude",
+        "    display_name: Claude shared",
+        "    credential_kind: config_dir_login",
+        `    isolation_locator: '${join(configDir, "claude-home")}'`,
+        "",
+      ].join("\n"),
+    );
+    try {
+      const launches: Array<{ harness: string; model: string | null }> = [];
+      const resetsAt = "2099-08-24T02:30:00.000Z";
+      const result = await new Orchestrator({
+        registry: new Map([
+          ["codex", duplicateProfileAskAdapter("codex", launches)],
+          ["claude", duplicateProfileAskAdapter("claude", launches)],
+        ]),
+        reviewers: [],
+        quotaSnapshots: () => [spentProfileSnapshot("claude", "shared", resetsAt)],
+      }).run({
+        repoRoot: repo,
+        prompt: "inspect the repository",
+        mode: "ask",
+        primaryHarness: "claude",
+        model: "claude-opus-5",
+        credentialProfileId: "shared",
+      });
+
+      expect(legacyOutcome(result)).toBe("failed");
+      expect(launches).toEqual([]);
+      const failure = new ArtifactStore(repo).readYaml<Record<string, unknown>>(
+        join(result.runDir, "final", "failure.yaml"),
+      );
+      expect(failure).toMatchObject({
+        category: "harness_unavailable",
+        code: "subscription_window_exhausted",
+        resetsAt,
+      });
+    } finally {
+      if (previousConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = previousConfigDir;
+    }
+  });
+
+  it.each([
+    {
+      label: "unexpected",
+      error: new Error("unexpected credential preflight failure"),
+    },
+    {
+      label: "configuration",
+      error: Object.assign(new Error("bad credential routing configuration"), {
+        category: "config_error",
+      }),
+    },
+  ])("does not degrade a $label preflight error in an implicit pool", async ({ error }) => {
+    const repo = await initRepo();
+    const configDir = reapMk(join(tmpdir(), "claudexor-duplicate-profile-error-"));
+    const previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
+    process.env.CLAUDEXOR_CONFIG_DIR = configDir;
+    writeDuplicateProfileConfig(configDir, "shared");
+    try {
+      const launches: Array<{ harness: string; model: string | null }> = [];
+      const orchestrator = new Orchestrator({
+        registry: new Map([
+          ["codex", duplicateProfileAskAdapter("codex", launches)],
+          ["claude", duplicateProfileAskAdapter("claude", launches)],
+        ]),
+        reviewers: [],
+      });
+      const target = orchestrator as unknown as {
+        credentials: {
+          preflightProfile: (...args: unknown[]) => Promise<unknown>;
+        };
+      };
+      const original = target.credentials.preflightProfile.bind(target.credentials);
+      target.credentials.preflightProfile = async (...args: unknown[]) => {
+        if (args[1] === "codex") throw error;
+        return original(...args);
+      };
+
+      const result = await orchestrator.run({
+        repoRoot: repo,
+        prompt: "inspect the repository",
+        mode: "ask",
+        primaryHarness: "claude",
+        model: "claude-opus-5",
+        credentialProfileId: "shared",
+      });
+
+      expect(legacyOutcome(result)).toBe("failed");
+      expect(launches).toEqual([]);
+      expect(readFileSync(join(result.runDir, "final", "failure.yaml"), "utf8")).toContain(
+        error.message,
+      );
+    } finally {
+      if (previousConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = previousConfigDir;
+    }
+  });
+
+  it("an explicit duplicate-profile pool remains strict when one selected lane is exhausted", async () => {
+    const repo = await initRepo();
+    const configDir = reapMk(join(tmpdir(), "claudexor-duplicate-profile-explicit-"));
+    const previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
+    process.env.CLAUDEXOR_CONFIG_DIR = configDir;
+    writeDuplicateProfileConfig(configDir, "shared");
+    try {
+      const launches: Array<{ harness: string; model: string | null }> = [];
+      const resetsAt = "2099-08-24T03:00:00.000Z";
+      const result = await new Orchestrator({
+        registry: new Map([
+          ["codex", duplicateProfileAskAdapter("codex", launches)],
+          ["claude", duplicateProfileAskAdapter("claude", launches)],
+        ]),
+        reviewers: [],
+        quotaSnapshots: () => [spentProfileSnapshot("codex", "shared", resetsAt)],
+      }).run({
+        repoRoot: repo,
+        prompt: "inspect the repository",
+        mode: "ask",
+        harnesses: ["claude", "codex"],
+        primaryHarness: "claude",
+        model: "claude-opus-5",
+        credentialProfileId: "shared",
+      });
+
+      expect(legacyOutcome(result)).toBe("failed");
+      expect(launches).toEqual([]);
+      const failure = new ArtifactStore(repo).readYaml<Record<string, unknown>>(
+        join(result.runDir, "final", "failure.yaml"),
+      );
+      expect(failure).toMatchObject({
+        category: "harness_unavailable",
+        code: "subscription_window_exhausted",
+        resetsAt,
+      });
     } finally {
       if (previousConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
       else process.env.CLAUDEXOR_CONFIG_DIR = previousConfigDir;
