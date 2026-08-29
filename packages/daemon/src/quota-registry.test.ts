@@ -2131,7 +2131,13 @@ describe("QuotaRegistry per-vendor pacing lanes", () => {
       },
     };
     const subjects = () => [subjectOf("claude", null)];
-    const registry = new QuotaRegistry(journal, [refresher], () => new Date(nowMs), subjects, store);
+    const registry = new QuotaRegistry(
+      journal,
+      [refresher],
+      () => new Date(nowMs),
+      subjects,
+      store,
+    );
 
     await expect(registry.pollStale()).resolves.toBe(true);
     expect(saved.get("claude")).toBe(nowMs + 45 * 60_000);
@@ -2504,13 +2510,21 @@ describe("QuotaRegistry gap-absence honesty (suppressed polls stay stated)", () 
         ],
       }),
     };
-    const registry = new QuotaRegistry(journal, [refresher], () => new Date(nowMs), subjects, store);
+    const registry = new QuotaRegistry(
+      journal,
+      [refresher],
+      () => new Date(nowMs),
+      subjects,
+      store,
+    );
     await expect(registry.pollStale()).resolves.toBe(true);
     // Typed claims exist for both; no derived duplicates.
-    expect(registry.read().absences.map((absence) => absence.reason).sort()).toEqual([
-      "probe_skipped_rate_limited",
-      "rate_limited",
-    ]);
+    expect(
+      registry
+        .read()
+        .absences.map((absence) => absence.reason)
+        .sort(),
+    ).toEqual(["probe_skipped_rate_limited", "rate_limited"]);
 
     // "Restart": absences are ephemeral, the floor is store-loaded. Without a
     // derived row both subjects would fall SILENT for the rest of the floor.
@@ -2541,9 +2555,9 @@ describe("QuotaRegistry gap-absence honesty (suppressed polls stay stated)", () 
     // Floor elapsed: the pause lifts, the lane repolls, derived rows vanish.
     nowMs = Date.parse("2026-08-28T00:30:00.000Z");
     await expect(restarted.pollStale()).resolves.toBe(true);
-    expect(
-      restarted.read().absences.every((absence) => absence.reason !== "poll_paced"),
-    ).toBe(true);
+    expect(restarted.read().absences.every((absence) => absence.reason !== "poll_paced")).toBe(
+      true,
+    );
 
     journal.close();
     rmSync(root, { recursive: true, force: true });

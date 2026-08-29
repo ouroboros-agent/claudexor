@@ -232,9 +232,7 @@ export function foldAbsenceClaims(input: {
   const claimed = new Set<string>(preserved.map((item) => quotaSubjectIdentity(item.subject)));
   for (const claim of input.claims) {
     const key = quotaSubjectIdentity(claim.subject);
-    const cover = QUOTA_GAP_ABSENCE_REASONS.has(claim.reason)
-      ? input.freshCovered
-      : input.covered;
+    const cover = QUOTA_GAP_ABSENCE_REASONS.has(claim.reason) ? input.freshCovered : input.covered;
     if (cover.has(key) || claimed.has(key)) continue;
     claimed.add(key);
     result.push(claim);

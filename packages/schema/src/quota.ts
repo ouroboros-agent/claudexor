@@ -228,9 +228,8 @@ export type QuotaAbsenceReason = z.infer<typeof QuotaAbsenceReason>;
  * the gap row keeps downstream exhaustion readers fail-open (a stale spent
  * window plus a gap row means "not re-asked", never "window exhausted"). A
  * FRESH snapshot still silences them like every other reason. */
-export const QUOTA_GAP_ABSENCE_REASONS: ReadonlySet<QuotaAbsenceReason> = new Set<QuotaAbsenceReason>(
-  ["rate_limited", "probe_skipped_rate_limited", "poll_paced"],
-);
+export const QUOTA_GAP_ABSENCE_REASONS: ReadonlySet<QuotaAbsenceReason> =
+  new Set<QuotaAbsenceReason>(["rate_limited", "probe_skipped_rate_limited", "poll_paced"]);
 
 export const QuotaAbsence = z
   .object({

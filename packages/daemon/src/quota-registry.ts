@@ -357,14 +357,10 @@ export class QuotaRegistry {
 
   /** Absences whose subject is not (any longer) covered by an active snapshot —
    * a snapshot arriving via ingest between cycles silences its absence at once.
-   * Two amendments for suppressed polls (gap honesty): a GAP-representation
-   * row (rate_limited / probe_skipped / poll_paced) is silenced only by a
-   * FRESH snapshot, so stale last-known data and the "not re-asked" fact stay
-   * visible together; and while a vendor lane's rate-limit floor is active,
-   * every universe subject of that vendor lacking fresh cover and lacking a
-   * stored row gets a DERIVED `poll_paced` row (a live projection, never
-   * journaled), so a paused vendor's subjects never fall silent — across
-   * daemon restarts with a store-loaded floor included. */
+   * Gap honesty for suppressed polls: a GAP-representation row is silenced
+   * only by a FRESH snapshot (stale last-known data and the "not re-asked"
+   * fact stay visible together), and a floor-suppressed vendor's unstated
+   * subjects gain DERIVED `poll_paced` rows (see derivePollPacedRows). */
   private activeAbsences(now: number): QuotaAbsence[] {
     const { covered, freshCovered } = subjectCoverSets(this.activeSnapshots(now));
     const rows = this.absences.filter(
@@ -373,9 +369,9 @@ export class QuotaRegistry {
           quotaSubjectIdentity(absence.subject),
         ),
     );
-    return rows.concat(
-      derivePollPacedRows(this.refresherLanes.lanes, this.subjects?.() ?? [], rows, freshCovered, now),
-    );
+    const subjects = this.subjects?.() ?? [];
+    const lanes = this.refresherLanes.lanes;
+    return rows.concat(derivePollPacedRows(lanes, subjects, rows, freshCovered, now));
   }
 
   /** Credential or routability state changed (login/profile/native/settings):

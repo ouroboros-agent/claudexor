@@ -76,9 +76,7 @@ const paidBudgetSchema = inlineJsonSchemaRefs(paidBudgetSchemaRaw);
 const agentCapabilityCatalogSchema = inlineJsonSchemaRefs(
   agentCapabilityCatalogSchemaRaw as Record<string, unknown>,
 );
-const accountsQuerySchema = inlineJsonSchemaRefs(
-  accountsQuerySchemaRaw as Record<string, unknown>,
-);
+const accountsQuerySchema = inlineJsonSchemaRefs(accountsQuerySchemaRaw as Record<string, unknown>);
 const RUN_STRATEGY_PROPERTIES = {
   ask: {
     deepScan: {

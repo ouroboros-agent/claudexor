@@ -34,9 +34,9 @@ describe("cursor mcp.json injection (delegation belt host)", () => {
   it("resolves the lane config dir: explicit CURSOR_CONFIG_DIR, then scoped HOME, never the host", () => {
     expect(resolveCursorMcpConfigDir({ CURSOR_CONFIG_DIR: "/lane/.cursor" })).toBe("/lane/.cursor");
     expect(resolveCursorMcpConfigDir({ HOME: "/lane" })).toBe(join("/lane", ".cursor"));
-    expect(
-      resolveCursorMcpConfigDir({ CURSOR_CONFIG_DIR: "/lane/.cursor", HOME: "/other" }),
-    ).toBe("/lane/.cursor");
+    expect(resolveCursorMcpConfigDir({ CURSOR_CONFIG_DIR: "/lane/.cursor", HOME: "/other" })).toBe(
+      "/lane/.cursor",
+    );
     expect(resolveCursorMcpConfigDir({})).toBeNull();
     expect(resolveCursorMcpConfigDir({ HOME: "  " })).toBeNull();
   });
@@ -87,9 +87,9 @@ describe("cursor mcp.json injection (delegation belt host)", () => {
     syncCursorMcpServers(dir, [belt()]);
     writeFileSync(join(dir, "mcp.json"), "{not json");
     syncCursorMcpServers(dir, [belt()]);
-    expect(
-      Object.keys(JSON.parse(readFileSync(join(dir, "mcp.json"), "utf8")).mcpServers),
-    ).toEqual(["claudexor"]);
+    expect(Object.keys(JSON.parse(readFileSync(join(dir, "mcp.json"), "utf8")).mcpServers)).toEqual(
+      ["claudexor"],
+    );
   });
 
   it("no servers and nothing managed is a pure no-op (no dir created)", () => {

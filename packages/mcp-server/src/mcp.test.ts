@@ -839,9 +839,7 @@ describe("Claudexor MCP server (SDK v2)", () => {
     expect(accounts?.description).toContain("CACHED");
     const members = accounts?.outputSchema?.anyOf as Array<Record<string, unknown>>;
     expect(members).toHaveLength(2);
-    const [listing, atomic] = members.map(
-      (member) => member.properties as Record<string, unknown>,
-    );
+    const [listing, atomic] = members.map((member) => member.properties as Record<string, unknown>);
     expect(listing).toMatchObject({ profiles: expect.any(Object) });
     expect(listing?.quotaEventCursor).toBeUndefined();
     expect(atomic).toMatchObject({

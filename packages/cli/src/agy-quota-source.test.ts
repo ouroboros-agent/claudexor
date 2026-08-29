@@ -275,9 +275,9 @@ esac
       [
         'const fs = require("node:fs");',
         `const log = ${JSON.stringify(log)};`,
-        'fs.appendFileSync(log, `S ${Date.now()}\\n`);',
+        "fs.appendFileSync(log, `S ${Date.now()}\\n`);",
         "setTimeout(() => {",
-        '  fs.appendFileSync(log, `E ${Date.now()}\\n`);',
+        "  fs.appendFileSync(log, `E ${Date.now()}\\n`);",
         '  process.stdout.write(JSON.stringify({ status: "ERROR", error: "slow fake vendor" }));',
         "}, 300);",
       ].join("\n"),
