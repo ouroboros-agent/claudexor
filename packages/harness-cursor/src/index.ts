@@ -459,10 +459,12 @@ async function* runCursor(
     yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
     return;
   }
-  // Typed disclosures for content the reconcile deliberately preserved
-  // (an unreadable mcp.json skipped on cleanup or quarantined aside).
+  // Typed disclosures for content the reconcile deliberately preserved:
+  // an unreadable mcp.json skipped on cleanup or quarantined aside, and an
+  // orphaned engine-named entry left riding without a managed manifest. One
+  // neutral code covers the class; the detail line names the exact case.
   for (const detail of injection.disclosures) {
-    const payload = { code: "cursor_mcp_json_unreadable", detail };
+    const payload = { code: "cursor_mcp_config_disclosure", detail };
     yield { type: "message", session_id: spec.session_id, ts: nowIso(), payload };
   }
   if (injection.approved) args.push("--approve-mcps");

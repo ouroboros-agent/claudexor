@@ -12,7 +12,8 @@ Release history for Claudexor. The current version is declared in the root
   bounded; the `claudexor_accounts` MCP tool defaults to the cached listing
   with `fresh: true` opting into the snapshot; and the cursor adapter can
   host the delegation belt via reconciled lane `mcp.json` injection
-  (CONCEPT-CHANGE(INV-030), pending its live E2E per docs/FEATURES.md).
+  (CONCEPT-CHANGE(INV-030); its owner-set live E2E was executed — see
+  docs/FEATURES.md for the bounded-proof record and remaining caveats).
   Ships under the owner-authorized version-scoped Ed25519 waiver: the release
   omits the review attestation and both signed runtime manifests, so in-app
   engine update and first-time remote bootstrap are unavailable for 3.9.0

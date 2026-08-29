@@ -195,6 +195,25 @@ describe("cursor mcp.json injection (delegation belt host)", () => {
     expect(syncCursorMcpServers(clean, [])).toEqual([]);
   });
 
+  it("absent manifest + unreadable mcp.json: cleanup preserves the bytes but never silently", () => {
+    // Final-gate finding: the disclosure contract holds on the early branch
+    // too — corrupt bytes with no manifest could hide a riding engine entry,
+    // so the pass-through says so instead of riding past quietly.
+    const dir = join(scratch(), ".cursor");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "mcp.json"), "{not json");
+    const disclosures = syncCursorMcpServers(dir, []);
+    expect(disclosures).toHaveLength(1);
+    expect(disclosures[0]).toContain("unreadable");
+    expect(disclosures[0]).toContain("preserved untouched");
+    expect(readFileSync(join(dir, "mcp.json"), "utf8")).toBe("{not json");
+    expect(existsSync(join(dir, "claudexor-managed-mcp.json"))).toBe(false);
+    // An absent mcp.json with no manifest still says nothing at all.
+    const empty = join(scratch(), ".cursor");
+    mkdirSync(empty, { recursive: true });
+    expect(syncCursorMcpServers(empty, [])).toEqual([]);
+  });
+
   it("crash-window states fail safe: over-wide manifest is benign, untracked belt refuses", () => {
     // Manifest-before-mcp.json write order means a crash leaves a manifest
     // naming entries mcp.json does not carry — removal of an absent key is a

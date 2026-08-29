@@ -138,8 +138,15 @@ export function syncCursorMcpServers(dir: string, servers: readonly ExtraMcpServ
     // manifest deletion), so a run passing through must say so LOUDLY
     // instead of riding past it silently, every time.
     const orphaned = readJsonObjectFile(mcpPath);
+    if (orphaned.corrupt) {
+      // The disclosure contract (final-gate finding) holds here too: an
+      // unreadable lane file is preserved untouched, but never silently.
+      disclosures.push(
+        `cursor mcp.json at ${mcpPath} is unreadable and has NO Claudexor managed manifest — it was preserved untouched (bytes are not ours to delete); whether an engine-named MCP entry rides inside is unknown: repair or remove it by hand`,
+      );
+      return disclosures;
+    }
     const orphanServers =
-      !orphaned.corrupt &&
       orphaned.value["mcpServers"] !== null &&
       typeof orphaned.value["mcpServers"] === "object" &&
       !Array.isArray(orphaned.value["mcpServers"])

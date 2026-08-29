@@ -2949,8 +2949,8 @@ continue.
 ### Engine runtime updater (M7, D22/D23)
 
 The mechanism below is the normal release contract. The version-specific
-`3.8.0` exception documented above deliberately has no signed manifest assets,
-so clients refuse rather than weaken this verifier.
+`3.8.0` and `3.9.0` exceptions documented above deliberately have no signed
+manifest assets, so clients refuse rather than weaken this verifier.
 
 The app updates its **engine runtime closure** in place without a new DMG. The
 update unit is a `claudexor-runtime-<version>.tar.gz` containing the engine-owned
