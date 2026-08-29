@@ -41,6 +41,11 @@ export async function quotaCommand(args: ParsedArgs, json: boolean): Promise<num
 }
 
 function printQuota(value: ReturnType<typeof ControlQuotaResponse.parse>): void {
+  // Additive refresh disclosure: a vendor inside its poll rate-limit cooldown
+  // was served from last-known registry data instead of a fresh fan-out.
+  for (const skip of value.refresh_skipped ?? []) {
+    print(`${skip.vendor}: refresh skipped (rate-limit cooldown until ${skip.not_before})`);
+  }
   if (value.snapshots.length === 0 && value.absences.length === 0) {
     print("quota: unknown (no vendor-owned snapshot available)");
     return;

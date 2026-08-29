@@ -1,11 +1,7 @@
 import type { DurableJournal } from "@claudexor/journal";
 import type { QuotaPacerStateStore } from "./quota-poll-pacer.js";
-import {
-  QuotaRegistry,
-  type QuotaRefresher,
-  type QuotaSubjectUniverse,
-  type QuotaVendorRefresher,
-} from "./quota-registry.js";
+import type { QuotaRefresher, QuotaVendorRefresher } from "./quota-poll-lanes.js";
+import { QuotaRegistry, type QuotaSubjectUniverse } from "./quota-registry.js";
 
 export function quotaProjection(
   refreshers: readonly (QuotaRefresher | QuotaVendorRefresher)[] = [],

@@ -23,6 +23,8 @@ import {
   buildRefresherLanes,
   laneHasDemand,
   performPollSweep,
+  recomputeScopeFor,
+  selectCycleEntries,
   type PacingLane,
   type QuotaRefresher,
   type QuotaVendorRefresher,
@@ -39,12 +41,6 @@ const PROJECTION_UPDATED = "quota.projection.updated";
 /** Snapshots older than this are pruned from every projection read (W17):
  * a day-old observation is not quota truth, just footer clutter. */
 const MAX_SNAPSHOT_AGE_MS = 24 * 60 * 60_000;
-
-export type {
-  QuotaRefresher,
-  QuotaRefreshResult,
-  QuotaVendorRefresher,
-} from "./quota-poll-lanes.js";
 
 /** The registered subject UNIVERSE: every subject the daemon expects to hear
  * about, so a subject with neither snapshot nor a source claim still surfaces
@@ -218,10 +214,13 @@ export class QuotaRegistry {
         status: 503,
       });
     }
-    const running =
-      scope === null
-        ? this.refresherLanes.entries
-        : this.refresherLanes.entries.filter((entry) => entry.lane === scope);
+    // Foreground cycles honor each vendor lane's rate-limit cooldown; the
+    // skips serve last-known registry data and are disclosed additively.
+    const { running, skipped } = selectCycleEntries(
+      this.refresherLanes,
+      scope,
+      this.now().getTime(),
+    );
     const settled = await Promise.allSettled(running.map(async ({ refresh }) => refresh()));
     const batches: Array<{ snapshots: QuotaSnapshot[]; absences: QuotaAbsence[] } | null> = [];
     const failures: string[] = [];
@@ -248,7 +247,10 @@ export class QuotaRegistry {
         batches.push(null);
       }
     }
-    if (batches.every((batch) => batch === null)) {
+    // An all-cooled full cycle (running empty, skips disclosed) is a served
+    // last-known response, not a failure; only attempted-and-failed sources
+    // make the cycle unavailable.
+    if (running.length > 0 && batches.every((batch) => batch === null)) {
       throw Object.assign(new Error(`quota refresh failed: ${failures.join("; ")}`), {
         code: "quota_refresh_unavailable",
         status: 503,
@@ -271,7 +273,7 @@ export class QuotaRegistry {
       claims.push(...batch.absences);
     }
     const now = this.now().getTime();
-    this.recomputeAbsences(claims, now, scope?.vendor != null ? new Set([scope.vendor]) : null);
+    if (running.length > 0) this.recomputeAbsences(claims, now, recomputeScopeFor(running));
     // A typed rate_limited absence is PACING evidence (owner decision 7=A):
     // arm the vendor lane's persisted floor — foreground cycles included, so
     // an explicit refresh that got throttled also cools later fan-outs — and
@@ -286,6 +288,7 @@ export class QuotaRegistry {
       snapshots: this.activeSnapshots(now),
       absences: this.activeAbsences(now),
       refreshed_at: refreshedAt,
+      ...(skipped.length > 0 ? { refresh_skipped: skipped } : {}),
     });
     // No await may appear between response construction and this marker/cursor.
     // The marker makes absence-only and identical refreshes observable; its own

@@ -2324,7 +2324,10 @@ both records or neither. Current engines apply the exact scope and true source
 only when the
 matching base follows; v3.2.0 replays that base conservatively as account-wide.
 A background poll cycle runs one vendor lane's refreshers; an explicit
-foreground refresh runs them all, and either kind of caller joining an
+foreground refresh (`POST /v2/quota`, the atomic Accounts snapshot) runs
+every lane NOT inside its vendor rate-limit cooldown — a cooled vendor is
+served from last-known registry data and the skip is disclosed additively as
+`refresh_skipped` rows on the response. Either kind of caller joining an
 in-flight cycle receives that cycle's result — the response is always the
 complete projection, whichever lanes re-fetched.
 `auto` ranks by the binding `min(elapsed_fraction - used_ratio)` pacing slack,

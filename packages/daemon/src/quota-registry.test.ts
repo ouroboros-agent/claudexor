@@ -2165,6 +2165,153 @@ describe("QuotaRegistry per-vendor pacing lanes", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
+  it("foreground refresh honors an armed vendor cooldown: serves last-known data and disclosed skips", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-quota-fg-cooldown-")));
+    const journal = new DurableJournal({ rootDir: root, partition: "global" });
+    let nowMs = Date.parse("2026-08-28T00:00:00.000Z");
+    let claudeCalls = 0;
+    let codexCalls = 0;
+    const subjectOf = (harness: string) => ({
+      harness,
+      credential_route: "vendor_native" as const,
+      plan_label: null,
+      subject_id: null,
+    });
+    const registry = new QuotaRegistry(
+      journal,
+      [
+        {
+          vendor: "codex",
+          refresh: async () => {
+            codexCalls += 1;
+            return {
+              snapshots: [
+                {
+                  ...quotaSnapshot("codex", null, 0.1),
+                  source: "codex_app_server" as const,
+                  observed_at: new Date(nowMs).toISOString(),
+                },
+              ],
+            };
+          },
+        },
+        {
+          vendor: "claude",
+          refresh: async () => {
+            claudeCalls += 1;
+            return {
+              snapshots: [],
+              absences: [
+                {
+                  subject: subjectOf("claude"),
+                  reason: "rate_limited" as const,
+                  detail: "oauth/usage responded 429",
+                  observed_at: new Date(nowMs).toISOString(),
+                  retry_after_ms: 20 * 60_000,
+                },
+              ],
+            };
+          },
+        },
+      ],
+      () => new Date(nowMs),
+      () => [subjectOf("codex"), subjectOf("claude")],
+    );
+
+    // First explicit refresh observes the 429 and arms the claude floor.
+    const first = await registry.refresh();
+    expect(first.refresh_skipped).toBeUndefined();
+    expect(claudeCalls).toBe(1);
+
+    // A second explicit refresh inside the cooldown re-fans-out codex only;
+    // claude's HTTP is skipped, its last-known typed absence still serves,
+    // and the skip is disclosed additively with the release instant.
+    nowMs += 60_000;
+    const second = await registry.refresh();
+    expect(claudeCalls).toBe(1);
+    expect(codexCalls).toBe(2);
+    expect(second.refresh_skipped).toEqual([
+      {
+        vendor: "claude",
+        not_before: new Date(Date.parse("2026-08-28T00:20:00.000Z")).toISOString(),
+      },
+    ]);
+    expect(second.absences.map((absence) => [absence.subject.harness, absence.reason])).toEqual([
+      ["claude", "rate_limited"],
+    ]);
+    expect(second.refreshed_at).not.toBeNull();
+
+    // POST /v2/quota and the atomic Accounts response ride this same cycle;
+    // an all-cooled cycle still serves rather than failing. Exhaust codex's
+    // eligibility by... codex has no floor, so it always runs — assert the
+    // single-vendor skip shape stays stable on a third refresh instead.
+    nowMs += 60_000;
+    const third = await registry.refreshWithCursor();
+    expect(third.response.refresh_skipped?.map((skip) => skip.vendor)).toEqual(["claude"]);
+    expect(third.quotaEventCursor).toBeTruthy();
+    expect(claudeCalls).toBe(1);
+
+    // After the floor elapses the fan-out resumes and the disclosure clears.
+    nowMs = Date.parse("2026-08-28T00:20:00.000Z");
+    const fourth = await registry.refresh();
+    expect(claudeCalls).toBe(2);
+    expect(fourth.refresh_skipped).toBeUndefined();
+
+    journal.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("an all-cooled foreground refresh serves last-known data instead of failing", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-quota-fg-allcooled-")));
+    const journal = new DurableJournal({ rootDir: root, partition: "global" });
+    let nowMs = Date.parse("2026-08-28T00:00:00.000Z");
+    let calls = 0;
+    const subject = {
+      harness: "claude",
+      credential_route: "vendor_native" as const,
+      plan_label: null,
+      subject_id: null,
+    };
+    const registry = new QuotaRegistry(
+      journal,
+      [
+        {
+          vendor: "claude",
+          refresh: async () => {
+            calls += 1;
+            return {
+              snapshots: [],
+              absences: [
+                {
+                  subject,
+                  reason: "rate_limited" as const,
+                  detail: null,
+                  observed_at: new Date(nowMs).toISOString(),
+                  retry_after_ms: 10 * 60_000,
+                },
+              ],
+            };
+          },
+        },
+      ],
+      () => new Date(nowMs),
+      () => [subject],
+    );
+
+    await registry.refresh();
+    nowMs += 60_000;
+    const cooled = await registry.refreshWithCursor();
+    expect(calls).toBe(1);
+    expect(cooled.response.refresh_skipped?.map((skip) => skip.vendor)).toEqual(["claude"]);
+    // The typed absence is preserved (not degraded to no_source), and the
+    // cycle still fences a valid cursor for snapshot-then-SSE clients.
+    expect(cooled.response.absences.map((absence) => absence.reason)).toEqual(["rate_limited"]);
+    expect(cooled.quotaEventCursor).toBeTruthy();
+
+    journal.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
   it("a vendor-scoped poll cycle preserves sibling vendors' typed absences and refresherless no_source rows", async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-quota-lane-absence-")));
     const journal = new DurableJournal({ rootDir: root, partition: "global" });

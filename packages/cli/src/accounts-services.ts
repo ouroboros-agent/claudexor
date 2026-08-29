@@ -74,8 +74,12 @@ export function createCredentialProfilesService(quotaRegistry: () => QuotaRegist
   // ran a doctor probe per registered profile plus a full harness sweep
   // inside harnessAccountsProjection on EVERY tick — the daemon-starving load
   // behind the 2026-08-04 "Daemon unreachable: ReadTimeout" login failure.
-  // The snapshot form stays fully fresh: it is the explicit refresh action,
-  // not the poll path. A login/logout invalidates this cache immediately
+  // The snapshot form is the explicit refresh action, not the poll path; its
+  // profile probes and doctor sweep are always fresh, while the QUOTA leg
+  // rides the registry cycle, which skips a vendor inside its poll
+  // rate-limit cooldown and discloses that additively
+  // (quota.refresh_skipped) instead of re-hammering a 429ing endpoint.
+  // A login/logout invalidates this cache immediately
   // (invalidateStatusProjections), so freshness lags at most the short TTL.
   const buildPollResponse = async () => {
     const quota = quotaRegistry().read();

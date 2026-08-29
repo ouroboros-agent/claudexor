@@ -113,3 +113,47 @@ export function laneHasDemand(
     ).size > 0
   );
 }
+
+export interface LaneCycleSelection {
+  readonly running: ReadonlyArray<{ lane: PacingLane; refresh: QuotaRefresher }>;
+  readonly skipped: Array<{ vendor: string; not_before: string }>;
+}
+
+/** Select which refreshers one cycle runs. A full (foreground) cycle honors
+ * each vendor lane's rate-limit floor: a vendor that just said 429 is not
+ * re-fanned-out by an explicit refresh — its skip is returned for additive
+ * disclosure. A poll-scoped cycle was already gated by the sweep. Anonymous
+ * lanes never carry a floor and always run. */
+export function selectCycleEntries(
+  refresherLanes: RefresherLanes,
+  scope: PacingLane | null,
+  nowMs: number,
+): LaneCycleSelection {
+  const skipped =
+    scope === null
+      ? refresherLanes.lanes.flatMap((lane) => {
+          const until = lane.vendor === null ? null : lane.pacer.rateLimitCooldownUntil(nowMs);
+          return until === null
+            ? []
+            : [{ vendor: lane.vendor as string, not_before: new Date(until).toISOString() }];
+        })
+      : [];
+  const skippedVendors = new Set(skipped.map((row) => row.vendor));
+  const running = refresherLanes.entries.filter((entry) =>
+    scope === null
+      ? entry.lane.vendor === null || !skippedVendors.has(entry.lane.vendor)
+      : entry.lane === scope,
+  );
+  return { running, skipped };
+}
+
+/** Absence recomputation covers exactly the lanes that RAN: an anonymous
+ * lane's coverage is unknowable, so its cycle keeps the full rebuild. */
+export function recomputeScopeFor(
+  running: LaneCycleSelection["running"],
+): ReadonlySet<string> | null {
+  const ranLanes = [...new Set(running.map((entry) => entry.lane))];
+  return ranLanes.some((lane) => lane.vendor === null)
+    ? null
+    : new Set(ranLanes.map((lane) => lane.vendor as string));
+}

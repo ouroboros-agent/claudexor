@@ -291,6 +291,17 @@ export const ControlQuotaRefreshRequest = z
   );
 export type ControlQuotaRefreshRequest = z.infer<typeof ControlQuotaRefreshRequest>;
 
+export const QuotaRefreshSkipped = z
+  .object({
+    vendor: Id,
+    not_before: z.string().datetime({ offset: true }),
+  })
+  .strict()
+  .describe(
+    "One vendor lane a refresh cycle did not re-fetch because its poll rate-limit cooldown is active; its snapshots/absences in the same response are last-known registry data.",
+  );
+export type QuotaRefreshSkipped = z.infer<typeof QuotaRefreshSkipped>;
+
 export const ControlQuotaResponse = z
   .object({
     snapshots: z.array(ControlQuotaSnapshot),
@@ -301,6 +312,11 @@ export const ControlQuotaResponse = z
         "Every registered subject reports either a snapshot or a typed absence — absence is never silent emptiness (zen: absence ≠ empty).",
       ),
     refreshed_at: z.string().datetime({ offset: true }).nullable(),
+    /** Additive disclosure: present only on refresh responses that skipped at
+     * least one vendor's fan-out for an active poll rate-limit cooldown
+     * (foreground refreshes honor the pacer instead of hammering a vendor
+     * that just said 429). Absent on plain reads and unskipped refreshes. */
+    refresh_skipped: z.array(QuotaRefreshSkipped).optional(),
   })
   .strict()
   .describe("Current quota snapshots without a fabricated aggregate.");

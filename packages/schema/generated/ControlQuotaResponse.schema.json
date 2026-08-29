@@ -308,6 +308,27 @@
               "type": "null"
             }
           ]
+        },
+        "refresh_skipped": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "vendor": {
+                "$ref": "#/definitions/ControlQuotaResponse/properties/snapshots/items/properties/subject/properties/harness"
+              },
+              "not_before": {
+                "type": "string",
+                "format": "date-time"
+              }
+            },
+            "required": [
+              "vendor",
+              "not_before"
+            ],
+            "additionalProperties": false,
+            "description": "One vendor lane a refresh cycle did not re-fetch because its poll rate-limit cooldown is active; its snapshots/absences in the same response are last-known registry data."
+          }
         }
       },
       "required": [
