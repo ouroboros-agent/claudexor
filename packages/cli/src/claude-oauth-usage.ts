@@ -316,7 +316,8 @@ export async function refreshClaudeOauthUsageQuota(
   }
   const snapshots: QuotaSnapshot[] = [];
   const absences: QuotaAbsence[] = [];
-  for (const candidate of candidates) {
+  for (let index = 0; index < candidates.length; index += 1) {
+    const candidate = candidates[index]!;
     let credential: ClaudeOauthCredential | null;
     try {
       credential = await readCredential(candidate.configDir, platform);
@@ -377,6 +378,24 @@ export async function refreshClaudeOauthUsageQuota(
           ? { retry_after_ms: Math.round(retryAfterMs) }
           : {}),
       });
+      // Short-circuit on the FIRST 429: every candidate hits the same vendor
+      // endpoint, so continuing the fan-out hammers the surface that just
+      // said stop. The unprobed siblings get the HONEST distinct reason —
+      // their own state is unknown; a sibling's 429 is never fabricated onto
+      // them as rate_limited (INV-093).
+      if (tagged === "rate_limited") {
+        for (const skippedCandidate of candidates.slice(index + 1)) {
+          absences.push(
+            claudeOauthAbsence(
+              skippedCandidate.subjectId,
+              "probe_skipped_rate_limited",
+              "a sibling candidate's oauth/usage probe hit the vendor rate limit this cycle",
+              now(),
+            ),
+          );
+        }
+        break;
+      }
     }
   }
   return { snapshots, absences };

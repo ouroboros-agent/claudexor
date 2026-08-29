@@ -41,9 +41,15 @@ export async function refreshAgyQuota(
   // Profiles are read CONCURRENTLY: several accounts is the point of the
   // feature, the daemon awaits every refresher in one cycle, and each read can
   // burn its full timeout — serially that is one stalled vendor per account
-  // added to claude's and codex's wait too.
-  const results = await Promise.all(
-    universe.candidates.map(async (candidate) => {
+  // added to claude's and codex's wait too. Concurrency is BOUNDED (3) so a
+  // large registry never turns one cycle into an unthrottled vendor burst,
+  // and a typed rate_limited observation short-circuits the still-unstarted
+  // candidates with the honest distinct probe_skipped reason (a sibling's 429
+  // is never fabricated onto an unprobed account).
+  const results = await mapBoundedUntilRateLimited(
+    universe.candidates,
+    AGY_QUOTA_CONCURRENCY,
+    async (candidate) => {
       const home = candidate.home;
       try {
         const env = agyProfileRunEnv(home, options.baseEnv ?? process.env);
@@ -103,13 +109,56 @@ export async function refreshAgyQuota(
           ),
         };
       }
-    }),
+    },
+    (candidate) =>
+      agyAbsence(
+        candidate.subjectId,
+        "probe_skipped_rate_limited",
+        "a sibling profile's quota probe hit the vendor rate limit this cycle",
+      ),
   );
   for (const result of results) {
     if (result.snapshot) snapshots.push(result.snapshot);
     if (result.absence) absences.push(result.absence);
   }
   return { snapshots, absences };
+}
+
+const AGY_QUOTA_CONCURRENCY = 3;
+
+type AgyCandidateResult = { snapshot?: QuotaSnapshot; absence?: QuotaAbsence };
+
+/** Bounded-concurrency map with a rate-limit short-circuit: at most `limit`
+ * probes in flight; once any settled result carries a typed `rate_limited`
+ * absence, the still-unstarted candidates are not probed and receive the
+ * caller's skip absence instead. Results keep candidate order. */
+async function mapBoundedUntilRateLimited<T>(
+  candidates: readonly T[],
+  limit: number,
+  probe: (candidate: T) => Promise<AgyCandidateResult>,
+  skip: (candidate: T) => QuotaAbsence,
+): Promise<AgyCandidateResult[]> {
+  const results: AgyCandidateResult[] = new Array<AgyCandidateResult>(candidates.length);
+  let next = 0;
+  let rateLimited = false;
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const index = next;
+      if (index >= candidates.length) return;
+      next += 1;
+      if (rateLimited) {
+        results[index] = { absence: skip(candidates[index]!) };
+        continue;
+      }
+      const result = await probe(candidates[index]!);
+      results[index] = result;
+      if (result.absence?.reason === "rate_limited") rateLimited = true;
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.max(1, Math.min(limit, candidates.length)) }, () => worker()),
+  );
+  return results;
 }
 
 /**

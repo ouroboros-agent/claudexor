@@ -271,6 +271,78 @@ describe("claude oauth/usage quota source (W5.3, INV-062)", () => {
     }
   });
 
+  it("short-circuits the candidate loop on the first 429: siblings get probe_skipped_rate_limited, never rate_limited", async () => {
+    // The vendor throttled the cycle — probing the remaining candidates would
+    // hammer the endpoint that just said stop, and a sibling's 429 proves
+    // nothing about THEIR windows (their reason must stay distinct).
+    const { mkdirSync, writeFileSync: writeSync, mkdtempSync } = await import("node:fs");
+    const dir = mkdtempSync(join(tmpdir(), "claudexor-oauth-429-"));
+    const prev = process.env.CLAUDEXOR_CONFIG_DIR;
+    process.env.CLAUDEXOR_CONFIG_DIR = dir;
+    try {
+      const { accountsMigrationFilePath } = await import("./accounts-unified-migration.js");
+      const { updateGlobalConfig } = await import("@claudexor/config");
+      mkdirSync(join(accountsMigrationFilePath(), ".."), { recursive: true });
+      // Mark claude migrated so no null-subject candidate precedes the rows.
+      writeSync(
+        accountsMigrationFilePath(),
+        JSON.stringify({
+          claude: {
+            phase: "completed",
+            row_id: "acc-a",
+            legacy_aliases: [null],
+            locator: join(dir, "claude-a"),
+            backup_ref: null,
+          },
+        }),
+      );
+      const rowOf = (id: string, locator: string) => ({
+        profile_id: id,
+        harness_id: "claude",
+        display_name: id,
+        credential_kind: "config_dir_login" as const,
+        isolation_locator: locator,
+        secret_ref: null,
+        enabled: true,
+        created_at: null,
+      });
+      updateGlobalConfig((config) => ({
+        ...config,
+        credential_profiles: [
+          rowOf("acc-a", join(dir, "claude-a")),
+          rowOf("acc-b", join(dir, "claude-b")),
+          rowOf("acc-c", join(dir, "claude-c")),
+        ],
+      }));
+      let fetches = 0;
+      const result = await refreshClaudeOauthUsageQuota({
+        readCredential: async () => ({ accessToken: "tok", subscriptionType: "max" }),
+        fetchUsage: async () => {
+          fetches += 1;
+          throw Object.assign(new Error("oauth/usage responded 429"), {
+            quotaAbsenceReason: "rate_limited" as const,
+            retryAfterMs: 45_000,
+          });
+        },
+        now: () => new Date("2026-08-28T00:00:00Z"),
+      });
+      expect(fetches).toBe(1);
+      expect(
+        result.absences?.map((absence) => [absence.subject.subject_id, absence.reason]),
+      ).toEqual([
+        ["acc-a", "rate_limited"],
+        ["acc-b", "probe_skipped_rate_limited"],
+        ["acc-c", "probe_skipped_rate_limited"],
+      ]);
+      expect(result.absences?.[0]?.retry_after_ms).toBe(45_000);
+      expect(result.absences?.slice(1).every((a) => a.retry_after_ms === undefined)).toBe(true);
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = prev;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("claims a refresh_failed absence when an HTTP-200 body carries no parseable quota windows (BACKLOG Q-a)", async () => {
     // An endpoint that answers 200 but with a body that maps to zero quota
     // windows must yield a typed absence, not silent emptiness — the registry

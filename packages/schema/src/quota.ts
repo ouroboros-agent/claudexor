@@ -201,6 +201,12 @@ export const QuotaAbsenceReason = z
      * throttled poll is not an exhausted window). The row carries
      * `retry_after_ms` when the vendor sent a parseable Retry-After. */
     "rate_limited",
+    /** A SIBLING candidate's probe hit the vendor rate limit in this same
+     * cycle, so this candidate was not probed at all (short-circuit: keeping
+     * on probing would hammer the endpoint that just said stop). Distinct
+     * from `rate_limited` — this subject's own state is honestly unknown,
+     * never fabricated from a sibling's 429. */
+    "probe_skipped_rate_limited",
     /** The current platform policy allows only one enabled binding, but the
      * persisted registry contains several. No row was selected or probed. */
     "credential_profile_ambiguous",

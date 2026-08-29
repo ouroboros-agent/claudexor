@@ -243,6 +243,74 @@ esac
     expect(out.absences?.[0]).toMatchObject({ reason: "refresh_failed" });
   });
 
+  it("bounds the profile fan-out to 3 concurrent vendor probes", async () => {
+    // Several accounts stay the point of the feature, but a large registry
+    // must not turn one refresh cycle into an unthrottled vendor burst: the
+    // probe pool holds at most 3 candidates in flight. The fake vendor logs
+    // start/end instants; unbounded Promise.all would overlap all 5.
+    const root = mkdtempSync(join(tmpdir(), "claudexor-agy-bounded-"));
+    roots.push(root);
+    process.env.CLAUDEXOR_CONFIG_DIR = root;
+    const rows: string[] = [];
+    for (const id of ["a", "b", "c", "d", "e"]) {
+      const home = join(root, "profiles", `agy-prof-${id}`);
+      mkdirSync(join(home, ".gemini", "antigravity-cli"), { recursive: true });
+      rows.push(
+        `  - profile_id: prof-${id}`,
+        "    harness_id: agy",
+        `    display_name: ${id.toUpperCase()}`,
+        "    credential_kind: config_dir_login",
+        `    isolation_locator: ${home}`,
+        "    enabled: true",
+      );
+    }
+    writeFileSync(
+      join(root, "config.yaml"),
+      ["version: 1", "credential_profiles:", ...rows, ""].join("\n"),
+    );
+    const log = join(root, "probe-log.txt");
+    const probe = join(root, "probe.cjs");
+    writeFileSync(
+      probe,
+      [
+        'const fs = require("node:fs");',
+        `const log = ${JSON.stringify(log)};`,
+        'fs.appendFileSync(log, `S ${Date.now()}\\n`);',
+        "setTimeout(() => {",
+        '  fs.appendFileSync(log, `E ${Date.now()}\\n`);',
+        '  process.stdout.write(JSON.stringify({ status: "ERROR", error: "slow fake vendor" }));',
+        "}, 300);",
+      ].join("\n"),
+    );
+    const bin = join(root, "fake-agy");
+    writeFileSync(bin, `#!/bin/sh\nexec node ${JSON.stringify(probe)}\n`);
+    chmodSync(bin, 0o755);
+
+    const out = await refresh({ bin });
+    // Every candidate still resolves (typed absences; the ERROR envelope is a
+    // refresh failure, and a failed /quota never spawns /model).
+    expect(out.snapshots).toEqual([]);
+    expect(out.absences?.map((absence) => absence.reason)).toEqual(
+      Array.from({ length: 5 }, () => "refresh_failed"),
+    );
+    const events = readFileSync(log, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => {
+        const [kind, at] = line.split(" ");
+        return { kind, at: Number(at) };
+      })
+      .sort((a, b) => a.at - b.at || (a.kind === "E" ? -1 : 1));
+    let inFlight = 0;
+    let maxInFlight = 0;
+    for (const event of events) {
+      inFlight += event.kind === "S" ? 1 : -1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+    }
+    expect(events).toHaveLength(10);
+    expect(maxInFlight).toBeLessThanOrEqual(3);
+  });
+
   it("fails loudly on ambiguous Windows rows with one absence per subject and zero vendor calls", async () => {
     const { bin } = scaffold({
       token: false,
