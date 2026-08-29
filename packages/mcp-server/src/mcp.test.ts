@@ -821,14 +821,30 @@ describe("Claudexor MCP server (SDK v2)", () => {
       quotaEventCursor: "q-1",
       accountPools: [{ harness_id: "claude", next_up: { kind: "profile", profileId: "work" } }],
     };
+    const calls: unknown[] = [];
     const tools = defaultClaudexorTools(async (params) => {
-      expect(params).toEqual({ mode: "__accounts" });
+      calls.push(params);
       return snapshot;
     });
     const accounts = tools.find((tool) => tool.name === "claudexor_accounts");
     expect(accounts?.annotations?.readOnlyHint).toBe(true);
-    expect(accounts?.outputSchema?.anyOf).toBeUndefined();
-    expect(accounts?.outputSchema?.properties).toMatchObject({
+    // Contract change (owner decision 11=A): the DEFAULT read is the cached
+    // credential-profiles listing; fresh:true opts into the expensive atomic
+    // snapshot. The declared output schema is the honest union of both forms.
+    expect(accounts?.inputSchema).toMatchObject({
+      type: "object",
+      additionalProperties: false,
+      properties: { fresh: { type: "boolean" } },
+    });
+    expect(accounts?.description).toContain("CACHED");
+    const members = accounts?.outputSchema?.anyOf as Array<Record<string, unknown>>;
+    expect(members).toHaveLength(2);
+    const [listing, atomic] = members.map(
+      (member) => member.properties as Record<string, unknown>,
+    );
+    expect(listing).toMatchObject({ profiles: expect.any(Object) });
+    expect(listing?.quotaEventCursor).toBeUndefined();
+    expect(atomic).toMatchObject({
       harnesses: expect.any(Object),
       git: expect.any(Object),
       quota: expect.any(Object),
@@ -837,6 +853,13 @@ describe("Claudexor MCP server (SDK v2)", () => {
     });
     const result = await accounts!.handler({}, {});
     expect(result).toMatchObject({ structured: snapshot });
+    await accounts!.handler({ fresh: true }, {});
+    await accounts!.handler({ fresh: false }, {});
+    expect(calls).toEqual([
+      { mode: "__accounts" },
+      { mode: "__accounts", fresh: true },
+      { mode: "__accounts" },
+    ]);
   });
 
   it("REFUSES to serve when the plugin artifact version does not match the CLI", async () => {

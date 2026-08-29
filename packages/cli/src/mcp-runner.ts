@@ -66,7 +66,9 @@ export interface McpSurfaceRunnerOptions {
 export function mcpSurfaceRunner(options: McpSurfaceRunnerOptions = {}) {
   return async (p: any, hooks?: SurfaceRunnerHooks) => {
     if (p?.mode === "__status" || p?.mode === "__capabilities" || p?.mode === "__accounts") {
-      return catalogQuery(p.mode, options.requireExistingDaemon === true);
+      return catalogQuery(p.mode, options.requireExistingDaemon === true, {
+        fresh: p?.fresh === true,
+      });
     }
     if (
       p?.mode === "__runs_list" ||

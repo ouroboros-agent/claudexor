@@ -18,7 +18,10 @@ It is strict: skipping a step is how the 2026-07-21 incident happened.
    from a host/default login.
 2. **Read the Accounts doorway before choosing a reviewer account.** Run
    `claudexor accounts --json` (or call the read-only `claudexor_accounts` MCP
-   tool). It is one daemon-authored snapshot of registered profiles, readiness,
+   tool; its default is the CACHED listing — pass `fresh: true` only when
+   acting on staleness matters, since the atomic snapshot probes every
+   profile and fans out to the vendors). It is one daemon-authored view of
+   registered profiles, readiness,
    quota freshness, and `next_up`; do not reconstruct a pool by joining
    `doctor`, `quota`, and profile-list responses yourself. `available/passed`
    on the exact named row is usable route evidence, while `unknown/not_run` or
