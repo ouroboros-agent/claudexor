@@ -43,6 +43,7 @@ import {
   stampCursorProfileEvents,
 } from "./profile.js";
 export { canonicalCursorProfileHome, cursorProfilePathEnv } from "./profile.js";
+import { prepareCursorMcpInjection } from "./mcp-config.js";
 import { smokeIsolatedApiKey, unsmokedApiSmoke, type CursorApiSmokeResult } from "./smoke.js";
 import {
   listCursorModelsFromReadyRoute,
@@ -97,6 +98,14 @@ export const CURSOR_CAPABILITY_PROFILE: HarnessCapabilityProfile =
     isolation: {
       supported_containment: ["env_or_file_injection"],
     },
+    // Engine-owned MCP injection (delegation belt): `mcp.json` written into
+    // the Claudexor-owned lane CURSOR_CONFIG_DIR plus `--approve-mcps`
+    // (mcp-config.ts). requires_full_access stays false: cursor's access
+    // enforcement is a TOOL allowlist (ask mode), not a filesystem/network
+    // sandbox around MCP subprocesses, so the belt reaches the daemon at
+    // workspace_write like claude (contrast codex's seatbelt).
+    mcp_injection: true,
+    mcp_injection_requires_full_access: false,
     attachment_inputs: [],
   });
 
@@ -293,8 +302,10 @@ export function createCursorAdapter(deps: Partial<CursorRuntimeDeps> = {}): Harn
           verify: true,
           synthesize: true,
           read_files: true,
-          // No browser-MCP injection path exists for cursor-agent yet —
-          // honest false until that path exists + is verified.
+          // The lane mcp.json injector (mcp-config.ts) now exists for
+          // engine-owned servers, but the BROWSER MCP specifically has no
+          // wired + live-verified cursor path — honest false until it does
+          // (INV-066).
           browser_tool: false,
           web_policy: "uncontrolled",
           // D-16: cursor has no native json_schema_output; the WorkReport rides
@@ -434,6 +445,27 @@ async function* runCursor(
     yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
     return;
   }
+  // Engine-owned MCP injection (delegation belt): reconcile the lane's
+  // mcp.json and approve MCPs headlessly, or refuse loudly (mcp-config.ts).
+  const injection = prepareCursorMcpInjection(env, spec.extra_mcp_servers ?? []);
+  if ("refusal" in injection) {
+    yield {
+      type: "error",
+      session_id: spec.session_id,
+      ts: nowIso(),
+      error: injection.refusal,
+      payload: { code: "required_mcp_startup_failed" },
+    };
+    yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
+    return;
+  }
+  // Typed disclosures for content the reconcile deliberately preserved
+  // (unreadable, quarantined, or orphaned lanes); the detail names the case.
+  for (const detail of injection.disclosures) {
+    const payload = { code: "cursor_mcp_config_disclosure", detail };
+    yield { type: "message", session_id: spec.session_id, ts: nowIso(), payload };
+  }
+  if (injection.approved) args.push("--approve-mcps");
   const credentialRoute =
     route === "local_session" ? ("vendor_native" as const) : ("managed_api_key" as const);
   const credentialSource =

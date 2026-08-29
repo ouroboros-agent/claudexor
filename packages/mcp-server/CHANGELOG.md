@@ -1,5 +1,21 @@
 # @claudexor/mcp-server
 
+## 3.9.0
+
+### Minor Changes
+
+- 11a785c: The `claudexor_accounts` MCP tool defaults to the server's cached credential-profiles listing instead of hardcoding the atomic snapshot; `fresh: true` opts into the expensive snapshot form (which itself now honors per-vendor rate-limit cooldowns). The tool description states the cost honestly and the output schema is the union of both forms.
+
+### Patch Changes
+
+- Updated dependencies [d9cccac]
+- Updated dependencies [69500f8]
+- Updated dependencies [e39c57b]
+- Updated dependencies [fd623ff]
+- Updated dependencies [278e436]
+  - @claudexor/schema@3.9.0
+  - @claudexor/util@3.9.0
+
 ## 3.8.4
 
 ### Patch Changes

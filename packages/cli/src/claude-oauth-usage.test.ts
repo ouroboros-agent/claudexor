@@ -157,6 +157,76 @@ describe("claude oauth/usage quota source (W5.3, INV-062)", () => {
     expect(nativeAbsence?.detail).toContain("401");
   });
 
+  it("claims a typed rate_limited absence carrying the vendor Retry-After floor on a 429", async () => {
+    // A 429 throttles the POLL, not the plan (owner decision 7=A): the reason
+    // stays distinct from refresh_failed so the pacer can honor the vendor
+    // floor, and the absence carries retry_after_ms only when the header came.
+    const result = await refreshClaudeOauthUsageQuota({
+      readCredential: async () => ({ accessToken: "tok", subscriptionType: "max" }),
+      fetchUsage: async () => {
+        throw Object.assign(new Error("oauth/usage responded 429"), {
+          quotaAbsenceReason: "rate_limited" as const,
+          retryAfterMs: 90_000,
+        });
+      },
+      now: () => new Date("2026-07-18T00:00:00Z"),
+    });
+    expect(result.snapshots).toEqual([]);
+    const nativeAbsence = result.absences?.find((a) => a.subject.subject_id === null);
+    expect(nativeAbsence?.reason).toBe("rate_limited");
+    expect(nativeAbsence?.retry_after_ms).toBe(90_000);
+  });
+
+  it("a 429 without Retry-After stays rate_limited with no fabricated floor", async () => {
+    // Anthropic does not always send Retry-After; the absence then simply
+    // omits retry_after_ms (absence of the floor is stated, never invented).
+    const result = await refreshClaudeOauthUsageQuota({
+      readCredential: async () => ({ accessToken: "tok", subscriptionType: "max" }),
+      fetchUsage: async () => {
+        throw Object.assign(new Error("oauth/usage responded 429"), {
+          quotaAbsenceReason: "rate_limited" as const,
+          retryAfterMs: null,
+        });
+      },
+      now: () => new Date("2026-07-18T00:00:00Z"),
+    });
+    const nativeAbsence = result.absences?.find((a) => a.subject.subject_id === null);
+    expect(nativeAbsence?.reason).toBe("rate_limited");
+    expect(nativeAbsence).not.toHaveProperty("retry_after_ms");
+  });
+
+  it("parses RFC 9110 Retry-After forms: delta-seconds, HTTP-date, junk, absent", async () => {
+    const { parseRetryAfterHeaderMs } = await import("./claude-oauth-usage.js");
+    const now = Date.parse("2026-07-18T00:00:00Z");
+    expect(parseRetryAfterHeaderMs("60", now)).toBe(60_000);
+    expect(parseRetryAfterHeaderMs(" 5 ", now)).toBe(5_000);
+    expect(parseRetryAfterHeaderMs("Sat, 18 Jul 2026 00:02:00 GMT", now)).toBe(120_000);
+    // A past HTTP-date clamps to zero rather than going negative.
+    expect(parseRetryAfterHeaderMs("Fri, 17 Jul 2026 23:00:00 GMT", now)).toBe(0);
+    expect(parseRetryAfterHeaderMs("soon", now)).toBeNull();
+    expect(parseRetryAfterHeaderMs(null, now)).toBeNull();
+  });
+
+  it("clamps oversized or overflowing Retry-After at the parser (observation kept, never schema-invalid)", async () => {
+    // An unrepresentable number reaching the schema would invalidate the whole
+    // typed rate_limited observation and drop the refresher's batch — the
+    // floor would never arm exactly when the vendor asked for the longest
+    // pause. The parser owns the bound: 7 days.
+    const { parseRetryAfterHeaderMs } = await import("./claude-oauth-usage.js");
+    const now = Date.parse("2026-07-18T00:00:00Z");
+    const sevenDaysMs = 7 * 24 * 60 * 60_000;
+    // Delta-seconds far past the ceiling (finite but enormous).
+    expect(parseRetryAfterHeaderMs("999999999", now)).toBe(sevenDaysMs);
+    // Delta-seconds that overflow to a non-finite product.
+    expect(parseRetryAfterHeaderMs("9".repeat(400), now)).toBe(sevenDaysMs);
+    // Far-future HTTP-date.
+    expect(parseRetryAfterHeaderMs("Fri, 01 Jan 9999 00:00:00 GMT", now)).toBe(sevenDaysMs);
+    // A valid long floor above the OLD 24h cap is honored in full.
+    expect(parseRetryAfterHeaderMs(String(3 * 24 * 60 * 60), now)).toBe(3 * 24 * 60 * 60_000);
+    // Everything the schema sees stays a safe non-negative integer.
+    expect(Number.isSafeInteger(parseRetryAfterHeaderMs("9".repeat(400), now))).toBe(true);
+  });
+
   it("a post-migration refresh cycle produces no null subject and never double-probes the migrated store", async () => {
     // The retired engine-default subject must not resurrect on refresh: a
     // migrated harness's former default store IS its auto-registered row, so
@@ -214,6 +284,78 @@ describe("claude oauth/usage quota source (W5.3, INV-062)", () => {
       expect(result.snapshots.map((s) => s.subject.subject_id)).toEqual(["claude-default"]);
       expect(result.snapshots.some((s) => s.subject.subject_id === null)).toBe(false);
       expect(result.absences ?? []).toEqual([]);
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = prev;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("short-circuits the candidate loop on the first 429: siblings get probe_skipped_rate_limited, never rate_limited", async () => {
+    // The vendor throttled the cycle — probing the remaining candidates would
+    // hammer the endpoint that just said stop, and a sibling's 429 proves
+    // nothing about THEIR windows (their reason must stay distinct).
+    const { mkdirSync, writeFileSync: writeSync, mkdtempSync } = await import("node:fs");
+    const dir = mkdtempSync(join(tmpdir(), "claudexor-oauth-429-"));
+    const prev = process.env.CLAUDEXOR_CONFIG_DIR;
+    process.env.CLAUDEXOR_CONFIG_DIR = dir;
+    try {
+      const { accountsMigrationFilePath } = await import("./accounts-unified-migration.js");
+      const { updateGlobalConfig } = await import("@claudexor/config");
+      mkdirSync(join(accountsMigrationFilePath(), ".."), { recursive: true });
+      // Mark claude migrated so no null-subject candidate precedes the rows.
+      writeSync(
+        accountsMigrationFilePath(),
+        JSON.stringify({
+          claude: {
+            phase: "completed",
+            row_id: "acc-a",
+            legacy_aliases: [null],
+            locator: join(dir, "claude-a"),
+            backup_ref: null,
+          },
+        }),
+      );
+      const rowOf = (id: string, locator: string) => ({
+        profile_id: id,
+        harness_id: "claude",
+        display_name: id,
+        credential_kind: "config_dir_login" as const,
+        isolation_locator: locator,
+        secret_ref: null,
+        enabled: true,
+        created_at: null,
+      });
+      updateGlobalConfig((config) => ({
+        ...config,
+        credential_profiles: [
+          rowOf("acc-a", join(dir, "claude-a")),
+          rowOf("acc-b", join(dir, "claude-b")),
+          rowOf("acc-c", join(dir, "claude-c")),
+        ],
+      }));
+      let fetches = 0;
+      const result = await refreshClaudeOauthUsageQuota({
+        readCredential: async () => ({ accessToken: "tok", subscriptionType: "max" }),
+        fetchUsage: async () => {
+          fetches += 1;
+          throw Object.assign(new Error("oauth/usage responded 429"), {
+            quotaAbsenceReason: "rate_limited" as const,
+            retryAfterMs: 45_000,
+          });
+        },
+        now: () => new Date("2026-08-28T00:00:00Z"),
+      });
+      expect(fetches).toBe(1);
+      expect(
+        result.absences?.map((absence) => [absence.subject.subject_id, absence.reason]),
+      ).toEqual([
+        ["acc-a", "rate_limited"],
+        ["acc-b", "probe_skipped_rate_limited"],
+        ["acc-c", "probe_skipped_rate_limited"],
+      ]);
+      expect(result.absences?.[0]?.retry_after_ms).toBe(45_000);
+      expect(result.absences?.slice(1).every((a) => a.retry_after_ms === undefined)).toBe(true);
     } finally {
       if (prev === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
       else process.env.CLAUDEXOR_CONFIG_DIR = prev;

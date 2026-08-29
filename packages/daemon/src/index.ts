@@ -20,5 +20,7 @@ export * from "./command-authority.js";
 export * from "./resource-store.js";
 export * from "./quota-registry.js";
 export * from "./quota-projection.js";
+export * from "./quota-poll-lanes.js";
+export { quotaPacerFileStore } from "./quota-poll-pacer.js";
 export * from "./credential-unusable-ledger.js";
 export * from "./project-partitions.js";

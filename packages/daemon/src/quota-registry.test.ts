@@ -1973,3 +1973,757 @@ describe("QuotaRegistry", () => {
     rmSync(root, { recursive: true, force: true });
   });
 });
+
+describe("QuotaRegistry per-vendor pacing lanes", () => {
+  const subjectOf = (harness: string, subjectId: string | null) => ({
+    harness,
+    credential_route: "vendor_native" as const,
+    plan_label: null,
+    subject_id: subjectId,
+  });
+
+  it("one vendor's unsatisfiable subject backs off alone; siblings keep their cadence", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-quota-lane-iso-")));
+    const journal = new DurableJournal({ rootDir: root, partition: "global" });
+    let nowMs = Date.parse("2026-08-28T00:00:00.000Z");
+    let codexCalls = 0;
+    let claudeCalls = 0;
+    const registry = new QuotaRegistry(
+      journal,
+      [
+        {
+          vendor: "codex",
+          refresh: async () => {
+            codexCalls += 1;
+            return {
+              snapshots: [
+                {
+                  ...quotaSnapshot("codex", null, 0.1),
+                  source: "codex_app_server" as const,
+                  observed_at: new Date(nowMs).toISOString(),
+                },
+              ],
+            };
+          },
+        },
+        {
+          vendor: "claude",
+          refresh: async () => {
+            claudeCalls += 1;
+            return {
+              snapshots: [],
+              absences: [
+                {
+                  subject: subjectOf("claude", null),
+                  reason: "not_logged_in" as const,
+                  detail: null,
+                  observed_at: new Date(nowMs).toISOString(),
+                },
+              ],
+            };
+          },
+        },
+      ],
+      () => new Date(nowMs),
+      () => [subjectOf("codex", null), subjectOf("claude", null)],
+    );
+
+    // Drive claude's absence-only lane to its 15-minute ceiling.
+    await expect(registry.pollStale()).resolves.toBe(true);
+    for (let step = 0; step < 6; step += 1) {
+      nowMs += 15 * 60_000;
+      await expect(registry.pollStale()).resolves.toBe(true);
+    }
+    const claudeAtCeiling = claudeCalls;
+    const codexBefore = codexCalls;
+    // 6 minutes later codex's snapshot is stale again (fresh window is 5 min):
+    // codex MUST refresh even though claude sits mid-way through its 15-minute
+    // window — the old global pacer pinned exactly this at the ceiling.
+    nowMs += 6 * 60_000;
+    await expect(registry.pollStale()).resolves.toBe(true);
+    expect(codexCalls).toBe(codexBefore + 1);
+    expect(claudeCalls).toBe(claudeAtCeiling);
+
+    journal.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("honors the vendor Retry-After floor over the exponential ladder and feeds it from foreground too", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-quota-lane-floor-")));
+    const journal = new DurableJournal({ rootDir: root, partition: "global" });
+    let nowMs = Date.parse("2026-08-28T00:00:00.000Z");
+    let calls = 0;
+    const registry = new QuotaRegistry(
+      journal,
+      [
+        {
+          vendor: "claude",
+          refresh: async () => {
+            calls += 1;
+            return {
+              snapshots: [],
+              absences: [
+                {
+                  subject: subjectOf("claude", null),
+                  reason: "rate_limited" as const,
+                  detail: "oauth/usage responded 429",
+                  observed_at: new Date(nowMs).toISOString(),
+                  retry_after_ms: 30 * 60_000,
+                },
+              ],
+            };
+          },
+        },
+      ],
+      () => new Date(nowMs),
+      () => [subjectOf("claude", null)],
+    );
+
+    // FOREGROUND refresh observes the 429 — the floor arms from it as well.
+    await registry.refresh();
+    expect(calls).toBe(1);
+    expect(registry.read().absences[0]?.reason).toBe("rate_limited");
+
+    // The exponential ladder alone would re-poll after 60s; the vendor said
+    // 30 minutes. One ms short of the floor stays skipped, at the floor polls.
+    nowMs += 60_000;
+    await expect(registry.pollStale()).resolves.toBe(false);
+    expect(calls).toBe(1);
+    nowMs += 29 * 60_000 - 1;
+    await expect(registry.pollStale()).resolves.toBe(false);
+    expect(calls).toBe(1);
+    nowMs += 1;
+    await expect(registry.pollStale()).resolves.toBe(true);
+    expect(calls).toBe(2);
+
+    journal.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("honors a multi-day vendor floor in full and caps a hostile one at 7 days", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-quota-lane-ceiling-")));
+    const journal = new DurableJournal({ rootDir: root, partition: "global" });
+    let nowMs = Date.parse("2026-08-28T00:00:00.000Z");
+    let calls = 0;
+    let retryAfterMs = 3 * 24 * 60 * 60_000; // valid 3-day vendor floor
+    const subject = subjectOf("claude", null);
+    const registry = new QuotaRegistry(
+      journal,
+      [
+        {
+          vendor: "claude",
+          refresh: async () => {
+            calls += 1;
+            return {
+              snapshots: [],
+              absences: [
+                {
+                  subject,
+                  reason: "rate_limited" as const,
+                  detail: null,
+                  observed_at: new Date(nowMs).toISOString(),
+                  retry_after_ms: retryAfterMs,
+                },
+              ],
+            };
+          },
+        },
+      ],
+      () => new Date(nowMs),
+      () => [subject],
+    );
+
+    await expect(registry.pollStale()).resolves.toBe(true);
+    // Above the OLD 24h cap, below the 7-day ceiling: honored in full.
+    nowMs += 3 * 24 * 60 * 60_000 - 1;
+    await expect(registry.pollStale()).resolves.toBe(false);
+    expect(calls).toBe(1);
+    nowMs += 1;
+    retryAfterMs = 30 * 24 * 60 * 60_000; // hostile 30-day floor
+    await expect(registry.pollStale()).resolves.toBe(true);
+    expect(calls).toBe(2);
+    // Clamped at the 7-day ceiling, not silenced for a month.
+    nowMs += 7 * 24 * 60 * 60_000 - 1;
+    await expect(registry.pollStale()).resolves.toBe(false);
+    expect(calls).toBe(2);
+    nowMs += 1;
+    await expect(registry.pollStale()).resolves.toBe(true);
+    expect(calls).toBe(3);
+
+    journal.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("persists the rate-limit floor across restart and credential change, journal-free", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-quota-lane-persist-")));
+    const journal = new DurableJournal({ rootDir: root, partition: "global" });
+    let nowMs = Date.parse("2026-08-28T00:00:00.000Z");
+    const saved = new Map<string, number>();
+    const store = {
+      load: (vendor: string) => saved.get(vendor) ?? 0,
+      save: (vendor: string, notBeforeMs: number) => {
+        saved.set(vendor, notBeforeMs);
+      },
+    };
+    let calls = 0;
+    const refresher = {
+      vendor: "claude",
+      refresh: async () => {
+        calls += 1;
+        return {
+          snapshots: [],
+          absences: [
+            {
+              subject: subjectOf("claude", null),
+              reason: "rate_limited" as const,
+              detail: null,
+              observed_at: new Date(nowMs).toISOString(),
+              retry_after_ms: 45 * 60_000,
+            },
+          ],
+        };
+      },
+    };
+    const subjects = () => [subjectOf("claude", null)];
+    const registry = new QuotaRegistry(
+      journal,
+      [refresher],
+      () => new Date(nowMs),
+      subjects,
+      store,
+    );
+
+    await expect(registry.pollStale()).resolves.toBe(true);
+    expect(saved.get("claude")).toBe(nowMs + 45 * 60_000);
+    // Owner decision 7=A: the floor never becomes a quota fact — no snapshot
+    // or cooldown upsert reaches the journal (the typed absence itself rides
+    // only the ephemeral projection, whose markers are the sole records here).
+    expect([...new Set(journal.records().map((record) => record.type))]).toEqual([
+      "quota.projection.updated",
+    ]);
+
+    // "Restart": a NEW registry over the same store inherits the floor and
+    // does not re-hammer the vendor; noteCredentialChange (which resets only
+    // the credential-demand backoff) does not lift it either.
+    nowMs += 10 * 60_000;
+    const restarted = new QuotaRegistry(
+      journal,
+      [refresher],
+      () => new Date(nowMs),
+      subjects,
+      store,
+    );
+    await expect(restarted.pollStale()).resolves.toBe(false);
+    restarted.noteCredentialChange();
+    await expect(restarted.pollStale()).resolves.toBe(false);
+    expect(calls).toBe(1);
+    nowMs += 35 * 60_000;
+    await expect(restarted.pollStale()).resolves.toBe(true);
+    expect(calls).toBe(2);
+
+    journal.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("a foreground refresh joining a lane-scoped poll cycle re-runs a FULL cycle (no silent partial join)", async () => {
+    // Regression vs base: on 0c376844 the poll ran a FULL cycle, so a joiner
+    // always got a genuine full refresh. With per-lane poll cycles, an
+    // explicit refresh that joined a scoped cycle must re-run full instead of
+    // returning with sibling vendors unre-fetched and no disclosure.
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-quota-joinrace-")));
+    const journal = new DurableJournal({ rootDir: root, partition: "global" });
+    let nowMs = Date.parse("2026-08-28T00:00:00.000Z");
+    let codexCalls = 0;
+    let claudeCalls = 0;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const claudeSubject = {
+      harness: "claude",
+      credential_route: "vendor_native" as const,
+      plan_label: null,
+      subject_id: null,
+    };
+    const registry = new QuotaRegistry(
+      journal,
+      [
+        {
+          vendor: "codex",
+          refresh: async () => {
+            codexCalls += 1;
+            return {
+              snapshots: [
+                {
+                  ...quotaSnapshot("codex", null, 0.1),
+                  source: "codex_app_server" as const,
+                  observed_at: new Date(nowMs).toISOString(),
+                },
+              ],
+            };
+          },
+        },
+        {
+          vendor: "claude",
+          refresh: async () => {
+            claudeCalls += 1;
+            if (claudeCalls === 1) await held;
+            return {
+              snapshots: [],
+              absences: [
+                {
+                  subject: claudeSubject,
+                  reason: "not_logged_in" as const,
+                  detail: null,
+                  observed_at: new Date(nowMs).toISOString(),
+                },
+              ],
+            };
+          },
+        },
+      ],
+      () => new Date(nowMs),
+      // Only claude has a registered subject, so the poll sweep runs ONLY the
+      // claude lane — the exact scoped cycle the foreground caller joins.
+      () => [claudeSubject],
+    );
+
+    const sweep = registry.pollStale();
+    await Promise.resolve();
+    expect(claudeCalls).toBe(1);
+    expect(codexCalls).toBe(0);
+    const foreground = registry.refresh();
+    await Promise.resolve();
+    nowMs += 1000;
+    release();
+    const [swept, fg] = await Promise.all([sweep, foreground]);
+    expect(swept).toBe(true);
+    // The joiner re-ran a FULL cycle: codex was actually fetched, fresh.
+    expect(codexCalls).toBe(1);
+    expect(claudeCalls).toBe(2);
+    expect(fg.snapshots.map((snapshot) => [snapshot.subject.harness, snapshot.freshness])).toEqual([
+      ["codex", "fresh"],
+    ]);
+    expect(fg.refresh_skipped).toBeUndefined();
+
+    journal.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("foreground refresh honors an armed vendor cooldown: serves last-known data and disclosed skips", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-quota-fg-cooldown-")));
+    const journal = new DurableJournal({ rootDir: root, partition: "global" });
+    let nowMs = Date.parse("2026-08-28T00:00:00.000Z");
+    let claudeCalls = 0;
+    let codexCalls = 0;
+    const subjectOf = (harness: string) => ({
+      harness,
+      credential_route: "vendor_native" as const,
+      plan_label: null,
+      subject_id: null,
+    });
+    const registry = new QuotaRegistry(
+      journal,
+      [
+        {
+          vendor: "codex",
+          refresh: async () => {
+            codexCalls += 1;
+            return {
+              snapshots: [
+                {
+                  ...quotaSnapshot("codex", null, 0.1),
+                  source: "codex_app_server" as const,
+                  observed_at: new Date(nowMs).toISOString(),
+                },
+              ],
+            };
+          },
+        },
+        {
+          vendor: "claude",
+          refresh: async () => {
+            claudeCalls += 1;
+            return {
+              snapshots: [],
+              absences: [
+                {
+                  subject: subjectOf("claude"),
+                  reason: "rate_limited" as const,
+                  detail: "oauth/usage responded 429",
+                  observed_at: new Date(nowMs).toISOString(),
+                  retry_after_ms: 20 * 60_000,
+                },
+              ],
+            };
+          },
+        },
+      ],
+      () => new Date(nowMs),
+      () => [subjectOf("codex"), subjectOf("claude")],
+    );
+
+    // First explicit refresh observes the 429 and arms the claude floor.
+    const first = await registry.refresh();
+    expect(first.refresh_skipped).toBeUndefined();
+    expect(claudeCalls).toBe(1);
+
+    // A second explicit refresh inside the cooldown re-fans-out codex only;
+    // claude's HTTP is skipped, its last-known typed absence still serves,
+    // and the skip is disclosed additively with the release instant.
+    nowMs += 60_000;
+    const second = await registry.refresh();
+    expect(claudeCalls).toBe(1);
+    expect(codexCalls).toBe(2);
+    expect(second.refresh_skipped).toEqual([
+      {
+        vendor: "claude",
+        not_before: new Date(Date.parse("2026-08-28T00:20:00.000Z")).toISOString(),
+      },
+    ]);
+    expect(second.absences.map((absence) => [absence.subject.harness, absence.reason])).toEqual([
+      ["claude", "rate_limited"],
+    ]);
+    expect(second.refreshed_at).not.toBeNull();
+
+    // POST /v2/quota and the atomic Accounts response ride this same cycle;
+    // an all-cooled cycle still serves rather than failing. Exhaust codex's
+    // eligibility by... codex has no floor, so it always runs — assert the
+    // single-vendor skip shape stays stable on a third refresh instead.
+    nowMs += 60_000;
+    const third = await registry.refreshWithCursor();
+    expect(third.response.refresh_skipped?.map((skip) => skip.vendor)).toEqual(["claude"]);
+    expect(third.quotaEventCursor).toBeTruthy();
+    expect(claudeCalls).toBe(1);
+
+    // After the floor elapses the fan-out resumes and the disclosure clears.
+    nowMs = Date.parse("2026-08-28T00:20:00.000Z");
+    const fourth = await registry.refresh();
+    expect(claudeCalls).toBe(2);
+    expect(fourth.refresh_skipped).toBeUndefined();
+
+    journal.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("an all-cooled foreground refresh serves last-known data instead of failing", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-quota-fg-allcooled-")));
+    const journal = new DurableJournal({ rootDir: root, partition: "global" });
+    let nowMs = Date.parse("2026-08-28T00:00:00.000Z");
+    let calls = 0;
+    const subject = {
+      harness: "claude",
+      credential_route: "vendor_native" as const,
+      plan_label: null,
+      subject_id: null,
+    };
+    const registry = new QuotaRegistry(
+      journal,
+      [
+        {
+          vendor: "claude",
+          refresh: async () => {
+            calls += 1;
+            return {
+              snapshots: [],
+              absences: [
+                {
+                  subject,
+                  reason: "rate_limited" as const,
+                  detail: null,
+                  observed_at: new Date(nowMs).toISOString(),
+                  retry_after_ms: 10 * 60_000,
+                },
+              ],
+            };
+          },
+        },
+      ],
+      () => new Date(nowMs),
+      () => [subject],
+    );
+
+    await registry.refresh();
+    nowMs += 60_000;
+    const cooled = await registry.refreshWithCursor();
+    expect(calls).toBe(1);
+    expect(cooled.response.refresh_skipped?.map((skip) => skip.vendor)).toEqual(["claude"]);
+    // The typed absence is preserved (not degraded to no_source), and the
+    // cycle still fences a valid cursor for snapshot-then-SSE clients.
+    expect(cooled.response.absences.map((absence) => absence.reason)).toEqual(["rate_limited"]);
+    expect(cooled.quotaEventCursor).toBeTruthy();
+
+    journal.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("a vendor-scoped poll cycle preserves sibling vendors' typed absences and refresherless no_source rows", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-quota-lane-absence-")));
+    const journal = new DurableJournal({ rootDir: root, partition: "global" });
+    let nowMs = Date.parse("2026-08-28T00:00:00.000Z");
+    let claudeCalls = 0;
+    const registry = new QuotaRegistry(
+      journal,
+      [
+        {
+          vendor: "codex",
+          refresh: async () => ({
+            snapshots: [],
+            absences: [
+              {
+                subject: subjectOf("codex", null),
+                reason: "not_logged_in" as const,
+                detail: null,
+                observed_at: new Date(nowMs).toISOString(),
+              },
+            ],
+          }),
+        },
+        {
+          vendor: "claude",
+          refresh: async () => {
+            claudeCalls += 1;
+            return {
+              snapshots: [],
+              absences: [
+                {
+                  subject: subjectOf("claude", null),
+                  reason: "refresh_failed" as const,
+                  detail: "flaky",
+                  observed_at: new Date(nowMs).toISOString(),
+                },
+              ],
+            };
+          },
+        },
+      ],
+      () => new Date(nowMs),
+      () => [subjectOf("codex", null), subjectOf("claude", null), subjectOf("cursor", "row-a")],
+    );
+
+    // Full sweep: codex claims not_logged_in, claude claims refresh_failed,
+    // and the refresherless cursor subject is stated as no_source.
+    await expect(registry.pollStale()).resolves.toBe(true);
+    const byHarness = () =>
+      new Map(registry.read().absences.map((absence) => [absence.subject.harness, absence.reason]));
+    expect(byHarness().get("codex")).toBe("not_logged_in");
+    expect(byHarness().get("claude")).toBe("refresh_failed");
+    expect(byHarness().get("cursor")).toBe("no_source");
+
+    // Claude's ladder recovers first (both armed 60s at the same completion);
+    // advance exactly one claude-only cycle ahead of codex by draining codex's
+    // eligibility with an equal cycle, then verify a claude-scoped cycle does
+    // not degrade codex's typed reason to no_source and keeps cursor stated.
+    nowMs += 60_000;
+    await expect(registry.pollStale()).resolves.toBe(true);
+    expect(byHarness().get("codex")).toBe("not_logged_in");
+    expect(byHarness().get("claude")).toBe("refresh_failed");
+    expect(byHarness().get("cursor")).toBe("no_source");
+    expect(claudeCalls).toBeGreaterThanOrEqual(2);
+
+    journal.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+});
+
+describe("QuotaRegistry gap-absence honesty (suppressed polls stay stated)", () => {
+  const subjectOf = (harness: string, subjectId: string | null) => ({
+    harness,
+    credential_route: "vendor_native" as const,
+    plan_label: null,
+    subject_id: subjectId,
+  });
+
+  it("a gap row coexists with a STALE snapshot but is silenced by a FRESH one", async () => {
+    // The stale spent window is exactly the state the gap row explains: an
+    // exhaustion reader that skips stale snapshots must still see an absence
+    // (fail-open), or "spent + silence" would read as window exhausted.
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-quota-gap-stale-")));
+    const journal = new DurableJournal({ rootDir: root, partition: "global" });
+    let nowMs = Date.parse("2026-08-28T00:00:00.000Z");
+    const a = subjectOf("claude", "acc-a");
+    const b = subjectOf("claude", "acc-b");
+    let cycle = 0;
+    const registry = new QuotaRegistry(
+      journal,
+      [
+        {
+          vendor: "claude",
+          refresh: async () => {
+            cycle += 1;
+            if (cycle === 1) {
+              // Both probed: two fresh snapshots.
+              return {
+                snapshots: [
+                  {
+                    ...quotaSnapshot("claude", "acc-a", 1),
+                    observed_at: new Date(nowMs).toISOString(),
+                  },
+                  {
+                    ...quotaSnapshot("claude", "acc-b", 0.4),
+                    observed_at: new Date(nowMs).toISOString(),
+                  },
+                ],
+              };
+            }
+            // Later cycle: A re-probed fresh; B's probe 429-skipped.
+            return {
+              snapshots: [
+                {
+                  ...quotaSnapshot("claude", "acc-a", 1),
+                  observed_at: new Date(nowMs).toISOString(),
+                },
+              ],
+              absences: [
+                {
+                  subject: b,
+                  reason: "probe_skipped_rate_limited" as const,
+                  detail: "sibling probe hit the vendor rate limit",
+                  observed_at: new Date(nowMs).toISOString(),
+                },
+              ],
+            };
+          },
+        },
+      ],
+      () => new Date(nowMs),
+      () => [a, b],
+    );
+
+    await registry.refresh();
+    // B has a FRESH snapshot: no absence row for B (fresh cover silences).
+    expect(registry.read().absences).toEqual([]);
+
+    // 10 minutes on: B's snapshot is STALE; the new cycle re-freshens A and
+    // claims B's probe skip. The gap row must be visible ALONGSIDE B's stale
+    // snapshot, never dropped for stale cover.
+    nowMs += 10 * 60_000;
+    await registry.refresh();
+    const view = registry.read();
+    expect(
+      view.snapshots.map((snapshot) => [snapshot.subject.subject_id, snapshot.freshness]),
+    ).toEqual([
+      ["acc-a", "fresh"],
+      ["acc-b", "stale"],
+    ]);
+    expect(view.absences.map((absence) => [absence.subject.subject_id, absence.reason])).toEqual([
+      ["acc-b", "probe_skipped_rate_limited"],
+    ]);
+
+    journal.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("derives stable poll_paced rows for a floor-suppressed vendor's unstated subjects, restart included", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-quota-gap-paced-")));
+    const journal = new DurableJournal({ rootDir: root, partition: "global" });
+    let nowMs = Date.parse("2026-08-28T00:00:00.000Z");
+    const saved = new Map<string, number>();
+    const store = {
+      load: (vendor: string) => saved.get(vendor) ?? 0,
+      save: (vendor: string, notBeforeMs: number) => {
+        saved.set(vendor, notBeforeMs);
+      },
+    };
+    const a = subjectOf("claude", "acc-a");
+    const b = subjectOf("claude", "acc-b");
+    const subjects = () => [a, b];
+    const refresher = {
+      vendor: "claude",
+      refresh: async () => ({
+        snapshots: [],
+        absences: [
+          {
+            subject: a,
+            reason: "rate_limited" as const,
+            detail: null,
+            observed_at: new Date(nowMs).toISOString(),
+            retry_after_ms: 30 * 60_000,
+          },
+          {
+            subject: b,
+            reason: "probe_skipped_rate_limited" as const,
+            detail: null,
+            observed_at: new Date(nowMs).toISOString(),
+          },
+        ],
+      }),
+    };
+    const registry = new QuotaRegistry(
+      journal,
+      [refresher],
+      () => new Date(nowMs),
+      subjects,
+      store,
+    );
+    await expect(registry.pollStale()).resolves.toBe(true);
+    // Typed claims exist for both; no derived duplicates.
+    expect(
+      registry
+        .read()
+        .absences.map((absence) => absence.reason)
+        .sort(),
+    ).toEqual(["probe_skipped_rate_limited", "rate_limited"]);
+
+    // "Restart": absences are ephemeral, the floor is store-loaded. Without a
+    // derived row both subjects would fall SILENT for the rest of the floor.
+    nowMs += 5 * 60_000;
+    const restarted = new QuotaRegistry(
+      journal,
+      [refresher],
+      () => new Date(nowMs),
+      subjects,
+      store,
+    );
+    const view = restarted.read();
+    expect(view.absences.map((absence) => [absence.subject.subject_id, absence.reason])).toEqual([
+      ["acc-a", "poll_paced"],
+      ["acc-b", "poll_paced"],
+    ]);
+    expect(view.absences[0]?.detail).toContain("2026-08-28T00:30:00.000Z");
+    // Stable per floor: repeated reads/sweeps never churn the projection.
+    const stampA = view.absences[0]?.observed_at;
+    nowMs += 60_000;
+    await expect(restarted.pollStale()).resolves.toBe(false);
+    const markersAfterFirstSweep = journal.records().length;
+    expect(restarted.read().absences[0]?.observed_at).toBe(stampA);
+    nowMs += 60_000;
+    await expect(restarted.pollStale()).resolves.toBe(false);
+    expect(journal.records().length).toBe(markersAfterFirstSweep);
+
+    // Floor elapsed: the pause lifts, the lane repolls, derived rows vanish.
+    nowMs = Date.parse("2026-08-28T00:30:00.000Z");
+    await expect(restarted.pollStale()).resolves.toBe(true);
+    expect(restarted.read().absences.every((absence) => absence.reason !== "poll_paced")).toBe(
+      true,
+    );
+
+    journal.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+});
+
+describe("quotaPacerFileStore", () => {
+  it("round-trips per-vendor floors, survives junk, and writes atomically", async () => {
+    const { quotaPacerFileStore } = await import("./quota-poll-pacer.js");
+    const { writeFileSync, readFileSync, readdirSync } = await import("node:fs");
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-pacer-store-")));
+    const store = quotaPacerFileStore(dir);
+    expect(store.load("claude")).toBe(0);
+    const at = Date.parse("2026-08-28T00:45:00.000Z");
+    store.save("claude", at);
+    store.save("codex", at + 1000);
+    expect(store.load("claude")).toBe(at);
+    expect(store.load("codex")).toBe(at + 1000);
+    // The file is daemon-private state, not a journal record.
+    const raw = JSON.parse(readFileSync(join(dir, "quota-pacer-state.json"), "utf8"));
+    expect(raw).toMatchObject({ version: 1 });
+    expect(readdirSync(dir).filter((name) => name.includes(".tmp."))).toEqual([]);
+    // Corrupt file: fail-open to no floor, and the next save repairs it.
+    writeFileSync(join(dir, "quota-pacer-state.json"), "{not json");
+    expect(store.load("claude")).toBe(0);
+    store.save("agy", at);
+    expect(store.load("agy")).toBe(at);
+    rmSync(dir, { recursive: true, force: true });
+  });
+});

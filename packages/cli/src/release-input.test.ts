@@ -233,19 +233,22 @@ describe("one-release custom Ed25519 waiver", () => {
     });
   });
 
-  it("accepts an exact v3.8.0 publish with all three custom inputs empty", () => {
-    withPublishFixture("3.8.0", (fixture) => {
-      const reviewPath = resolve(fixture.fixture, "review-attestation.json");
-      const result = verifyPublish(fixture, {
-        REVIEW_ATTESTATION_PATH: reviewPath,
-        SKIP_CUSTOM_ED25519_INPUT: "true",
-      });
+  it.each(["3.8.0", "3.9.0"])(
+    "accepts an exact v%s publish with all three custom inputs empty",
+    (version) => {
+      withPublishFixture(version, (fixture) => {
+        const reviewPath = resolve(fixture.fixture, "review-attestation.json");
+        const result = verifyPublish(fixture, {
+          REVIEW_ATTESTATION_PATH: reviewPath,
+          SKIP_CUSTOM_ED25519_INPUT: "true",
+        });
 
-      expect(result.status).toBe(0);
-      expect(result.stdout).toContain(`release input OK: publish ${fixture.candidateSha}`);
-      expect(existsSync(reviewPath)).toBe(false);
-    });
-  });
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain(`release input OK: publish ${fixture.candidateSha}`);
+        expect(existsSync(reviewPath)).toBe(false);
+      });
+    },
+  );
 
   it("keeps the normal publish path fail-closed when the review attestation is empty", () => {
     withPublishFixture("3.8.0", (fixture) => {
@@ -258,16 +261,19 @@ describe("one-release custom Ed25519 waiver", () => {
     });
   });
 
-  it("rejects the waiver for every package version except 3.8.0", () => {
-    withPublishFixture("3.3.17", (fixture) => {
-      const result = verifyPublish(fixture, { SKIP_CUSTOM_ED25519_INPUT: "true" });
+  it.each(["3.3.17", "3.8.4", "3.9.1"])(
+    "rejects the waiver for every package version outside the exact 3.8.0/3.9.0 list (%s)",
+    (version) => {
+      withPublishFixture(version, (fixture) => {
+        const result = verifyPublish(fixture, { SKIP_CUSTOM_ED25519_INPUT: "true" });
 
-      expect(result.status).toBe(1);
-      expect(result.stderr).toContain(
-        "release input rejected: skip_custom_ed25519 is authorized only for package version 3.8.0",
-      );
-    });
-  });
+        expect(result.status).toBe(1);
+        expect(result.stderr).toContain(
+          "release input rejected: skip_custom_ed25519 is authorized only for package versions 3.8.0 and 3.9.0",
+        );
+      });
+    },
+  );
 
   it.each([
     "REVIEW_ATTESTATION_B64_INPUT",

@@ -3,6 +3,21 @@
 Release history for Claudexor. The current version is declared in the root
 `package.json` (the version SSOT); tags `v*` correspond to GitHub Releases.
 
+- **v3.9.0** (2026-08-29): quota polling is paced per vendor lane with a
+  persisted Retry-After floor (a 429 or restart no longer amplifies vendor
+  traffic); foreground quota refreshes honor vendor cooldowns and disclose
+  skipped vendors additively; suppressed polls stay stated through typed gap
+  absences (`rate_limited`, `probe_skipped_rate_limited`, `poll_paced`); the
+  claude probe loop short-circuits after the first 429 and the agy fan-out is
+  bounded; the `claudexor_accounts` MCP tool defaults to the cached listing
+  with `fresh: true` opting into the snapshot; and the cursor adapter can
+  host the delegation belt via reconciled lane `mcp.json` injection
+  (CONCEPT-CHANGE(INV-030); its owner-set live E2E was executed — see
+  docs/FEATURES.md for the bounded-proof record and remaining caveats).
+  Ships under the owner-authorized version-scoped Ed25519 waiver: the release
+  omits the review attestation and both signed runtime manifests, so in-app
+  engine update and first-time remote bootstrap are unavailable for 3.9.0
+  (client verifiers stay fail-closed); DMG/npm/provenance are unchanged.
 - **v3.8.4** (2026-08-28): implicit profile pools now drop only the typed
   quota-exhausted lane when a sibling harness can continue, while explicit
   pools remain strict and an exhausted primary preserves its typed terminal

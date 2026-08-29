@@ -84,6 +84,11 @@ export async function accountsCommandWithDeps(
   }
   print(`Accounts snapshot: quota cursor ${snapshot.quotaEventCursor}`);
   print(`  quota refreshed_at: ${snapshot.quota.refreshed_at ?? "unknown"}`);
+  for (const skip of snapshot.quota.refresh_skipped ?? []) {
+    print(
+      `  quota refresh skipped for ${skip.vendor}: rate-limit cooldown until ${skip.not_before}`,
+    );
+  }
   print(`  git: ${snapshot.git.status}`);
   if (snapshot.profiles.length === 0) {
     print("  no registered credential profiles");

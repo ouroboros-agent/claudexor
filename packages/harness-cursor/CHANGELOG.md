@@ -1,5 +1,23 @@
 # @claudexor/harness-cursor
 
+## 3.9.0
+
+### Minor Changes
+
+- d9cccac: The cursor adapter can now host the delegation belt: engine-owned MCP servers are injected by reconciling `mcp.json` inside the Claudexor-owned lane `CURSOR_CONFIG_DIR` (sidecar-manifest reconcile; the host `~/.cursor` is never written; stale managed entries are removed on non-delegate runs) with `--approve-mcps`, and `capability_profile.mcp_injection` is declared true. The owner-set live delegated E2E recorded in docs/FEATURES.md has been executed (bounded probe: a real cursor-agent loaded the injected belt and it answered typed over MCP; the full parent-run hop remains follow-up evidence).
+
+### Patch Changes
+
+- Updated dependencies [d9cccac]
+- Updated dependencies [69500f8]
+- Updated dependencies [e39c57b]
+- Updated dependencies [fd623ff]
+- Updated dependencies [278e436]
+  - @claudexor/schema@3.9.0
+  - @claudexor/core@3.9.0
+  - @claudexor/secrets@3.9.0
+  - @claudexor/util@3.9.0
+
 ## 3.8.4
 
 ### Patch Changes

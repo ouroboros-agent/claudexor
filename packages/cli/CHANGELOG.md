@@ -1,5 +1,48 @@
 # @claudexor/cli
 
+## 3.9.0
+
+### Minor Changes
+
+- 69500f8: Foreground quota refreshes (POST /v2/quota and the atomic Accounts snapshot) now honor each vendor's poll rate-limit cooldown: a vendor that recently answered 429 is served from last-known registry data instead of a fresh fan-out, disclosed additively as `refresh_skipped` rows on the quota response.
+- 11a785c: The `claudexor_accounts` MCP tool defaults to the server's cached credential-profiles listing instead of hardcoding the atomic snapshot; `fresh: true` opts into the expensive snapshot form (which itself now honors per-vendor rate-limit cooldowns). The tool description states the cost honestly and the output schema is the union of both forms.
+- fd623ff: Parse Retry-After on oauth/usage 429 into a typed `rate_limited` quota absence carrying `retry_after_ms`, so poll pacing can honor the vendor floor instead of recording an undiagnosed refresh failure.
+- 48ae659: Quota poll pacing is now per vendor lane: each vendor's refreshers own an independent completion-anchored backoff, a typed rate_limited absence arms a persisted vendor Retry-After floor in daemon-private pacer state (never the quota journal), and a daemon restart or credential change no longer resets the vendor cooldown into a 429 amplifier.
+- 278e436: The claude oauth-usage candidate loop short-circuits after the first 429 (unprobed siblings get the honest distinct `probe_skipped_rate_limited` absence, never a fabricated `rate_limited`), and the agy profile fan-out is bounded to 3 concurrent vendor probes; the same short-circuit seam is in place for agy and arms once its vendor classifier learns to type 429s (today the live agy win is the concurrency bound).
+
+### Patch Changes
+
+- Updated dependencies [d9cccac]
+- Updated dependencies [69500f8]
+- Updated dependencies [e39c57b]
+- Updated dependencies [11a785c]
+- Updated dependencies [fd623ff]
+- Updated dependencies [48ae659]
+- Updated dependencies [278e436]
+  - @claudexor/harness-cursor@3.9.0
+  - @claudexor/schema@3.9.0
+  - @claudexor/daemon@3.9.0
+  - @claudexor/mcp-server@3.9.0
+  - @claudexor/acp-server@3.9.0
+  - @claudexor/config@3.9.0
+  - @claudexor/control-api@3.9.0
+  - @claudexor/core@3.9.0
+  - @claudexor/delivery@3.9.0
+  - @claudexor/gateway@3.9.0
+  - @claudexor/harness-agy@3.9.0
+  - @claudexor/harness-claude@3.9.0
+  - @claudexor/harness-codex@3.9.0
+  - @claudexor/harness-fake@3.9.0
+  - @claudexor/harness-opencode@3.9.0
+  - @claudexor/harness-raw-api@3.9.0
+  - @claudexor/orchestrator@3.9.0
+  - @claudexor/review@3.9.0
+  - @claudexor/workspace@3.9.0
+  - @claudexor/artifact-store@3.9.0
+  - @claudexor/journal@3.9.0
+  - @claudexor/secrets@3.9.0
+  - @claudexor/util@3.9.0
+
 ## 3.8.4
 
 ### Patch Changes

@@ -1,5 +1,18 @@
 # @claudexor/workspace
 
+## 3.9.0
+
+### Patch Changes
+
+- Updated dependencies [d9cccac]
+- Updated dependencies [69500f8]
+- Updated dependencies [e39c57b]
+- Updated dependencies [fd623ff]
+- Updated dependencies [278e436]
+  - @claudexor/schema@3.9.0
+  - @claudexor/core@3.9.0
+  - @claudexor/util@3.9.0
+
 ## 3.8.4
 
 ### Patch Changes

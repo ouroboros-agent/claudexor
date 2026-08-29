@@ -128,8 +128,8 @@ for (const [label, pattern] of [
     /remote_runtime_manifest_b64:\s*\n\s*description:[^\n]*owner-signed four-target SSH runtime manifest/,
   ],
   [
-    "the v3.8.0 custom Ed25519 waiver is an explicit boolean defaulting false",
-    /skip_custom_ed25519:\s*\n\s*description:[^\n]*v3\.8\.0 publish only[^\n]*\n\s*required:\s*false\n\s*type:\s*boolean\n\s*default:\s*false/,
+    "the v3.8.0/v3.9.0 custom Ed25519 waiver is an explicit boolean defaulting false",
+    /skip_custom_ed25519:\s*\n\s*description:[^\n]*v3\.8\.0 or v3\.9\.0 publish only[^\n]*\n\s*required:\s*false\n\s*type:\s*boolean\n\s*default:\s*false/,
   ],
   [
     "the v3.8.1/v3.8.2 Cursor review waiver is an explicit boolean defaulting false",
@@ -661,8 +661,8 @@ for (const [label, pattern] of [
     /skipCustomEd25519\s*&&\s*customEd25519Inputs\.some\(\(value\)\s*=>\s*value\s*!==\s*""\)/,
   ],
   [
-    "waiver is permanently pinned to package version 3.8.0",
-    /skipCustomEd25519\s*&&\s*version\s*!==\s*"3\.8\.0"/,
+    "waiver is permanently pinned to the exact package versions 3.8.0 and 3.9.0",
+    /skipCustomEd25519\s*&&\s*!\["3\.8\.0",\s*"3\.9\.0"\]\.includes\(version\)/,
   ],
   [
     "Cursor review waiver is permanently pinned to package versions 3.8.1 and 3.8.2",
@@ -929,17 +929,17 @@ function exactCandidateAppPromotionErrors(job) {
     assembleStep,
   );
   requirePattern(
-    "the v3.8.0 waiver must keep the unsigned engine manifest candidate-only",
+    "the custom Ed25519 waiver must keep the unsigned engine manifest candidate-only",
     /if \[ "\$RELEASE_MODE_INPUT" = publish \]; then\n\s*if \[ "\$SKIP_CUSTOM_ED25519_INPUT" != true \]; then[\s\S]*?cp "\$signed" "\$assets\/runtime-manifest\.json"\n\s*fi\n\s*else\n\s*cp "\$RUNNER_TEMP\/runtime-closure\/runtime-manifest\.json" "\$assets\/"/,
     assembleStep,
   );
   requirePattern(
-    "the v3.8.0 waiver must keep the unsigned remote manifest candidate-only",
+    "the custom Ed25519 waiver must keep the unsigned remote manifest candidate-only",
     /if \[ "\$RELEASE_MODE_INPUT" = publish \]; then\n\s*if \[ "\$SKIP_CUSTOM_ED25519_INPUT" != true \]; then[\s\S]*?cp "\$remote_signed" "\$assets\/remote-runtime-manifest\.json"\n\s*fi\n\s*else\n\s*cp "\$RUNNER_TEMP\/remote-runtimes\/remote-runtime-manifest\.json" "\$assets\/"/,
     assembleStep,
   );
   requirePattern(
-    "the v3.8.0 waiver must omit all three custom Ed25519 documents from final assets",
+    "the custom Ed25519 waiver must omit all three custom Ed25519 documents from final assets",
     /if \[ "\$SKIP_CUSTOM_ED25519_INPUT" = true \]; then\n\s*for name in REVIEW_ATTESTATION\.json runtime-manifest\.json remote-runtime-manifest\.json; do\n\s*test ! -e "\$assets\/\$name"/,
     assembleStep,
   );

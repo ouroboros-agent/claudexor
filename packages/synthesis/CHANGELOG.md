@@ -1,5 +1,11 @@
 # @claudexor/synthesis
 
+## 3.9.0
+
+### Patch Changes
+
+- @claudexor/arbitration@3.9.0
+
 ## 3.8.4
 
 ### Patch Changes

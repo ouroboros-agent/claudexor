@@ -35,10 +35,11 @@ release. The existing signed runtime manifest remains the
 publication authority, so an embedder does not create a second artifact or
 trust root.
 
-Release `3.8.0` is an explicit one-release exception: its GitHub Release omits
+Releases `3.8.0` and `3.9.0` are explicit owner-authorized exceptions: their
+GitHub Releases omit
 the custom signed runtime and remote-runtime manifests instead of publishing
 unsigned files. Existing app installs cannot use in-place engine update for
-that version, and the app cannot first-bootstrap a remote runtime from it.
+those versions, and the app cannot first-bootstrap a remote runtime from them.
 Fresh signed/notarized app installs, npm packages, and reviewed embedders that
 pin the exact archive URL/build SHA/SHA-256/size remain usable. The normal
 signed-manifest contract above remains fail-closed for every non-exempt
@@ -203,7 +204,10 @@ read Claude credential or session files. See the official
 `GET /v2/credential-profiles` with the `snapshot=true` query is the opt-in
 Accounts read for interactive clients. It returns profiles/readiness,
 per-harness `next_up`, Workspace Git, quota, and an opaque quota-event cursor
-from one server-authored epoch. Resume the dedicated quota observer from that
+from one server-authored epoch. The quota leg (like `POST /v2/quota`) honors
+each vendor's poll rate-limit cooldown: a vendor that recently answered 429
+is served from last-known registry data, disclosed additively as
+`quota.refresh_skipped` rows carrying the vendor and its release instant. Resume the dedicated quota observer from that
 cursor. A quota marker or a rejected/lost cursor invalidates the quota and
 `next_up` projection; clients keep identity/Enabled/readiness, stop observing,
 and wait for an explicit Accounts Refresh rather than automatically fetching a
@@ -335,7 +339,9 @@ The implemented tools include `claudexor_ask` (with `deepScan`), `claudexor_run`
 (the derived AgentCapabilityCatalog: per-harness live capabilities, modes,
 the mutability matrix, run-control keys), and the read-only recovery tools
 `claudexor_accounts` (the server-authored credential-profile/readiness/quota
-snapshot, including freshness and `next_up` state),
+view, including freshness and `next_up` state — the default read is the
+cached listing; `fresh: true` opts into the expensive atomic snapshot, which
+honors per-vendor rate-limit cooldowns),
 `claudexor_runs`, `claudexor_inspect`, `claudexor_run_status`,
 `claudexor_run_result`, `claudexor_run_cancel`,
 `claudexor_run_interactions`, `claudexor_answer_interaction`,

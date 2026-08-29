@@ -52,7 +52,11 @@ engine strategies are flags on a mode, never modes:
 
 `--delegate` (agent-only) injects a SCOPED Claudexor MCP belt into the harness
 sandbox — the generalized `HarnessRunSpec.extra_mcp_servers` seam translated per
-adapter (claude `--mcp-config` inline JSON, codex `-c mcp_servers.<name>.*`).
+adapter (claude `--mcp-config` inline JSON, codex `-c mcp_servers.<name>.*`,
+cursor a reconciled `mcp.json` in the Claudexor-owned lane `CURSOR_CONFIG_DIR`
+plus `--approve-mcps` — a run without `extra_mcp_servers` removes any
+previously Claudexor-managed entries so a stale belt never rides a
+non-delegate run, and the host `~/.cursor` is never written).
 The running daemon entry must itself dispatch `mcp serve-belt`; every in-repo
 launcher preserves that executable-entry contract.
 The harness decides when to spawn bounded, isolated sub-runs; the belt exposes
@@ -82,7 +86,7 @@ terminal. After the drain, the ledger rechecks the family terminal state and
 reconciles the returned result plus `decision.yaml`; a late overshoot or
 unverifiable child settlement replaces the prepared success with a typed budget
 failure. Only adapters
-whose `capability_profile.mcp_injection` is true (claude, codex) can host the
+whose `capability_profile.mcp_injection` is true (claude, codex, cursor) can host the
 belt. `HarnessStatusDto` and the agent capability catalog carry one derived
 `delegation` projection (`available`, typed `reason`, remediation, and the access
 requirement), so CLI, Control API, and macOS consume the same readiness truth.
@@ -91,7 +95,11 @@ record `delegation {requested,effective,used,reason,remediation}`; the field is
 nullable when reading legacy artifacts that predate this receipt. A known pre-injection
 runtime, manifest, or access incompatibility may continue as an ordinary Agent
 run with `effective:false` and a durable warning. An MCP startup failure AFTER
-the descriptor was injected is terminal and never silently degrades. An
+the descriptor was injected is terminal and never silently degrades on
+adapters with a startup receipt (claude's `mcp_servers` init frames, codex's
+required-MCP failure frames); cursor has NO post-spawn startup receipt yet —
+its injection failures refuse typed pre-spawn only, and closing the post-spawn
+gap is the recorded acceptance condition on its `docs/FEATURES.md` row. An
 unrecovered non-ok result from an exact injected belt tool likewise hard-fails
 the Agent outcome; the Delegate receipt still says `used:true` because it records
 which path ran, not whether that operation succeeded. An isolated-envelope
@@ -2290,15 +2298,31 @@ subject and only a fresh matching primary snapshot satisfies it. Typed absence
 is still a successful, displayable observation, but retains soft demand under
 exponential pacing; reactive rollout/retry and status-line evidence remains
 available to display and routing without triggering or satisfying primary
-demand. The poll lifecycle is single-flight, anchors its next eligibility to
-completion rather than start, advances backoff after partial/absence outcomes,
-and resets when credential or routability state changes. A registry-owned
+demand. The poll lifecycle is a single-flight sweep paced PER VENDOR LANE:
+each vendor with a registered refresher owns an independent
+completion-anchored exponential backoff (15-minute ceiling) that advances
+after partial/absence outcomes and resets when credential or routability
+state changes, so one vendor's permanently unsatisfiable subject never pins a
+sibling vendor's refresh cadence. A typed `rate_limited` poll absence
+additionally arms that lane's vendor rate-limit floor — the max of the
+exponential ladder and the vendor's Retry-After when one was sent — kept in
+daemon-private pacer state, never the quota journal (a throttled poll is
+pacing evidence, not an exhausted window), so a daemon restart is not a 429
+amplifier; a credential change resets only the demand backoff, never the
+floor. A suppressed poll never falls silent: gap-representation absences
+(`rate_limited`, `probe_skipped_rate_limited`, `poll_paced`) are silenced
+only by a FRESH snapshot — stale last-known data and the "not re-asked" fact
+stay visible together — and while a lane's floor is active every universe
+subject of that vendor lacking fresh cover and a stored row is stated as a
+derived `poll_paced` row (a live projection, never journaled), so an
+exhaustion reader that skips stale snapshots stays fail-open instead of
+promoting a stale spent window into "window exhausted". A registry-owned
 credential generation fences a provider cycle after validation and before its
 first journal, memory, absence, marker, response, or cursor write. A foreground
 caller from a newer generation waits for obsolete work to retire, then all such
 callers coalesce into one current-generation cycle; an obsolete poll cannot
-restore removed evidence or satisfy a post-login refresh. The three top-level
-refreshers run concurrently, validate every fulfilled snapshot and absence
+restore removed evidence or satisfy a post-login refresh. Within one cycle the
+selected refreshers run concurrently, validate every fulfilled snapshot and absence
 before the first write, then fold in declaration order so first-claim and marker
 semantics remain deterministic; each refresher's per-account vendor calls stay
 serial. Both `/v2/quota` and the atomic Accounts response decorate snapshots
@@ -2314,6 +2338,17 @@ appends that pair under one recovery intent and one fsync, so replay retains
 both records or neither. Current engines apply the exact scope and true source
 only when the
 matching base follows; v3.2.0 replays that base conservatively as account-wide.
+A background poll cycle runs one vendor lane's refreshers; an explicit
+foreground refresh (`POST /v2/quota`, the atomic Accounts snapshot) runs
+every lane NOT inside its vendor rate-limit cooldown — a cooled vendor is
+served from last-known registry data and the skip is disclosed additively as
+`refresh_skipped` rows on the response. Join semantics are asymmetric: a
+poll joining an in-flight foreground FULL cycle keeps that cycle's result (a
+superset of what it wanted), while a foreground caller that joined a
+lane-scoped poll cycle re-runs a bounded full cycle once the scoped one
+completes — an explicit refresh never silently returns with sibling vendors
+unre-fetched and no disclosure. Every served response remains the complete
+projection.
 `auto` ranks by the binding `min(elapsed_fraction - used_ratio)` pacing slack,
 `quality` uses only exact user-declared `{harness,model,effort}` tiers, and
 `economy` minimizes known incremental cash spend with quality tiers only as a
@@ -2756,11 +2791,12 @@ macOS UI/UX SSOT. This section keeps only the engine-facing facts.
 
 ### Remote SSH execution
 
-Release `3.8.0` is an owner-authorized one-release publication exception: its
-GitHub Release omits `runtime-manifest.json` and
+Releases `3.8.0` and `3.9.0` are owner-authorized publication exceptions:
+their
+GitHub Releases omit `runtime-manifest.json` and
 `remote-runtime-manifest.json` rather than shipping unsigned substitutes.
-Consequently, an existing app cannot update its engine in place to that
-version, and the app cannot perform a first-time remote bootstrap from it.
+Consequently, an existing app cannot update its engine in place to those
+versions, and the app cannot perform a first-time remote bootstrap from them.
 Fresh signed/notarized app installs, npm packages, and reviewed exact-pin
 embedders remain usable; the normal signed-manifest design below stays
 fail-closed for non-exempt releases.
@@ -2913,8 +2949,8 @@ continue.
 ### Engine runtime updater (M7, D22/D23)
 
 The mechanism below is the normal release contract. The version-specific
-`3.8.0` exception documented above deliberately has no signed manifest assets,
-so clients refuse rather than weaken this verifier.
+`3.8.0` and `3.9.0` exceptions documented above deliberately have no signed
+manifest assets, so clients refuse rather than weaken this verifier.
 
 The app updates its **engine runtime closure** in place without a new DMG. The
 update unit is a `claudexor-runtime-<version>.tar.gz` containing the engine-owned

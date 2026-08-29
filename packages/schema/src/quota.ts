@@ -195,6 +195,25 @@ export const QuotaAbsenceReason = z
      * network) and from `not_logged_in` (there IS a stored login): the local
      * store looks healthy while the token behind it is no longer honored. */
     "auth_revoked",
+    /** The vendor rate-limited the QUOTA POLL itself (429). The credential is
+     * not dead and the plan window is not proven spent — this is poll-pacing
+     * evidence only and must never be journaled as a quota cooldown (a
+     * throttled poll is not an exhausted window). The row carries
+     * `retry_after_ms` when the vendor sent a parseable Retry-After. */
+    "rate_limited",
+    /** A SIBLING candidate's probe hit the vendor rate limit in this same
+     * cycle, so this candidate was not probed at all (short-circuit: keeping
+     * on probing would hammer the endpoint that just said stop). Distinct
+     * from `rate_limited` — this subject's own state is honestly unknown,
+     * never fabricated from a sibling's 429. */
+    "probe_skipped_rate_limited",
+    /** The subject was not re-probed because its vendor's poll rate-limit
+     * cooldown is active: the POLL is paused, not the plan window. A derived
+     * gap row so a suppressed vendor's subjects never fall silent — surfaces
+     * can say "data is stale, polling paused until T", and exhaustion
+     * readers stay fail-open instead of promoting a stale spent window into
+     * "window exhausted". */
+    "poll_paced",
     /** The current platform policy allows only one enabled binding, but the
      * persisted registry contains several. No row was selected or probed. */
     "credential_profile_ambiguous",
@@ -202,12 +221,27 @@ export const QuotaAbsenceReason = z
   .describe("Why a registered subject has no quota snapshot, in the source's own vocabulary.");
 export type QuotaAbsenceReason = z.infer<typeof QuotaAbsenceReason>;
 
+/** Gap-representation absence reasons: "this cycle deliberately did not ask"
+ * (the vendor throttled the poll, a sibling's 429 short-circuited it, or
+ * pacing paused the lane). Unlike credential-state reasons they may coexist
+ * with a STALE snapshot — the stale data stays visible as last-known while
+ * the gap row keeps downstream exhaustion readers fail-open (a stale spent
+ * window plus a gap row means "not re-asked", never "window exhausted"). A
+ * FRESH snapshot still silences them like every other reason. */
+export const QUOTA_GAP_ABSENCE_REASONS: ReadonlySet<QuotaAbsenceReason> =
+  new Set<QuotaAbsenceReason>(["rate_limited", "probe_skipped_rate_limited", "poll_paced"]);
+
 export const QuotaAbsence = z
   .object({
     subject: QuotaSubject,
     reason: QuotaAbsenceReason,
     detail: z.string().nullable().default(null),
     observed_at: z.string().datetime({ offset: true }),
+    /** For `rate_limited` only: the vendor's Retry-After translated to
+     * milliseconds from `observed_at`. Present only when the header arrived
+     * and parsed (Anthropic does not always send it); absent = no vendor
+     * floor is known and pacing falls back to its own exponential backoff. */
+    retry_after_ms: z.number().int().nonnegative().optional(),
   })
   .strict()
   .describe("A registered subject's typed missing-snapshot — absence is stated, never inferred.");
@@ -280,6 +314,17 @@ export const ControlQuotaRefreshRequest = z
   );
 export type ControlQuotaRefreshRequest = z.infer<typeof ControlQuotaRefreshRequest>;
 
+export const QuotaRefreshSkipped = z
+  .object({
+    vendor: Id,
+    not_before: z.string().datetime({ offset: true }),
+  })
+  .strict()
+  .describe(
+    "One vendor lane a refresh cycle did not re-fetch because its poll rate-limit cooldown is active; its snapshots/absences in the same response are last-known registry data.",
+  );
+export type QuotaRefreshSkipped = z.infer<typeof QuotaRefreshSkipped>;
+
 export const ControlQuotaResponse = z
   .object({
     snapshots: z.array(ControlQuotaSnapshot),
@@ -290,6 +335,11 @@ export const ControlQuotaResponse = z
         "Every registered subject reports either a snapshot or a typed absence — absence is never silent emptiness (zen: absence ≠ empty).",
       ),
     refreshed_at: z.string().datetime({ offset: true }).nullable(),
+    /** Additive disclosure: present only on refresh responses that skipped at
+     * least one vendor's fan-out for an active poll rate-limit cooldown
+     * (foreground refreshes honor the pacer instead of hammering a vendor
+     * that just said 429). Absent on plain reads and unskipped refreshes. */
+    refresh_skipped: z.array(QuotaRefreshSkipped).optional(),
   })
   .strict()
   .describe("Current quota snapshots without a fabricated aggregate.");
