@@ -207,6 +207,26 @@ describe("claude oauth/usage quota source (W5.3, INV-062)", () => {
     expect(parseRetryAfterHeaderMs(null, now)).toBeNull();
   });
 
+  it("clamps oversized or overflowing Retry-After at the parser (observation kept, never schema-invalid)", async () => {
+    // An unrepresentable number reaching the schema would invalidate the whole
+    // typed rate_limited observation and drop the refresher's batch — the
+    // floor would never arm exactly when the vendor asked for the longest
+    // pause. The parser owns the bound: 7 days.
+    const { parseRetryAfterHeaderMs } = await import("./claude-oauth-usage.js");
+    const now = Date.parse("2026-07-18T00:00:00Z");
+    const sevenDaysMs = 7 * 24 * 60 * 60_000;
+    // Delta-seconds far past the ceiling (finite but enormous).
+    expect(parseRetryAfterHeaderMs("999999999", now)).toBe(sevenDaysMs);
+    // Delta-seconds that overflow to a non-finite product.
+    expect(parseRetryAfterHeaderMs("9".repeat(400), now)).toBe(sevenDaysMs);
+    // Far-future HTTP-date.
+    expect(parseRetryAfterHeaderMs("Fri, 01 Jan 9999 00:00:00 GMT", now)).toBe(sevenDaysMs);
+    // A valid long floor above the OLD 24h cap is honored in full.
+    expect(parseRetryAfterHeaderMs(String(3 * 24 * 60 * 60), now)).toBe(3 * 24 * 60 * 60_000);
+    // Everything the schema sees stays a safe non-negative integer.
+    expect(Number.isSafeInteger(parseRetryAfterHeaderMs("9".repeat(400), now))).toBe(true);
+  });
+
   it("a post-migration refresh cycle produces no null subject and never double-probes the migrated store", async () => {
     // The retired engine-default subject must not resurrect on refresh: a
     // migrated harness's former default store IS its auto-registered row, so

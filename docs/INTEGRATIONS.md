@@ -35,10 +35,11 @@ release. The existing signed runtime manifest remains the
 publication authority, so an embedder does not create a second artifact or
 trust root.
 
-Release `3.8.0` is an explicit one-release exception: its GitHub Release omits
+Releases `3.8.0` and `3.9.0` are explicit owner-authorized exceptions: their
+GitHub Releases omit
 the custom signed runtime and remote-runtime manifests instead of publishing
 unsigned files. Existing app installs cannot use in-place engine update for
-that version, and the app cannot first-bootstrap a remote runtime from it.
+those versions, and the app cannot first-bootstrap a remote runtime from them.
 Fresh signed/notarized app installs, npm packages, and reviewed embedders that
 pin the exact archive URL/build SHA/SHA-256/size remain usable. The normal
 signed-manifest contract above remains fail-closed for every non-exempt

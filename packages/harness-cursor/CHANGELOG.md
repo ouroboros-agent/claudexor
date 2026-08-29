@@ -4,11 +4,11 @@
 
 ### Minor Changes
 
-- 9a06cf9: The cursor adapter can now host the delegation belt: engine-owned MCP servers are injected by reconciling `mcp.json` inside the Claudexor-owned lane `CURSOR_CONFIG_DIR` (sidecar-manifest reconcile; the host `~/.cursor` is never written; stale managed entries are removed on non-delegate runs) with `--approve-mcps`, and `capability_profile.mcp_injection` is declared true. Pending the live delegated E2E recorded in docs/FEATURES.md.
+- d9cccac: The cursor adapter can now host the delegation belt: engine-owned MCP servers are injected by reconciling `mcp.json` inside the Claudexor-owned lane `CURSOR_CONFIG_DIR` (sidecar-manifest reconcile; the host `~/.cursor` is never written; stale managed entries are removed on non-delegate runs) with `--approve-mcps`, and `capability_profile.mcp_injection` is declared true. Pending the live delegated E2E recorded in docs/FEATURES.md.
 
 ### Patch Changes
 
-- Updated dependencies [9a06cf9]
+- Updated dependencies [d9cccac]
 - Updated dependencies [69500f8]
 - Updated dependencies [e39c57b]
 - Updated dependencies [fd623ff]

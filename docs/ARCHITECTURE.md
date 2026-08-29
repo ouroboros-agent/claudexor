@@ -2791,11 +2791,12 @@ macOS UI/UX SSOT. This section keeps only the engine-facing facts.
 
 ### Remote SSH execution
 
-Release `3.8.0` is an owner-authorized one-release publication exception: its
-GitHub Release omits `runtime-manifest.json` and
+Releases `3.8.0` and `3.9.0` are owner-authorized publication exceptions:
+their
+GitHub Releases omit `runtime-manifest.json` and
 `remote-runtime-manifest.json` rather than shipping unsigned substitutes.
-Consequently, an existing app cannot update its engine in place to that
-version, and the app cannot perform a first-time remote bootstrap from it.
+Consequently, an existing app cannot update its engine in place to those
+versions, and the app cannot perform a first-time remote bootstrap from them.
 Fresh signed/notarized app installs, npm packages, and reviewed exact-pin
 embedders remain usable; the normal signed-manifest design below stays
 fail-closed for non-exempt releases.

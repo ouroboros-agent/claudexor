@@ -3,10 +3,11 @@ import { join } from "node:path";
 
 const POLL_BACKOFF_MS = 60_000;
 const MAX_POLL_BACKOFF_MS = 15 * 60_000;
-/** Defensive ceiling on a vendor-supplied Retry-After floor: a buggy or
- * hostile header must not silence a vendor's polling for days. Real vendor
- * windows (~45 min observed) sit far below it. */
-const MAX_RATE_LIMIT_FLOOR_MS = 24 * 60 * 60_000;
+/** Ceiling on the vendor rate-limit floor (7 days, aligned with the
+ * Retry-After parser's clamp): valid long vendor floors are honored in full —
+ * the plan's max(exponential, retryAfterMs) — while a buggy or hostile value
+ * cannot silence a vendor's polling unboundedly. */
+const MAX_RATE_LIMIT_FLOOR_MS = 7 * 24 * 60 * 60_000;
 
 /**
  * Daemon-private persistence for one pacer fact: the per-vendor rate-limit

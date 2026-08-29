@@ -130,11 +130,32 @@ function writeManifest(dir: string, names: readonly string[]): void {
 export function syncCursorMcpServers(dir: string, servers: readonly ExtraMcpServer[]): string[] {
   const disclosures: string[] = [];
   const manifest = readManagedManifest(dir);
-  if (servers.length === 0 && !manifest.exists) return disclosures;
+  const mcpPath = join(dir, "mcp.json");
+  if (servers.length === 0 && !manifest.exists) {
+    // An engine-named entry with NO manifest is formally foreign, so
+    // preservation wins over deletion — but it is exactly the
+    // stale-or-squatted belt shape (pre-hardening crash window, manual
+    // manifest deletion), so a run passing through must say so LOUDLY
+    // instead of riding past it silently, every time.
+    const orphaned = readJsonObjectFile(mcpPath);
+    const orphanServers =
+      !orphaned.corrupt &&
+      orphaned.value["mcpServers"] !== null &&
+      typeof orphaned.value["mcpServers"] === "object" &&
+      !Array.isArray(orphaned.value["mcpServers"])
+        ? (orphaned.value["mcpServers"] as Record<string, unknown>)
+        : {};
+    const riding = ENGINE_OWNED_MCP_NAMES.filter((name) => name in orphanServers);
+    if (riding.length > 0) {
+      disclosures.push(
+        `cursor mcp.json at ${mcpPath} carries engine-named MCP entr${riding.length > 1 ? "ies" : "y"} (${riding.join(", ")}) with NO Claudexor managed manifest — stale or foreign; it was NOT auto-removed: remove it by hand, or run a delegate turn to re-adopt it`,
+      );
+    }
+    return disclosures;
+  }
   const managedNames = manifest.corrupt
     ? [...new Set([...ENGINE_OWNED_MCP_NAMES, ...servers.map((server) => server.name)])]
     : manifest.names;
-  const mcpPath = join(dir, "mcp.json");
   const mcpFile = readJsonObjectFile(mcpPath);
   if (mcpFile.corrupt) {
     if (servers.length === 0) {

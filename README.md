@@ -160,12 +160,15 @@ explicit-port preview tunnel.
 
 ### Updates
 
-**v3.8.0 release exception.** The owner-authorized release omits the three
+**v3.8.0 and v3.9.0 release exceptions.** These owner-authorized releases omit
+the three
 custom Ed25519 documents rather than publishing unsigned substitutes. Existing
-app installs therefore cannot take the in-place engine update to 3.8.0, and
-the app cannot perform a first-time remote bootstrap from that release. A fresh
+app installs therefore cannot take the in-place engine update to those
+versions, and
+the app cannot perform a first-time remote bootstrap from those releases. A fresh
 signed/notarized DMG, npm packages, and reviewed exact-pin embedders remain
-usable; normal releases keep the signed-manifest path below fail-closed.
+usable; normal releases keep the signed-manifest path below fail-closed (the
+client verifiers themselves stay fail-closed for the waived versions too).
 
 - **macOS app** — each release publishes a `claudexor-runtime-<version>.tar.gz`
   closure (the bundled daemon and CLI, setup-login runner, Browser MCP, and native
@@ -319,7 +322,10 @@ spend while the parent reports the aggregate. Only harnesses whose adapter decla
 permission, not a requirement to create a child. Readiness and the final
 requested/effective/used outcome are engine-projected: a known pre-start
 incompatibility may continue as an ordinary Agent run only with a durable
-warning and typed remediation, while failure after belt injection is terminal. Claudexor children
+warning and typed remediation, while failure after belt injection is terminal
+on adapters with a startup receipt (claude, codex) — cursor hosting is
+pre-spawn injection with typed pre-spawn refusals, its live E2E and
+startup-status mapping gated as recorded in `docs/FEATURES.md`. Claudexor children
 carry a typed parent link; native vendor subagents never count as belt use. This
 replaces the former `orchestrate` mode (retired in v3): "suggest"-style planning
 is ordinary `claudexor plan`.

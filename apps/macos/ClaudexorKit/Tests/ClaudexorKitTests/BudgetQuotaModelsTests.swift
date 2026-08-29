@@ -47,6 +47,24 @@ import Testing
         #expect(snapshot.availability?.modelScopedExhaustions.first?.appliesToModels == ["fable"])
     }
 
+    @Test func quotaDecodesOptionalRefreshSkippedAndDefaultsEmpty() throws {
+        // Additive disclosure: a refresh that skipped a vendor for an active
+        // poll rate-limit cooldown names it; absent field stays an empty list
+        // (older daemons predate the projection).
+        let skipped = try JSONDecoder().decode(ControlQuotaResponse.self, from: Data(#"""
+        {"snapshots":[],"absences":[],"refreshed_at":"2026-08-29T00:00:00Z",
+         "refresh_skipped":[{"vendor":"claude","not_before":"2026-08-29T00:20:00Z"}]}
+        """#.utf8))
+        #expect(skipped.refreshSkipped.count == 1)
+        #expect(skipped.refreshSkipped.first?.vendor == "claude")
+        #expect(skipped.refreshSkipped.first?.notBefore == "2026-08-29T00:20:00Z")
+
+        let absent = try JSONDecoder().decode(ControlQuotaResponse.self, from: Data(#"""
+        {"snapshots":[],"absences":[],"refreshed_at":null}
+        """#.utf8))
+        #expect(absent.refreshSkipped.isEmpty)
+    }
+
     // Ф2 valuation fields (QA-023c): an UNKNOWN valuation stays absent and is
     // NEVER coerced to a fake $0; a KNOWN valuation surfaces.
     @Test func budgetSnapshotHonorsUnknownValuation() throws {

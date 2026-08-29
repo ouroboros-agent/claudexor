@@ -2100,6 +2100,60 @@ describe("QuotaRegistry per-vendor pacing lanes", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
+  it("honors a multi-day vendor floor in full and caps a hostile one at 7 days", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-quota-lane-ceiling-")));
+    const journal = new DurableJournal({ rootDir: root, partition: "global" });
+    let nowMs = Date.parse("2026-08-28T00:00:00.000Z");
+    let calls = 0;
+    let retryAfterMs = 3 * 24 * 60 * 60_000; // valid 3-day vendor floor
+    const subject = subjectOf("claude", null);
+    const registry = new QuotaRegistry(
+      journal,
+      [
+        {
+          vendor: "claude",
+          refresh: async () => {
+            calls += 1;
+            return {
+              snapshots: [],
+              absences: [
+                {
+                  subject,
+                  reason: "rate_limited" as const,
+                  detail: null,
+                  observed_at: new Date(nowMs).toISOString(),
+                  retry_after_ms: retryAfterMs,
+                },
+              ],
+            };
+          },
+        },
+      ],
+      () => new Date(nowMs),
+      () => [subject],
+    );
+
+    await expect(registry.pollStale()).resolves.toBe(true);
+    // Above the OLD 24h cap, below the 7-day ceiling: honored in full.
+    nowMs += 3 * 24 * 60 * 60_000 - 1;
+    await expect(registry.pollStale()).resolves.toBe(false);
+    expect(calls).toBe(1);
+    nowMs += 1;
+    retryAfterMs = 30 * 24 * 60 * 60_000; // hostile 30-day floor
+    await expect(registry.pollStale()).resolves.toBe(true);
+    expect(calls).toBe(2);
+    // Clamped at the 7-day ceiling, not silenced for a month.
+    nowMs += 7 * 24 * 60 * 60_000 - 1;
+    await expect(registry.pollStale()).resolves.toBe(false);
+    expect(calls).toBe(2);
+    nowMs += 1;
+    await expect(registry.pollStale()).resolves.toBe(true);
+    expect(calls).toBe(3);
+
+    journal.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
   it("persists the rate-limit floor across restart and credential change, journal-free", async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-quota-lane-persist-")));
     const journal = new DurableJournal({ rootDir: root, partition: "global" });

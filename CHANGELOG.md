@@ -13,6 +13,10 @@ Release history for Claudexor. The current version is declared in the root
   with `fresh: true` opting into the snapshot; and the cursor adapter can
   host the delegation belt via reconciled lane `mcp.json` injection
   (CONCEPT-CHANGE(INV-030), pending its live E2E per docs/FEATURES.md).
+  Ships under the owner-authorized version-scoped Ed25519 waiver: the release
+  omits the review attestation and both signed runtime manifests, so in-app
+  engine update and first-time remote bootstrap are unavailable for 3.9.0
+  (client verifiers stay fail-closed); DMG/npm/provenance are unchanged.
 - **v3.8.4** (2026-08-28): implicit profile pools now drop only the typed
   quota-exhausted lane when a sibling harness can continue, while explicit
   pools remain strict and an exhausted primary preserves its typed terminal

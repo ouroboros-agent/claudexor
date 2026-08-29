@@ -156,9 +156,43 @@ describe("cursor mcp.json injection (delegation belt host)", () => {
     writeFileSync(join(dir, "mcp.json"), JSON.stringify(foreign));
     expect(() => syncCursorMcpServers(dir, [belt()])).toThrowError(/foreign MCP entry/);
     expect(JSON.parse(readFileSync(join(dir, "mcp.json"), "utf8"))).toEqual(foreign);
-    // Cleanup treats it as foreign too: preserved, since nothing is managed.
-    expect(syncCursorMcpServers(dir, [])).toEqual([]);
+    // Cleanup preserves it too (formally foreign, nothing is managed) but
+    // must disclose the engine-named orphan LOUDLY on every pass-through.
+    const cleanup = syncCursorMcpServers(dir, []);
+    expect(cleanup).toHaveLength(1);
+    expect(cleanup[0]).toContain("NO Claudexor managed manifest");
     expect(JSON.parse(readFileSync(join(dir, "mcp.json"), "utf8"))).toEqual(foreign);
+  });
+
+  it("absent manifest + riding belt entry: ordinary-run cleanup discloses and leaves bytes untouched", () => {
+    // The pre-hardening crash window (or a hand-deleted manifest) leaves an
+    // engine-named entry with no manifest. Blind deletion loses (formally
+    // foreign); silence loses harder (undisclosed injection persists). The
+    // reconcile now names it every time until a human or a delegate turn
+    // resolves it.
+    const dir = join(scratch(), ".cursor");
+    mkdirSync(dir, { recursive: true });
+    const stale = {
+      mcpServers: {
+        claudexor: { command: "/usr/bin/node", args: ["/opt/claudexord.js", "mcp", "serve-belt"] },
+        user_tool: { command: "/usr/local/bin/thing", args: [] },
+      },
+    };
+    writeFileSync(join(dir, "mcp.json"), JSON.stringify(stale));
+    const disclosures = syncCursorMcpServers(dir, []);
+    expect(disclosures).toHaveLength(1);
+    expect(disclosures[0]).toContain("claudexor");
+    expect(disclosures[0]).toContain("NOT auto-removed");
+    expect(JSON.parse(readFileSync(join(dir, "mcp.json"), "utf8"))).toEqual(stale);
+    expect(existsSync(join(dir, "claudexor-managed-mcp.json"))).toBe(false);
+    // A clean no-manifest lane with no engine-named entry stays silent.
+    const clean = join(scratch(), ".cursor");
+    mkdirSync(clean, { recursive: true });
+    writeFileSync(
+      join(clean, "mcp.json"),
+      JSON.stringify({ mcpServers: { user_tool: { command: "/usr/local/bin/thing", args: [] } } }),
+    );
+    expect(syncCursorMcpServers(clean, [])).toEqual([]);
   });
 
   it("crash-window states fail safe: over-wide manifest is benign, untracked belt refuses", () => {
