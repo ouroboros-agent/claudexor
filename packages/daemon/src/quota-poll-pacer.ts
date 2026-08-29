@@ -1,62 +1,153 @@
+import { readFileSync, renameSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
 const POLL_BACKOFF_MS = 60_000;
 const MAX_POLL_BACKOFF_MS = 15 * 60_000;
+/** Defensive ceiling on a vendor-supplied Retry-After floor: a buggy or
+ * hostile header must not silence a vendor's polling for days. Real vendor
+ * windows (~45 min observed) sit far below it. */
+const MAX_RATE_LIMIT_FLOOR_MS = 24 * 60 * 60_000;
 
-export interface QuotaPollPacerDeps {
-  readonly now: () => Date;
-  readonly publishClockTransition: () => void;
-  readonly hasDemand: (now: number) => boolean;
-  readonly refresh: () => Promise<void>;
+/**
+ * Daemon-private persistence for one pacer fact: the per-vendor rate-limit
+ * floor. Deliberately OUTSIDE the quota journal and every quota projection
+ * (owner decision 7=A): a throttled POLL is pacing state, never quota truth —
+ * journaling it as a cooldown would read as "window exhausted" to rotation
+ * and to external consumers of the quota surface.
+ */
+export interface QuotaPacerStateStore {
+  /** Millisecond epoch before which the vendor must not be polled; 0 = none. */
+  load(vendor: string): number;
+  save(vendor: string, notBeforeMs: number): void;
 }
 
-/** Whole-lifecycle single-flight and completion-anchored pacing for the quota
- * registry. Evidence/demand semantics stay with QuotaRegistry; this helper
- * owns only scheduling state. */
+/** File-backed store under the daemon dir. Best-effort durability: a missing,
+ * corrupt, or unwritable file only forgets the floor (fail-open to polling),
+ * it never breaks the poll cycle. */
+export function quotaPacerFileStore(dir: string): QuotaPacerStateStore {
+  const path = join(dir, "quota-pacer-state.json");
+  const read = (): Record<string, { not_before?: unknown }> => {
+    try {
+      const parsed = JSON.parse(readFileSync(path, "utf8")) as {
+        version?: unknown;
+        vendors?: unknown;
+      };
+      return parsed?.version === 1 &&
+        parsed.vendors !== null &&
+        typeof parsed.vendors === "object" &&
+        !Array.isArray(parsed.vendors)
+        ? (parsed.vendors as Record<string, { not_before?: unknown }>)
+        : {};
+    } catch {
+      return {};
+    }
+  };
+  return {
+    load(vendor) {
+      const iso = read()[vendor]?.not_before;
+      const at = typeof iso === "string" ? Date.parse(iso) : Number.NaN;
+      return Number.isFinite(at) ? at : 0;
+    },
+    save(vendor, notBeforeMs) {
+      const vendors = read();
+      vendors[vendor] = { not_before: new Date(notBeforeMs).toISOString() };
+      const tmp = `${path}.tmp.${process.pid}`;
+      writeFileSync(tmp, `${JSON.stringify({ version: 1, vendors }, null, 2)}\n`);
+      renameSync(tmp, path);
+    },
+  };
+}
+
+/**
+ * Completion-anchored poll pacing for ONE vendor lane of the quota registry
+ * (one instance per vendor with a registered refresher), so a permanently
+ * unsatisfiable subject of one vendor can no longer pin every other vendor's
+ * refresh cadence at the 15-minute ceiling. Two independent gates:
+ *
+ * - the credential-demand backoff (`failures`/`notBefore`): in-memory,
+ *   exponential per unsatisfied cycle, reset by a credential change — the
+ *   pre-existing semantics, now per lane;
+ * - the vendor rate-limit floor (`rateLimitedNotBefore`): armed when a cycle
+ *   observes a typed `rate_limited` absence for this vendor, honoring the
+ *   vendor's Retry-After when known (max with the exponential ladder, 60s
+ *   minimum). Persisted through the daemon-private store so a restart is not
+ *   a 429 amplifier, and deliberately NOT reset by a credential change —
+ *   logging in again does not un-rate-limit the vendor endpoint.
+ *
+ * Evidence/demand semantics stay with QuotaRegistry; this class owns only
+ * scheduling state. Single-flight of the poll sweep also lives in the
+ * registry, which drives every lane from one sweep.
+ */
 export class QuotaPollPacer {
   private failures = 0;
   private notBefore = 0;
-  private inFlight: Promise<boolean> | null = null;
-  /** Prevent an old-credential cycle from restoring backoff after a reset. */
-  private credentialGeneration = 0;
+  private rateLimitedNotBefore = 0;
 
-  constructor(private readonly deps: QuotaPollPacerDeps) {}
+  constructor(
+    private readonly vendor: string | null = null,
+    private readonly store?: QuotaPacerStateStore,
+  ) {
+    if (this.vendor !== null && this.store) {
+      try {
+        this.rateLimitedNotBefore = this.store.load(this.vendor);
+      } catch {
+        /* fail-open: a broken store never blocks polling */
+      }
+    }
+  }
 
+  /** Credential/routability change: drop only the credential-demand backoff.
+   * The vendor rate-limit floor survives — it is about the vendor endpoint,
+   * not about which credentials exist (and a daemon restart or profile toggle
+   * must not become a 429 amplifier). */
   noteCredentialChange(): void {
-    this.credentialGeneration += 1;
     this.failures = 0;
     this.notBefore = 0;
   }
 
-  poll(): Promise<boolean> {
-    if (this.inFlight) return this.inFlight;
-    const poll = this.perform().finally(() => {
-      if (this.inFlight === poll) this.inFlight = null;
-    });
-    this.inFlight = poll;
-    return poll;
+  pollEligible(now: number): boolean {
+    return now >= this.notBefore && now >= this.rateLimitedNotBefore;
   }
 
-  private async perform(): Promise<boolean> {
-    const now = this.deps.now().getTime();
-    this.deps.publishClockTransition();
-    if (!this.deps.hasDemand(now)) return false;
-    if (now < this.notBefore) return false;
-    const credentialGeneration = this.credentialGeneration;
-    try {
-      await this.deps.refresh();
-      const completedAt = this.deps.now().getTime();
-      if (this.credentialGeneration !== credentialGeneration) return true;
-      if (!this.deps.hasDemand(completedAt)) {
-        this.failures = 0;
-        this.notBefore = 0;
-        return true;
+  /** The active vendor rate-limit floor, or null when none is in effect. */
+  rateLimitCooldownUntil(now: number): number | null {
+    return now < this.rateLimitedNotBefore ? this.rateLimitedNotBefore : null;
+  }
+
+  /** A cycle for this lane completed: reset on fully satisfied demand, else
+   * exponential backoff anchored at completion (never the stale start). */
+  notePollSuccess(completedAt: number, demandRemains: boolean): void {
+    if (!demandRemains) {
+      this.failures = 0;
+      this.notBefore = 0;
+      return;
+    }
+    this.armBackoff(completedAt);
+  }
+
+  notePollFailure(completedAt: number): void {
+    this.armBackoff(completedAt);
+  }
+
+  /** A cycle observed a typed `rate_limited` absence for this vendor: arm the
+   * floor at max(exponential ladder, vendor Retry-After), monotonic, and
+   * persist it (a null Retry-After — Anthropic does not always send one —
+   * still arms the exponential-derived floor). */
+  noteRateLimited(observedAt: number, retryAfterMs: number | null): void {
+    const exponential = Math.min(
+      POLL_BACKOFF_MS * 2 ** Math.max(this.failures - 1, 0),
+      MAX_POLL_BACKOFF_MS,
+    );
+    const floor = Math.max(exponential, Math.min(retryAfterMs ?? 0, MAX_RATE_LIMIT_FLOOR_MS));
+    const until = observedAt + floor;
+    if (until <= this.rateLimitedNotBefore) return;
+    this.rateLimitedNotBefore = until;
+    if (this.vendor !== null) {
+      try {
+        this.store?.save(this.vendor, until);
+      } catch {
+        /* fail-open: losing the durable floor only re-allows polling */
       }
-      this.armBackoff(completedAt);
-      return true;
-    } catch {
-      if (this.credentialGeneration === credentialGeneration) {
-        this.armBackoff(this.deps.now().getTime());
-      }
-      return false;
     }
   }
 

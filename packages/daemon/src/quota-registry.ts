@@ -19,9 +19,18 @@ import {
   staleAt,
   withoutExpiredScopedCooldowns,
 } from "./quota-registry-support.js";
-import { QuotaPollPacer } from "./quota-poll-pacer.js";
+import {
+  buildRefresherLanes,
+  laneHasDemand,
+  performPollSweep,
+  type PacingLane,
+  type QuotaRefresher,
+  type QuotaVendorRefresher,
+  type RefresherLanes,
+} from "./quota-poll-lanes.js";
+import type { QuotaPacerStateStore } from "./quota-poll-pacer.js";
 import { QuotaRefreshCoordinator } from "./quota-refresh-coordinator.js";
-import { quotaSubjectIdentity, remainingQuotaRefreshDemand } from "./quota-refresh-demand.js";
+import { quotaSubjectIdentity } from "./quota-refresh-demand.js";
 
 const UPSERTED = "quota.snapshot.upserted";
 const SCOPED_PREPARED = "quota.snapshot.scoped_prepared";
@@ -31,15 +40,11 @@ const PROJECTION_UPDATED = "quota.projection.updated";
  * a day-old observation is not quota truth, just footer clutter. */
 const MAX_SNAPSHOT_AGE_MS = 24 * 60 * 60_000;
 
-/** One refresh cycle's fruit: the snapshots a source observed, plus the typed
- * absences it CLAIMS for subjects it tried and could not observe. Absence is
- * stated by the source, never inferred from an empty snapshot list. */
-export interface QuotaRefreshResult {
-  snapshots: QuotaSnapshot[];
-  absences?: QuotaAbsence[];
-}
-
-export type QuotaRefresher = () => Promise<QuotaRefreshResult>;
+export type {
+  QuotaRefresher,
+  QuotaRefreshResult,
+  QuotaVendorRefresher,
+} from "./quota-poll-lanes.js";
 
 /** The registered subject UNIVERSE: every subject the daemon expects to hear
  * about, so a subject with neither snapshot nor a source claim still surfaces
@@ -60,14 +65,16 @@ export class QuotaRegistry {
   private readonly refreshCoordinator = new QuotaRefreshCoordinator<
     Awaited<ReturnType<QuotaRegistry["performRefreshCycle"]>>
   >();
-  private readonly pollPacer: QuotaPollPacer;
+  private readonly refresherLanes: RefresherLanes;
+  private pollSweepInFlight: Promise<boolean> | null = null;
   private recoveryMarkerPending = false;
 
   constructor(
     private readonly journal: DurableJournal,
-    private readonly refreshers: readonly QuotaRefresher[] = [],
+    refreshers: readonly (QuotaRefresher | QuotaVendorRefresher)[] = [],
     private readonly now: () => Date = () => new Date(),
     private readonly subjects?: QuotaSubjectUniverse,
+    pacerStore?: QuotaPacerStateStore,
   ) {
     let rawMutationAfterMarker = false;
     let pendingScoped: { baseHash: string; snapshot: QuotaSnapshot } | null = null;
@@ -136,15 +143,7 @@ export class QuotaRegistry {
     // already-subscribed clients permanently behind. Close the recovered
     // commit boundary synchronously before the projection becomes available.
     this.recoveryMarkerPending = rawMutationAfterMarker;
-    this.pollPacer = new QuotaPollPacer({
-      now: this.now,
-      publishClockTransition: () => this.publishClockTransitionIfNeeded(),
-      hasDemand: (now) =>
-        remainingQuotaRefreshDemand(this.activeSnapshots(now), this.subjects?.()).size > 0,
-      refresh: async () => {
-        await this.refreshCycle(false);
-      },
-    });
+    this.refresherLanes = buildRefresherLanes(refreshers, pacerStore);
   }
 
   /** Publish the recovered projection boundary only after bootstrap activation. */
@@ -198,24 +197,32 @@ export class QuotaRegistry {
   }
 
   /** One coalesced atomic refresh cycle shared by foreground and background
-   * callers; poll pacing derives from post-cycle demand, never shared counters. */
+   * callers; poll pacing derives from post-cycle demand, never shared
+   * counters. A poll passes its lane so only that vendor's refreshers run; a
+   * caller joining an in-flight cycle receives that cycle's result — the
+   * response is always the complete projection, whichever lanes re-fetched. */
   private async refreshCycle(
     followCredentialChanges = true,
+    scope?: PacingLane,
   ): ReturnType<QuotaRegistry["performRefreshCycle"]> {
     return this.refreshCoordinator.run(
-      (credentialGeneration) => this.performRefreshCycle(credentialGeneration),
+      (credentialGeneration) => this.performRefreshCycle(credentialGeneration, scope ?? null),
       followCredentialChanges,
     );
   }
 
-  private async performRefreshCycle(credentialGeneration: number) {
-    if (this.refreshers.length === 0) {
+  private async performRefreshCycle(credentialGeneration: number, scope: PacingLane | null) {
+    if (this.refresherLanes.entries.length === 0) {
       throw Object.assign(new Error("no live vendor-owned quota refresh source is available"), {
         code: "quota_refresh_unavailable",
         status: 503,
       });
     }
-    const settled = await Promise.allSettled(this.refreshers.map(async (refresher) => refresher()));
+    const running =
+      scope === null
+        ? this.refresherLanes.entries
+        : this.refresherLanes.entries.filter((entry) => entry.lane === scope);
+    const settled = await Promise.allSettled(running.map(async ({ refresh }) => refresh()));
     const batches: Array<{ snapshots: QuotaSnapshot[]; absences: QuotaAbsence[] } | null> = [];
     const failures: string[] = [];
     // Validate EVERY fulfilled source batch before the first durable write.
@@ -264,7 +271,16 @@ export class QuotaRegistry {
       claims.push(...batch.absences);
     }
     const now = this.now().getTime();
-    this.recomputeAbsences(claims, now);
+    this.recomputeAbsences(claims, now, scope?.vendor != null ? new Set([scope.vendor]) : null);
+    // A typed rate_limited absence is PACING evidence (owner decision 7=A):
+    // arm the vendor lane's persisted floor — foreground cycles included, so
+    // an explicit refresh that got throttled also cools later fan-outs — and
+    // never journal it as a quota cooldown.
+    for (const claim of claims) {
+      if (claim.reason !== "rate_limited") continue;
+      const lane = this.refresherLanes.lanes.find((item) => item.vendor === claim.subject.harness);
+      lane?.pacer.noteRateLimited(now, claim.retry_after_ms ?? null);
+    }
     const refreshedAt = this.now().toISOString();
     const response = ControlQuotaResponse.parse({
       snapshots: this.activeSnapshots(now),
@@ -282,8 +298,25 @@ export class QuotaRegistry {
    * universe (V11a): a fresh-or-stale snapshot from ANY source means no
    * absence; else the first refresher-claimed absence wins; neither =>
    * "no_source". Identity is (harness, subject_id); route/source never split
-   * a subject. */
-  private recomputeAbsences(claims: readonly QuotaAbsence[], now: number): void {
+   * a subject.
+   *
+   * `scope` (a vendor-lane cycle) rebuilds only that vendor's rows plus every
+   * REFRESHERLESS harness's rows (those can only ever be `no_source`, and
+   * skipping them would leave e.g. a cursor subject silently unstated until
+   * the next full cycle); other vendors' claimed rows are preserved so a
+   * claude-only poll cannot degrade codex's typed reasons to no_source.
+   * `null` scope (a full cycle, or an anonymous-lane cycle whose coverage is
+   * unknowable) keeps the pre-existing full rebuild. */
+  private recomputeAbsences(
+    claims: readonly QuotaAbsence[],
+    now: number,
+    scope: ReadonlySet<string> | null = null,
+  ): void {
+    const laneVendors = new Set(
+      this.refresherLanes.lanes.map((lane) => lane.vendor).filter((vendor) => vendor !== null),
+    );
+    const rebuilt = (harness: string): boolean =>
+      scope === null || scope.has(harness) || !laneVendors.has(harness);
     // Every other reason answers "why is there no snapshot", so a snapshot
     // silences it. `auth_revoked` says the vendor rejected the credential;
     // `credential_profile_ambiguous` says current platform policy forbids
@@ -306,8 +339,9 @@ export class QuotaRegistry {
     const covered = new Set(
       this.activeSnapshots(now).map((snapshot) => quotaSubjectIdentity(snapshot.subject)),
     );
+    const preserved = this.absences.filter((absence) => !rebuilt(absence.subject.harness));
     const result: QuotaAbsence[] = [];
-    const claimed = new Set<string>();
+    const claimed = new Set<string>(preserved.map((item) => quotaSubjectIdentity(item.subject)));
     for (const claim of claims) {
       const key = quotaSubjectIdentity(claim.subject);
       if (covered.has(key) || claimed.has(key)) continue;
@@ -315,6 +349,7 @@ export class QuotaRegistry {
       result.push(claim);
     }
     for (const subject of this.subjects?.() ?? []) {
+      if (!rebuilt(subject.harness)) continue;
       const key = quotaSubjectIdentity(subject);
       if (covered.has(key) || claimed.has(key)) continue;
       claimed.add(key);
@@ -325,7 +360,7 @@ export class QuotaRegistry {
         observed_at: new Date(now).toISOString(),
       });
     }
-    this.absences = result;
+    this.absences = [...preserved, ...result];
   }
 
   /** Absences whose subject is not (any longer) covered by an active snapshot —
@@ -339,18 +374,34 @@ export class QuotaRegistry {
   }
 
   /** Credential or routability state changed (login/profile/native/settings):
-   * drop absence backoff so the next poll observes the new subject universe
-   * instead of waiting out up to 15 minutes of old-state pacing. */
+   * drop the credential-demand backoff so the next poll observes the new
+   * subject universe instead of waiting out up to 15 minutes of old-state
+   * pacing. Each lane's vendor rate-limit floor deliberately survives — a
+   * login does not un-rate-limit the vendor endpoint. */
   noteCredentialChange(): void {
     this.refreshCoordinator.retireCredentialGeneration();
-    this.pollPacer.noteCredentialChange();
+    for (const lane of this.refresherLanes.lanes) lane.pacer.noteCredentialChange();
   }
 
-  /** Background official-source refresh for per-subject primary demand. The
-   * whole decision + refresh + pacing update is single-flight, independent of
-   * foreground refresh coalescing. */
+  /** Background official-source refresh for per-subject primary demand. One
+   * single-flight sweep drives every vendor lane in order; each eligible lane
+   * runs its own coalesced cycle, so one vendor's backoff never starves a
+   * sibling vendor's freshness. Resolves true when any lane refreshed. */
   pollStale(): Promise<boolean> {
-    return this.pollPacer.poll();
+    if (this.pollSweepInFlight) return this.pollSweepInFlight;
+    const sweep = performPollSweep(this.refresherLanes.lanes, {
+      now: this.now,
+      publishClockTransition: () => this.publishClockTransitionIfNeeded(),
+      laneHasDemand: (vendor, now) =>
+        laneHasDemand(vendor, this.activeSnapshots(now), this.subjects?.()),
+      currentGeneration: () => this.refreshCoordinator.currentGeneration(),
+      isCurrentGeneration: (generation) => this.refreshCoordinator.isCurrent(generation),
+      runLaneCycle: (lane) => this.refreshCycle(false, lane),
+    }).finally(() => {
+      if (this.pollSweepInFlight === sweep) this.pollSweepInFlight = null;
+    });
+    this.pollSweepInFlight = sweep;
+    return sweep;
   }
 
   ingest(harnessId: string, value: unknown): void {

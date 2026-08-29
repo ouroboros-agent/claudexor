@@ -2290,15 +2290,24 @@ subject and only a fresh matching primary snapshot satisfies it. Typed absence
 is still a successful, displayable observation, but retains soft demand under
 exponential pacing; reactive rollout/retry and status-line evidence remains
 available to display and routing without triggering or satisfying primary
-demand. The poll lifecycle is single-flight, anchors its next eligibility to
-completion rather than start, advances backoff after partial/absence outcomes,
-and resets when credential or routability state changes. A registry-owned
+demand. The poll lifecycle is a single-flight sweep paced PER VENDOR LANE:
+each vendor with a registered refresher owns an independent
+completion-anchored exponential backoff (15-minute ceiling) that advances
+after partial/absence outcomes and resets when credential or routability
+state changes, so one vendor's permanently unsatisfiable subject never pins a
+sibling vendor's refresh cadence. A typed `rate_limited` poll absence
+additionally arms that lane's vendor rate-limit floor — the max of the
+exponential ladder and the vendor's Retry-After when one was sent — kept in
+daemon-private pacer state, never the quota journal (a throttled poll is
+pacing evidence, not an exhausted window), so a daemon restart is not a 429
+amplifier; a credential change resets only the demand backoff, never the
+floor. A registry-owned
 credential generation fences a provider cycle after validation and before its
 first journal, memory, absence, marker, response, or cursor write. A foreground
 caller from a newer generation waits for obsolete work to retire, then all such
 callers coalesce into one current-generation cycle; an obsolete poll cannot
-restore removed evidence or satisfy a post-login refresh. The three top-level
-refreshers run concurrently, validate every fulfilled snapshot and absence
+restore removed evidence or satisfy a post-login refresh. Within one cycle the
+selected refreshers run concurrently, validate every fulfilled snapshot and absence
 before the first write, then fold in declaration order so first-claim and marker
 semantics remain deterministic; each refresher's per-account vendor calls stay
 serial. Both `/v2/quota` and the atomic Accounts response decorate snapshots
@@ -2314,6 +2323,10 @@ appends that pair under one recovery intent and one fsync, so replay retains
 both records or neither. Current engines apply the exact scope and true source
 only when the
 matching base follows; v3.2.0 replays that base conservatively as account-wide.
+A background poll cycle runs one vendor lane's refreshers; an explicit
+foreground refresh runs them all, and either kind of caller joining an
+in-flight cycle receives that cycle's result — the response is always the
+complete projection, whichever lanes re-fetched.
 `auto` ranks by the binding `min(elapsed_fraction - used_ratio)` pacing slack,
 `quality` uses only exact user-declared `{harness,model,effort}` tiers, and
 `economy` minimizes known incremental cash spend with quality tiers only as a

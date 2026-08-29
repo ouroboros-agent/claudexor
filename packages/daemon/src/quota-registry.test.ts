@@ -1973,3 +1973,288 @@ describe("QuotaRegistry", () => {
     rmSync(root, { recursive: true, force: true });
   });
 });
+
+describe("QuotaRegistry per-vendor pacing lanes", () => {
+  const subjectOf = (harness: string, subjectId: string | null) => ({
+    harness,
+    credential_route: "vendor_native" as const,
+    plan_label: null,
+    subject_id: subjectId,
+  });
+
+  it("one vendor's unsatisfiable subject backs off alone; siblings keep their cadence", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-quota-lane-iso-")));
+    const journal = new DurableJournal({ rootDir: root, partition: "global" });
+    let nowMs = Date.parse("2026-08-28T00:00:00.000Z");
+    let codexCalls = 0;
+    let claudeCalls = 0;
+    const registry = new QuotaRegistry(
+      journal,
+      [
+        {
+          vendor: "codex",
+          refresh: async () => {
+            codexCalls += 1;
+            return {
+              snapshots: [
+                {
+                  ...quotaSnapshot("codex", null, 0.1),
+                  source: "codex_app_server" as const,
+                  observed_at: new Date(nowMs).toISOString(),
+                },
+              ],
+            };
+          },
+        },
+        {
+          vendor: "claude",
+          refresh: async () => {
+            claudeCalls += 1;
+            return {
+              snapshots: [],
+              absences: [
+                {
+                  subject: subjectOf("claude", null),
+                  reason: "not_logged_in" as const,
+                  detail: null,
+                  observed_at: new Date(nowMs).toISOString(),
+                },
+              ],
+            };
+          },
+        },
+      ],
+      () => new Date(nowMs),
+      () => [subjectOf("codex", null), subjectOf("claude", null)],
+    );
+
+    // Drive claude's absence-only lane to its 15-minute ceiling.
+    await expect(registry.pollStale()).resolves.toBe(true);
+    for (let step = 0; step < 6; step += 1) {
+      nowMs += 15 * 60_000;
+      await expect(registry.pollStale()).resolves.toBe(true);
+    }
+    const claudeAtCeiling = claudeCalls;
+    const codexBefore = codexCalls;
+    // 6 minutes later codex's snapshot is stale again (fresh window is 5 min):
+    // codex MUST refresh even though claude sits mid-way through its 15-minute
+    // window — the old global pacer pinned exactly this at the ceiling.
+    nowMs += 6 * 60_000;
+    await expect(registry.pollStale()).resolves.toBe(true);
+    expect(codexCalls).toBe(codexBefore + 1);
+    expect(claudeCalls).toBe(claudeAtCeiling);
+
+    journal.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("honors the vendor Retry-After floor over the exponential ladder and feeds it from foreground too", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-quota-lane-floor-")));
+    const journal = new DurableJournal({ rootDir: root, partition: "global" });
+    let nowMs = Date.parse("2026-08-28T00:00:00.000Z");
+    let calls = 0;
+    const registry = new QuotaRegistry(
+      journal,
+      [
+        {
+          vendor: "claude",
+          refresh: async () => {
+            calls += 1;
+            return {
+              snapshots: [],
+              absences: [
+                {
+                  subject: subjectOf("claude", null),
+                  reason: "rate_limited" as const,
+                  detail: "oauth/usage responded 429",
+                  observed_at: new Date(nowMs).toISOString(),
+                  retry_after_ms: 30 * 60_000,
+                },
+              ],
+            };
+          },
+        },
+      ],
+      () => new Date(nowMs),
+      () => [subjectOf("claude", null)],
+    );
+
+    // FOREGROUND refresh observes the 429 — the floor arms from it as well.
+    await registry.refresh();
+    expect(calls).toBe(1);
+    expect(registry.read().absences[0]?.reason).toBe("rate_limited");
+
+    // The exponential ladder alone would re-poll after 60s; the vendor said
+    // 30 minutes. One ms short of the floor stays skipped, at the floor polls.
+    nowMs += 60_000;
+    await expect(registry.pollStale()).resolves.toBe(false);
+    expect(calls).toBe(1);
+    nowMs += 29 * 60_000 - 1;
+    await expect(registry.pollStale()).resolves.toBe(false);
+    expect(calls).toBe(1);
+    nowMs += 1;
+    await expect(registry.pollStale()).resolves.toBe(true);
+    expect(calls).toBe(2);
+
+    journal.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("persists the rate-limit floor across restart and credential change, journal-free", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-quota-lane-persist-")));
+    const journal = new DurableJournal({ rootDir: root, partition: "global" });
+    let nowMs = Date.parse("2026-08-28T00:00:00.000Z");
+    const saved = new Map<string, number>();
+    const store = {
+      load: (vendor: string) => saved.get(vendor) ?? 0,
+      save: (vendor: string, notBeforeMs: number) => {
+        saved.set(vendor, notBeforeMs);
+      },
+    };
+    let calls = 0;
+    const refresher = {
+      vendor: "claude",
+      refresh: async () => {
+        calls += 1;
+        return {
+          snapshots: [],
+          absences: [
+            {
+              subject: subjectOf("claude", null),
+              reason: "rate_limited" as const,
+              detail: null,
+              observed_at: new Date(nowMs).toISOString(),
+              retry_after_ms: 45 * 60_000,
+            },
+          ],
+        };
+      },
+    };
+    const subjects = () => [subjectOf("claude", null)];
+    const registry = new QuotaRegistry(journal, [refresher], () => new Date(nowMs), subjects, store);
+
+    await expect(registry.pollStale()).resolves.toBe(true);
+    expect(saved.get("claude")).toBe(nowMs + 45 * 60_000);
+    // Owner decision 7=A: the floor never becomes a quota fact — no snapshot
+    // or cooldown upsert reaches the journal (the typed absence itself rides
+    // only the ephemeral projection, whose markers are the sole records here).
+    expect([...new Set(journal.records().map((record) => record.type))]).toEqual([
+      "quota.projection.updated",
+    ]);
+
+    // "Restart": a NEW registry over the same store inherits the floor and
+    // does not re-hammer the vendor; noteCredentialChange (which resets only
+    // the credential-demand backoff) does not lift it either.
+    nowMs += 10 * 60_000;
+    const restarted = new QuotaRegistry(
+      journal,
+      [refresher],
+      () => new Date(nowMs),
+      subjects,
+      store,
+    );
+    await expect(restarted.pollStale()).resolves.toBe(false);
+    restarted.noteCredentialChange();
+    await expect(restarted.pollStale()).resolves.toBe(false);
+    expect(calls).toBe(1);
+    nowMs += 35 * 60_000;
+    await expect(restarted.pollStale()).resolves.toBe(true);
+    expect(calls).toBe(2);
+
+    journal.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("a vendor-scoped poll cycle preserves sibling vendors' typed absences and refresherless no_source rows", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-quota-lane-absence-")));
+    const journal = new DurableJournal({ rootDir: root, partition: "global" });
+    let nowMs = Date.parse("2026-08-28T00:00:00.000Z");
+    let claudeCalls = 0;
+    const registry = new QuotaRegistry(
+      journal,
+      [
+        {
+          vendor: "codex",
+          refresh: async () => ({
+            snapshots: [],
+            absences: [
+              {
+                subject: subjectOf("codex", null),
+                reason: "not_logged_in" as const,
+                detail: null,
+                observed_at: new Date(nowMs).toISOString(),
+              },
+            ],
+          }),
+        },
+        {
+          vendor: "claude",
+          refresh: async () => {
+            claudeCalls += 1;
+            return {
+              snapshots: [],
+              absences: [
+                {
+                  subject: subjectOf("claude", null),
+                  reason: "refresh_failed" as const,
+                  detail: "flaky",
+                  observed_at: new Date(nowMs).toISOString(),
+                },
+              ],
+            };
+          },
+        },
+      ],
+      () => new Date(nowMs),
+      () => [subjectOf("codex", null), subjectOf("claude", null), subjectOf("cursor", "row-a")],
+    );
+
+    // Full sweep: codex claims not_logged_in, claude claims refresh_failed,
+    // and the refresherless cursor subject is stated as no_source.
+    await expect(registry.pollStale()).resolves.toBe(true);
+    const byHarness = () =>
+      new Map(registry.read().absences.map((absence) => [absence.subject.harness, absence.reason]));
+    expect(byHarness().get("codex")).toBe("not_logged_in");
+    expect(byHarness().get("claude")).toBe("refresh_failed");
+    expect(byHarness().get("cursor")).toBe("no_source");
+
+    // Claude's ladder recovers first (both armed 60s at the same completion);
+    // advance exactly one claude-only cycle ahead of codex by draining codex's
+    // eligibility with an equal cycle, then verify a claude-scoped cycle does
+    // not degrade codex's typed reason to no_source and keeps cursor stated.
+    nowMs += 60_000;
+    await expect(registry.pollStale()).resolves.toBe(true);
+    expect(byHarness().get("codex")).toBe("not_logged_in");
+    expect(byHarness().get("claude")).toBe("refresh_failed");
+    expect(byHarness().get("cursor")).toBe("no_source");
+    expect(claudeCalls).toBeGreaterThanOrEqual(2);
+
+    journal.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+});
+
+describe("quotaPacerFileStore", () => {
+  it("round-trips per-vendor floors, survives junk, and writes atomically", async () => {
+    const { quotaPacerFileStore } = await import("./quota-poll-pacer.js");
+    const { writeFileSync, readFileSync, readdirSync } = await import("node:fs");
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-pacer-store-")));
+    const store = quotaPacerFileStore(dir);
+    expect(store.load("claude")).toBe(0);
+    const at = Date.parse("2026-08-28T00:45:00.000Z");
+    store.save("claude", at);
+    store.save("codex", at + 1000);
+    expect(store.load("claude")).toBe(at);
+    expect(store.load("codex")).toBe(at + 1000);
+    // The file is daemon-private state, not a journal record.
+    const raw = JSON.parse(readFileSync(join(dir, "quota-pacer-state.json"), "utf8"));
+    expect(raw).toMatchObject({ version: 1 });
+    expect(readdirSync(dir).filter((name) => name.includes(".tmp."))).toEqual([]);
+    // Corrupt file: fail-open to no floor, and the next save repairs it.
+    writeFileSync(join(dir, "quota-pacer-state.json"), "{not json");
+    expect(store.load("claude")).toBe(0);
+    store.save("agy", at);
+    expect(store.load("agy")).toBe(at);
+    rmSync(dir, { recursive: true, force: true });
+  });
+});

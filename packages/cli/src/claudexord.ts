@@ -14,6 +14,7 @@ import {
   projectProjection,
   RunEventBus,
   ResourceStore,
+  quotaPacerFileStore,
   quotaProjection,
   threadHeadPingProjection,
   threadProjection,
@@ -116,7 +117,13 @@ export async function main(): Promise<void> {
     const runEventStoreSlot = journalManager.registerProjection(runEventProjection());
     const projectStoreSlot = journalManager.registerProjection(projectProjection());
     const quotaStoreSlot = journalManager.registerProjection(
-      quotaProjection(quotaRefreshers(), quotaSubjectUniverseFromConfig),
+      quotaProjection(
+        quotaRefreshers(),
+        quotaSubjectUniverseFromConfig,
+        undefined,
+        // Daemon-private per-vendor rate-limit floors (never in the journal).
+        quotaPacerFileStore(daemonDir()),
+      ),
     );
     // Sidebar invalidation ping (W12): a GLOBAL-partition emitter every
     // ThreadStore (global + per-project) writes through, so any thread
