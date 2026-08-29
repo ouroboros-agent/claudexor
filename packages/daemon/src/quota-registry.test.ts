@@ -2171,6 +2171,91 @@ describe("QuotaRegistry per-vendor pacing lanes", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
+  it("a foreground refresh joining a lane-scoped poll cycle re-runs a FULL cycle (no silent partial join)", async () => {
+    // Regression vs base: on 0c376844 the poll ran a FULL cycle, so a joiner
+    // always got a genuine full refresh. With per-lane poll cycles, an
+    // explicit refresh that joined a scoped cycle must re-run full instead of
+    // returning with sibling vendors unre-fetched and no disclosure.
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-quota-joinrace-")));
+    const journal = new DurableJournal({ rootDir: root, partition: "global" });
+    let nowMs = Date.parse("2026-08-28T00:00:00.000Z");
+    let codexCalls = 0;
+    let claudeCalls = 0;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const claudeSubject = {
+      harness: "claude",
+      credential_route: "vendor_native" as const,
+      plan_label: null,
+      subject_id: null,
+    };
+    const registry = new QuotaRegistry(
+      journal,
+      [
+        {
+          vendor: "codex",
+          refresh: async () => {
+            codexCalls += 1;
+            return {
+              snapshots: [
+                {
+                  ...quotaSnapshot("codex", null, 0.1),
+                  source: "codex_app_server" as const,
+                  observed_at: new Date(nowMs).toISOString(),
+                },
+              ],
+            };
+          },
+        },
+        {
+          vendor: "claude",
+          refresh: async () => {
+            claudeCalls += 1;
+            if (claudeCalls === 1) await held;
+            return {
+              snapshots: [],
+              absences: [
+                {
+                  subject: claudeSubject,
+                  reason: "not_logged_in" as const,
+                  detail: null,
+                  observed_at: new Date(nowMs).toISOString(),
+                },
+              ],
+            };
+          },
+        },
+      ],
+      () => new Date(nowMs),
+      // Only claude has a registered subject, so the poll sweep runs ONLY the
+      // claude lane — the exact scoped cycle the foreground caller joins.
+      () => [claudeSubject],
+    );
+
+    const sweep = registry.pollStale();
+    await Promise.resolve();
+    expect(claudeCalls).toBe(1);
+    expect(codexCalls).toBe(0);
+    const foreground = registry.refresh();
+    await Promise.resolve();
+    nowMs += 1000;
+    release();
+    const [swept, fg] = await Promise.all([sweep, foreground]);
+    expect(swept).toBe(true);
+    // The joiner re-ran a FULL cycle: codex was actually fetched, fresh.
+    expect(codexCalls).toBe(1);
+    expect(claudeCalls).toBe(2);
+    expect(fg.snapshots.map((snapshot) => [snapshot.subject.harness, snapshot.freshness])).toEqual([
+      ["codex", "fresh"],
+    ]);
+    expect(fg.refresh_skipped).toBeUndefined();
+
+    journal.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
   it("foreground refresh honors an armed vendor cooldown: serves last-known data and disclosed skips", async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-quota-fg-cooldown-")));
     const journal = new DurableJournal({ rootDir: root, partition: "global" });

@@ -157,7 +157,11 @@ invariant or operator decision before proceeding.
   surface guessing it. A known failure BEFORE injection may continue as an
   ordinary Agent run only with durable requested/effective/used/reason/remediation
   facts and a visible warning. Once the belt descriptor was injected, an
-  explicit startup failure is terminal. An unrecovered non-ok result from an
+  explicit startup failure is terminal on adapters with a startup receipt
+  (claude, codex); cursor hosting is pre-spawn config injection with NO
+  startup receipt yet — a pre-spawn injection failure refuses typed, while
+  the live E2E and a mapped vendor startup-status surface are its recorded
+  acceptance conditions in `docs/FEATURES.md`. An unrecovered non-ok result from an
   exact injected belt operation is also terminal for the Agent outcome: this is
   the required-capability exception to INV-043. An envelope deliverable stays
   available only as diagnostic evidence and cannot succeed or be auto-adopted.

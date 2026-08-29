@@ -95,7 +95,11 @@ record `delegation {requested,effective,used,reason,remediation}`; the field is
 nullable when reading legacy artifacts that predate this receipt. A known pre-injection
 runtime, manifest, or access incompatibility may continue as an ordinary Agent
 run with `effective:false` and a durable warning. An MCP startup failure AFTER
-the descriptor was injected is terminal and never silently degrades. An
+the descriptor was injected is terminal and never silently degrades on
+adapters with a startup receipt (claude's `mcp_servers` init frames, codex's
+required-MCP failure frames); cursor has NO post-spawn startup receipt yet —
+its injection failures refuse typed pre-spawn only, and closing the post-spawn
+gap is the recorded acceptance condition on its `docs/FEATURES.md` row. An
 unrecovered non-ok result from an exact injected belt tool likewise hard-fails
 the Agent outcome; the Delegate receipt still says `used:true` because it records
 which path ran, not whether that operation succeeded. An isolated-envelope
@@ -2338,9 +2342,13 @@ A background poll cycle runs one vendor lane's refreshers; an explicit
 foreground refresh (`POST /v2/quota`, the atomic Accounts snapshot) runs
 every lane NOT inside its vendor rate-limit cooldown — a cooled vendor is
 served from last-known registry data and the skip is disclosed additively as
-`refresh_skipped` rows on the response. Either kind of caller joining an
-in-flight cycle receives that cycle's result — the response is always the
-complete projection, whichever lanes re-fetched.
+`refresh_skipped` rows on the response. Join semantics are asymmetric: a
+poll joining an in-flight foreground FULL cycle keeps that cycle's result (a
+superset of what it wanted), while a foreground caller that joined a
+lane-scoped poll cycle re-runs a bounded full cycle once the scoped one
+completes — an explicit refresh never silently returns with sibling vendors
+unre-fetched and no disclosure. Every served response remains the complete
+projection.
 `auto` ranks by the binding `min(elapsed_fraction - used_ratio)` pacing slack,
 `quality` uses only exact user-declared `{harness,model,effort}` tiers, and
 `economy` minimizes known incremental cash spend with quality tiers only as a

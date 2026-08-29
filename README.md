@@ -315,7 +315,7 @@ sub-runs are capped per parent (default 8), and each sub-run draws from the
 same live daemon-owned paid-budget authority as its parent. Reservations and
 settlements are enforced across the whole family; each child reports its own
 spend while the parent reports the aggregate. Only harnesses whose adapter declares
-`capability_profile.mcp_injection` (claude, codex) can host the belt. The flag is
+`capability_profile.mcp_injection` (claude, codex, cursor) can host the belt. The flag is
 permission, not a requirement to create a child. Readiness and the final
 requested/effective/used outcome are engine-projected: a known pre-start
 incompatibility may continue as an ordinary Agent run only with a durable

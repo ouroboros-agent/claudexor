@@ -459,6 +459,12 @@ async function* runCursor(
     yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
     return;
   }
+  // Typed disclosures for content the reconcile deliberately preserved
+  // (an unreadable mcp.json skipped on cleanup or quarantined aside).
+  for (const detail of injection.disclosures) {
+    const payload = { code: "cursor_mcp_json_unreadable", detail };
+    yield { type: "message", session_id: spec.session_id, ts: nowIso(), payload };
+  }
   if (injection.approved) args.push("--approve-mcps");
   const credentialRoute =
     route === "local_session" ? ("vendor_native" as const) : ("managed_api_key" as const);

@@ -196,19 +196,25 @@ export class QuotaRegistry {
     return { response, quotaEventCursor };
   }
 
-  /** One coalesced atomic refresh cycle shared by foreground and background
-   * callers; poll pacing derives from post-cycle demand, never shared
-   * counters. A poll passes its lane so only that vendor's refreshers run; a
-   * caller joining an in-flight cycle receives that cycle's result — the
-   * response is always the complete projection, whichever lanes re-fetched. */
+  /** One coalesced atomic refresh cycle; a poll passes its lane so only that
+   * vendor's refreshers run. Join semantics are asymmetric on purpose: a poll
+   * joining a foreground FULL cycle keeps its (superset) result, but a FULL
+   * caller that joined a lane-SCOPED poll cycle re-runs a full cycle once it
+   * completes — an explicit refresh must not silently return with sibling
+   * vendors unre-fetched and undisclosed. Bounded retry; on exhaustion the
+   * last (complete-projection) result serves. */
   private async refreshCycle(
     followCredentialChanges = true,
     scope?: PacingLane,
-  ): ReturnType<QuotaRegistry["performRefreshCycle"]> {
-    return this.refreshCoordinator.run(
-      (credentialGeneration) => this.performRefreshCycle(credentialGeneration, scope ?? null),
-      followCredentialChanges,
-    );
+  ): Promise<Awaited<ReturnType<QuotaRegistry["performRefreshCycle"]>>> {
+    for (let attempt = 0; ; attempt += 1) {
+      const cycle = await this.refreshCoordinator.run(
+        (credentialGeneration) => this.performRefreshCycle(credentialGeneration, scope ?? null),
+        followCredentialChanges,
+      );
+      if (scope !== undefined || !cycle.scoped || attempt > this.refresherLanes.lanes.length)
+        return cycle;
+    }
   }
 
   private async performRefreshCycle(credentialGeneration: number, scope: PacingLane | null) {
@@ -298,7 +304,8 @@ export class QuotaRegistry {
     // The marker makes absence-only and identical refreshes observable; its own
     // cursor is the exact last event represented by this response.
     const quotaEventCursor = this.appendProjectionMarker("refresh", refreshedAt, response);
-    return { response, quotaEventCursor };
+    // scoped: an unscoped joiner re-runs a full cycle on it (join semantics).
+    return { response, quotaEventCursor, scoped: scope !== null };
   }
 
   /** Aggregate one cycle's snapshots + absence claims against the subject

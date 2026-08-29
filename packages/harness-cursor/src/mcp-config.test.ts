@@ -1,4 +1,12 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -82,14 +90,97 @@ describe("cursor mcp.json injection (delegation belt host)", () => {
     expect(existsSync(join(dir, "claudexor-managed-mcp.json"))).toBe(false);
   });
 
-  it("tolerates a corrupt mcp.json and repairs it on the next injection", () => {
+  it("quarantines a corrupt mcp.json on injection: bytes preserved, fresh config written, disclosed", () => {
     const dir = join(scratch(), ".cursor");
     syncCursorMcpServers(dir, [belt()]);
     writeFileSync(join(dir, "mcp.json"), "{not json");
+    const disclosures = syncCursorMcpServers(dir, [belt()]);
+    expect(Object.keys(JSON.parse(readFileSync(join(dir, "mcp.json"), "utf8")).mcpServers)).toEqual(
+      ["claudexor"],
+    );
+    const quarantined = readdirSync(dir).filter((name) => name.startsWith("mcp.json.invalid-"));
+    expect(quarantined).toHaveLength(1);
+    expect(readFileSync(join(dir, quarantined[0]!), "utf8")).toBe("{not json");
+    expect(disclosures).toHaveLength(1);
+    expect(disclosures[0]).toContain("preserved");
+  });
+
+  it("cleanup NEVER deletes an unreadable mcp.json: preserved, disclosed, manifest kept", () => {
+    // The bytes are not ours to delete, and the manifest must survive too —
+    // its entry may still ride inside the unreadable file.
+    const dir = join(scratch(), ".cursor");
+    syncCursorMcpServers(dir, [belt()]);
+    writeFileSync(join(dir, "mcp.json"), "{human wrote this, badly");
+    const disclosures = syncCursorMcpServers(dir, []);
+    expect(readFileSync(join(dir, "mcp.json"), "utf8")).toBe("{human wrote this, badly");
+    expect(existsSync(join(dir, "claudexor-managed-mcp.json"))).toBe(true);
+    expect(disclosures).toHaveLength(1);
+    expect(disclosures[0]).toContain("cleanup skipped");
+  });
+
+  it("a corrupt managed manifest never orphans the belt: cleanup falls back to the engine name", () => {
+    const dir = join(scratch(), ".cursor");
+    syncCursorMcpServers(dir, [belt()]);
+    // Add a foreign sibling so the fallback's selectivity is visible.
+    const current = JSON.parse(readFileSync(join(dir, "mcp.json"), "utf8"));
+    current.mcpServers["user_tool"] = { command: "/usr/local/bin/thing", args: [] };
+    writeFileSync(join(dir, "mcp.json"), JSON.stringify(current));
+    writeFileSync(join(dir, "claudexor-managed-mcp.json"), "{corrupt");
+    syncCursorMcpServers(dir, []);
+    expect(JSON.parse(readFileSync(join(dir, "mcp.json"), "utf8"))).toEqual({
+      mcpServers: { user_tool: { command: "/usr/local/bin/thing", args: [] } },
+    });
+    expect(existsSync(join(dir, "claudexor-managed-mcp.json"))).toBe(false);
+    // Later non-delegate runs stay clean no-ops.
+    expect(syncCursorMcpServers(dir, [])).toEqual([]);
+  });
+
+  it("a corrupt managed manifest during injection adopts the engine name instead of refusing", () => {
+    const dir = join(scratch(), ".cursor");
+    syncCursorMcpServers(dir, [belt()]);
+    writeFileSync(join(dir, "claudexor-managed-mcp.json"), "{corrupt");
     syncCursorMcpServers(dir, [belt()]);
     expect(Object.keys(JSON.parse(readFileSync(join(dir, "mcp.json"), "utf8")).mcpServers)).toEqual(
       ["claudexor"],
     );
+    expect(JSON.parse(readFileSync(join(dir, "claudexor-managed-mcp.json"), "utf8"))).toEqual({
+      version: 1,
+      names: ["claudexor"],
+    });
+  });
+
+  it("a foreign entry squatting the engine name refuses injection typed and stays untouched", () => {
+    const dir = join(scratch(), ".cursor");
+    const foreign = { mcpServers: { claudexor: { command: "/usr/local/bin/imposter", args: [] } } };
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "mcp.json"), JSON.stringify(foreign));
+    expect(() => syncCursorMcpServers(dir, [belt()])).toThrowError(/foreign MCP entry/);
+    expect(JSON.parse(readFileSync(join(dir, "mcp.json"), "utf8"))).toEqual(foreign);
+    // Cleanup treats it as foreign too: preserved, since nothing is managed.
+    expect(syncCursorMcpServers(dir, [])).toEqual([]);
+    expect(JSON.parse(readFileSync(join(dir, "mcp.json"), "utf8"))).toEqual(foreign);
+  });
+
+  it("crash-window states fail safe: over-wide manifest is benign, untracked belt refuses", () => {
+    // Manifest-before-mcp.json write order means a crash leaves a manifest
+    // naming entries mcp.json does not carry — removal of an absent key is a
+    // no-op and the manifest clears on the next cleanup.
+    const dir = join(scratch(), ".cursor");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "claudexor-managed-mcp.json"),
+      JSON.stringify({ version: 1, names: ["claudexor"] }),
+    );
+    expect(syncCursorMcpServers(dir, [])).toEqual([]);
+    expect(existsSync(join(dir, "claudexor-managed-mcp.json"))).toBe(false);
+    expect(existsSync(join(dir, "mcp.json"))).toBe(false);
+    // The REVERSE state (belt present, manifest lost entirely) is exactly the
+    // squat shape: injection refuses typed instead of silently re-adopting.
+    writeFileSync(
+      join(dir, "mcp.json"),
+      JSON.stringify({ mcpServers: { claudexor: { command: "/usr/bin/node", args: [] } } }),
+    );
+    expect(() => syncCursorMcpServers(dir, [belt()])).toThrowError(/foreign MCP entry/);
   });
 
   it("no servers and nothing managed is a pure no-op (no dir created)", () => {
@@ -105,7 +196,7 @@ describe("cursor mcp.json injection (delegation belt host)", () => {
     const home = scratch();
     const env: Record<string, string | null | undefined> = { HOME: home };
     const approved = prepareCursorMcpInjection(env, [belt()]);
-    expect(approved).toEqual({ approved: true });
+    expect(approved).toEqual({ approved: true, disclosures: [] });
     expect(env["CURSOR_CONFIG_DIR"]).toBe(join(home, ".cursor"));
     expect(existsSync(join(home, ".cursor", "mcp.json"))).toBe(true);
   });
