@@ -44,7 +44,6 @@ import {
 } from "./profile.js";
 export { canonicalCursorProfileHome, cursorProfilePathEnv } from "./profile.js";
 import { prepareCursorMcpInjection } from "./mcp-config.js";
-export { resolveCursorMcpConfigDir, syncCursorMcpServers } from "./mcp-config.js";
 import { smokeIsolatedApiKey, unsmokedApiSmoke, type CursorApiSmokeResult } from "./smoke.js";
 import {
   listCursorModelsFromReadyRoute,

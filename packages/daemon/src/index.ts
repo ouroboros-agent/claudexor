@@ -21,6 +21,6 @@ export * from "./resource-store.js";
 export * from "./quota-registry.js";
 export * from "./quota-projection.js";
 export * from "./quota-poll-lanes.js";
-export { quotaPacerFileStore, type QuotaPacerStateStore } from "./quota-poll-pacer.js";
+export { quotaPacerFileStore } from "./quota-poll-pacer.js";
 export * from "./credential-unusable-ledger.js";
 export * from "./project-partitions.js";
