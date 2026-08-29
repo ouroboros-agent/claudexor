@@ -459,10 +459,8 @@ async function* runCursor(
     yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
     return;
   }
-  // Typed disclosures for content the reconcile deliberately preserved:
-  // an unreadable mcp.json skipped on cleanup or quarantined aside, and an
-  // orphaned engine-named entry left riding without a managed manifest. One
-  // neutral code covers the class; the detail line names the exact case.
+  // Typed disclosures for content the reconcile deliberately preserved
+  // (unreadable, quarantined, or orphaned lanes); the detail names the case.
   for (const detail of injection.disclosures) {
     const payload = { code: "cursor_mcp_config_disclosure", detail };
     yield { type: "message", session_id: spec.session_id, ts: nowIso(), payload };

@@ -189,8 +189,9 @@ public struct ControlQuotaResponse: Codable, Sendable, Equatable {
     public let refreshedAt: String?
     /// Present only on refresh responses that skipped at least one vendor's
     /// fan-out for an active poll rate-limit cooldown; those vendors' rows
-    /// above are last-known data, not the product of this refresh.
-    public let refreshSkipped: [QuotaRefreshSkipped]
+    /// above are last-known data, not the product of this refresh. Optional
+    /// so an absent wire field round-trips absent, never as a minted [].
+    public let refreshSkipped: [QuotaRefreshSkipped]?
 
     private enum CodingKeys: String, CodingKey {
         case snapshots, absences
@@ -202,7 +203,7 @@ public struct ControlQuotaResponse: Codable, Sendable, Equatable {
         snapshots: [QuotaSnapshot],
         absences: [QuotaAbsence] = [],
         refreshedAt: String?,
-        refreshSkipped: [QuotaRefreshSkipped] = []
+        refreshSkipped: [QuotaRefreshSkipped]? = nil
     ) {
         self.snapshots = snapshots
         self.absences = absences
@@ -216,6 +217,6 @@ public struct ControlQuotaResponse: Codable, Sendable, Equatable {
         absences = try c.decodeIfPresent([QuotaAbsence].self, forKey: .absences) ?? []
         refreshedAt = try c.decodeIfPresent(String.self, forKey: .refreshedAt)
         refreshSkipped =
-            try c.decodeIfPresent([QuotaRefreshSkipped].self, forKey: .refreshSkipped) ?? []
+            try c.decodeIfPresent([QuotaRefreshSkipped].self, forKey: .refreshSkipped)
     }
 }

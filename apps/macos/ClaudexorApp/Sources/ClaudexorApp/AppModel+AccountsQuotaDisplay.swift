@@ -189,11 +189,12 @@ extension AppModel {
         // NOT uniformly current: those vendors ride last-known data, so the
         // display says so instead of stamping the request-time refreshed_at
         // over them (honest states — unknown ≠ fresh).
-        if response.refreshSkipped.isEmpty {
+        let refreshSkipped = response.refreshSkipped ?? []
+        if refreshSkipped.isEmpty {
             accountsQuotaDisplayStates[locationID] = .current(
                 observedAt: Self.quotaObservedAt(response))
         } else {
-            let vendors = response.refreshSkipped.map(\.vendor).joined(separator: ", ")
+            let vendors = refreshSkipped.map(\.vendor).joined(separator: ", ")
             accountsQuotaDisplayStates[locationID] = .stale(
                 reason:
                     "Rate-limit cooldown: \(vendors) served from last-known data (not re-fetched).",
