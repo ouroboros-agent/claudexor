@@ -1,5 +1,25 @@
 # @claudexor/daemon
 
+## 3.9.0
+
+### Minor Changes
+
+- 69500f8: Foreground quota refreshes (POST /v2/quota and the atomic Accounts snapshot) now honor each vendor's poll rate-limit cooldown: a vendor that recently answered 429 is served from last-known registry data instead of a fresh fan-out, disclosed additively as `refresh_skipped` rows on the quota response.
+- e39c57b: Suppressed quota polls never fall silent: gap absences (rate_limited, probe_skipped_rate_limited, and the new derived poll_paced) coexist with stale snapshots and are silenced only by fresh ones, so downstream exhaustion readers stay fail-open while a vendor's poll pacing is cooling.
+- 48ae659: Quota poll pacing is now per vendor lane: each vendor's refreshers own an independent completion-anchored backoff, a typed rate_limited absence arms a persisted vendor Retry-After floor in daemon-private pacer state (never the quota journal), and a daemon restart or credential change no longer resets the vendor cooldown into a 429 amplifier.
+
+### Patch Changes
+
+- Updated dependencies [9a06cf9]
+- Updated dependencies [69500f8]
+- Updated dependencies [e39c57b]
+- Updated dependencies [fd623ff]
+- Updated dependencies [278e436]
+  - @claudexor/schema@3.9.0
+  - @claudexor/core@3.9.0
+  - @claudexor/journal@3.9.0
+  - @claudexor/util@3.9.0
+
 ## 3.8.4
 
 ### Patch Changes
