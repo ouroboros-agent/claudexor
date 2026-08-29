@@ -47,10 +47,11 @@ import Testing
         #expect(snapshot.availability?.modelScopedExhaustions.first?.appliesToModels == ["fable"])
     }
 
-    @Test func quotaDecodesOptionalRefreshSkippedAndDefaultsEmpty() throws {
+    @Test func quotaDecodesOptionalRefreshSkippedAndKeepsAbsenceAbsent() throws {
         // Additive disclosure: a refresh that skipped a vendor for an active
-        // poll rate-limit cooldown names it; absent field stays an empty list
-        // (older daemons predate the projection).
+        // poll rate-limit cooldown names it; an absent wire field stays nil
+        // and re-encodes absent (older daemons predate the projection, and
+        // wire fixtures round-trip byte-faithfully).
         let skipped = try JSONDecoder().decode(ControlQuotaResponse.self, from: Data(#"""
         {"snapshots":[],"absences":[],"refreshed_at":"2026-08-29T00:00:00Z",
          "refresh_skipped":[{"vendor":"claude","not_before":"2026-08-29T00:20:00Z"}]}
