@@ -1,6 +1,7 @@
+import { QUOTA_GAP_ABSENCE_REASONS } from "@claudexor/schema";
 import type { QuotaAbsence, QuotaSnapshot, QuotaSubject } from "@claudexor/schema";
 import { QuotaPollPacer, type QuotaPacerStateStore } from "./quota-poll-pacer.js";
-import { remainingQuotaRefreshDemand } from "./quota-refresh-demand.js";
+import { quotaSubjectIdentity, remainingQuotaRefreshDemand } from "./quota-refresh-demand.js";
 
 /** One refresh cycle's fruit: the snapshots a source observed, plus the typed
  * absences it CLAIMS for subjects it tried and could not observe. Absence is
@@ -156,4 +157,99 @@ export function recomputeScopeFor(
   return ranLanes.some((lane) => lane.vendor === null)
     ? null
     : new Set(ranLanes.map((lane) => lane.vendor as string));
+}
+
+/** Derived `poll_paced` gap rows: while a vendor lane's rate-limit floor is
+ * active, every universe subject of that vendor lacking FRESH snapshot cover
+ * and lacking a stored absence row is stated as paused — a live projection
+ * (never journaled), stable per floor so the projection signature does not
+ * churn markers on every read. Keeps a suppressed vendor's subjects from
+ * falling silent (daemon restarts with a store-loaded floor included) and
+ * downstream exhaustion readers fail-open. */
+export function derivePollPacedRows(
+  lanes: readonly PacingLane[],
+  subjects: readonly QuotaSubject[],
+  existingRows: readonly QuotaAbsence[],
+  freshCovered: ReadonlySet<string>,
+  now: number,
+): QuotaAbsence[] {
+  const present = new Set(existingRows.map((row) => quotaSubjectIdentity(row.subject)));
+  const rows: QuotaAbsence[] = [];
+  for (const lane of lanes) {
+    if (lane.vendor === null) continue;
+    const until = lane.pacer.rateLimitCooldownUntil(now);
+    if (until === null) continue;
+    for (const subject of subjects) {
+      if (subject.harness !== lane.vendor) continue;
+      const key = quotaSubjectIdentity(subject);
+      if (freshCovered.has(key) || present.has(key)) continue;
+      present.add(key);
+      rows.push({
+        subject,
+        reason: "poll_paced",
+        detail: `vendor poll paused by rate-limit cooldown until ${new Date(until).toISOString()}`,
+        observed_at: new Date(lane.pacer.rateLimitObservedAt(now)).toISOString(),
+      });
+    }
+  }
+  return rows;
+}
+
+/** Subject-identity cover sets over one active-snapshot view. Gap rows are
+ * silenced only by the FRESH set; every other reason by any active snapshot. */
+export function subjectCoverSets(active: readonly QuotaSnapshot[]): {
+  covered: ReadonlySet<string>;
+  freshCovered: ReadonlySet<string>;
+} {
+  return {
+    covered: new Set(active.map((snapshot) => quotaSubjectIdentity(snapshot.subject))),
+    freshCovered: new Set(
+      active
+        .filter((snapshot) => snapshot.freshness === "fresh")
+        .map((snapshot) => quotaSubjectIdentity(snapshot.subject)),
+    ),
+  };
+}
+
+/** Pure absence fold for one cycle (V11a semantics): preserved out-of-scope
+ * rows first, then first-claim-wins claims, then `no_source` for uncovered
+ * in-scope universe subjects. Gap-representation claims ("deliberately not
+ * asked": rate_limited and its skip siblings) are silenced only by a FRESH
+ * snapshot — a stale one is exactly the state the gap row explains, and
+ * dropping the row there would let a stale spent window read as exhausted
+ * downstream. */
+export function foldAbsenceClaims(input: {
+  claims: readonly QuotaAbsence[];
+  prior: readonly QuotaAbsence[];
+  rebuilt: (harness: string) => boolean;
+  covered: ReadonlySet<string>;
+  freshCovered: ReadonlySet<string>;
+  subjects: readonly QuotaSubject[];
+  now: number;
+}): QuotaAbsence[] {
+  const preserved = input.prior.filter((absence) => !input.rebuilt(absence.subject.harness));
+  const result: QuotaAbsence[] = [];
+  const claimed = new Set<string>(preserved.map((item) => quotaSubjectIdentity(item.subject)));
+  for (const claim of input.claims) {
+    const key = quotaSubjectIdentity(claim.subject);
+    const cover = QUOTA_GAP_ABSENCE_REASONS.has(claim.reason)
+      ? input.freshCovered
+      : input.covered;
+    if (cover.has(key) || claimed.has(key)) continue;
+    claimed.add(key);
+    result.push(claim);
+  }
+  for (const subject of input.subjects) {
+    if (!input.rebuilt(subject.harness)) continue;
+    const key = quotaSubjectIdentity(subject);
+    if (input.covered.has(key) || claimed.has(key)) continue;
+    claimed.add(key);
+    result.push({
+      subject,
+      reason: "no_source",
+      detail: null,
+      observed_at: new Date(input.now).toISOString(),
+    });
+  }
+  return [...preserved, ...result];
 }

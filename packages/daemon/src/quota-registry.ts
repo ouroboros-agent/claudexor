@@ -3,6 +3,7 @@ import { hashJson } from "@claudexor/util";
 import {
   ControlQuotaResponse,
   HarnessEvent,
+  QUOTA_GAP_ABSENCE_REASONS,
   QuotaAbsence as QuotaAbsenceSchema,
   QuotaSnapshot as QuotaSnapshotSchema,
   REACTIVE_COOLDOWN_SOURCE,
@@ -21,10 +22,13 @@ import {
 } from "./quota-registry-support.js";
 import {
   buildRefresherLanes,
+  derivePollPacedRows,
+  foldAbsenceClaims,
   laneHasDemand,
   performPollSweep,
   recomputeScopeFor,
   selectCycleEntries,
+  subjectCoverSets,
   type PacingLane,
   type QuotaRefresher,
   type QuotaVendorRefresher,
@@ -339,41 +343,39 @@ export class QuotaRegistry {
       this.journal.append(REMOVED, { harness, subject_id });
       this.remove(harness, subject_id);
     }
-    const covered = new Set(
-      this.activeSnapshots(now).map((snapshot) => quotaSubjectIdentity(snapshot.subject)),
-    );
-    const preserved = this.absences.filter((absence) => !rebuilt(absence.subject.harness));
-    const result: QuotaAbsence[] = [];
-    const claimed = new Set<string>(preserved.map((item) => quotaSubjectIdentity(item.subject)));
-    for (const claim of claims) {
-      const key = quotaSubjectIdentity(claim.subject);
-      if (covered.has(key) || claimed.has(key)) continue;
-      claimed.add(key);
-      result.push(claim);
-    }
-    for (const subject of this.subjects?.() ?? []) {
-      if (!rebuilt(subject.harness)) continue;
-      const key = quotaSubjectIdentity(subject);
-      if (covered.has(key) || claimed.has(key)) continue;
-      claimed.add(key);
-      result.push({
-        subject,
-        reason: "no_source",
-        detail: null,
-        observed_at: new Date(now).toISOString(),
-      });
-    }
-    this.absences = [...preserved, ...result];
+    const { covered, freshCovered } = subjectCoverSets(this.activeSnapshots(now));
+    this.absences = foldAbsenceClaims({
+      claims,
+      prior: this.absences,
+      rebuilt,
+      covered,
+      freshCovered,
+      subjects: this.subjects?.() ?? [],
+      now,
+    });
   }
 
   /** Absences whose subject is not (any longer) covered by an active snapshot —
-   * a snapshot arriving via ingest between cycles silences its absence at once,
-   * so read() never shows a subject with both a snapshot and an absence. */
+   * a snapshot arriving via ingest between cycles silences its absence at once.
+   * Two amendments for suppressed polls (gap honesty): a GAP-representation
+   * row (rate_limited / probe_skipped / poll_paced) is silenced only by a
+   * FRESH snapshot, so stale last-known data and the "not re-asked" fact stay
+   * visible together; and while a vendor lane's rate-limit floor is active,
+   * every universe subject of that vendor lacking fresh cover and lacking a
+   * stored row gets a DERIVED `poll_paced` row (a live projection, never
+   * journaled), so a paused vendor's subjects never fall silent — across
+   * daemon restarts with a store-loaded floor included. */
   private activeAbsences(now: number): QuotaAbsence[] {
-    const covered = new Set(
-      this.activeSnapshots(now).map((snapshot) => quotaSubjectIdentity(snapshot.subject)),
+    const { covered, freshCovered } = subjectCoverSets(this.activeSnapshots(now));
+    const rows = this.absences.filter(
+      (absence) =>
+        !(QUOTA_GAP_ABSENCE_REASONS.has(absence.reason) ? freshCovered : covered).has(
+          quotaSubjectIdentity(absence.subject),
+        ),
     );
-    return this.absences.filter((absence) => !covered.has(quotaSubjectIdentity(absence.subject)));
+    return rows.concat(
+      derivePollPacedRows(this.refresherLanes.lanes, this.subjects?.() ?? [], rows, freshCovered, now),
+    );
   }
 
   /** Credential or routability state changed (login/profile/native/settings):

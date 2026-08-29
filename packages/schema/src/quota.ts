@@ -207,12 +207,30 @@ export const QuotaAbsenceReason = z
      * from `rate_limited` — this subject's own state is honestly unknown,
      * never fabricated from a sibling's 429. */
     "probe_skipped_rate_limited",
+    /** The subject was not re-probed because its vendor's poll rate-limit
+     * cooldown is active: the POLL is paused, not the plan window. A derived
+     * gap row so a suppressed vendor's subjects never fall silent — surfaces
+     * can say "data is stale, polling paused until T", and exhaustion
+     * readers stay fail-open instead of promoting a stale spent window into
+     * "window exhausted". */
+    "poll_paced",
     /** The current platform policy allows only one enabled binding, but the
      * persisted registry contains several. No row was selected or probed. */
     "credential_profile_ambiguous",
   ])
   .describe("Why a registered subject has no quota snapshot, in the source's own vocabulary.");
 export type QuotaAbsenceReason = z.infer<typeof QuotaAbsenceReason>;
+
+/** Gap-representation absence reasons: "this cycle deliberately did not ask"
+ * (the vendor throttled the poll, a sibling's 429 short-circuited it, or
+ * pacing paused the lane). Unlike credential-state reasons they may coexist
+ * with a STALE snapshot — the stale data stays visible as last-known while
+ * the gap row keeps downstream exhaustion readers fail-open (a stale spent
+ * window plus a gap row means "not re-asked", never "window exhausted"). A
+ * FRESH snapshot still silences them like every other reason. */
+export const QUOTA_GAP_ABSENCE_REASONS: ReadonlySet<QuotaAbsenceReason> = new Set<QuotaAbsenceReason>(
+  ["rate_limited", "probe_skipped_rate_limited", "poll_paced"],
+);
 
 export const QuotaAbsence = z
   .object({

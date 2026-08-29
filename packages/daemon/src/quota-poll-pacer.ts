@@ -82,6 +82,8 @@ export class QuotaPollPacer {
   private failures = 0;
   private notBefore = 0;
   private rateLimitedNotBefore = 0;
+  /** When the active floor was observed (0 = unknown, e.g. store-loaded). */
+  private rateLimitedSince = 0;
 
   constructor(
     private readonly vendor: string | null = null,
@@ -114,6 +116,16 @@ export class QuotaPollPacer {
     return now < this.rateLimitedNotBefore ? this.rateLimitedNotBefore : null;
   }
 
+  /** Stable observation stamp for the ACTIVE floor's derived gap rows: the
+   * instant the floor was observed. A store-loaded floor (daemon restart)
+   * has no recorded observation, so the first read anchors it — stability of
+   * the projection signature matters more than the exact historical instant,
+   * and the anchor is honest ("known paused since at least then"). */
+  rateLimitObservedAt(now: number): number {
+    if (this.rateLimitedSince === 0) this.rateLimitedSince = now;
+    return this.rateLimitedSince;
+  }
+
   /** A cycle for this lane completed: reset on fully satisfied demand, else
    * exponential backoff anchored at completion (never the stale start). */
   notePollSuccess(completedAt: number, demandRemains: boolean): void {
@@ -142,6 +154,7 @@ export class QuotaPollPacer {
     const until = observedAt + floor;
     if (until <= this.rateLimitedNotBefore) return;
     this.rateLimitedNotBefore = until;
+    this.rateLimitedSince = observedAt;
     if (this.vendor !== null) {
       try {
         this.store?.save(this.vendor, until);

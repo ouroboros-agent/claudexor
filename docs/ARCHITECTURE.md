@@ -2301,7 +2301,14 @@ exponential ladder and the vendor's Retry-After when one was sent — kept in
 daemon-private pacer state, never the quota journal (a throttled poll is
 pacing evidence, not an exhausted window), so a daemon restart is not a 429
 amplifier; a credential change resets only the demand backoff, never the
-floor. A registry-owned
+floor. A suppressed poll never falls silent: gap-representation absences
+(`rate_limited`, `probe_skipped_rate_limited`, `poll_paced`) are silenced
+only by a FRESH snapshot — stale last-known data and the "not re-asked" fact
+stay visible together — and while a lane's floor is active every universe
+subject of that vendor lacking fresh cover and a stored row is stated as a
+derived `poll_paced` row (a live projection, never journaled), so an
+exhaustion reader that skips stale snapshots stays fail-open instead of
+promoting a stale spent window into "window exhausted". A registry-owned
 credential generation fences a provider cycle after validation and before its
 first journal, memory, absence, marker, response, or cursor write. A foreground
 caller from a newer generation waits for obsolete work to retire, then all such
