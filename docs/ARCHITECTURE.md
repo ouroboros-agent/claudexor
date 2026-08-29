@@ -52,7 +52,11 @@ engine strategies are flags on a mode, never modes:
 
 `--delegate` (agent-only) injects a SCOPED Claudexor MCP belt into the harness
 sandbox — the generalized `HarnessRunSpec.extra_mcp_servers` seam translated per
-adapter (claude `--mcp-config` inline JSON, codex `-c mcp_servers.<name>.*`).
+adapter (claude `--mcp-config` inline JSON, codex `-c mcp_servers.<name>.*`,
+cursor a reconciled `mcp.json` in the Claudexor-owned lane `CURSOR_CONFIG_DIR`
+plus `--approve-mcps` — a run without `extra_mcp_servers` removes any
+previously Claudexor-managed entries so a stale belt never rides a
+non-delegate run, and the host `~/.cursor` is never written).
 The running daemon entry must itself dispatch `mcp serve-belt`; every in-repo
 launcher preserves that executable-entry contract.
 The harness decides when to spawn bounded, isolated sub-runs; the belt exposes
@@ -82,7 +86,7 @@ terminal. After the drain, the ledger rechecks the family terminal state and
 reconciles the returned result plus `decision.yaml`; a late overshoot or
 unverifiable child settlement replaces the prepared success with a typed budget
 failure. Only adapters
-whose `capability_profile.mcp_injection` is true (claude, codex) can host the
+whose `capability_profile.mcp_injection` is true (claude, codex, cursor) can host the
 belt. `HarnessStatusDto` and the agent capability catalog carry one derived
 `delegation` projection (`available`, typed `reason`, remediation, and the access
 requirement), so CLI, Control API, and macOS consume the same readiness truth.

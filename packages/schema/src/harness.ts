@@ -313,7 +313,9 @@ export const HarnessCapabilityProfile = z
     /**
      * The adapter can inject engine-owned MCP servers into the harness sandbox
      * (the generalized browser-MCP seam): claude via `--mcp-config` inline JSON,
-     * codex via `-c mcp_servers.<name>.*` overrides. Consumers: the browser-tool
+     * codex via `-c mcp_servers.<name>.*` overrides, cursor via a reconciled
+     * `mcp.json` in the Claudexor-owned lane config dir plus `--approve-mcps`.
+     * Consumers: the browser-tool
      * wiring and the delegation belt. When false, `HarnessRunSpec.extra_mcp_servers`
      * is refused at preflight (never silently dropped), while the Agent
      * `delegate` toggle degrades to ordinary Agent with a durable typed receipt.
@@ -329,7 +331,9 @@ export const HarnessCapabilityProfile = z
      * the run sandbox) at FULL access. Codex's workspace-write seatbelt cancels
      * that escalation-requiring MCP call in headless exec; only danger-full-access
      * lets it through — the browser MCP already rides this. Claude does not
-     * sandbox its MCP servers (false). true => a --delegate lane below full
+     * sandbox its MCP servers (false); cursor's access enforcement is a tool
+     * allowlist, not a sandbox around MCP subprocesses (false). true => a
+     * --delegate lane below full
      * access degrades to ordinary Agent with a durable typed receipt.
      */
     mcp_injection_requires_full_access: z

@@ -153,7 +153,7 @@ invariant or operator decision before proceeding.
   per parent (default 8), and one live daemon-owned paid-budget authority shared
   by the parent and every child. The flag grants permission; the parent may finish without creating
   a child. Only adapters declaring `capability_profile.mcp_injection` (claude,
-  codex) can host the belt, and the engine projects belt readiness instead of a
+  codex, cursor) can host the belt, and the engine projects belt readiness instead of a
   surface guessing it. A known failure BEFORE injection may continue as an
   ordinary Agent run only with durable requested/effective/used/reason/remediation
   facts and a visible warning. Once the belt descriptor was injected, an
