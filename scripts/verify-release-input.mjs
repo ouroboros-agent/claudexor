@@ -96,8 +96,8 @@ const manifest = JSON.parse(readFileSync("package.json", "utf8"));
 const version = manifest.version;
 if (mode === "publish" && tag !== `v${version}`)
   fail(["publish tag does not match package.json version"]);
-if (skipCustomEd25519 && version !== "3.8.0") {
-  fail(["skip_custom_ed25519 is authorized only for package version 3.8.0"]);
+if (skipCustomEd25519 && !["3.8.0", "3.9.0"].includes(version)) {
+  fail(["skip_custom_ed25519 is authorized only for package versions 3.8.0 and 3.9.0"]);
 }
 if (waiveCursorReview && !["3.8.1", "3.8.2"].includes(version)) {
   fail(["waive_cursor_review is authorized only for package versions 3.8.1 and 3.8.2"]);
