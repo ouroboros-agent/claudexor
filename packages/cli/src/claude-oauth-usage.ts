@@ -207,6 +207,20 @@ export interface ClaudeOauthUsageDeps {
   platform: NodeJS.Platform;
 }
 
+/** RFC 9110 Retry-After → milliseconds from `now`: delta-seconds or an
+ * HTTP-date. Null for a missing or unparseable header — the vendor floor is
+ * then simply unknown and pacing falls back to exponential backoff. */
+export function parseRetryAfterHeaderMs(
+  header: string | null,
+  nowMs: number = Date.now(),
+): number | null {
+  if (header === null) return null;
+  const trimmed = header.trim();
+  if (/^\d+$/.test(trimmed)) return Number(trimmed) * 1000;
+  const at = Date.parse(trimmed);
+  return Number.isFinite(at) ? Math.max(0, at - nowMs) : null;
+}
+
 async function fetchUsageDefault(accessToken: string): Promise<unknown> {
   const res = await fetch(USAGE_URL, {
     method: "GET",
@@ -220,12 +234,22 @@ async function fetchUsageDefault(accessToken: string): Promise<unknown> {
   // A 401/403 from an endpoint called with THIS subject's own access token is
   // the vendor stating the credential is no longer honored — the one live
   // liveness fact the daemon gets for free, without spending a run's quota.
-  // Everything else stays an undiagnosed refresh failure.
   if (res.status === 401 || res.status === 403) {
     throw Object.assign(new Error(`oauth/usage responded ${res.status}`), {
       quotaAbsenceReason: "auth_revoked" as QuotaAbsence["reason"],
     });
   }
+  // A 429 throttles the POLL, not the plan: typed `rate_limited` so the pacer
+  // can honor the vendor's Retry-After floor (owner decision 7=A: this stays
+  // pacing evidence and is never journaled as a quota cooldown). Anthropic
+  // does not always send Retry-After — retryAfterMs is then null.
+  if (res.status === 429) {
+    throw Object.assign(new Error("oauth/usage responded 429"), {
+      quotaAbsenceReason: "rate_limited" as QuotaAbsence["reason"],
+      retryAfterMs: parseRetryAfterHeaderMs(res.headers.get("retry-after")),
+    });
+  }
+  // Everything else stays an undiagnosed refresh failure.
   if (!res.ok) throw new Error(`oauth/usage responded ${res.status}`);
   return res.json();
 }
@@ -336,17 +360,23 @@ export async function refreshClaudeOauthUsageQuota(
           ),
         );
     } catch (error) {
-      // The fetch path carries its own typed reason for a rejected credential
-      // (auth_revoked); anything untagged stays an undiagnosed refresh failure.
+      // The fetch path carries its own typed reasons for a rejected credential
+      // (auth_revoked) and a throttled poll (rate_limited, with the vendor's
+      // Retry-After floor when known); anything untagged stays an undiagnosed
+      // refresh failure.
       const tagged = (error as { quotaAbsenceReason?: QuotaAbsence["reason"] })?.quotaAbsenceReason;
-      absences.push(
-        claudeOauthAbsence(
+      const retryAfterMs = (error as { retryAfterMs?: number | null })?.retryAfterMs;
+      absences.push({
+        ...claudeOauthAbsence(
           candidate.subjectId,
           tagged ?? "refresh_failed",
           error instanceof Error ? error.message : String(error),
           now(),
         ),
-      );
+        ...(typeof retryAfterMs === "number" && retryAfterMs >= 0
+          ? { retry_after_ms: Math.round(retryAfterMs) }
+          : {}),
+      });
     }
   }
   return { snapshots, absences };

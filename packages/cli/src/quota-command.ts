@@ -61,7 +61,11 @@ function printQuota(value: ReturnType<typeof ControlQuotaResponse.parse>): void 
   // here — absence is stated, never silent emptiness (zen: absence ≠ empty).
   for (const absence of value.absences) {
     const subject = `${absence.subject.harness}/${absence.subject.subject_id ?? "default"}`;
+    const retryAfter =
+      absence.retry_after_ms === undefined
+        ? ""
+        : ` retry-after=${Math.ceil(absence.retry_after_ms / 1000)}s`;
     const detail = absence.detail ? ` (${absence.detail})` : "";
-    print(`${subject}: no snapshot — ${absence.reason}${detail}`);
+    print(`${subject}: no snapshot — ${absence.reason}${retryAfter}${detail}`);
   }
 }

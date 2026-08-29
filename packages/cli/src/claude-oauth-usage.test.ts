@@ -157,6 +157,56 @@ describe("claude oauth/usage quota source (W5.3, INV-062)", () => {
     expect(nativeAbsence?.detail).toContain("401");
   });
 
+  it("claims a typed rate_limited absence carrying the vendor Retry-After floor on a 429", async () => {
+    // A 429 throttles the POLL, not the plan (owner decision 7=A): the reason
+    // stays distinct from refresh_failed so the pacer can honor the vendor
+    // floor, and the absence carries retry_after_ms only when the header came.
+    const result = await refreshClaudeOauthUsageQuota({
+      readCredential: async () => ({ accessToken: "tok", subscriptionType: "max" }),
+      fetchUsage: async () => {
+        throw Object.assign(new Error("oauth/usage responded 429"), {
+          quotaAbsenceReason: "rate_limited" as const,
+          retryAfterMs: 90_000,
+        });
+      },
+      now: () => new Date("2026-07-18T00:00:00Z"),
+    });
+    expect(result.snapshots).toEqual([]);
+    const nativeAbsence = result.absences?.find((a) => a.subject.subject_id === null);
+    expect(nativeAbsence?.reason).toBe("rate_limited");
+    expect(nativeAbsence?.retry_after_ms).toBe(90_000);
+  });
+
+  it("a 429 without Retry-After stays rate_limited with no fabricated floor", async () => {
+    // Anthropic does not always send Retry-After; the absence then simply
+    // omits retry_after_ms (absence of the floor is stated, never invented).
+    const result = await refreshClaudeOauthUsageQuota({
+      readCredential: async () => ({ accessToken: "tok", subscriptionType: "max" }),
+      fetchUsage: async () => {
+        throw Object.assign(new Error("oauth/usage responded 429"), {
+          quotaAbsenceReason: "rate_limited" as const,
+          retryAfterMs: null,
+        });
+      },
+      now: () => new Date("2026-07-18T00:00:00Z"),
+    });
+    const nativeAbsence = result.absences?.find((a) => a.subject.subject_id === null);
+    expect(nativeAbsence?.reason).toBe("rate_limited");
+    expect(nativeAbsence).not.toHaveProperty("retry_after_ms");
+  });
+
+  it("parses RFC 9110 Retry-After forms: delta-seconds, HTTP-date, junk, absent", async () => {
+    const { parseRetryAfterHeaderMs } = await import("./claude-oauth-usage.js");
+    const now = Date.parse("2026-07-18T00:00:00Z");
+    expect(parseRetryAfterHeaderMs("60", now)).toBe(60_000);
+    expect(parseRetryAfterHeaderMs(" 5 ", now)).toBe(5_000);
+    expect(parseRetryAfterHeaderMs("Sat, 18 Jul 2026 00:02:00 GMT", now)).toBe(120_000);
+    // A past HTTP-date clamps to zero rather than going negative.
+    expect(parseRetryAfterHeaderMs("Fri, 17 Jul 2026 23:00:00 GMT", now)).toBe(0);
+    expect(parseRetryAfterHeaderMs("soon", now)).toBeNull();
+    expect(parseRetryAfterHeaderMs(null, now)).toBeNull();
+  });
+
   it("a post-migration refresh cycle produces no null subject and never double-probes the migrated store", async () => {
     // The retired engine-default subject must not resurrect on refresh: a
     // migrated harness's former default store IS its auto-registered row, so

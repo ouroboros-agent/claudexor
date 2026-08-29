@@ -195,6 +195,12 @@ export const QuotaAbsenceReason = z
      * network) and from `not_logged_in` (there IS a stored login): the local
      * store looks healthy while the token behind it is no longer honored. */
     "auth_revoked",
+    /** The vendor rate-limited the QUOTA POLL itself (429). The credential is
+     * not dead and the plan window is not proven spent — this is poll-pacing
+     * evidence only and must never be journaled as a quota cooldown (a
+     * throttled poll is not an exhausted window). The row carries
+     * `retry_after_ms` when the vendor sent a parseable Retry-After. */
+    "rate_limited",
     /** The current platform policy allows only one enabled binding, but the
      * persisted registry contains several. No row was selected or probed. */
     "credential_profile_ambiguous",
@@ -208,6 +214,11 @@ export const QuotaAbsence = z
     reason: QuotaAbsenceReason,
     detail: z.string().nullable().default(null),
     observed_at: z.string().datetime({ offset: true }),
+    /** For `rate_limited` only: the vendor's Retry-After translated to
+     * milliseconds from `observed_at`. Present only when the header arrived
+     * and parsed (Anthropic does not always send it); absent = no vendor
+     * floor is known and pacing falls back to its own exponential backoff. */
+    retry_after_ms: z.number().int().nonnegative().optional(),
   })
   .strict()
   .describe("A registered subject's typed missing-snapshot — absence is stated, never inferred.");
