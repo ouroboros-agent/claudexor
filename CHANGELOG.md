@@ -8,6 +8,11 @@ Release history for Claudexor. The current version is declared in the root
   is fresh. Known-expired refreshable tokens skip the usage request, while an
   unknown-expiry 401/403 is reported as the typed `refresh_failed` quota
   absence instead of falsely downgrading the account to `auth_revoked`.
+  Publication uses the owner-approved one-release `waive_cursor_review`
+  exception after the required Fable subagent tier disappeared from the live
+  Cursor catalog; both owner-signed runtime manifests and every other release,
+  notarization, and provenance gate remain required, and no formal Cursor
+  attestation is claimed.
 - **v3.9.0** (2026-08-29): quota polling is paced per vendor lane with a
   persisted Retry-After floor (a 429 or restart no longer amplifies vendor
   traffic); foreground quota refreshes honor vendor cooldowns and disclose
