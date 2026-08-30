@@ -377,3 +377,49 @@ describe("arbitrate", () => {
     });
   });
 });
+
+describe("required_gates axis format matches its ranking predicate", () => {
+  it("an errored zero-gate loser formats distinguishably from a healthy zero-gate winner", () => {
+    const base = {
+      acceptanceCovered: [],
+      acceptanceTotal: 0,
+      findings: [],
+      testsPassed: 0,
+      testsTotal: 0,
+      finalReviewClean: true,
+      diffSize: 1,
+    };
+    const healthy = { ...base, attemptId: "B", label: "Candidate B", gates: [] };
+    const errored = {
+      ...base,
+      attemptId: "A",
+      label: "Candidate A",
+      gates: [
+        {
+          id: "harness",
+          command: "harness",
+          exit_code: 1,
+          status: "failed" as const,
+          duration_ms: 0,
+          required: true,
+          stdout_tail: null,
+          stderr_tail: null,
+          output_truncated: false,
+        },
+      ],
+    };
+    const record = arbitrate([errored, healthy]).decision;
+    const axes = record.ranking_scorecard.map((row) => ({
+      id: row.attempt_id,
+      gates: row.axes["required_gates"],
+    }));
+    const winner = axes.find((a) => a.id === "B");
+    const loser = axes.find((a) => a.id === "A");
+    // QA-028: the axis value and label on ONE surface may never disagree —
+    // and the decisive-axis disclosure must be able to EXPLAIN the pick, so
+    // the two candidates' formats must differ when their values do.
+    expect(winner?.gates).not.toBe(loser?.gates);
+    expect(loser?.gates).toContain("FAILED");
+    expect(loser?.gates).toContain("harness errored");
+  });
+});

@@ -119,7 +119,11 @@ exemptions):
   artifacts (diagnostic `final/summary.md`) are kept. Consumers must use both
   facts: the process lifecycle is cancelled, while user-facing presentation is
   "Time limit reached" and ACP reports a refusal; an explicit Stop remains
-  `user_cancelled` / cancelled.
+  `user_cancelled` / cancelled. A control may additionally carry the typed
+  `reason_code` (`user_cancelled` | `host_cancelled` | `owner_task_gone`), so
+  a host-initiated stop (daemon shutdown, MCP host teardown, an integrating
+  host whose owning task died) records its real provenance instead of
+  coercing to user intent; an absent code keeps the historical coercion.
 - `--max-turns <n>`: per-run turn cap; beats per-harness settings, and a lane
   without native support discloses the ignored knob.
 - `--deny-path <glob>` (repeatable): globs no candidate may touch at all;

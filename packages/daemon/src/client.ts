@@ -1,3 +1,4 @@
+import type { CancelReasonCode } from "@claudexor/schema";
 import { type Socket, connect } from "node:net";
 import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
@@ -139,7 +140,7 @@ export class DaemonClient {
       }[]
     >("claudexor.list");
   }
-  cancel(id: string, reasonCode?: string) {
+  cancel(id: string, reasonCode?: CancelReasonCode) {
     return this.call("claudexor.cancel", reasonCode ? { id, reason_code: reasonCode } : { id });
   }
   fenceDelegationParent(runId: string) {

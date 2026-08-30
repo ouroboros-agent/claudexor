@@ -44,6 +44,21 @@ function configuredGates(c: CandidateEvidence): GateResult[] {
   return c.gates.filter((g) => g.id !== "harness");
 }
 
+/** Test counts for the label surfaces: when a producer's numeric counts were
+ * computed over the AUGMENTED array (the sentinel present), re-derive from the
+ * configured gates so "tests=0%" cannot resurrect through the numbers alone.
+ * A gate-less producer keeps its own numbers — testsTotal is not always a
+ * gate count on the public CandidateEvidence surface. */
+function configuredTestCounts(c: CandidateEvidence): { passed: number; total: number } {
+  const hasSentinel = c.gates.some((g) => g.id === "harness");
+  if (!hasSentinel) return { passed: c.testsPassed, total: c.testsTotal };
+  const configured = configuredGates(c);
+  return {
+    passed: configured.filter((g) => g.status === "passed").length,
+    total: configured.length,
+  };
+}
+
 /**
  * Ranking predicate — reads the AUGMENTED gates array ON PURPOSE: the
  * synthetic `harness` pseudo-gate is how an errored candidate is demoted in
@@ -88,12 +103,13 @@ function openBlockerCount(c: CandidateEvidence): number {
  * runner if that anti-reward-hacking design returns.)
  */
 function effectiveTestFraction(c: CandidateEvidence): number {
-  return c.testsTotal > 0 ? c.testsPassed / c.testsTotal : 0;
+  const { passed, total } = configuredTestCounts(c);
+  return total > 0 ? passed / total : 0;
 }
 
 /** Human label for test evidence: honest "n/a" when no tests exist at all. */
 function testEvidenceLabel(c: CandidateEvidence): string {
-  if (c.testsTotal === 0) return "n/a";
+  if (configuredTestCounts(c).total === 0) return "n/a";
   return `${(effectiveTestFraction(c) * 100).toFixed(0)}%`;
 }
 
@@ -115,7 +131,17 @@ const AXES: RankingAxis[] = [
   {
     key: "required_gates",
     value: (c) => (requiredGatesPassed(c) ? 1 : 0),
-    format: (c) => requiredGateLabel(c),
+    // The axis FORMAT must describe the same predicate the axis RANKS on
+    // (QA-028: value and label on one surface may never disagree). Ranking
+    // reads the AUGMENTED gates, so a harness-errored candidate formats as
+    // FAILED-with-cause here even when zero gates are configured — while the
+    // verdict surfaces (requiredGateLabel/checks) keep configured-only truth.
+    format: (c) => {
+      if (requiredGatesPassed(c)) return requiredGateLabel(c);
+      return configuredGates(c).some((gate) => gate.required)
+        ? "required gates FAILED"
+        : "required gates FAILED (harness errored; none configured)";
+    },
   },
   {
     key: "acceptance_coverage",

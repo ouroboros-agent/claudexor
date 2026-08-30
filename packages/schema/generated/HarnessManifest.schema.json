@@ -242,6 +242,16 @@
                   ],
                   "description": "How read-only access is enforced for a harness: a filesystem sandbox, permission denial, a tool allowlist, or none (read-only intent is advisory).",
                   "default": "none"
+                },
+                "write_mechanism": {
+                  "type": "string",
+                  "enum": [
+                    "fs_sandbox",
+                    "tool_policy",
+                    "none"
+                  ],
+                  "description": "How workspace_write access is CONFINED for a harness: a filesystem/network sandbox (codex seatbelt), a tool-permission policy with no FS/network fence (claude — an allowed shell is unconfined), or none (write intent is advisory).",
+                  "default": "none"
                 }
               },
               "additionalProperties": false,

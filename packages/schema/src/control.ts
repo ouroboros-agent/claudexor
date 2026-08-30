@@ -1,4 +1,5 @@
 import { z } from "zod/v3";
+import { CANCEL_REASON_CODES } from "./cancel-reason.js";
 import {
   AccessProfile,
   AuthPreference,
@@ -937,13 +938,12 @@ export const RunControl = z
     kind: z.enum(["cancel"]).describe("Control verb: cancel the run."),
     target: RunControlTarget.default({}),
     reason: z.string().optional().describe("Human-readable reason for the control."),
-    // Typed cancellation class (additive): rides the abort signal into the
-    // terminal writers so "who stopped this run" survives into RunReason
-    // instead of coercing to user_cancelled. Absent = user_cancelled (compat).
     reason_code: z
-      .enum(["user_cancelled", "host_cancelled", "owner_task_gone"])
+      .enum(CANCEL_REASON_CODES)
       .optional()
-      .describe("Typed cancellation class; absent coerces to user_cancelled."),
+      .describe(
+        "Typed cancellation class riding the abort signal (cancel-reason.ts); absent coerces to user_cancelled.",
+      ),
   })
   .describe("A control verb (cancel) aimed at a run or a narrower target inside it.");
 export type RunControl = z.infer<typeof RunControl>;

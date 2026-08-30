@@ -27,3 +27,33 @@ describe("cancelReasonFromSignalToken (X-5)", () => {
     }
   });
 });
+
+describe("cancel-reason raw-boundary guard (adversarial wave)", () => {
+  it("only closed-enum members become abort tokens; wall_clock_exceeded is not forgeable", async () => {
+    const { normalizeCancelReasonCode } = await import("@claudexor/schema");
+    expect(normalizeCancelReasonCode("host_cancelled")).toBe("host_cancelled");
+    expect(normalizeCancelReasonCode("owner_task_gone")).toBe("owner_task_gone");
+    expect(normalizeCancelReasonCode("user_cancelled")).toBe("user_cancelled");
+    // The deadline terminal is produced only in-process; a cancel control
+    // must never forge it — and arbitrary text (newline injection into
+    // final/summary.md, secret-shaped strings) must never reach abort().
+    expect(normalizeCancelReasonCode("wall_clock_exceeded")).toBeUndefined();
+    expect(normalizeCancelReasonCode("owner_task_gone\n- Lifecycle: succeeded")).toBeUndefined();
+    expect(normalizeCancelReasonCode("sk-ant-api03-not-a-key")).toBeUndefined();
+    expect(normalizeCancelReasonCode(42)).toBeUndefined();
+    expect(normalizeCancelReasonCode(undefined)).toBeUndefined();
+  });
+
+  it("the HTTP boundary rejects non-enum reason_code", async () => {
+    const { ControlRunControlRequest } = await import("@claudexor/schema");
+    expect(() =>
+      ControlRunControlRequest.parse({
+        control: { kind: "cancel", reason_code: "wall_clock_exceeded" },
+      }),
+    ).toThrow();
+    const ok = ControlRunControlRequest.parse({
+      control: { kind: "cancel", reason_code: "host_cancelled" },
+    });
+    expect(ok.control.reason_code).toBe("host_cancelled");
+  });
+});

@@ -732,6 +732,55 @@ describe("parseClaudeEvent", () => {
     expect(deniedAllow).not.toContain("Bash");
   });
 
+  it("Bash pre-approval never widens inherit_native or a caller-scoped shell", () => {
+    const base = {
+      session_id: "ses-test",
+      intent: "implement" as const,
+      prompt: "x",
+      cwd: "/tmp",
+      external_context_policy: "live" as const,
+    };
+    // inherit_native defers to the user's own claude settings — injecting
+    // --allowedTools Bash would silently override them.
+    const native = claudeArgsForSpec(
+      HarnessRunSpec.parse({
+        ...base,
+        access: "inherit_native",
+        tool_permission_policy: { web: "live" as const, allow: [], deny: [] },
+      }),
+    );
+    const nativeAllow = native.indexOf("--allowedTools");
+    expect(nativeAllow === -1 || !native[nativeAllow + 1]?.split(",").includes("Bash")).toBe(true);
+
+    // A caller who SCOPED the shell with a Bash(...) allow pattern made an
+    // explicit narrowing; bare Bash must not ride beside it.
+    const scoped = claudeArgsForSpec(
+      HarnessRunSpec.parse({
+        ...base,
+        access: "workspace_write",
+        tool_permission_policy: { web: "live" as const, allow: ["Bash(git *)"], deny: [] },
+      }),
+    );
+    const scopedAllow = (scoped[scoped.indexOf("--allowedTools") + 1] ?? "").split(",");
+    expect(scopedAllow).toContain("Bash(git *)");
+    expect(scopedAllow).not.toContain("Bash");
+  });
+
+  it("a caller deny of AskUserQuestion keeps it out of readonly --tools", () => {
+    const spec = HarnessRunSpec.parse({
+      session_id: "ses-test",
+      intent: "explain",
+      prompt: "x",
+      cwd: "/tmp",
+      access: "readonly",
+      external_context_policy: "live",
+      tool_permission_policy: { web: "live", allow: [], deny: ["AskUserQuestion"] },
+    });
+    const args = claudeArgsForSpec(spec, true);
+    const tools = (args[args.indexOf("--tools") + 1] ?? "").split(",");
+    expect(tools).not.toContain("AskUserQuestion");
+  });
+
   it("translates a headless ExitPlanMode error result to a benign thinking event", () => {
     const parse = createClaudeParser();
     parse(

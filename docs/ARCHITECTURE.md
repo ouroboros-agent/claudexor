@@ -1587,7 +1587,16 @@ Lifecycle and terminal reason remain separate. Reaching a configured hard
 wall-clock limit stops the process and therefore commits lifecycle `cancelled`
 with reason `wall_clock_exceeded`; the shared presentation owner labels that
 "Time limit reached", and ACP returns `refusal` because the user did not cancel
-the turn. An explicit Stop commits `user_cancelled` and projects cancelled.
+the turn. An explicit Stop commits `user_cancelled` and projects cancelled;
+`RunControl.reason_code` (closed enum, validated at BOTH the HTTP boundary and
+the raw daemon RPC) additionally types host-initiated stops as
+`host_cancelled` (daemon shutdown drain, MCP host teardown, the delegation
+budget authority) or `owner_task_gone` (an integrating host whose owning task
+died — fabricated by no first-party site), riding the abort token into the
+terminal writers through one mapper; the projection labels them "Stopped by
+host" / "Owner task gone". `write_mechanism` similarly types how
+workspace_write is confined per harness (`fs_sandbox` | `tool_policy` |
+`none`) so lane choice by confinement never branches on a harness name.
 Control API, CLI, MCP, ACP, and macOS consume those typed facts rather than
 rewriting every cancellation as user intent; a legacy cancellation with no
 reason stays unknown/cancelled instead of receiving a fabricated cause.

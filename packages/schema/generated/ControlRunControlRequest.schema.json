@@ -41,6 +41,15 @@
             "reason": {
               "type": "string",
               "description": "Human-readable reason for the control."
+            },
+            "reason_code": {
+              "type": "string",
+              "enum": [
+                "user_cancelled",
+                "host_cancelled",
+                "owner_task_gone"
+              ],
+              "description": "Typed cancellation class riding the abort signal (cancel-reason.ts); absent coerces to user_cancelled."
             }
           },
           "required": [

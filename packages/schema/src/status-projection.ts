@@ -70,7 +70,18 @@ export function runOutcomeLabel(facts: RunOutcomeFacts): string {
     case "failed":
       return facts.reason ? `Failed (${facts.reason.replaceAll("_", " ")})` : "Failed";
     case "cancelled":
-      return facts.reason === "wall_clock_exceeded" ? "Time limit reached" : "Cancelled";
+      // The new provenance must survive to the human label too, or the whole
+      // reason_code chain ends in a byte-identical "Cancelled".
+      switch (facts.reason) {
+        case "wall_clock_exceeded":
+          return "Time limit reached";
+        case "host_cancelled":
+          return "Stopped by host";
+        case "owner_task_gone":
+          return "Owner task gone";
+        default:
+          return "Cancelled";
+      }
     case "interrupted":
       return "Interrupted";
     case "succeeded":

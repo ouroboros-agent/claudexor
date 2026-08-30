@@ -1,3 +1,4 @@
+import type { CancelReasonCode } from "@claudexor/schema";
 export interface DelegationControlRecord {
   id: string;
   runId?: string;
@@ -6,7 +7,7 @@ export interface DelegationControlRecord {
 
 export interface DelegationControlDaemon {
   status(id: string): Promise<DelegationControlRecord>;
-  cancel(id: string, reasonCode?: string): Promise<unknown>;
+  cancel(id: string, reasonCode?: CancelReasonCode): Promise<unknown>;
   fenceDelegationParent?(runId: string): Promise<unknown>;
 }
 
@@ -23,7 +24,7 @@ export async function cancelDelegationFamily(input: {
   pollMs?: number;
   /** Typed cancellation class, forwarded to every family member's abort so
    * the terminal writers stop coercing host cancels into user_cancelled. */
-  reasonCode?: string;
+  reasonCode?: CancelReasonCode;
 }): Promise<{ descendants: DelegationControlRecord[] }> {
   const parentRunId = input.parent.runId ?? input.parent.id;
   const failures: string[] = [];

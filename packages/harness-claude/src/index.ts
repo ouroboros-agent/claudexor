@@ -700,15 +700,13 @@ function toolPermissionArgs(spec: HarnessRunSpec): string[] {
   const args: string[] = [];
   if (spec.access === "readonly") {
     const builtins = CLAUDE_READONLY_BUILTIN_TOOLS.filter((tool) => allow.has(tool));
-    // AskUserQuestion rides --tools UNCONDITIONALLY, outside the allow filter
-    // (live-verified, claude CLI 2.1.221) so a readonly interactive run keeps
-    // its question channel. Two traps: (1) adding it to
-    // CLAUDE_READONLY_BUILTIN_TOOLS alone is a silent no-op — the allow filter
-    // above drops it; (2) adding it to the readonly allow set instead would
-    // emit it in --allowedTools, pre-approving it and suppressing the
-    // control_request the interaction bridge needs. On a one-shot readonly run
-    // (no --permission-prompt-tool) it is a harmless no-op.
-    args.push("--tools", [...builtins, "AskUserQuestion"].join(","));
+    // AskUserQuestion rides --tools outside the allow filter (live-verified
+    // 2.1.221): in the constant it dies in the allow filter; in `allow` it
+    // would be pre-approved in --allowedTools, suppressing the very
+    // control_request the bridge needs. One-shot readonly = harmless no-op.
+    // A caller's explicit deny wins (never both --tools and --disallowedTools).
+    const asks = deny.has("AskUserQuestion") ? [] : ["AskUserQuestion"];
+    args.push("--tools", [...builtins, ...asks].join(","));
   }
   if (allow.size > 0) args.push("--allowedTools", [...allow].join(","));
   if (deny.size > 0) args.push("--disallowedTools", [...deny].join(","));
@@ -729,19 +727,19 @@ function toolPermissionSets(spec: HarnessRunSpec): { allow: Set<string>; deny: S
       deny.add(tool);
       allow.delete(tool);
     }
-  } else if (!deny.has("Bash")) {
-    // workspace_write/full: pre-approve Bash. Without it the interaction
-    // bridge denies every non-edit-shaped command (`acceptEdits`
-    // auto-approves edits and prompts for the rest, and the bridge's
-    // can_use_tool handler refuses everything but AskUserQuestion) — so a
-    // "workspace_write" run could edit files but not run pytest/node/curl,
-    // a silent capability loss on every daemon run (the daemon always arms
-    // a channel). Live-verified on claude 2.1.221: `--permission-mode
-    // dontAsk` hard-refuses before the bridge and `auto` changes nothing;
-    // only the allowlist works. Claude has no FS/network sandbox, so this
-    // access profile is BROADER than codex's seatbelt workspace-write —
-    // disclosed as the typed write_mechanism capability, by owner decision
-    // (2026-08-30): honest breadth over an illusory prefix-pattern fence.
+  } else if (
+    (spec.access === "workspace_write" || spec.access === "full") &&
+    !deny.has("Bash") &&
+    ![...allow].some((tool) => tool.startsWith("Bash("))
+  ) {
+    // workspace_write/full ONLY: pre-approve Bash — under acceptEdits the
+    // bridge denied every non-edit command (pytest/node/curl), a silent
+    // capability loss on every daemon run; live-verified 2.1.221 (dontAsk
+    // hard-refuses pre-bridge, auto is a no-op, only the allowlist works).
+    // inherit_native must not be widened, and a caller's Bash(...) allow
+    // pattern is an explicit narrowing this must not undo. No FS/net
+    // sandbox exists, so this is BROADER than codex's seatbelt — disclosed
+    // as the typed write_mechanism capability (owner decision 2026-08-30).
     allow.add("Bash");
   }
   if (policy === "off") {

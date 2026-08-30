@@ -1,3 +1,4 @@
+import type { CancelReasonCode } from "@claudexor/schema";
 import { MAX_DELEGATED_CHILDREN } from "@claudexor/schema";
 
 export interface DaemonRunRecord {
@@ -39,7 +40,7 @@ export interface DaemonFacadeClient {
   ): Promise<DaemonRunRecord | null>;
   status(id: string): Promise<DaemonRunRecord>;
   list(): Promise<DaemonRunRecord[]>;
-  cancel(id: string, reasonCode?: string): Promise<unknown>;
+  cancel(id: string, reasonCode?: CancelReasonCode): Promise<unknown>;
   fenceDelegationParent?(runId: string): Promise<unknown>;
 }
 
