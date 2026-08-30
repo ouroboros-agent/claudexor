@@ -7,8 +7,12 @@ import { loadConfig } from "@claudexor/config";
 import type { QuotaRefreshResult } from "@claudexor/daemon";
 import {
   canonicalProfileConfigDir,
+  CLAUDE_AUTH_REFRESH_TERMINATION_UNCONFIRMED,
+  claudeNativeEnv,
+  claudeOauthAccessTokenIsFresh,
   claudeQuotaModelAliases,
   defaultNativeClaudeConfigDir,
+  refreshClaudeNativeAuth,
 } from "@claudexor/harness-claude";
 import {
   QuotaSnapshot as QuotaSnapshotSchema,
@@ -33,9 +37,10 @@ const FETCH_TIMEOUT_MS = 10_000;
  * vendor store — the keychain item on macOS, the vendor's
  * `<configDir>/.credentials.json` (documented 0600 file store) elsewhere —
  * held transiently for at most one usage request, and never persisted,
- * logged, or included in errors. A known-expired refreshable credential
- * yields NO snapshot and never degrades auth readiness; a known-fresh
- * 401/403 remains the vendor's explicit rejection evidence.
+ * logged, or included in errors. Before probing a known-expired or near-expiry
+ * refreshable credential, Claudexor wakes Claude Code's prompt-free MCP server
+ * and lets the vendor refresh its own store; a known-fresh 401/403 remains the
+ * vendor's explicit rejection evidence.
  */
 
 /** Vendor formula, live-verified: `Claude Code-credentials-<sha256(configDir)[:8]>`. */
@@ -134,7 +139,9 @@ export function parseClaudeOauthCredential(raw: string): ClaudeOauthCredential |
 }
 
 const VENDOR_REFRESH_REQUIRED_DETAIL =
-  "OAuth access token is not proven fresh; Claude Code owns refresh on a real run before quota can be read";
+  "OAuth access token freshness is unknown; Claude Code did not expose a refreshable expiry for quota reading";
+const VENDOR_REFRESH_FAILED_DETAIL =
+  "Claude Code's automatic OAuth refresh did not publish a fresh access token before quota reading";
 
 /** Expiry and refresh-token PRESENCE are the only refresh metadata retained.
  * The refresh token itself never leaves the vendor credential body (INV-062). */
@@ -142,8 +149,34 @@ function needsVendorRefresh(credential: ClaudeOauthCredential, observedAt: Date)
   return (
     credential.hasRefreshToken &&
     credential.expiresAtMs !== null &&
-    credential.expiresAtMs <= observedAt.getTime()
+    !claudeOauthAccessTokenIsFresh(credential.expiresAtMs, observedAt.getTime())
   );
+}
+
+export type ClaudeOauthCredentialRefresher = (
+  configDir: string,
+  platform: NodeJS.Platform,
+  readCredential: typeof readClaudeOauthCredential,
+) => Promise<ClaudeOauthCredential | null>;
+
+/** Keep refresh-token custody and store writes inside Claude Code. Claudexor
+ * wakes the vendor's prompt-free MCP server, observes expiry metadata, then
+ * re-reads the access token only after the vendor has published fresh state. */
+async function refreshCredentialDefault(
+  configDir: string,
+  platform: NodeJS.Platform,
+  readCredential: typeof readClaudeOauthCredential,
+): Promise<ClaudeOauthCredential | null> {
+  const refreshed = await refreshClaudeNativeAuth(
+    claudeNativeEnv(undefined, configDir),
+    async () => (await readCredential(configDir, platform))?.expiresAtMs ?? null,
+  );
+  if (!refreshed) throw taggedRefreshFailure(VENDOR_REFRESH_FAILED_DETAIL);
+  const credential = await readCredential(configDir, platform);
+  if (credential === null || !claudeOauthAccessTokenIsFresh(credential.expiresAtMs)) {
+    throw taggedRefreshFailure(VENDOR_REFRESH_FAILED_DETAIL);
+  }
+  return credential;
 }
 
 /** Pure mapping of the oauth/usage response onto QuotaSnapshot (testable). */
@@ -223,6 +256,7 @@ function scopedConstraints(value: unknown): Array<Record<string, unknown> | null
 
 export interface ClaudeOauthUsageDeps {
   readCredential: typeof readClaudeOauthCredential;
+  refreshCredential: ClaudeOauthCredentialRefresher;
   fetchUsage: (accessToken: string) => Promise<unknown>;
   now: () => Date;
   platform: NodeJS.Platform;
@@ -317,14 +351,15 @@ function claudeOauthAbsence(
  * a null credential is not_logged_in (on macOS the keychain read cannot tell
  * a missing item from an unavailable keychain, so its detail states both; off
  * macOS a missing credential file IS the vendor's logged-out state), a store
- * read fault is the tagged reason it carries, an expired refreshable token
- * waits for Claude Code's vendor-owned refresh, and a fetch refusal is
- * refresh_failed unless a known-fresh credential is explicitly rejected.
+ * read fault is the tagged reason it carries, an expired refreshable token is
+ * automatically refreshed by Claude Code without inference, and a fetch
+ * refusal is refresh_failed unless a known-fresh credential is explicitly rejected.
  * Absence is stated, never inferred. */
 export async function refreshClaudeOauthUsageQuota(
   deps: Partial<ClaudeOauthUsageDeps> = {},
 ): Promise<QuotaRefreshResult> {
   const readCredential = deps.readCredential ?? readClaudeOauthCredential;
+  const refreshCredential = deps.refreshCredential ?? refreshCredentialDefault;
   const fetchUsage = deps.fetchUsage ?? fetchUsageDefault;
   const now = deps.now ?? (() => new Date());
   const platform = deps.platform ?? process.platform;
@@ -378,17 +413,40 @@ export async function refreshClaudeOauthUsageQuota(
       );
       continue;
     }
-    const beforeRequest = now();
+    let beforeRequest = now();
     if (needsVendorRefresh(credential, beforeRequest)) {
-      absences.push(
-        claudeOauthAbsence(
-          candidate.subjectId,
-          "refresh_failed",
-          VENDOR_REFRESH_REQUIRED_DETAIL,
-          beforeRequest,
-        ),
-      );
-      continue;
+      const originalCredentialStillValid =
+        credential.expiresAtMs !== null && credential.expiresAtMs > beforeRequest.getTime();
+      try {
+        const refreshed = await refreshCredential(candidate.configDir, platform, readCredential);
+        if (
+          refreshed === null ||
+          !claudeOauthAccessTokenIsFresh(refreshed.expiresAtMs, now().getTime())
+        ) {
+          throw taggedRefreshFailure(VENDOR_REFRESH_FAILED_DETAIL);
+        }
+        credential = refreshed;
+        beforeRequest = now();
+      } catch (error) {
+        // The five-minute wake is proactive. If Claude Code cannot refresh yet
+        // but the presented access token is still unexpired, use that proven
+        // token for this bounded request rather than hiding an available quota.
+        const terminationUnconfirmed =
+          (error as { code?: unknown })?.code === CLAUDE_AUTH_REFRESH_TERMINATION_UNCONFIRMED;
+        if (originalCredentialStillValid && !terminationUnconfirmed) {
+          beforeRequest = now();
+        } else {
+          absences.push(
+            claudeOauthAbsence(
+              candidate.subjectId,
+              "refresh_failed",
+              error instanceof Error ? error.message : VENDOR_REFRESH_FAILED_DETAIL,
+              now(),
+            ),
+          );
+          continue;
+        }
+      }
     }
     try {
       const usage = await fetchUsage(credential.accessToken);

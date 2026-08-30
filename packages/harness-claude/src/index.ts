@@ -68,6 +68,11 @@ import {
   probeClaudeHelp,
 } from "./effort-probe.js";
 export { BIN, CLAUDE_EFFORT_SNAPSHOT } from "./effort-probe.js";
+export {
+  CLAUDE_AUTH_REFRESH_TERMINATION_UNCONFIRMED,
+  claudeOauthAccessTokenIsFresh,
+  refreshClaudeNativeAuth,
+} from "./auth-refresh.js";
 export { CLAUDE_VENDOR_CLI_VERSION } from "./vendor-cli-version.js";
 import {
   claudeAttachmentBlocks,
