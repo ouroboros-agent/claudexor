@@ -1550,28 +1550,20 @@ export class Orchestrator {
     }
     // outputSchema is MANDATORY (Quiz-6a): a selected lane that cannot
     // natively constrain its final message would deliver best-effort text —
-    // that is a typed preflight refusal, never silent degradation. The
-    // interactive stream-json transport x --json-schema is an unverified
-    // vendor combination, so lanes that would ride it refuse too.
+    // that is a typed preflight refusal, never silent degradation.
+    // The former DT2.1-16 refusal of interactive-transport lanes is GONE:
+    // `--json-schema` x stream-json is live-verified on claude 2.1.221 (the
+    // model emits a schema-conformant StructuredOutput tool call and the run
+    // settles clean), so a schema run keeps its interaction channel — since
+    // the daemon always arms one, the refusal was denying claude every
+    // daemon/CLI structured-output run. The WorkReport side_tool envelope
+    // stays interactive-gated separately (attemptFinalize) as a deliberate
+    // scope choice; the caller schema itself rides regardless.
     if (input.outputSchema !== undefined && input.outputSchema !== null) {
       const incapable = out.filter((lane) => !lane.supportsJsonSchemaOutput);
       if (incapable.length > 0) {
         throw new HarnessUnavailableError(
           `outputSchema is mandatory but selected lane(s) cannot constrain output natively: ${[...new Set(incapable.map((lane) => lane.adapter.id))].join(", ")} (manifest capabilities.json_schema_output=false); choose schema-capable harnesses or drop the schema`,
-        );
-      }
-      // NOTE (DT2.1-16): the daemon ALWAYS arms an interaction channel, so an
-      // interactive-capable lane (claude) is refused for outputSchema on every
-      // daemon/CLI run today — the --json-schema x stream-json interactive combo
-      // is not yet live-verified. Structured-output runs therefore route through
-      // a non-interactive lane (codex). The message names that reality instead
-      // of pointing at a channel a daemon caller cannot turn off.
-      const interactive = Boolean(input.onInteraction)
-        ? out.filter((lane) => lane.supportsInteractive)
-        : [];
-      if (interactive.length > 0) {
-        throw new HarnessUnavailableError(
-          `outputSchema is not yet available on interactive-transport lane(s): ${[...new Set(interactive.map((lane) => lane.adapter.id))].join(", ")} (the --json-schema x stream-json combination is unverified). Route structured-output runs through a non-interactive schema-capable harness (e.g. codex), or drop the schema`,
         );
       }
     }

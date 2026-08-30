@@ -11588,6 +11588,64 @@ describe("Orchestrator", () => {
     expect(existsSync(join(ok.runDir, "final", "output.json"))).toBe(true);
   });
 
+  it("outputSchema rides an interactive-capable lane with a live channel (DT2.1-16 lifted)", async () => {
+    // --json-schema x stream-json is live-verified (claude 2.1.221): a schema
+    // run keeps its interaction channel. The old refusal denied claude every
+    // daemon/CLI structured-output run, because the daemon always arms one.
+    const repo = await initRepo();
+    let seenSchema: unknown;
+    const adapter: HarnessAdapter = {
+      id: "schema-interactive",
+      async discover() {
+        return HarnessManifest.parse({
+          id: "schema-interactive",
+          display_name: "schema-interactive",
+          kind: "local_cli",
+          provider_family: "local",
+          capabilities: { implement: true, json_schema_output: true, interactive: true },
+          access_profiles_supported: ["workspace_write", "full"],
+        });
+      },
+      async doctor() {
+        return ConformanceReport.parse({
+          harness_id: "schema-interactive",
+          status: "ok",
+          enabled_intents: ["implement"],
+        });
+      },
+      async *run(spec) {
+        const ts = new Date().toISOString();
+        seenSchema = spec.output_schema;
+        yield { type: "started", session_id: spec.session_id, ts };
+        yield {
+          type: "message",
+          session_id: spec.session_id,
+          ts,
+          text: JSON.stringify({ verdict: "ok" }),
+        };
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    };
+    const orch = new Orchestrator({
+      registry: new Map([[adapter.id, adapter]]),
+      reviewers: [],
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: [adapter.id],
+      n: 1,
+      outputSchema: { type: "object", properties: { verdict: { type: "string" } } },
+      onInteraction: async () => ({ kind: "free_text", text: "" }) as never,
+    });
+    // Not refused; the caller schema reached the lane.
+    expect(res.summary).not.toContain("interactive-transport");
+    expect(seenSchema).toMatchObject({ type: "object" });
+    const receipt = readFileSync(join(res.runDir, "final", "structured_output.yaml"), "utf8");
+    expect(receipt).toContain("status: passed");
+  });
+
   it("refuses outputSchema at preflight when a selected lane cannot constrain natively (W8)", async () => {
     const repo = await initRepo();
     const adapter = diffImplementer("no-schema-lane");

@@ -103,8 +103,13 @@ export function resolveWorkReportEnvelope(opts: {
   const callerStrict = hasCallerSchema
     ? strictifyOutputSchema(opts.callerSchema as Record<string, unknown>)
     : null;
-  // claude's `--json-schema` × interactive stream-json is an unverified combo:
-  // disclose the WorkReport transport as unsupported for that lane (§1).
+  // `--json-schema` × interactive stream-json is live-verified (claude
+  // 2.1.221) and CALLER schemas now ride interactive lanes (the DT2.1-16
+  // refusal is gone). The WorkReport side_tool envelope stays gated on
+  // interactive lanes as a DELIBERATE scope choice: arming a work-report
+  // tool on every interactive run is a behavior change with its own
+  // verification debt, not implied by the caller-schema verification. The
+  // inactive branch below still carries the caller schema through.
   const interactiveGated = opts.channel === "side_tool" && opts.interactive;
 
   // `validated` transport (cursor): no native schema constrains the output —
