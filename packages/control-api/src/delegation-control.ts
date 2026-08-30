@@ -6,7 +6,7 @@ export interface DelegationControlRecord {
 
 export interface DelegationControlDaemon {
   status(id: string): Promise<DelegationControlRecord>;
-  cancel(id: string): Promise<unknown>;
+  cancel(id: string, reasonCode?: string): Promise<unknown>;
   fenceDelegationParent?(runId: string): Promise<unknown>;
 }
 
@@ -21,6 +21,9 @@ export async function cancelDelegationFamily(input: {
   descendantsAfterFence: () => Promise<DelegationControlRecord[]>;
   timeoutMs?: number;
   pollMs?: number;
+  /** Typed cancellation class, forwarded to every family member's abort so
+   * the terminal writers stop coercing host cancels into user_cancelled. */
+  reasonCode?: string;
 }): Promise<{ descendants: DelegationControlRecord[] }> {
   const parentRunId = input.parent.runId ?? input.parent.id;
   const failures: string[] = [];
@@ -34,7 +37,7 @@ export async function cancelDelegationFamily(input: {
     // snapshot. Daemon cancellation fences its live run authority atomically,
     // so no new child can enter the family between snapshot and cascade.
     try {
-      await input.daemon.cancel(input.parent.id);
+      await input.daemon.cancel(input.parent.id, input.reasonCode);
       parentSignalled = true;
     } catch (cancelError) {
       failures.push(fenceFailure);
@@ -52,7 +55,7 @@ export async function cancelDelegationFamily(input: {
   const active = descendants.filter((record) => !terminal(record.state)).reverse();
   for (const child of active) {
     try {
-      await input.daemon.cancel(child.id);
+      await input.daemon.cancel(child.id, input.reasonCode);
     } catch (error) {
       failures.push(
         `child ${child.runId ?? child.id}: ${error instanceof Error ? error.message : String(error)}`,
@@ -61,7 +64,7 @@ export async function cancelDelegationFamily(input: {
   }
   if (!parentSignalled) {
     try {
-      await input.daemon.cancel(input.parent.id);
+      await input.daemon.cancel(input.parent.id, input.reasonCode);
       parentSignalled = true;
     } catch (error) {
       failures.push(

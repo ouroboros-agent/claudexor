@@ -39,7 +39,7 @@ export interface DaemonFacadeClient {
   ): Promise<DaemonRunRecord | null>;
   status(id: string): Promise<DaemonRunRecord>;
   list(): Promise<DaemonRunRecord[]>;
-  cancel(id: string): Promise<unknown>;
+  cancel(id: string, reasonCode?: string): Promise<unknown>;
   fenceDelegationParent?(runId: string): Promise<unknown>;
 }
 

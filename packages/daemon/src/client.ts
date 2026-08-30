@@ -139,8 +139,8 @@ export class DaemonClient {
       }[]
     >("claudexor.list");
   }
-  cancel(id: string) {
-    return this.call("claudexor.cancel", { id });
+  cancel(id: string, reasonCode?: string) {
+    return this.call("claudexor.cancel", reasonCode ? { id, reason_code: reasonCode } : { id });
   }
   fenceDelegationParent(runId: string) {
     return this.call<{ runId: string; fenced: boolean }>("claudexor.delegationFence", { runId });

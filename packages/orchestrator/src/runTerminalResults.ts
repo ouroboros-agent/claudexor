@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { cancelReasonFromSignalToken } from "./runTerminals.js";
 import type { ArtifactStore } from "@claudexor/artifact-store";
 import type { EventLog } from "@claudexor/event-log";
 import { RunFailure, RunFailureCode, type ModeKind, type RunOutcomeFacts } from "@claudexor/schema";
@@ -146,7 +147,7 @@ export function cancelledResult(
   const cancelFacts = terminalOutcomeFacts(
     priorFacts,
     "cancelled",
-    cancelReason === "wall_clock_exceeded" ? "wall_clock_exceeded" : "user_cancelled",
+    cancelReasonFromSignalToken(cancelReason),
   );
   log.emit("run.failed", {
     lifecycle: "cancelled",

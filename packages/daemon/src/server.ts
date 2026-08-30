@@ -359,7 +359,10 @@ export class DaemonServer {
       case "claudexor.list":
         return productCommandRecords(this.allRecords()).map(publicJobRecord);
       case "claudexor.cancel": {
-        return this.cancelJob(String(params?.id));
+        return this.cancelJob(
+          String(params?.id),
+          typeof params?.reason_code === "string" ? params.reason_code : undefined,
+        );
       }
       case "claudexor.delegationFence": {
         const runId = String(params?.runId ?? "");
@@ -390,7 +393,7 @@ export class DaemonServer {
 
   /** Daemon-owned cancellation primitive used by RPC and the Delegate drain
    * barrier. It is safe to repeat and preserves queued-admission cleanup. */
-  cancelJob(jid: string): { id: string; cancelled: true } {
+  cancelJob(jid: string, reasonCode?: string): { id: string; cancelled: true } {
     const rec = this.getRecord(jid);
     if (!rec) throw new Error(`no such job: ${jid}`);
     this.cancelled.add(jid);
@@ -400,7 +403,10 @@ export class DaemonServer {
       if (delegatedFrom) this.opts.delegationAuthority?.cancelAcceptedChild(delegatedFrom, rec.id);
     }
     if (rec.runId) this.opts.delegationAuthority?.beginParentClose(rec.runId);
-    this.controllers.get(jid)?.abort();
+    // The abort reason is the ONE channel a cancel's provenance rides into
+    // the terminal writers; a bare abort() coerced every host cancel to
+    // user_cancelled downstream. Only known typed tokens travel.
+    this.controllers.get(jid)?.abort(reasonCode || undefined);
     return { id: jid, cancelled: true };
   }
 

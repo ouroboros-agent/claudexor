@@ -139,6 +139,7 @@ import {
   failTerminally,
   guardAnnouncedRun,
   writeFailure,
+  cancelReasonFromSignalToken,
 } from "./runTerminals.js";
 import { type BudgetDenial, budgetFailureRecord, classifyBudgetFailure } from "./budgetFailure.js";
 import { finalizeStructuredOutput } from "./structuredOutput.js";
@@ -5411,8 +5412,7 @@ export class Orchestrator {
         : undefined;
     const convCancelFacts = () =>
       makeOutcomeFacts("cancelled", {
-        reason:
-          convAbortReason === "wall_clock_exceeded" ? "wall_clock_exceeded" : "user_cancelled",
+        reason: cancelReasonFromSignalToken(convAbortReason),
       });
     let facts = convergenceOutcomeFacts(
       {

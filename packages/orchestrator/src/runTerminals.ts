@@ -106,14 +106,24 @@ function terminalEventTypeFor(
   return "run.completed";
 }
 
+/** Map an abort-signal reason token to its typed terminal RunReason. The
+ * abort reason is the ONE channel a cancel's provenance survives on — before
+ * this mapping every host-initiated cancel coerced to user_cancelled (the
+ * daemon's own ctrl-c relay and the MCP host teardown included). Unknown
+ * tokens keep the user_cancelled coercion for wire compatibility. */
+export function cancelReasonFromSignalToken(
+  reason: unknown,
+): "wall_clock_exceeded" | "user_cancelled" | "host_cancelled" | "owner_task_gone" {
+  if (typeof reason === "string") {
+    if (reason === "wall_clock_exceeded") return "wall_clock_exceeded";
+    if (reason === "host_cancelled") return "host_cancelled";
+    if (reason === "owner_task_gone") return "owner_task_gone";
+  }
+  return "user_cancelled";
+}
+
 function cancellationFacts(signal: AbortSignal, prior: RunOutcomeFactsType): RunOutcomeFactsType {
-  return terminalOutcomeFacts(
-    prior,
-    "cancelled",
-    typeof signal.reason === "string" && signal.reason === "wall_clock_exceeded"
-      ? "wall_clock_exceeded"
-      : "user_cancelled",
-  );
+  return terminalOutcomeFacts(prior, "cancelled", cancelReasonFromSignalToken(signal.reason));
 }
 
 function terminalOutcomeFromPayload(payload: Record<string, unknown>): RunOutcomeFactsType {
@@ -331,7 +341,7 @@ export async function guardAnnouncedRun(
           const cancelFacts = terminalOutcomeFacts(
             result.facts,
             "cancelled",
-            signal.reason === "wall_clock_exceeded" ? "wall_clock_exceeded" : "user_cancelled",
+            cancelReasonFromSignalToken(signal.reason),
           );
           const cancelSummary =
             signal.reason === "wall_clock_exceeded"
@@ -424,7 +434,7 @@ export async function guardAnnouncedRun(
           const cancelFacts = terminalOutcomeFacts(
             priorFacts,
             "cancelled",
-            signal.reason === "wall_clock_exceeded" ? "wall_clock_exceeded" : "user_cancelled",
+            cancelReasonFromSignalToken(signal.reason),
           );
           const cancelSummary =
             signal.reason === "wall_clock_exceeded"

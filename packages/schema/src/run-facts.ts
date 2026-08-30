@@ -429,7 +429,12 @@ export function validateRunFactsInvariants(value: unknown): RunFacts {
       "work_report_contract",
       "workspace_unavailable",
     ]),
-    cancelled: new Set(["user_cancelled", "wall_clock_exceeded"]),
+    cancelled: new Set([
+      "user_cancelled",
+      "wall_clock_exceeded",
+      "host_cancelled",
+      "owner_task_gone",
+    ]),
     interrupted: new Set(["crash_interrupted", "context_capacity_exhausted"]),
   };
   if (!lifecycleReasons[outcome.lifecycle].has(outcome.reason)) {

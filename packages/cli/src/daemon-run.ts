@@ -334,7 +334,13 @@ export async function enqueueAndAwait(
     void controlApiFetch(addr, `/runs/${encodeURIComponent(jobId)}/control`, {
       method: "POST",
       headers: { Authorization: `Bearer ${addr.token}`, "content-type": "application/json" },
-      body: JSON.stringify({ control: { kind: "cancel", reason: "ctrl-c on the waiting CLI" } }),
+      body: JSON.stringify({
+        control: {
+          kind: "cancel",
+          reason: "ctrl-c on the waiting CLI",
+          reason_code: "user_cancelled",
+        },
+      }),
     })
       .then(async (res) => {
         if (!res.ok) {
