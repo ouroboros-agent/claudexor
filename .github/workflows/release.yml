@@ -13,11 +13,11 @@ on:
         required: true
         type: string
       review_attestation_b64:
-        description: Base64 signed schema-v6 full-context owner-review attestation (Cursor operator panel); required for publish unless an exact version-scoped v3.8.0, v3.8.1, v3.8.2, or v3.9.0 waiver applies
+        description: Base64 signed schema-v6 full-context owner-review attestation (Cursor operator panel); required for publish unless an exact version-scoped v3.8.0, v3.8.1, v3.8.2, v3.9.0, or v3.9.1 waiver applies
         required: false
         type: string
       waive_cursor_review:
-        description: Version-scoped owner waiver for the v3.8.1 or v3.8.2 Cursor review attestation only; requires an empty review attestation and both signed runtime manifests
+        description: Version-scoped owner waiver for the v3.8.1, v3.8.2, or v3.9.1 Cursor review attestation only; requires an empty review attestation and both signed runtime manifests
         required: false
         type: boolean
         default: false
@@ -776,7 +776,7 @@ jobs:
           # artifact (owner normally signs it offline). Publish either ships
           # only the OWNER-SIGNED manifest after fail-closed verification
           # against the PROMOTED candidate closure. The v3.8.0/v3.9.0 waiver
-          # omits both runtime manifests; the v3.8.1/v3.8.2 review-only waiver
+          # omits both runtime manifests; the v3.8.1/v3.8.2/v3.9.1 review-only waiver
           # still requires and ships both owner-signed manifests.
           if [ "$RELEASE_MODE_INPUT" = publish ]; then
             if [ "$SKIP_CUSTOM_ED25519_INPUT" != true ]; then

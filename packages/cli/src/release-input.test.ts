@@ -324,7 +324,7 @@ describe("version-scoped Cursor review waiver", () => {
     WAIVE_CURSOR_REVIEW_INPUT: "true",
   };
 
-  it.each(["3.8.1", "3.8.2"])(
+  it.each(["3.8.1", "3.8.2", "3.9.1"])(
     "accepts v%s with an empty review attestation and both runtime inputs",
     (version) => {
       withPublishFixture(version, (fixture) => {
@@ -395,7 +395,7 @@ describe("version-scoped Cursor review waiver", () => {
 
       expect(result.status).toBe(1);
       expect(result.stderr).toContain(
-        "release input rejected: waive_cursor_review is authorized only for package versions 3.8.1 and 3.8.2",
+        "release input rejected: waive_cursor_review is authorized only for package versions 3.8.1, 3.8.2, and 3.9.1",
       );
     });
   });

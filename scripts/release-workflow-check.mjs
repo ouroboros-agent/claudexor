@@ -132,8 +132,8 @@ for (const [label, pattern] of [
     /skip_custom_ed25519:\s*\n\s*description:[^\n]*v3\.8\.0 or v3\.9\.0 publish only[^\n]*\n\s*required:\s*false\n\s*type:\s*boolean\n\s*default:\s*false/,
   ],
   [
-    "the v3.8.1/v3.8.2 Cursor review waiver is an explicit boolean defaulting false",
-    /waive_cursor_review:\s*\n\s*description:[^\n]*v3\.8\.1 or v3\.8\.2 Cursor review attestation only[^\n]*\n\s*required:\s*false\n\s*type:\s*boolean\n\s*default:\s*false/,
+    "the v3.8.1/v3.8.2/v3.9.1 Cursor review waiver is an explicit boolean defaulting false",
+    /waive_cursor_review:\s*\n\s*description:[^\n]*v3\.8\.1, v3\.8\.2, or v3\.9\.1 Cursor review attestation only[^\n]*\n\s*required:\s*false\n\s*type:\s*boolean\n\s*default:\s*false/,
   ],
   [
     "custom Ed25519 waiver input is projected into one shell-only environment variable",
@@ -665,8 +665,8 @@ for (const [label, pattern] of [
     /skipCustomEd25519\s*&&\s*!\["3\.8\.0",\s*"3\.9\.0"\]\.includes\(version\)/,
   ],
   [
-    "Cursor review waiver is permanently pinned to package versions 3.8.1 and 3.8.2",
-    /waiveCursorReview\s*&&\s*!\["3\.8\.1",\s*"3\.8\.2"\]\.includes\(version\)/,
+    "Cursor review waiver is permanently pinned to package versions 3.8.1, 3.8.2, and 3.9.1",
+    /waiveCursorReview\s*&&\s*!\["3\.8\.1",\s*"3\.8\.2",\s*"3\.9\.1"\]\.includes\(version\)/,
   ],
   [
     "Cursor review waiver requires an empty review input",
@@ -949,7 +949,7 @@ function exactCandidateAppPromotionErrors(job) {
     assembleStep,
   );
   requirePattern(
-    "v3.8.1/v3.8.2 review waiver must omit only the review attestation asset",
+    "v3.8.1/v3.8.2/v3.9.1 review waiver must omit only the review attestation asset",
     /if \[ "\$WAIVE_CURSOR_REVIEW_INPUT" = true \]; then\n\s*test ! -e "\$assets\/REVIEW_ATTESTATION\.json"/,
     assembleStep,
   );
