@@ -3,6 +3,13 @@
 Release history for Claudexor. The current version is declared in the root
 `package.json` (the version SSOT); tags `v*` correspond to GitHub Releases.
 
+- **v3.9.3** (2026-08-30): delegated run timelines preserve typed text-fragment
+  metadata and original whitespace so hosts can join streamed words without
+  inserting event separators into model prose. Complete messages, tool events,
+  final answers, and omission disclosures retain their distinct semantics.
+  Release review accepts any two distinct approved model families on any
+  harness, recording the actual model and harness while preserving independent
+  full-context reports, exact-candidate evidence, and signed attestation checks.
 - **v3.9.2** (2026-08-30): Claude subscription quota refresh now wakes Claude
   Code's own prompt-free OAuth lifecycle before probing an expired or
   near-expiry access token. Claude Code retains refresh-token custody, locking,

@@ -1,5 +1,19 @@
 # @claudexor/harness-cursor
 
+## 3.9.3
+
+### Patch Changes
+
+- Preserve typed text-fragment metadata in delegated run timelines so hosts can join streamed words and whitespace without inserting event separators. Keep complete messages, tool events, final answers, and omission disclosures distinct.
+
+  Allow release review by any two distinct approved model families on any harness, recording the actual model and harness while retaining exact-candidate evidence, independent reports, and signed attestation checks.
+
+- Updated dependencies
+  - @claudexor/schema@3.9.3
+  - @claudexor/core@3.9.3
+  - @claudexor/secrets@3.9.3
+  - @claudexor/util@3.9.3
+
 ## 3.9.2
 
 ### Patch Changes
