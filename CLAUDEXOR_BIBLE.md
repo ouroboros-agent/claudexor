@@ -730,63 +730,37 @@ invariant or operator decision before proceeding.
   `scripts/complexity-ratchet.mjs` in CI.
 - **INV-125** Release tags additionally pass the owner-review gate: ONE
   parallel full-context wave on the frozen candidate SHA with EXACTLY two
-  required reviewers — the fable slot on one slug from the operator-approved
-  tier set {`claude-fable-5-thinking-max`, `claude-fable-5-thinking-medium`,
-  `claude-fable-5-thinking-high`}
-  and the sol slot on one slug from {`gpt-5.6-sol-xhigh`,
-  `gpt-5.6-sol-max`, `gpt-5.6-sol-high`, `gpt-5.6-sol-medium`},
-  both executed as the Cursor operator's
-  own subagents (protocol `cursor-operator-fable-sol-v1`). Decision trail:
-  operator decision 2026-08-04, verbatim: «зачем тебе кодекс? Ревьюй курсором и
-  клод кодом» — the sol slot moved from the codex harness to cursor. Second
-  operator decision 2026-08-04 (session transcript
-  5349be54-a1d2-46bb-a6ef-52a2e43b91ee.jsonl line 1824) allowed the native
-  sol lane to review the sealed delta after a completed full-context pass.
-  Operator decision 2026-08-06 (takeover session), verbatim: «не надо вообще
-  codex использовать, я же сказал. Используй своих субагентов, ты же можешь
-  у себя разные модели вызывать так как ты cursor» — the whole panel moved
-  from vendor-native harness sessions to Cursor operator subagents; the
-  native-lane mechanics (route/effort observation, the sol delta scope)
-  retired with that transport, and both slots now review the full context.
-  Operator decision 2026-08-06 ~08:29 MSK, under the operator authorization of
-  08:04 MSK the same day («меня удовлетворяют модели fable-5 и gpt-5.6-sol»,
-  given after the sol max tier disappeared from the subagent model catalog):
-  the panel moved from one hard-pinned slug per slot to the operator-approved
-  tier sets above. Motive: two subagent-model catalog flaps within one hour
-  (sol max, then fable max); a hard single-tier pin would have blocked the
-  formal pair on the frozen SHA, and a new SHA re-runs every gate. The
-  actually used slug is recorded in the reviewer metadata and the signed
-  review entry; a slug outside the slot's set refuses fail-closed.
-  Operator addendum 2026-08-07: the same-family `xhigh` Sol tier is admitted
-  after the live subagent catalog exposed only that tier; it restores the
-  original high-assurance Sol level without permitting another model family.
-  Operator addendum 2026-08-10, operator-ratified the same day: the same-family
-  `high` Fable tier is admitted after the live subagent catalog exposed only
-  that Fable tier; the ratification is recorded verbatim in the CHECKLISTS
-  protocol decision trail and the 3.3.15 release evidence.
-  Operator addendum 2026-08-16, operator-ratified the same day: the same-family
-  `high` Sol tier is admitted after the live subagent catalog exposed only
-  that Sol tier; it sits above the already-approved `medium`, so the
-  assurance floor does not drop. The ratification is recorded in the
-  CHECKLISTS protocol decision trail and the 3.4.2 release evidence.
+  independent required reviewers from DISTINCT model families chosen from
+  {`grok-4.6`, `fable-5`, `opus-5`, `gpt-5.6-sol`, `kimi-k3`}.
+  Any harness, including operator subagents or native harness sessions, may
+  execute either neutral slot (`reviewer-1`, `reviewer-2`); vendor-specific
+  slugs and tiers do not require an amendment. This is the operator's
+  2026-08-30 amendment to the former Cursor-only Fable/Sol panel.
   Slot artifacts are the reviewer's complete report plus exact-shape metadata
-  — model slug, ISO start/finish intervals, verdict, the mandatory
+  — declared model family, actual model slug/label and harness, ISO
+  start/finish intervals, verdict, the mandatory
   `review_scope: "full"`, report SHA-256 — sealed against the packet; real
   execution overlap stays mandatory; the two reports must be distinct.
+  These are operator-attested identity and execution statements, not a claim
+  that the signature independently proves vendor identity. Preserve available
+  observed-model and run evidence in the report; a requested model or an
+  unidentified Auto route cannot establish an approved family.
   Each reviewer receives the same complete Git-visible candidate,
   complete diff, sealed evidence, user dialogue and operator decisions, test and
   gate receipts, and internet access;
-  packet splitting and substitute models cannot satisfy the gate. Then: ONE adjudication under INV-139; ONE batched
+  packet splitting and unlisted model families cannot satisfy the gate. Then: ONE adjudication under INV-139; ONE batched
   correction commit; ONE parallel confirmation wave in the same full context,
   focused on the correction delta. Any tracked mutation re-freezes the
   candidate. A blocking, missing, malformed, or incomplete
   required verdict cannot be sealed. Rounds beyond confirmation require an
-  explicit operator decision. The signed schema-v6 operator-review attestation binds
+  explicit operator decision. The signed schema-v7 operator-review attestation
+  (`owner-review-two-model-families-v1`) binds
   the candidate SHA/tree/version, exact full-gate receipt, sealed evidence
-  manifest, diff and wave, and both reviewers' model slugs, execution
+  manifest, diff and wave, and both reviewers' model families, concrete models,
+  harnesses, execution
   intervals, review scopes, report and metadata digests, and non-blocking
-  verdicts. Extra
-  critics are advisory and never satisfy either required slot. Schema v2-v5
+  verdicts. Additional critics remain advisory; any two compliant distinct-family
+  reports may be selected for the signed pair. Schema v2-v6
   attestations remain
   cryptographically verifiable only as historical records and are rejected as
   current publish input.

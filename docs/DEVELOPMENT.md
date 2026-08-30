@@ -114,31 +114,16 @@ After review, `publish` accepts only an annotated stable tag on the exact
 `origin/main` commit plus a base64 signed review attestation. The workflow
 verifies its Ed25519 signature against the pinned public release-review key
 before reading any review claims, then recomputes the commit tree and
-validates the current schemaVersion 6 payload. It binds the candidate
+validates the current schemaVersion 7 payload. It binds the candidate
 SHA/tree/version, exact `pnpm release:verify` receipt, sealed evidence
-manifest/diff/wave, and exactly two operator reviewer reports (owner decision
-2026-08-06: the pair runs as Cursor operator subagents — slot `fable` = one
-slug from the owner-approved tier set {`claude-fable-5-thinking-max`,
-`claude-fable-5-thinking-medium`, `claude-fable-5-thinking-high`} with the
-full context, slot `sol` = one slug
-from {`gpt-5.6-sol-xhigh`, `gpt-5.6-sol-max`, `gpt-5.6-sol-high`,
-`gpt-5.6-sol-medium`};
-operator decision 2026-08-06 ~08:29 after two subagent-model catalog flaps
-within one hour, amended 2026-08-07 when the catalog exposed only the
-same-family `xhigh` Sol tier, 2026-08-10 when it exposed only the
-same-family `high` Fable tier, and 2026-08-16 when it exposed only the
-same-family `high` Sol tier). The sealer
-recomputes every evidence and report digest,
-requires each slot's metadata to bind the exact packet identity, a model slug
-inside the slot's owner-approved tier set (the actually used slug is what gets
-sealed and signed; anything outside the set refuses fail-closed), exact ISO
-start/finish of at least one second with
-genuinely overlapping executions, the mandatory `review_scope: "full"`, and a
-non-blocking `pass` or `warn`
-verdict. The v6 attestation
+manifest/diff/wave, and exactly two operator-attested reviewer reports. The
+sealer recomputes every evidence and report digest and requires the metadata
+to bind the exact packet identity, approved distinct model families, actual
+model slugs/labels and harnesses, exact ISO start/finish intervals, full scope,
+and non-blocking verdicts. The v7 attestation
 seals the final confirmation pair; the initial review and adjudication remain
 ledgered evidence. Panel composition and wave discipline
-live only in `docs/CHECKLISTS.md`. Historical signed schemas 2 through 5 remain
+live only in `docs/CHECKLISTS.md`. Historical signed schemas 2 through 6 remain
 cryptographically verifiable as archives but fail current semantic publish
 validation.
 Only after that authority check does the workflow promote the candidate run's
@@ -269,7 +254,7 @@ publication, SBOMs, GitHub artifact provenance, and npm provenance are
 unchanged. The 3.9.0 exception is the owner decision of 2026-08-28 for the
 quota-throttling/cursor-belt release (no attestation wave is run for it). The
 verifier rejects this waiver for every other version, and the
-default `false` path retains the normal schema-v6 and signed-manifest gates.
+default `false` path retains the normal schema-v7 and signed-manifest gates.
 
 Package versions 3.8.1, 3.8.2, 3.9.1, and 3.9.2 each have a separate,
 one-release owner waiver for the Cursor review attestation. The 3.8.1 exception
@@ -287,7 +272,7 @@ manifest inputs present and validly base64-encoded. This waiver omits only
 provenance, signed runtime and remote-runtime manifests, SBOMs, signing,
 notarization, npm provenance, and all remaining publication checks are
 unchanged. It is an explicit exception, not a substitute review report, and
-the normal schema-v6 contract remains fail-closed for every other release.
+the normal schema-v7 contract remains fail-closed for every other release.
 
 The review process itself (panel composition, sealed packet contents, the
 blocker contract, wave discipline) is defined ONCE, in `docs/CHECKLISTS.md`
@@ -298,14 +283,37 @@ Do not hand-author the attestation JSON. Run
 it), the external sealed evidence directory, the external operator review
 artifacts directory, the external 0600 private key, the tracked
 `release/review-attestation-authority.json`, and a new external output path.
-The artifacts directory holds exactly two reviewer directories (`01-fable/`,
-`02-sol/`), each written by the Cursor operator after its review subagent
+The artifacts directory holds exactly two reviewer directories (`01-reviewer-1/`,
+`02-reviewer-2/`), each written by the operator after the independent reviewer
 completed: `report.md` (the reviewer's complete markdown report) and an
-exact-shape `metadata.json` binding the slot, the actually used model slug
-(which must belong to that slot's owner-approved tier set), the
+exact-shape `metadata.json` binding the neutral slot, `model_family`, actual
+`model` slug/label, nonempty `harness`, the
 candidate SHA and tree, the packet manifest digest, the review wave UUID, the
 `sha256:`-prefixed diff digest, exact ISO start/finish, a `pass|warn`
-verdict, the mandatory `review_scope: "full"`, and the report's SHA-256:
+verdict, the mandatory `review_scope: "full"`, and the report's SHA-256.
+The family is declared explicitly, not inferred from a release-only slug
+catalog. Available observed-model telemetry and run references belong in
+the report; a requested slug or unidentified Auto route does not establish
+an approved family.
+
+```json
+{
+  "slot": "reviewer-1",
+  "model_family": "grok-4.6",
+  "model": "cursor-grok-4.6-xhigh",
+  "harness": "cursor",
+  "candidate_sha": "<40-character SHA>",
+  "candidate_tree": "<40-character tree SHA>",
+  "packet_manifest_sha256": "<64-character digest>",
+  "review_wave_id": "<UUID-v4>",
+  "diff_sha256": "sha256:<64-character digest>",
+  "started_at": "2026-08-30T12:00:00.000Z",
+  "completed_at": "2026-08-30T12:10:00.000Z",
+  "verdict": "pass",
+  "review_scope": "full",
+  "report_sha256": "<64-character digest>"
+}
+```
 
 ```bash
 node scripts/run-full-gate-receipt.mjs <external-gate-dir>
@@ -324,19 +332,19 @@ The signer executes only receipt-bound candidate verifier bytes after the exact
 full gate passes. That gate writes a tiny self-contained verifier and a copy of
 the packaged app's self-contained `claudexor.bundle.cjs` beside the receipt in
 an output directory outside the candidate and evidence/artifact trees, with
-both byte digests in the receipt. The operator transport never executes the
+both byte digests in the receipt. The sealer never executes the
 copied CLI; it travels only as receipt-bound bytes. The sealer imports only
 the verified verifier bytes, recomputes every evidence and artifact digest,
 and refuses a missing, extra, malformed, or mismatched metadata field, a
-non-overlapping pair, duplicate report bytes, or any verdict outside
-`pass|warn`. Verdicts, models, intervals, and scope are operator-attested
-metadata (see the owner amendment in `docs/CHECKLISTS.md`); the digest and
-packet-identity bindings are what the sealer proves mechanically. A failed
+non-overlapping pair, duplicate families or report bytes, or any verdict
+outside `pass|warn`. Verdicts, model identity, intervals, and scope are
+operator-attested metadata (see the owner amendment in `docs/CHECKLISTS.md`);
+the digest and packet-identity bindings are what the sealer proves mechanically,
+not vendor model identity. A failed
 frozen slot is not retried in place: rerun it with fresh artifacts and a
-fresh wave. The retired native-harness transport (schema v5, protocol
-`native-fable-full-sol-delta-v2`) and the older
-packet-split OpenRouter transport and its broad coverage/runtime-bundle tools
-are deleted, not fallback paths. Schemas 2-5 stay signature-verifiable only for
+fresh wave. The earlier fixed-panel and packet-split release protocols are
+retired, not fallback paths; native harness sessions are eligible under the
+current protocol. Schemas 2-6 stay signature-verifiable only for
 already-sealed historical evidence. Never put raw transcripts, the private
 key, or secrets in the repository or workflow input.
 
