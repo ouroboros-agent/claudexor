@@ -32,9 +32,10 @@ const FETCH_TIMEOUT_MS = 10_000;
  * Security (INV-062 class): the access token is read from the profile's OWN
  * vendor store — the keychain item on macOS, the vendor's
  * `<configDir>/.credentials.json` (documented 0600 file store) elsewhere —
- * held transiently for exactly one usage request, and never persisted,
- * logged, or included in errors. A failing endpoint yields NO snapshot
- * (fail-to-unknown) and never degrades auth readiness.
+ * held transiently for at most one usage request, and never persisted,
+ * logged, or included in errors. A known-expired refreshable credential
+ * yields NO snapshot and never degrades auth readiness; a known-fresh
+ * 401/403 remains the vendor's explicit rejection evidence.
  */
 
 /** Vendor formula, live-verified: `Claude Code-credentials-<sha256(configDir)[:8]>`. */
@@ -45,6 +46,8 @@ export function claudeOauthKeychainItem(configDir: string): string {
 export interface ClaudeOauthCredential {
   accessToken: string;
   subscriptionType: string | null;
+  expiresAtMs: number | null;
+  hasRefreshToken: boolean;
 }
 
 const execFileAsync = promisify(execFile);
@@ -119,10 +122,28 @@ export function parseClaudeOauthCredential(raw: string): ClaudeOauthCredential |
       accessToken: token,
       subscriptionType:
         typeof body["subscriptionType"] === "string" ? body["subscriptionType"] : null,
+      expiresAtMs:
+        typeof body["expiresAt"] === "number" && Number.isFinite(body["expiresAt"])
+          ? body["expiresAt"]
+          : null,
+      hasRefreshToken: typeof body["refreshToken"] === "string" && body["refreshToken"].length > 0,
     };
   } catch {
     return null;
   }
+}
+
+const VENDOR_REFRESH_REQUIRED_DETAIL =
+  "OAuth access token is not proven fresh; Claude Code owns refresh on a real run before quota can be read";
+
+/** Expiry and refresh-token PRESENCE are the only refresh metadata retained.
+ * The refresh token itself never leaves the vendor credential body (INV-062). */
+function needsVendorRefresh(credential: ClaudeOauthCredential, observedAt: Date): boolean {
+  return (
+    credential.hasRefreshToken &&
+    credential.expiresAtMs !== null &&
+    credential.expiresAtMs <= observedAt.getTime()
+  );
 }
 
 /** Pure mapping of the oauth/usage response onto QuotaSnapshot (testable). */
@@ -246,9 +267,10 @@ async function fetchUsageDefault(accessToken: string): Promise<unknown> {
     },
     signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
-  // A 401/403 from an endpoint called with THIS subject's own access token is
-  // the vendor stating the credential is no longer honored — the one live
-  // liveness fact the daemon gets for free, without spending a run's quota.
+  // A 401/403 is tagged as the vendor rejecting the presented access token.
+  // The caller owns the credential-expiry context: a token known to have
+  // expired while refreshable is awaiting Claude Code's vendor-owned refresh,
+  // not evidence that the account itself was revoked.
   if (res.status === 401 || res.status === 403) {
     throw Object.assign(new Error(`oauth/usage responded ${res.status}`), {
       quotaAbsenceReason: "auth_revoked" as QuotaAbsence["reason"],
@@ -295,8 +317,10 @@ function claudeOauthAbsence(
  * a null credential is not_logged_in (on macOS the keychain read cannot tell
  * a missing item from an unavailable keychain, so its detail states both; off
  * macOS a missing credential file IS the vendor's logged-out state), a store
- * read fault is the tagged reason it carries, and a fetch refusal is
- * refresh_failed. Absence is stated, never inferred. */
+ * read fault is the tagged reason it carries, an expired refreshable token
+ * waits for Claude Code's vendor-owned refresh, and a fetch refusal is
+ * refresh_failed unless a known-fresh credential is explicitly rejected.
+ * Absence is stated, never inferred. */
 export async function refreshClaudeOauthUsageQuota(
   deps: Partial<ClaudeOauthUsageDeps> = {},
 ): Promise<QuotaRefreshResult> {
@@ -354,6 +378,18 @@ export async function refreshClaudeOauthUsageQuota(
       );
       continue;
     }
+    const beforeRequest = now();
+    if (needsVendorRefresh(credential, beforeRequest)) {
+      absences.push(
+        claudeOauthAbsence(
+          candidate.subjectId,
+          "refresh_failed",
+          VENDOR_REFRESH_REQUIRED_DETAIL,
+          beforeRequest,
+        ),
+      );
+      continue;
+    }
     try {
       const usage = await fetchUsage(credential.accessToken);
       const snapshot = parseClaudeOauthUsage(
@@ -376,18 +412,29 @@ export async function refreshClaudeOauthUsageQuota(
           ),
         );
     } catch (error) {
-      // The fetch path carries its own typed reasons for a rejected credential
+      // The fetch path carries typed reasons for a rejected presented token
       // (auth_revoked) and a throttled poll (rate_limited, with the vendor's
-      // Retry-After floor when known); anything untagged stays an undiagnosed
-      // refresh failure.
+      // Retry-After floor when known). A refreshable credential whose freshness
+      // cannot be proven at rejection time waits for Claude Code's vendor-owned
+      // refresh instead of condemning the row. Anything untagged stays an
+      // undiagnosed refresh failure.
       const tagged = (error as { quotaAbsenceReason?: QuotaAbsence["reason"] })?.quotaAbsenceReason;
       const retryAfterMs = (error as { retryAfterMs?: number | null })?.retryAfterMs;
+      const observedAt = now();
+      const rejectedWithoutFreshnessProof =
+        tagged === "auth_revoked" &&
+        credential.hasRefreshToken &&
+        (credential.expiresAtMs === null || needsVendorRefresh(credential, observedAt));
       absences.push({
         ...claudeOauthAbsence(
           candidate.subjectId,
-          tagged ?? "refresh_failed",
-          error instanceof Error ? error.message : String(error),
-          now(),
+          rejectedWithoutFreshnessProof ? "refresh_failed" : (tagged ?? "refresh_failed"),
+          rejectedWithoutFreshnessProof
+            ? VENDOR_REFRESH_REQUIRED_DETAIL
+            : error instanceof Error
+              ? error.message
+              : String(error),
+          observedAt,
         ),
         ...(typeof retryAfterMs === "number" && retryAfterMs >= 0
           ? { retry_after_ms: Math.round(retryAfterMs) }

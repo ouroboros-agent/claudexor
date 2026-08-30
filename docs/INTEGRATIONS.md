@@ -189,12 +189,20 @@ endpoint, read per credential profile from the profile's own vendor store:
 on macOS its keychain item
 (`Claude Code-credentials-<sha256(configDir)[:8]>`, live-verified formula),
 on Linux the vendor's `.credentials.json` inside the profile's config dir.
-Either store yields an access token held transiently for exactly one request — never
-persisted, logged, or included in errors — and returns proactive
+Either store yields an access token held transiently for at most one request — never
+persisted, logged, or included in errors — plus only its expiry timestamp and
+whether a refresh token exists (the refresh token itself is never projected).
+The endpoint returns proactive
 five_hour/seven_day/per-model utilization attributed to the profile
-(`subject_id`). An expired idle token fails to unknown (the vendor CLI
-refreshes tokens on real use); endpoint refusal never degrades auth
-readiness. The status-line collector stays as a secondary source: an explicit
+(`subject_id`). A known-expired refreshable idle token skips the request and
+fails quota to unknown. If expiry is absent, the bounded request may still
+succeed; a 401/403 for that refreshable token, or after a known-fresh token
+crosses expiry during the request, also fails quota to unknown because freshness
+was not proven at rejection time. Claude Code owns refresh on a real use. Only a
+token proven fresh at rejection remains vendor revocation evidence and may
+degrade auth readiness; a token without refresh capability retains that
+conservative real-response behavior. The status-line collector
+stays as a secondary source: an explicit
 `claudexor plugin install claude` composes it with an existing user
 `statusLine` command and restores it on uninstall; it persists only the two
 documented windows and provenance in the Claudexor-owned v3 root and does not

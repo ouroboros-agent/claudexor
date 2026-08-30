@@ -9,6 +9,7 @@ import {
   parseClaudeOauthUsage,
   readClaudeOauthCredential,
   refreshClaudeOauthUsageQuota,
+  type ClaudeOauthCredential,
 } from "./claude-oauth-usage.js";
 
 /** The EXACT response shape of the 2026-07-17 live experiment (max plan). */
@@ -23,6 +24,16 @@ const LIVE_USAGE = {
   extra_usage: { is_enabled: true, utilization: 98.77 },
   spend: { percent: 99, severity: "critical" },
 };
+
+const oauthCredential = (
+  overrides: Partial<ClaudeOauthCredential> = {},
+): ClaudeOauthCredential => ({
+  accessToken: "tok",
+  subscriptionType: "max",
+  expiresAtMs: null,
+  hasRefreshToken: false,
+  ...overrides,
+});
 
 describe("claude oauth/usage quota source (W5.3, INV-062)", () => {
   it("keychain item name follows the live-verified vendor formula", () => {
@@ -92,15 +103,46 @@ describe("claude oauth/usage quota source (W5.3, INV-062)", () => {
     expect(parseClaudeOauthUsage({ five_hour: { utilization: "38" } }, null, null)).toBeNull();
   });
 
-  it("reads both credential shapes and never invents a token", () => {
-    expect(
-      parseClaudeOauthCredential(JSON.stringify({ accessToken: "tok", subscriptionType: "max" })),
-    ).toEqual({ accessToken: "tok", subscriptionType: "max" });
+  it("reads both credential shapes and retains only non-secret refresh metadata", () => {
     expect(
       parseClaudeOauthCredential(
-        JSON.stringify({ claudeAiOauth: { accessToken: "tok2", subscriptionType: "pro" } }),
+        JSON.stringify({
+          accessToken: "tok",
+          subscriptionType: "max",
+          expiresAt: 1_787_011_200_000,
+          refreshToken: "refresh-secret",
+        }),
       ),
-    ).toEqual({ accessToken: "tok2", subscriptionType: "pro" });
+    ).toEqual({
+      accessToken: "tok",
+      subscriptionType: "max",
+      expiresAtMs: 1_787_011_200_000,
+      hasRefreshToken: true,
+    });
+    expect(
+      parseClaudeOauthCredential(
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: "tok2",
+            subscriptionType: "pro",
+            expiresAt: 1_787_011_300_000,
+            refreshToken: "wrapped-refresh-secret",
+          },
+        }),
+      ),
+    ).toEqual({
+      accessToken: "tok2",
+      subscriptionType: "pro",
+      expiresAtMs: 1_787_011_300_000,
+      hasRefreshToken: true,
+    });
+    expect(
+      JSON.stringify(
+        parseClaudeOauthCredential(
+          JSON.stringify({ accessToken: "tok", refreshToken: "refresh-secret" }),
+        ),
+      ),
+    ).not.toContain("refresh-secret");
     expect(parseClaudeOauthCredential("not json")).toBeNull();
     expect(parseClaudeOauthCredential(JSON.stringify({ refreshToken: "only" }))).toBeNull();
   });
@@ -126,7 +168,7 @@ describe("claude oauth/usage quota source (W5.3, INV-062)", () => {
 
   it("claims a refresh_failed absence when the usage endpoint refuses", async () => {
     const result = await refreshClaudeOauthUsageQuota({
-      readCredential: async () => ({ accessToken: "tok", subscriptionType: "max" }),
+      readCredential: async () => oauthCredential(),
       fetchUsage: async () => {
         throw new Error("oauth/usage responded 500");
       },
@@ -138,23 +180,121 @@ describe("claude oauth/usage quota source (W5.3, INV-062)", () => {
     expect(nativeAbsence?.detail).toContain("500");
   });
 
-  it("claims auth_revoked, not refresh_failed, when the vendor rejects the credential", async () => {
-    // A 401/403 from a call made with THIS subject's own token is the vendor
-    // saying the credential is dead — the one fact that separates a revoked
-    // login from an unreachable endpoint, and the one the profile status reads.
+  it.each([401, 403])(
+    "claims auth_revoked when the vendor rejects a known-fresh credential (%i)",
+    async (status) => {
+      const result = await refreshClaudeOauthUsageQuota({
+        readCredential: async () =>
+          oauthCredential({
+            expiresAtMs: Date.parse("2026-07-18T01:00:00Z"),
+            hasRefreshToken: true,
+          }),
+        fetchUsage: async () => {
+          throw Object.assign(new Error(`oauth/usage responded ${status}`), {
+            quotaAbsenceReason: "auth_revoked" as const,
+          });
+        },
+        now: () => new Date("2026-07-18T00:00:00Z"),
+      });
+      expect(result.snapshots).toEqual([]);
+      const nativeAbsence = result.absences?.find((a) => a.subject.subject_id === null);
+      expect(nativeAbsence?.reason).toBe("auth_revoked");
+      expect(nativeAbsence?.detail).toContain(String(status));
+    },
+  );
+
+  it.each([401, 403])(
+    "fails a rejected refreshable credential with unknown expiry to refresh_failed (%i)",
+    async (status) => {
+      let fetches = 0;
+      const result = await refreshClaudeOauthUsageQuota({
+        readCredential: async () =>
+          oauthCredential({
+            expiresAtMs: null,
+            hasRefreshToken: true,
+          }),
+        fetchUsage: async () => {
+          fetches += 1;
+          throw Object.assign(new Error(`oauth/usage responded ${status}`), {
+            quotaAbsenceReason: "auth_revoked" as const,
+          });
+        },
+        now: () => new Date("2026-07-18T00:00:00Z"),
+      });
+      expect(fetches).toBe(1);
+      const nativeAbsence = result.absences?.find((a) => a.subject.subject_id === null);
+      expect(nativeAbsence).toMatchObject({ reason: "refresh_failed" });
+      expect(nativeAbsence?.detail).toContain("Claude Code owns refresh");
+      expect(nativeAbsence?.detail).not.toContain(String(status));
+    },
+  );
+
+  it("skips oauth/usage for an already-expired refreshable credential", async () => {
+    let fetches = 0;
     const result = await refreshClaudeOauthUsageQuota({
-      readCredential: async () => ({ accessToken: "tok", subscriptionType: "max" }),
+      readCredential: async () =>
+        oauthCredential({
+          accessToken: "access-secret-needle",
+          expiresAtMs: Date.parse("2026-07-17T23:59:59Z"),
+          hasRefreshToken: true,
+        }),
       fetchUsage: async () => {
+        fetches += 1;
+        throw new Error("should not be called");
+      },
+      now: () => new Date("2026-07-18T00:00:00Z"),
+    });
+    expect(fetches).toBe(0);
+    const nativeAbsence = result.absences?.find((a) => a.subject.subject_id === null);
+    expect(nativeAbsence).toMatchObject({ reason: "refresh_failed" });
+    expect(nativeAbsence?.detail).toContain("Claude Code owns refresh");
+    expect(nativeAbsence?.detail).not.toContain("access-secret-needle");
+  });
+
+  it.each([401, 403])(
+    "reclassifies %i when the refreshable credential expires during the request",
+    async (status) => {
+      const times = [new Date("2026-07-18T00:00:00.000Z"), new Date("2026-07-18T00:00:00.002Z")];
+      const result = await refreshClaudeOauthUsageQuota({
+        readCredential: async () =>
+          oauthCredential({
+            expiresAtMs: Date.parse("2026-07-18T00:00:00.001Z"),
+            hasRefreshToken: true,
+          }),
+        fetchUsage: async () => {
+          throw Object.assign(new Error(`oauth/usage responded ${status}`), {
+            quotaAbsenceReason: "auth_revoked" as const,
+          });
+        },
+        now: () => times.shift() ?? new Date("2026-07-18T00:00:00.002Z"),
+      });
+      const nativeAbsence = result.absences?.find((a) => a.subject.subject_id === null);
+      expect(nativeAbsence).toMatchObject({ reason: "refresh_failed" });
+      expect(nativeAbsence?.detail).toContain("Claude Code owns refresh");
+      expect(nativeAbsence?.detail).not.toContain(String(status));
+    },
+  );
+
+  it("retains the real-response auth verdict for an expired token without a refresh token", async () => {
+    let fetches = 0;
+    const result = await refreshClaudeOauthUsageQuota({
+      readCredential: async () =>
+        oauthCredential({
+          expiresAtMs: Date.parse("2026-07-17T23:59:59Z"),
+          hasRefreshToken: false,
+        }),
+      fetchUsage: async () => {
+        fetches += 1;
         throw Object.assign(new Error("oauth/usage responded 401"), {
           quotaAbsenceReason: "auth_revoked" as const,
         });
       },
       now: () => new Date("2026-07-18T00:00:00Z"),
     });
-    expect(result.snapshots).toEqual([]);
-    const nativeAbsence = result.absences?.find((a) => a.subject.subject_id === null);
-    expect(nativeAbsence?.reason).toBe("auth_revoked");
-    expect(nativeAbsence?.detail).toContain("401");
+    expect(fetches).toBe(1);
+    expect(result.absences?.find((a) => a.subject.subject_id === null)?.reason).toBe(
+      "auth_revoked",
+    );
   });
 
   it("claims a typed rate_limited absence carrying the vendor Retry-After floor on a 429", async () => {
@@ -162,7 +302,7 @@ describe("claude oauth/usage quota source (W5.3, INV-062)", () => {
     // stays distinct from refresh_failed so the pacer can honor the vendor
     // floor, and the absence carries retry_after_ms only when the header came.
     const result = await refreshClaudeOauthUsageQuota({
-      readCredential: async () => ({ accessToken: "tok", subscriptionType: "max" }),
+      readCredential: async () => oauthCredential(),
       fetchUsage: async () => {
         throw Object.assign(new Error("oauth/usage responded 429"), {
           quotaAbsenceReason: "rate_limited" as const,
@@ -181,7 +321,7 @@ describe("claude oauth/usage quota source (W5.3, INV-062)", () => {
     // Anthropic does not always send Retry-After; the absence then simply
     // omits retry_after_ms (absence of the floor is stated, never invented).
     const result = await refreshClaudeOauthUsageQuota({
-      readCredential: async () => ({ accessToken: "tok", subscriptionType: "max" }),
+      readCredential: async () => oauthCredential(),
       fetchUsage: async () => {
         throw Object.assign(new Error("oauth/usage responded 429"), {
           quotaAbsenceReason: "rate_limited" as const,
@@ -273,7 +413,7 @@ describe("claude oauth/usage quota source (W5.3, INV-062)", () => {
       const result = await refreshClaudeOauthUsageQuota({
         readCredential: async (configDir) => {
           probedDirs.push(configDir);
-          return { accessToken: "tok", subscriptionType: "max" };
+          return oauthCredential();
         },
         fetchUsage: async () => LIVE_USAGE,
         now: () => new Date("2026-08-18T00:00:00Z"),
@@ -336,7 +476,7 @@ describe("claude oauth/usage quota source (W5.3, INV-062)", () => {
       }));
       let fetches = 0;
       const result = await refreshClaudeOauthUsageQuota({
-        readCredential: async () => ({ accessToken: "tok", subscriptionType: "max" }),
+        readCredential: async () => oauthCredential(),
         fetchUsage: async () => {
           fetches += 1;
           throw Object.assign(new Error("oauth/usage responded 429"), {
@@ -368,7 +508,7 @@ describe("claude oauth/usage quota source (W5.3, INV-062)", () => {
     // windows must yield a typed absence, not silent emptiness — the registry
     // needs the observation to back off instead of re-polling forever.
     const result = await refreshClaudeOauthUsageQuota({
-      readCredential: async () => ({ accessToken: "tok", subscriptionType: "max" }),
+      readCredential: async () => oauthCredential(),
       fetchUsage: async () => ({ unrelated: "payload", limits: [] }),
       now: () => new Date("2026-07-18T00:00:00Z"),
     });
@@ -403,16 +543,27 @@ describe("claude credential-file store off macOS (Linux quota parity)", () => {
     await expect(readClaudeOauthCredential(flat, "linux")).resolves.toEqual({
       accessToken: bait,
       subscriptionType: "max",
+      expiresAtMs: null,
+      hasRefreshToken: false,
     });
 
     const wrapped = await configDir();
     await writeFile(
       join(wrapped, ".credentials.json"),
-      JSON.stringify({ claudeAiOauth: { accessToken: bait, subscriptionType: "pro" } }),
+      JSON.stringify({
+        claudeAiOauth: {
+          accessToken: bait,
+          subscriptionType: "pro",
+          expiresAt: 1_787_011_300_000,
+          refreshToken: "refresh-secret",
+        },
+      }),
     );
     await expect(readClaudeOauthCredential(wrapped, "linux")).resolves.toEqual({
       accessToken: bait,
       subscriptionType: "pro",
+      expiresAtMs: 1_787_011_300_000,
+      hasRefreshToken: true,
     });
   });
 

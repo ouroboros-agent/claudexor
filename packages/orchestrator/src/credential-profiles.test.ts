@@ -836,6 +836,12 @@ describe("vendor credential observation (honest profile verification)", () => {
     observed_at: "2026-07-17T12:00:00Z",
   } as const;
 
+  const awaitingVendorRefresh = {
+    ...revoked,
+    reason: "refresh_failed",
+    detail: "OAuth access token expired; Claude Code must refresh it on a real run",
+  } as const;
+
   it("reads a successful authenticated poll as the vendor honoring the credential", () => {
     expect(
       vendorCredentialObservation(
@@ -910,6 +916,18 @@ describe("vendor credential observation (honest profile verification)", () => {
 
   it("leaves the status untouched when the poller has no verdict", () => {
     expect(withVendorCredentialObservation(local, null)).toEqual(local);
+  });
+
+  it("keeps an expired-refreshable profile locally passed and admissible", () => {
+    const observation = vendorCredentialObservation(
+      { snapshots: [], absences: [awaitingVendorRefresh] },
+      "claude",
+      "work",
+    );
+    expect(observation).toBeNull();
+    const status = withVendorCredentialObservation(local, observation);
+    expect(status).toEqual(local);
+    expect(profileStatusAdmits({ credential_kind: "config_dir_login" }, status)).toBe(true);
   });
 
   it("lets a rejection outrank a cached success, and refuses the profile", () => {
@@ -988,6 +1006,23 @@ describe("run admission reads the vendor's verdict, not just the local store", (
         harnessId: "claude",
         probe: locallyPassing,
         quota: { snapshots: [], absences: [] },
+      }),
+    ).toBe("available");
+  });
+
+  it("still admits a locally-passing profile whose idle token awaits vendor refresh", async () => {
+    const awaitingVendorRefresh = {
+      ...revoked,
+      reason: "refresh_failed" as const,
+      detail: "OAuth access token expired; Claude Code must refresh it on a real run",
+    };
+    expect(
+      await selectedProfileAvailability({
+        registry: [work],
+        profileId: "work",
+        harnessId: "claude",
+        probe: locallyPassing,
+        quota: { snapshots: [], absences: [awaitingVendorRefresh] },
       }),
     ).toBe("available");
   });
