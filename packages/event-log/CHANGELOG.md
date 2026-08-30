@@ -1,5 +1,12 @@
 # @claudexor/event-log
 
+## 3.9.1
+
+### Patch Changes
+
+- @claudexor/schema@3.9.1
+- @claudexor/util@3.9.1
+
 ## 3.9.0
 
 ### Patch Changes
