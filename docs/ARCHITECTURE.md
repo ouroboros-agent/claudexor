@@ -3215,11 +3215,19 @@ code touching one of these areas must honor it or change it explicitly here.
   cross-run authority rather than rediscovering pressure independently in each
   run. Codex uses its app-server. Claude subscription windows arrive from the
   `oauth/usage` endpoint as the PRIMARY source (since 2.1): the daemon's
-  refresher reads each logged-in config dir's OAuth token transiently —
+  refresher reads each logged-in config dir's OAuth token transiently, retaining
+  only the expiry timestamp and refresh-token presence beside the one-request
+  access token (never the refresh token itself) —
   every claude `config_dir_login` row (subject = its profile id), plus the
   legacy default native dir (subject null) only while that store is
-  UNMIGRATED — and a failing endpoint yields NO
-  snapshot, never degraded auth. The user-scoped status-line payload
+  UNMIGRATED. A known-expired refreshable token skips the request and yields a
+  typed `refresh_failed` absence. A refreshable token with unknown expiry is
+  still probed, but a 401/403 cannot prove revocation; it and a rejection after
+  a known-fresh token crosses expiry during the bounded request yield the same
+  `refresh_failed` absence. Only a token proven fresh at rejection remains typed
+  `auth_revoked`; a token without refresh capability retains that conservative
+  real-response verdict. Other endpoint failures yield NO snapshot and no auth
+  verdict. The user-scoped status-line payload
   (installed explicitly by the Claude host-plugin lifecycle) remains a
   SECONDARY source for the legacy null subject only; its collector stores only
   allowlisted windows in the external v3 root and composes/restores any
