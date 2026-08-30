@@ -3,6 +3,11 @@
 Release history for Claudexor. The current version is declared in the root
 `package.json` (the version SSOT); tags `v*` correspond to GitHub Releases.
 
+- **v3.9.1** (2026-08-30): refreshable Claude Code profiles remain signed in
+  when an idle `oauth/usage` probe cannot prove the vendor-owned access token
+  is fresh. Known-expired refreshable tokens skip the usage request, while an
+  unknown-expiry 401/403 is reported as the typed `refresh_failed` quota
+  absence instead of falsely downgrading the account to `auth_revoked`.
 - **v3.9.0** (2026-08-29): quota polling is paced per vendor lane with a
   persisted Retry-After floor (a 429 or restart no longer amplifies vendor
   traffic); foreground quota refreshes honor vendor cooldowns and disclose

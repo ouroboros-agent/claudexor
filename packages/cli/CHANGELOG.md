@@ -1,5 +1,34 @@
 # @claudexor/cli
 
+## 3.9.1
+
+### Patch Changes
+
+- 574711f: Keep refreshable Claude Code profiles signed in when an idle quota probe cannot prove their vendor-owned access token was fresh.
+  - @claudexor/acp-server@3.9.1
+  - @claudexor/artifact-store@3.9.1
+  - @claudexor/config@3.9.1
+  - @claudexor/control-api@3.9.1
+  - @claudexor/core@3.9.1
+  - @claudexor/daemon@3.9.1
+  - @claudexor/delivery@3.9.1
+  - @claudexor/gateway@3.9.1
+  - @claudexor/harness-agy@3.9.1
+  - @claudexor/harness-claude@3.9.1
+  - @claudexor/harness-codex@3.9.1
+  - @claudexor/harness-cursor@3.9.1
+  - @claudexor/harness-fake@3.9.1
+  - @claudexor/harness-opencode@3.9.1
+  - @claudexor/harness-raw-api@3.9.1
+  - @claudexor/journal@3.9.1
+  - @claudexor/mcp-server@3.9.1
+  - @claudexor/orchestrator@3.9.1
+  - @claudexor/review@3.9.1
+  - @claudexor/schema@3.9.1
+  - @claudexor/secrets@3.9.1
+  - @claudexor/util@3.9.1
+  - @claudexor/workspace@3.9.1
+
 ## 3.9.0
 
 ### Minor Changes
