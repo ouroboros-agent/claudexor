@@ -93,6 +93,7 @@ export async function buildAgentCapabilityCatalog(): Promise<AgentCapabilityCata
         effortLevels: [...(s.manifest?.capabilities.effort_levels ?? [])],
         accessProfilesSupported: [...(s.manifest?.access_profiles_supported ?? [])],
         readonlyMechanism: profile?.access_control.readonly_mechanism ?? "none",
+        writeMechanism: profile?.access_control.write_mechanism ?? "none",
         delegation: delegationCapabilityFor(s.manifest),
         setupLogin: await effectiveSetupLoginCapability(s.id, {
           getAdapter: (id) => adapters.get(id),

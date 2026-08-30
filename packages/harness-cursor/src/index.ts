@@ -94,7 +94,7 @@ export const CURSOR_CAPABILITY_PROFILE: HarnessCapabilityProfile =
     // allowlist, not a filesystem sandbox. `--sandbox enabled` alone was proven
     // NOT to enforce readonly: a print-mode agent run "has access to all tools,
     // including write and shell", and a live probe wrote a file through it.
-    access_control: { readonly_mechanism: "tool_allowlist" },
+    access_control: { readonly_mechanism: "tool_allowlist", write_mechanism: "fs_sandbox" },
     isolation: {
       supported_containment: ["env_or_file_injection"],
     },

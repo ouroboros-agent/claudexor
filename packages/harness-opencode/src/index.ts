@@ -216,7 +216,7 @@ export function createOpenCodeAdapter(): HarnessAdapter {
           // HONEST access surface: the only permission flag the adapter drives
           // is `--dangerously-skip-permissions` (full access), so there is no
           // scoped readonly mechanism to declare (see access_profiles below).
-          access_control: { readonly_mechanism: "none" },
+          access_control: { readonly_mechanism: "none", write_mechanism: "none" },
           isolation: { supported_containment: ["env_or_file_injection"] },
           attachment_inputs: [],
         },

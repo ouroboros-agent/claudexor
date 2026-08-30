@@ -159,7 +159,7 @@ export const AGY_CAPABILITY_PROFILE: HarnessCapabilityProfile =
       ],
       managed_login: AGY_MANAGED_LOGIN,
     },
-    access_control: { readonly_mechanism: "permission_deny" },
+    access_control: { readonly_mechanism: "permission_deny", write_mechanism: "none" },
     isolation: {
       supported_containment: ["env_or_file_injection", "private_per_profile_keychain"],
     },

@@ -355,6 +355,10 @@ export function createClaudeAdapter(deps: Partial<ClaudeRuntimeDeps> = {}): Harn
           ...CLAUDE_CAPABILITY_PROFILE,
           access_control: {
             readonly_mechanism: readonlyProfile.supported ? "tool_allowlist" : "none",
+            // workspace_write pre-approves Bash with no FS/network fence
+            // (claude has no sandbox): BROADER than codex's seatbelt, said
+            // typed here instead of prose in another repo.
+            write_mechanism: "tool_policy",
           },
           auth: {
             ...CLAUDE_CAPABILITY_PROFILE.auth,
@@ -725,6 +729,20 @@ function toolPermissionSets(spec: HarnessRunSpec): { allow: Set<string>; deny: S
       deny.add(tool);
       allow.delete(tool);
     }
+  } else if (!deny.has("Bash")) {
+    // workspace_write/full: pre-approve Bash. Without it the interaction
+    // bridge denies every non-edit-shaped command (`acceptEdits`
+    // auto-approves edits and prompts for the rest, and the bridge's
+    // can_use_tool handler refuses everything but AskUserQuestion) — so a
+    // "workspace_write" run could edit files but not run pytest/node/curl,
+    // a silent capability loss on every daemon run (the daemon always arms
+    // a channel). Live-verified on claude 2.1.221: `--permission-mode
+    // dontAsk` hard-refuses before the bridge and `auto` changes nothing;
+    // only the allowlist works. Claude has no FS/network sandbox, so this
+    // access profile is BROADER than codex's seatbelt workspace-write —
+    // disclosed as the typed write_mechanism capability, by owner decision
+    // (2026-08-30): honest breadth over an illusory prefix-pattern fence.
+    allow.add("Bash");
   }
   if (policy === "off") {
     for (const tool of CLAUDE_WEB_TOOLS) {

@@ -690,7 +690,46 @@ describe("parseClaudeEvent", () => {
     expect(denyValue).toContain("WebSearch");
     expect(denyValue).toContain("WebFetch");
     expect(denyValue).toContain("Bash(rm:*)");
-    expect(args).not.toContain("--allowedTools");
+    // workspace_write pre-approves bare Bash (the capability-loss fix); the
+    // caller's narrower deny PATTERN rides beside it and wins by precedence.
+    const allowValue = args[args.indexOf("--allowedTools") + 1] ?? "";
+    expect(allowValue).toContain("Bash");
+  });
+
+  it("workspace_write pre-approves Bash; readonly and an explicit deny do not", () => {
+    // Live-verified (claude 2.1.221): under acceptEdits the interaction
+    // bridge denies every non-edit-shaped command (python3/pytest/curl) and
+    // neither dontAsk nor auto helps — only the allowlist restores the
+    // declared workspace_write capability. Claude has no FS/network sandbox,
+    // so this is BROADER than codex's seatbelt: disclosed as the typed
+    // write_mechanism="tool_policy" capability, never a name branch.
+    const base = {
+      session_id: "ses-test",
+      intent: "implement" as const,
+      prompt: "x",
+      cwd: "/tmp",
+      external_context_policy: "live" as const,
+      tool_permission_policy: { web: "live" as const, allow: [], deny: [] },
+    };
+    const write = claudeArgsForSpec(HarnessRunSpec.parse({ ...base, access: "workspace_write" }));
+    const writeAllow = (write[write.indexOf("--allowedTools") + 1] ?? "").split(",");
+    expect(writeAllow).toContain("Bash");
+
+    const readonly = claudeArgsForSpec(HarnessRunSpec.parse({ ...base, access: "readonly" }));
+    const roAllow = (readonly[readonly.indexOf("--allowedTools") + 1] ?? "").split(",");
+    expect(roAllow).not.toContain("Bash");
+    const roDeny = (readonly[readonly.indexOf("--disallowedTools") + 1] ?? "").split(",");
+    expect(roDeny).toContain("Bash");
+
+    const denied = claudeArgsForSpec(
+      HarnessRunSpec.parse({
+        ...base,
+        access: "workspace_write",
+        tool_permission_policy: { web: "live" as const, allow: [], deny: ["Bash"] },
+      }),
+    );
+    const deniedAllow = (denied[denied.indexOf("--allowedTools") + 1] ?? "").split(",");
+    expect(deniedAllow).not.toContain("Bash");
   });
 
   it("translates a headless ExitPlanMode error result to a benign thinking event", () => {
