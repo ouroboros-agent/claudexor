@@ -696,7 +696,15 @@ function toolPermissionArgs(spec: HarnessRunSpec): string[] {
   const args: string[] = [];
   if (spec.access === "readonly") {
     const builtins = CLAUDE_READONLY_BUILTIN_TOOLS.filter((tool) => allow.has(tool));
-    args.push("--tools", builtins.join(","));
+    // AskUserQuestion rides --tools UNCONDITIONALLY, outside the allow filter
+    // (live-verified, claude CLI 2.1.221) so a readonly interactive run keeps
+    // its question channel. Two traps: (1) adding it to
+    // CLAUDE_READONLY_BUILTIN_TOOLS alone is a silent no-op — the allow filter
+    // above drops it; (2) adding it to the readonly allow set instead would
+    // emit it in --allowedTools, pre-approving it and suppressing the
+    // control_request the interaction bridge needs. On a one-shot readonly run
+    // (no --permission-prompt-tool) it is a harmless no-op.
+    args.push("--tools", [...builtins, "AskUserQuestion"].join(","));
   }
   if (allow.size > 0) args.push("--allowedTools", [...allow].join(","));
   if (deny.size > 0) args.push("--disallowedTools", [...deny].join(","));

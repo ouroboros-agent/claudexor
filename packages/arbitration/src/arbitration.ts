@@ -32,6 +32,26 @@ export interface CandidateEvidence {
   workState?: WorkState;
 }
 
+/**
+ * The candidate's CONFIGURED deterministic gates. The synthetic `harness`
+ * pseudo-gate row (appended by the evidence producer when a run errored) is
+ * process/lifecycle evidence, never a configured check — every checks-axis
+ * consumer routes through this ONE filter so a producer that appends the
+ * pseudo-gate (or repollutes the test counts) can't resurrect
+ * "tests=0% / required gates FAILED" on a zero-configured-gate run.
+ */
+function configuredGates(c: CandidateEvidence): GateResult[] {
+  return c.gates.filter((g) => g.id !== "harness");
+}
+
+/**
+ * Ranking predicate — reads the AUGMENTED gates array ON PURPOSE: the
+ * synthetic `harness` pseudo-gate is how an errored candidate is demoted in
+ * the score tuple, and routing this through `configuredGates` was reproduced
+ * to let an errored empty-diff candidate outrank a healthy one and terminate
+ * the run harness_failed. The honesty fixes live in the LABEL and the checks
+ * axis (both read `configuredGates`); ranking keeps lifecycle demotion.
+ */
 function requiredGatesPassed(c: CandidateEvidence): boolean {
   const required = c.gates.filter((g) => g.required);
   return required.length === 0 ? true : required.every((g) => g.status === "passed");
@@ -201,8 +221,13 @@ export interface ArbitrationResult {
 }
 
 function requiredGateLabel(candidate: CandidateEvidence): string {
-  if (!candidate.gates.some((gate) => gate.required)) return "required gates n/a (none configured)";
-  return requiredGatesPassed(candidate) ? "required gates passed" : "required gates FAILED";
+  const required = configuredGates(candidate).filter((gate) => gate.required);
+  if (required.length === 0) return "required gates n/a (none configured)";
+  // The label describes CONFIGURED gates only — lifecycle (the pseudo-gate)
+  // must not turn "every configured gate passed" into a FAILED claim.
+  return required.every((gate) => gate.status === "passed")
+    ? "required gates passed"
+    : "required gates FAILED";
 }
 
 /** Pairwise comparison over EVERY ranking axis (QA-028 root cause #2): the
@@ -280,8 +305,11 @@ export function arbitrate(
   // v3 AXES (D8/D18): the harness pseudo-gate row is process evidence, not a
   // configured deterministic check — it feeds lifecycle, never the checks
   // axis (the old lattice let it flip hasGates and reroute the whole tree).
-  const realGates = winner.gates.filter((g) => g.id !== "harness");
-  const checksConfigured = winner.testsTotal > 0 || realGates.length > 0;
+  // No `testsTotal > 0` disjunct here: the counts derive from the same gate
+  // rows, and a producer that computed them over the augmented array would
+  // re-admit the pseudo-gate through that back door.
+  const realGates = configuredGates(winner);
+  const checksConfigured = realGates.length > 0;
   const checksPassed =
     checksConfigured &&
     requiredOk &&

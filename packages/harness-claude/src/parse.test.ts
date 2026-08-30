@@ -618,7 +618,7 @@ describe("parseClaudeEvent", () => {
       "--max-turns",
       "12",
       "--tools",
-      "Read,Glob,Grep,WebSearch,WebFetch",
+      "Read,Glob,Grep,WebSearch,WebFetch,AskUserQuestion",
       "--allowedTools",
       "Read,Glob,Grep,WebSearch,WebFetch",
       "--disallowedTools",
@@ -644,12 +644,33 @@ describe("parseClaudeEvent", () => {
     const tools = args[args.indexOf("--tools") + 1];
     const allowed = args[args.indexOf("--allowedTools") + 1];
     const denied = args[args.indexOf("--disallowedTools") + 1];
-    expect(tools).toBe("Read,Grep");
+    expect(tools).toBe("Read,Grep,AskUserQuestion");
     expect(allowed).toBe("Read,Grep");
     expect(denied).toContain("Bash");
     expect(denied).toContain("Write");
     expect(denied).toContain("Agent");
     expect(denied).toContain("Glob");
+  });
+
+  it("keeps the readonly AskUserQuestion channel open without pre-approving it", () => {
+    const spec = HarnessRunSpec.parse({
+      session_id: "ses-readonly-ask",
+      intent: "review",
+      prompt: "review",
+      cwd: "/tmp",
+      access: "readonly",
+    });
+    const args = claudeArgsForSpec(spec, true);
+    const tools = (args[args.indexOf("--tools") + 1] ?? "").split(",");
+    const allowed = (args[args.indexOf("--allowedTools") + 1] ?? "").split(",");
+    const denied = (args[args.indexOf("--disallowedTools") + 1] ?? "").split(",");
+    // In --tools so the readonly interactive run can raise questions at all…
+    expect(tools).toContain("AskUserQuestion");
+    // …but NOT in --allowedTools: pre-approval would suppress the
+    // control_request the interaction bridge listens for.
+    expect(allowed).not.toContain("AskUserQuestion");
+    // The mutation surface stays denied.
+    for (const tool of ["Bash", "Write", "Edit"]) expect(denied).toContain(tool);
   });
 
   it("maps web policy off to comma-form disallowed tools and merges user deny lists", () => {

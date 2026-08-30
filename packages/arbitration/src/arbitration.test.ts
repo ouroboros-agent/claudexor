@@ -116,6 +116,45 @@ describe("arbitrate", () => {
   });
 
   it("does not mask harness failures as no_op when the diff is empty", () => {
+    // A zero-configured-gate errored run: the producer appends the synthetic
+    // harness pseudo-gate for lifecycle, but computes the test counts from the
+    // configured gates only (0/0, not the polluted 0/1).
+    const res = arbitrate([
+      candidate("A", {
+        diffBytes: 0,
+        diffSize: 0,
+        gates: [
+          {
+            id: "harness",
+            status: "failed",
+            required: true,
+            command: "codex",
+            exit_code: 1,
+            duration_ms: 1,
+            stdout_tail: null,
+            stderr_tail: null,
+            output_truncated: false,
+          },
+        ],
+        testsPassed: 0,
+        testsTotal: 0,
+        finalReviewClean: false,
+      }),
+    ]);
+    expect(res.decision.facts.lifecycle).toBe("failed");
+    expect(res.decision.facts.reason).toBe("harness_failed");
+    expect(res.decision.apply_recommendation).not.toBe("apply");
+    // The pseudo-gate is lifecycle evidence, never a configured check: no
+    // resurrected "tests=0% / required gates FAILED / gates 0/1".
+    expect(res.decision.facts.checks).toBe("not_configured");
+    expect(res.decision.why_winner).toContain("tests=n/a");
+    expect(res.decision.final_checks).toContain("required gates n/a (none configured)");
+  });
+
+  it("keeps checks not_configured even when a producer repollutes the counts with the pseudo-gate", () => {
+    // Guard for the configuredGates() seam: a legacy/foreign producer that
+    // counted the synthetic harness row into testsTotal must still not flip
+    // the checks axis to failed — the gate rows are the ground truth.
     const res = arbitrate([
       candidate("A", {
         diffBytes: 0,
@@ -139,8 +178,8 @@ describe("arbitrate", () => {
       }),
     ]);
     expect(res.decision.facts.lifecycle).toBe("failed");
-    expect(res.decision.facts.reason).toBe("harness_failed");
-    expect(res.decision.apply_recommendation).not.toBe("apply");
+    expect(res.decision.facts.checks).toBe("not_configured");
+    expect(res.decision.final_checks).toContain("required gates n/a (none configured)");
   });
 
   it("adopts a no-gate run on a VERIFIED clean cross-family review, basis disclosed", () => {

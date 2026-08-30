@@ -109,8 +109,16 @@ export function formatRunEventLine(ev: Record<string, unknown>): string | null {
         : `[${who}] no answer in time — continuing with assumptions`;
     case "harness.completed":
       return `[${who}] completed: ${String(p["status"] ?? "?")}${p["error"] ? ` — ${truncate(String(p["error"]), 160)}` : ""}`;
-    case "gate.completed":
-      return `[${String(p["attempt_id"] ?? "?")}] gates ${p["passed"] ? "passed" : "failed"}`;
+    case "gate.completed": {
+      // Zero configured gates: `passed` is vacuously true (gatesPassed([]) ===
+      // true), so "gates passed" would paint verification that never ran.
+      const gateCount = Array.isArray(p["gates"]) ? (p["gates"] as unknown[]).length : null;
+      const label =
+        gateCount === 0
+          ? "gates n/a (none configured)"
+          : `gates ${p["passed"] ? "passed" : "failed"}`;
+      return `[${String(p["attempt_id"] ?? "?")}] ${label}`;
+    }
     case "review.started":
       return `review started (${String(p["reviewers"] ?? 0)} reviewer(s))`;
     case "review.skipped":

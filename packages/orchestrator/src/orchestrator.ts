@@ -3494,6 +3494,9 @@ export class Orchestrator {
       runs.map((r) => ({
         attemptId: r.attemptId,
         harnessId: r.harnessId,
+        // gatesPassed([]) is vacuously true: a successful zero-gate run is a
+        // legitimate green STATUS (never a "gates passed" claim — the label
+        // surfaces render that honestly as n/a).
         status: gatesPassed(r.gates) && !r.errored ? "green" : "red",
       }));
     /** The one cancellation terminal this race can reach, from any of its three
@@ -4379,6 +4382,9 @@ export class Orchestrator {
       candidates: runs.map((r) => ({
         attemptId: r.attemptId,
         harnessId: r.harnessId,
+        // gatesPassed([]) is vacuously true: a successful zero-gate run is a
+        // legitimate green STATUS (never a "gates passed" claim — the label
+        // surfaces render that honestly as n/a).
         status: gatesPassed(r.gates) && !r.errored ? "green" : "red",
       })),
       decisionPath,

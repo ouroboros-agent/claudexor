@@ -172,8 +172,12 @@ export function toCandidateEvidence(
     acceptanceCovered,
     acceptanceTotal: 0,
     findings,
-    testsPassed: gates.filter((gate) => gate.status === "passed").length,
-    testsTotal: gates.length,
+    // Test counts come from the CONFIGURED gates only (pre-augmentation): the
+    // synthetic harness pseudo-gate above is lifecycle evidence, and counting
+    // it here made a zero-configured-gate errored run report testsTotal=1 →
+    // "tests=0% / gates 0/1" instead of an honest "n/a / not_configured".
+    testsPassed: run.gates.filter((gate) => gate.status === "passed").length,
+    testsTotal: run.gates.length,
     finalReviewClean,
     reviewVerified,
     toolWarningsCount:
