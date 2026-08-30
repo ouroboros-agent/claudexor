@@ -368,20 +368,23 @@ pnpm test
   DMG/ZIP signing and notarization, npm publication, SBOMs, GitHub artifact
   provenance, and npm provenance remain required. Every other version and the
   default `false` path retain the normal schema-v6 and signed-manifest gates.
-- One-release review-only exceptions for 3.8.1, 3.8.2, and 3.9.1: the
+- One-release review-only exceptions for 3.8.1, 3.8.2, 3.9.1, and 3.9.2: the
   owner-authorized publish may set `waive_cursor_review: true` for those exact
   versions. The
   3.8.1 exception covered unavailable Cursor Fable/Sol lanes; the 3.8.2
   exception avoids repeating full-context review already completed during its
   release work in a different execution setup. The 3.9.1 exception records the
   owner's 2026-08-30 acceleration decision after the exact Fable slot was absent
-  from the live Cursor subagent catalog. The review input must be empty,
+  from the live Cursor subagent catalog. The 3.9.2 exception records the owner's
+  same-day direction to accelerate the live OAuth quota-refresh repair after its
+  independent correctness, scope, and security reviews plus the full release
+  gate completed. The review input must be empty,
   both owner-signed runtime manifests must be supplied and verified, and the
   final assets must omit only `REVIEW_ATTESTATION.json`. This does not create or
   claim a formal Cursor review; exact candidate provenance, signed/notarized app
   bytes, both runtime signatures, SBOMs, npm/GitHub provenance, and every other
   release gate still apply. The verifier rejects this waiver for all versions
-  except 3.8.1, 3.8.2, and 3.9.1 and rejects combining it with
+  except 3.8.1, 3.8.2, 3.9.1, and 3.9.2 and rejects combining it with
   `skip_custom_ed25519`.
 - The shared engine closure remains one artifact and one signed authority for
   app updates and host embedding. Its archive entries are only regular files
@@ -395,7 +398,7 @@ pnpm test
   full Node toolchain; POSIX local harness installation additionally proves the
   exact adjacent npm entrypoint without PATH fallback. A Windows support claim has a native
   extract/probe/handshake/graceful-stop smoke receipt.
-- Except for the explicit 3.8.0, 3.8.1, 3.8.2, 3.9.0, and 3.9.1 waivers above, the publish
+- Except for the explicit 3.8.0, 3.8.1, 3.8.2, 3.9.0, 3.9.1, and 3.9.2 waivers above, the publish
   input is an annotated stable tag on exact `origin/main` plus a signed schema-v6
   attestation. It binds the candidate SHA/tree/version, exact
   full-gate receipt, sealed evidence manifest/diff/wave, and the two required

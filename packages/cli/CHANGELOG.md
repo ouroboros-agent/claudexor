@@ -1,5 +1,35 @@
 # @claudexor/cli
 
+## 3.9.2
+
+### Patch Changes
+
+- 14e1dd3: Refresh expired Claude subscription credentials through Claude Code before reading quota, without sending a model prompt or taking custody of refresh tokens.
+- Updated dependencies [14e1dd3]
+  - @claudexor/harness-claude@3.9.2
+  - @claudexor/acp-server@3.9.2
+  - @claudexor/artifact-store@3.9.2
+  - @claudexor/config@3.9.2
+  - @claudexor/control-api@3.9.2
+  - @claudexor/core@3.9.2
+  - @claudexor/daemon@3.9.2
+  - @claudexor/delivery@3.9.2
+  - @claudexor/gateway@3.9.2
+  - @claudexor/harness-agy@3.9.2
+  - @claudexor/harness-codex@3.9.2
+  - @claudexor/harness-cursor@3.9.2
+  - @claudexor/harness-fake@3.9.2
+  - @claudexor/harness-opencode@3.9.2
+  - @claudexor/harness-raw-api@3.9.2
+  - @claudexor/journal@3.9.2
+  - @claudexor/mcp-server@3.9.2
+  - @claudexor/orchestrator@3.9.2
+  - @claudexor/review@3.9.2
+  - @claudexor/schema@3.9.2
+  - @claudexor/secrets@3.9.2
+  - @claudexor/util@3.9.2
+  - @claudexor/workspace@3.9.2
+
 ## 3.9.1
 
 ### Patch Changes

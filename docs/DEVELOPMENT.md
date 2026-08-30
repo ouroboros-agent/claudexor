@@ -271,14 +271,17 @@ quota-throttling/cursor-belt release (no attestation wave is run for it). The
 verifier rejects this waiver for every other version, and the
 default `false` path retains the normal schema-v6 and signed-manifest gates.
 
-Package versions 3.8.1, 3.8.2, and 3.9.1 each have a separate, one-release owner
-waiver for the Cursor review attestation. The 3.8.1 exception covered unavailable
-Cursor Fable and Sol provider lanes; the 3.8.2 exception avoids repeating a
-full-context review already completed during its release work in a different
-execution setup; the 3.9.1 exception is the owner's 2026-08-30 acceleration
-decision after the exact Fable slot disappeared from the live Cursor subagent
-catalog. A publish may set `waive_cursor_review: true` only for those exact
-versions, with `review_attestation_b64` empty and both owner-signed runtime
+Package versions 3.8.1, 3.8.2, 3.9.1, and 3.9.2 each have a separate,
+one-release owner waiver for the Cursor review attestation. The 3.8.1 exception
+covered unavailable Cursor Fable and Sol provider lanes; the 3.8.2 exception
+avoids repeating a full-context review already completed during its release
+work in a different execution setup; the 3.9.1 exception is the owner's
+2026-08-30 acceleration decision after the exact Fable slot disappeared from
+the live Cursor subagent catalog; and the 3.9.2 exception is the owner's same-day
+decision to accelerate the live OAuth quota-refresh repair after its independent
+correctness, scope, and security reviews plus the full release gate completed.
+A publish may set `waive_cursor_review: true` only for those exact versions,
+with `review_attestation_b64` empty and both owner-signed runtime
 manifest inputs present and validly base64-encoded. This waiver omits only
 `REVIEW_ATTESTATION.json`; the candidate run, exact tag and SHA, artifact
 provenance, signed runtime and remote-runtime manifests, SBOMs, signing,

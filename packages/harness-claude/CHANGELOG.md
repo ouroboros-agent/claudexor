@@ -1,5 +1,15 @@
 # @claudexor/harness-claude
 
+## 3.9.2
+
+### Patch Changes
+
+- 14e1dd3: Refresh expired Claude subscription credentials through Claude Code before reading quota, without sending a model prompt or taking custody of refresh tokens.
+  - @claudexor/core@3.9.2
+  - @claudexor/schema@3.9.2
+  - @claudexor/secrets@3.9.2
+  - @claudexor/util@3.9.2
+
 ## 3.9.1
 
 ### Patch Changes

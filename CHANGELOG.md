@@ -3,6 +3,16 @@
 Release history for Claudexor. The current version is declared in the root
 `package.json` (the version SSOT); tags `v*` correspond to GitHub Releases.
 
+- **v3.9.2** (2026-08-30): Claude subscription quota refresh now wakes Claude
+  Code's own prompt-free OAuth lifecycle before probing an expired or
+  near-expiry access token. Claude Code retains refresh-token custody, locking,
+  rotation, and store writes; Claudexor sends no MCP frame or model prompt and
+  only re-reads the fresh access token after expiry metadata advances.
+  Publication uses the owner-approved one-release `waive_cursor_review`
+  exception to accelerate the live quota hotfix after its correctness, scope,
+  security, exact-vendor acceptance, and full release gates completed; both
+  owner-signed runtime manifests and every other release, notarization, and
+  provenance gate remain required, and no formal Cursor attestation is claimed.
 - **v3.9.1** (2026-08-30): refreshable Claude Code profiles remain signed in
   when an idle `oauth/usage` probe cannot prove the vendor-owned access token
   is fresh. Known-expired refreshable tokens skip the usage request, while an
