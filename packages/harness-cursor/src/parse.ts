@@ -249,7 +249,19 @@ function parseCursorEventStateful(
   if (type === "thinking" || type === "reasoning") {
     const text =
       typeof obj.text === "string" ? obj.text : typeof obj.message === "string" ? obj.message : "";
-    return text ? [{ type: "thinking", session_id: sessionId, ts, text }] : [];
+    return text
+      ? [
+          {
+            type: "thinking",
+            session_id: sessionId,
+            ts,
+            text,
+            // The recorded native stream declares fragment semantics here;
+            // complete/legacy thinking blocks are not deltas merely by type.
+            ...(obj.subtype === "delta" ? { payload: { delta: true } } : {}),
+          },
+        ]
+      : [];
   }
 
   if (type === "tool_call") {

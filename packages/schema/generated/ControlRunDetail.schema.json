@@ -1910,7 +1910,28 @@
                   "null"
                 ],
                 "default": null,
-                "description": "Human-readable event detail."
+                "description": "Human-readable event detail. For typed harness text, the complete redacted text with original whitespace; title may be abbreviated."
+              },
+              "textKind": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "thinking",
+                      "message"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Normalized harness text category; null for non-text or legacy rows. Read text from detail, not the abbreviated title."
+              },
+              "textDelta": {
+                "type": "boolean",
+                "default": false,
+                "description": "True only for adapter-declared text fragments. Consecutive deltas of the same textKind and attempt may be concatenated verbatim; complete messages and other events remain separate."
               },
               "severity": {
                 "type": "string",

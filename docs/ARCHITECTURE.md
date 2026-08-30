@@ -1541,6 +1541,16 @@ projection).
 
 ### Event streaming contract (snapshot-then-subscribe)
 
+The run-detail timeline preserves typed harness text as `textKind`
+(`thinking` or `message`) plus `textDelta`. Its `detail` is the full redacted
+text with original whitespace; `title` may be abbreviated. Only an adapter's
+explicit `payload.delta: true` marks a fragment. Consumers can concatenate
+consecutive same-kind, same-attempt deltas verbatim without inserting event
+separators inside model prose. Complete messages, tool/status events, and rows
+without text metadata remain separate; historical rows do not acquire guessed
+fragment semantics. Cursor thinking deltas use the native `subtype: delta`,
+while its complete assistant flush remains a complete message.
+
 Every `RunEvent` carries a monotonic per-run `seq` stamped by the engine's
 EventLog at emit time (control-api audit appends continue the same sequence).
 In the daemon composition root, each emitted event is also appended to its
