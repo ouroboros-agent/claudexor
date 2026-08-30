@@ -194,13 +194,18 @@ persisted, logged, or included in errors — plus only its expiry timestamp and
 whether a refresh token exists (the refresh token itself is never projected).
 The endpoint returns proactive
 five_hour/seven_day/per-model utilization attributed to the profile
-(`subject_id`). A known-expired refreshable idle token skips the request and
-fails quota to unknown. If expiry is absent, the bounded request may still
-succeed; a 401/403 for that refreshable token, or after a known-fresh token
-crosses expiry during the request, also fails quota to unknown because freshness
-was not proven at rejection time. Claude Code owns refresh on a real use. Only a
-token proven fresh at rejection remains vendor revocation evidence and may
-degrade auth readiness; a token without refresh capability retains that
+(`subject_id`). Before probing a refreshable token that is expired or inside
+Claude Code's five-minute refresh window, Claudexor starts the vendor's
+documented, prompt-free `claude mcp serve` lifecycle in that exact profile
+environment, sends no MCP request, and waits for Claude Code to publish a fresh
+expiry under its own credential lock. No model request or inference quota is
+used, and Claudexor never reads the refresh token or writes the vendor store.
+If the proactive wake fails while the old access token is still valid, the
+bounded usage request may use that token; an expired token remains a typed
+`refresh_failed` absence. If expiry is absent, the bounded request may still
+succeed, but a 401/403 cannot prove revocation and also yields `refresh_failed`.
+Only a token proven fresh at rejection remains vendor revocation evidence and
+may degrade auth readiness; a token without refresh capability retains that
 conservative real-response behavior. The status-line collector
 stays as a secondary source: an explicit
 `claudexor plugin install claude` composes it with an existing user

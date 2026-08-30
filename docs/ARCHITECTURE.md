@@ -3220,10 +3220,15 @@ code touching one of these areas must honor it or change it explicitly here.
   access token (never the refresh token itself) —
   every claude `config_dir_login` row (subject = its profile id), plus the
   legacy default native dir (subject null) only while that store is
-  UNMIGRATED. A known-expired refreshable token skips the request and yields a
-  typed `refresh_failed` absence. A refreshable token with unknown expiry is
-  still probed, but a 401/403 cannot prove revocation; it and a rejection after
-  a known-fresh token crosses expiry during the bounded request yield the same
+  UNMIGRATED. A refreshable token that is expired or within Claude Code's
+  five-minute refresh window first wakes the vendor's documented, prompt-free
+  `mcp serve` lifecycle in the exact profile environment. No MCP frame or model
+  prompt is sent; Claude Code owns its refresh lock, token rotation, and store
+  write while Claudexor observes expiry metadata only, then re-reads the access
+  token for the bounded usage request. A still-valid token remains a fallback
+  when the proactive wake fails; an expired token yields a typed
+  `refresh_failed` absence. A refreshable token with unknown expiry is still
+  probed, but a 401/403 cannot prove revocation and yields the same
   `refresh_failed` absence. Only a token proven fresh at rejection remains typed
   `auth_revoked`; a token without refresh capability retains that conservative
   real-response verdict. Other endpoint failures yield NO snapshot and no auth

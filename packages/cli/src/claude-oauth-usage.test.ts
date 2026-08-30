@@ -2,6 +2,7 @@ import { rmSync } from "node:fs";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { CLAUDE_AUTH_REFRESH_TERMINATION_UNCONFIRMED } from "@claudexor/harness-claude";
 import { afterAll, describe, expect, it } from "vitest";
 import {
   claudeOauthKeychainItem,
@@ -207,12 +208,17 @@ describe("claude oauth/usage quota source (W5.3, INV-062)", () => {
     "fails a rejected refreshable credential with unknown expiry to refresh_failed (%i)",
     async (status) => {
       let fetches = 0;
+      let refreshes = 0;
       const result = await refreshClaudeOauthUsageQuota({
         readCredential: async () =>
           oauthCredential({
             expiresAtMs: null,
             hasRefreshToken: true,
           }),
+        refreshCredential: async () => {
+          refreshes += 1;
+          throw new Error("unknown expiry must not invoke the vendor refresh wake");
+        },
         fetchUsage: async () => {
           fetches += 1;
           throw Object.assign(new Error(`oauth/usage responded ${status}`), {
@@ -222,14 +228,47 @@ describe("claude oauth/usage quota source (W5.3, INV-062)", () => {
         now: () => new Date("2026-07-18T00:00:00Z"),
       });
       expect(fetches).toBe(1);
+      expect(refreshes).toBe(0);
       const nativeAbsence = result.absences?.find((a) => a.subject.subject_id === null);
       expect(nativeAbsence).toMatchObject({ reason: "refresh_failed" });
-      expect(nativeAbsence?.detail).toContain("Claude Code owns refresh");
+      expect(nativeAbsence?.detail).toContain("freshness is unknown");
       expect(nativeAbsence?.detail).not.toContain(String(status));
     },
   );
 
-  it("skips oauth/usage for an already-expired refreshable credential", async () => {
+  it("automatically refreshes an expired credential before reading quota", async () => {
+    let fetches = 0;
+    let refreshes = 0;
+    const result = await refreshClaudeOauthUsageQuota({
+      readCredential: async () =>
+        oauthCredential({
+          accessToken: "access-secret-needle",
+          expiresAtMs: Date.parse("2026-07-17T23:59:59Z"),
+          hasRefreshToken: true,
+        }),
+      refreshCredential: async () => {
+        refreshes += 1;
+        return oauthCredential({
+          accessToken: "fresh-token",
+          expiresAtMs: Date.parse("2026-07-18T08:00:00Z"),
+          hasRefreshToken: true,
+        });
+      },
+      fetchUsage: async (accessToken) => {
+        fetches += 1;
+        expect(accessToken).toBe("fresh-token");
+        return LIVE_USAGE;
+      },
+      now: () => new Date("2026-07-18T00:00:00Z"),
+    });
+    expect(refreshes).toBe(1);
+    expect(fetches).toBe(1);
+    expect(result.snapshots).toHaveLength(1);
+    expect(result.absences ?? []).toEqual([]);
+    expect(JSON.stringify(result)).not.toContain("access-secret-needle");
+  });
+
+  it("keeps quota unknown when automatic refresh fails, without exposing the access token", async () => {
     let fetches = 0;
     const result = await refreshClaudeOauthUsageQuota({
       readCredential: async () =>
@@ -238,42 +277,123 @@ describe("claude oauth/usage quota source (W5.3, INV-062)", () => {
           expiresAtMs: Date.parse("2026-07-17T23:59:59Z"),
           hasRefreshToken: true,
         }),
+      refreshCredential: async () => {
+        throw new Error(
+          "Claude Code's automatic OAuth refresh did not publish a fresh access token",
+        );
+      },
       fetchUsage: async () => {
         fetches += 1;
-        throw new Error("should not be called");
+        return LIVE_USAGE;
       },
       now: () => new Date("2026-07-18T00:00:00Z"),
     });
     expect(fetches).toBe(0);
     const nativeAbsence = result.absences?.find((a) => a.subject.subject_id === null);
     expect(nativeAbsence).toMatchObject({ reason: "refresh_failed" });
-    expect(nativeAbsence?.detail).toContain("Claude Code owns refresh");
+    expect(nativeAbsence?.detail).toContain("automatic OAuth refresh");
     expect(nativeAbsence?.detail).not.toContain("access-secret-needle");
   });
 
+  it("refreshes proactively inside Claude Code's five-minute window", async () => {
+    let refreshes = 0;
+    const result = await refreshClaudeOauthUsageQuota({
+      readCredential: async () =>
+        oauthCredential({
+          expiresAtMs: Date.parse("2026-07-18T00:04:00Z"),
+          hasRefreshToken: true,
+        }),
+      refreshCredential: async () => {
+        refreshes += 1;
+        return oauthCredential({ expiresAtMs: Date.parse("2026-07-18T08:00:00Z") });
+      },
+      fetchUsage: async () => LIVE_USAGE,
+      now: () => new Date("2026-07-18T00:00:00Z"),
+    });
+    expect(refreshes).toBe(1);
+    expect(result.snapshots).toHaveLength(1);
+  });
+
+  it("falls back to a still-valid near-expiry token when the proactive wake fails", async () => {
+    let fetches = 0;
+    const result = await refreshClaudeOauthUsageQuota({
+      readCredential: async () =>
+        oauthCredential({
+          accessToken: "still-valid",
+          expiresAtMs: Date.parse("2026-07-18T00:04:00Z"),
+          hasRefreshToken: true,
+        }),
+      refreshCredential: async () => {
+        throw new Error("vendor helper exited early");
+      },
+      fetchUsage: async (accessToken) => {
+        fetches += 1;
+        expect(accessToken).toBe("still-valid");
+        return LIVE_USAGE;
+      },
+      now: () => new Date("2026-07-18T00:00:00Z"),
+    });
+    expect(fetches).toBe(1);
+    expect(result.snapshots).toHaveLength(1);
+    expect(result.absences ?? []).toEqual([]);
+  });
+
   it.each([401, 403])(
-    "reclassifies %i when the refreshable credential expires during the request",
+    "keeps a token that expires during a failed proactive refresh out of auth_revoked (%i)",
     async (status) => {
-      const times = [new Date("2026-07-18T00:00:00.000Z"), new Date("2026-07-18T00:00:00.002Z")];
+      let fetches = 0;
+      const times = ["2026-07-18T00:00:00Z", "2026-07-18T00:00:00Z", "2026-07-18T00:05:00Z"];
       const result = await refreshClaudeOauthUsageQuota({
         readCredential: async () =>
           oauthCredential({
-            expiresAtMs: Date.parse("2026-07-18T00:00:00.001Z"),
+            accessToken: "access-secret-needle",
+            expiresAtMs: Date.parse("2026-07-18T00:04:00Z"),
             hasRefreshToken: true,
           }),
+        refreshCredential: async () => {
+          throw new Error("vendor helper exited early");
+        },
         fetchUsage: async () => {
+          fetches += 1;
           throw Object.assign(new Error(`oauth/usage responded ${status}`), {
             quotaAbsenceReason: "auth_revoked" as const,
           });
         },
-        now: () => times.shift() ?? new Date("2026-07-18T00:00:00.002Z"),
+        now: () => new Date(times.shift() ?? "2026-07-18T00:05:00Z"),
       });
+      expect(fetches).toBe(1);
       const nativeAbsence = result.absences?.find((a) => a.subject.subject_id === null);
       expect(nativeAbsence).toMatchObject({ reason: "refresh_failed" });
-      expect(nativeAbsence?.detail).toContain("Claude Code owns refresh");
+      expect(nativeAbsence?.detail).toContain("freshness is unknown");
       expect(nativeAbsence?.detail).not.toContain(String(status));
+      expect(nativeAbsence?.detail).not.toContain("access-secret-needle");
     },
   );
+
+  it("never falls back while refresh-helper termination remains unconfirmed", async () => {
+    let fetches = 0;
+    const result = await refreshClaudeOauthUsageQuota({
+      readCredential: async () =>
+        oauthCredential({
+          expiresAtMs: Date.parse("2026-07-18T00:04:00Z"),
+          hasRefreshToken: true,
+        }),
+      refreshCredential: async () => {
+        throw Object.assign(new Error("vendor helper termination could not be confirmed"), {
+          code: CLAUDE_AUTH_REFRESH_TERMINATION_UNCONFIRMED,
+        });
+      },
+      fetchUsage: async () => {
+        fetches += 1;
+        return LIVE_USAGE;
+      },
+      now: () => new Date("2026-07-18T00:00:00Z"),
+    });
+    expect(fetches).toBe(0);
+    const nativeAbsence = result.absences?.find((a) => a.subject.subject_id === null);
+    expect(nativeAbsence).toMatchObject({ reason: "refresh_failed" });
+    expect(nativeAbsence?.detail).toContain("termination could not be confirmed");
+  });
 
   it("retains the real-response auth verdict for an expired token without a refresh token", async () => {
     let fetches = 0;
