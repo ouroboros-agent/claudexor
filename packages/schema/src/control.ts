@@ -33,6 +33,7 @@ import { ControlAuthRoute } from "./control-auth-route.js";
 import { DelegatedChildRunIds, RunDelegationInfo } from "./delegation.js";
 import { HARNESS_INACTIVITY_TIMEOUT_DEFAULT_MS, InteractionTimeoutValue } from "./config.js";
 export { RunExecution } from "./control-run-execution.js";
+export { ControlTimelineEvent } from "./control-timeline.js";
 export const ControlReviewerPanelEntry = z
   .object({
     /** Explicit reviewer harness id. Repeated harness ids are allowed so one
@@ -749,45 +750,6 @@ export const ControlRunSummary = z
     "Run summary row served by GET /runs and embedded in run detail: state, routing, budget, policies, and honest outcome.",
   );
 export type ControlRunSummary = z.infer<typeof ControlRunSummary>;
-
-export const ControlTimelineEvent = z
-  .object({
-    type: z.string().describe("Run event type."),
-    ts: z.string().optional().describe("Event timestamp."),
-    harnessId: z.string().nullable().default(null).describe("Harness involved, when any."),
-    attemptId: z.string().nullable().default(null).describe("Attempt involved, when any."),
-    title: z.string().describe("Human-readable event title."),
-    detail: z.string().nullable().default(null).describe("Human-readable event detail."),
-    severity: z
-      .enum(["info", "warning", "error"])
-      .default("info")
-      .describe("Display severity of the event."),
-    toolName: z.string().nullable().default(null).describe("Tool name for tool events."),
-    target: z.string().nullable().default(null).describe("Redacted tool target for tool events."),
-    errorSummary: z
-      .string()
-      .nullable()
-      .default(null)
-      .describe("Redacted error detail for error events."),
-    /** Unsupported per-harness knobs the selected route silently could not honor
-     * (INV-105): the engine discloses them on `harness.started`, and this
-     * projection carries them so the row can render a visible warning ("max_turns
-     * was ignored") instead of an indistinguishable benign start (QA-070). Empty
-     * for every event that dropped nothing. */
-    ignoredSettings: z
-      .array(z.string())
-      .default([])
-      .describe(
-        "Unsupported per-harness knobs the route could not honor (INV-105), disclosed on harness.started; empty when nothing was dropped (QA-070).",
-      ),
-    rawRef: z
-      .string()
-      .nullable()
-      .default(null)
-      .describe("Reference to the raw underlying event/artifact."),
-  })
-  .describe("One projected timeline row of a run for display.");
-export type ControlTimelineEvent = z.infer<typeof ControlTimelineEvent>;
 
 export const ControlEvidenceIntegrity = z
   .enum(["complete", "incomplete", "unavailable"])

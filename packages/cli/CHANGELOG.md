@@ -1,5 +1,38 @@
 # @claudexor/cli
 
+## 3.9.3
+
+### Patch Changes
+
+- Preserve typed text-fragment metadata in delegated run timelines so hosts can join streamed words and whitespace without inserting event separators. Keep complete messages, tool events, final answers, and omission disclosures distinct.
+
+  Allow release review by any two distinct approved model families on any harness, recording the actual model and harness while retaining exact-candidate evidence, independent reports, and signed attestation checks.
+
+- Updated dependencies
+  - @claudexor/schema@3.9.3
+  - @claudexor/control-api@3.9.3
+  - @claudexor/harness-cursor@3.9.3
+  - @claudexor/acp-server@3.9.3
+  - @claudexor/config@3.9.3
+  - @claudexor/core@3.9.3
+  - @claudexor/daemon@3.9.3
+  - @claudexor/delivery@3.9.3
+  - @claudexor/gateway@3.9.3
+  - @claudexor/harness-agy@3.9.3
+  - @claudexor/harness-claude@3.9.3
+  - @claudexor/harness-codex@3.9.3
+  - @claudexor/harness-fake@3.9.3
+  - @claudexor/harness-opencode@3.9.3
+  - @claudexor/harness-raw-api@3.9.3
+  - @claudexor/mcp-server@3.9.3
+  - @claudexor/orchestrator@3.9.3
+  - @claudexor/review@3.9.3
+  - @claudexor/workspace@3.9.3
+  - @claudexor/artifact-store@3.9.3
+  - @claudexor/journal@3.9.3
+  - @claudexor/secrets@3.9.3
+  - @claudexor/util@3.9.3
+
 ## 3.9.2
 
 ### Patch Changes

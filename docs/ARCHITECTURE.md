@@ -1541,6 +1541,16 @@ projection).
 
 ### Event streaming contract (snapshot-then-subscribe)
 
+The run-detail timeline preserves typed harness text as `textKind`
+(`thinking` or `message`) plus `textDelta`. Its `detail` is the full redacted
+text with original whitespace; `title` may be abbreviated. Only an adapter's
+explicit `payload.delta: true` marks a fragment. Consumers can concatenate
+consecutive same-kind, same-attempt deltas verbatim without inserting event
+separators inside model prose. Complete messages, tool/status events, and rows
+without text metadata remain separate; historical rows do not acquire guessed
+fragment semantics. Cursor thinking deltas use the native `subtype: delta`,
+while its complete assistant flush remains a complete message.
+
 Every `RunEvent` carries a monotonic per-run `seq` stamped by the engine's
 EventLog at emit time (control-api audit appends continue the same sequence).
 In the daemon composition root, each emitted event is also appended to its
@@ -2500,21 +2510,20 @@ detail as `candidates` from attempt/review/decision artifacts.
 
 Repository release review is cumulative and SHA-bound. The panel reviews the
 exact clean committed candidate against the checklists and docs; any tracked
-mutation invalidates every result and starts a new freeze. Since the owner
-decision of 2026-08-06 the formal pair executes as Cursor operator subagents
-(one `fable` slot and one `sol` slot, each pinned to its owner-approved tier
-set in the panel constant, both on the full context — INV-125), and the signed
-schemaVersion-6 attestation (protocol `cursor-operator-fable-sol-v1`) binds
+mutation invalidates every result and starts a new freeze. The formal pair
+uses neutral slots `reviewer-1` and `reviewer-2` with distinct owner-approved
+model families on any harness (INV-125). The signed schemaVersion-7 attestation
+(protocol `owner-review-two-model-families-v1`) binds
 the candidate SHA/tree/version, the exact full-gate receipt, the sealed
 evidence manifest/diff/wave, and both reviewer entries. Each slot's artifact
 directory (`NN-<slot>/`) carries `report.md` plus an exact-shape
-`metadata.json` whose fields are operator-attested: the actually used model
-slug (validated against that slot's owner-approved tier set), exact ISO
+`metadata.json` whose fields are operator-attested: the declared model family,
+actual model slug/label and harness, exact ISO
 start/finish intervals that must genuinely overlap, a
 `pass|warn` verdict, the mandatory `review_scope: "full"`, and the report's
 SHA-256. The sealer does not launch any review CLI; it recomputes every
 digest and refuses anything missing, extra, malformed, or mismatched.
-Schemas v2-v5 are archival only:
+Schemas v2-v6 are archival only:
 already-sealed attestations stay signature-verifiable for their releases,
 never as new publish input. The operational protocol — panel composition, wave
 discipline, blocker contract, and round bound — is defined ONCE in
@@ -2527,16 +2536,17 @@ release attestation.
 After exact `pnpm release:verify` passes, the gate builds a small
 self-contained verifier from tracked candidate sources and copies the packaged
 app's self-contained CLI, binding both byte digests into its receipt. The
-operator transport never executes that copied CLI — it travels only as
+sealer never executes that copied CLI — it travels only as
 receipt-bound bytes — and the sealer imports only the receipt-verified
 verifier bytes rather than mutable workspace `dist`. The sealer re-verifies
 the sealed evidence packet against the candidate SHA/tree, the exact
 base..candidate diff byte-for-byte, the byte-identical receipt inside the
 packet, every reviewer artifact digest, and the interval overlap before
-signing. The slot metadata itself — model, intervals, verdict, scope — is a
-set of operator-attested statements, not independently observed session
-evidence (an accepted property of the owner's v6 transport decision recorded
-in `docs/CHECKLISTS.md`).
+signing. The slot metadata itself — model family, concrete model, harness,
+intervals, verdict, scope — remains operator-attested, not independent vendor
+identity proof. Available observed-model telemetry and run references stay in
+the reports; requested slugs and unidentified Auto routes cannot establish an
+approved family. The current owner amendment is in `docs/CHECKLISTS.md`.
 
 Runtime resilience is typed. Adapters translate native transient failures
 (network lookup failures, stream disconnects, retryable HTTP statuses, timeouts)

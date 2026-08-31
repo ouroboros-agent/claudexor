@@ -5,7 +5,7 @@
   "apps/macos/ClaudexorApp/Sources/ClaudexorApp/OpsScreens.swift": 435,
   "apps/macos/ClaudexorApp/Sources/ClaudexorApp/ThreadsScreen.swift": 601,
   "apps/macos/ClaudexorKit/Sources/ClaudexorKit/GatewayClient.swift": 527,
-  "apps/macos/ClaudexorKit/Sources/ClaudexorKit/Models.swift": 587,
+  "apps/macos/ClaudexorKit/Sources/ClaudexorKit/Models.swift": 548,
   "packages/acp-server/src/index.ts": 459,
   "packages/cli/src/claudexord.ts": 609,
   "packages/cli/src/cli.ts": 1458,
@@ -30,7 +30,7 @@
   "packages/orchestrator/src/orchestrator.ts": 7631,
   "packages/orchestrator/src/planRun.ts": 612,
   "packages/review/src/reviewEngine.ts": 1234,
-  "packages/schema/src/control.ts": 1649,
+  "packages/schema/src/control.ts": 1611,
   "packages/schema/src/harness.ts": 1054,
   "packages/schema/src/setup.ts": 700,
   "packages/schema/src/telemetry.ts": 601

@@ -265,6 +265,13 @@ export function timelineEvents(
   for (const ev of events ?? readRunEvents(rec)) {
     const payload = eventPayload(ev);
     const type = String(ev["type"] ?? "event");
+    const textKind =
+      type === "harness.event" &&
+      (payload["type"] === "thinking" || payload["type"] === "message") &&
+      typeof payload["text"] === "string"
+        ? payload["type"]
+        : null;
+    const textDelta = textKind !== null && eventPayload(payload)["delta"] === true;
     // Typed tool info travels on the normalized HarnessEvent `tool` field.
     const tool =
       payload["tool"] && typeof payload["tool"] === "object" && !Array.isArray(payload["tool"])
@@ -285,11 +292,13 @@ export function timelineEvents(
               payload["error"],
           )) ?? prettyEventType(type);
     const errorSummary = stringOrNull(tool["error_summary"] ?? payload["error"]);
-    const detail = partialGitInitialization
-      ? `Stopped during ${String(payload["failed_stage"] ?? "unknown")} at ${String(payload["repo_root"] ?? "?")}; partial Git metadata may remain.`
-      : (stringOrNull(payload["detail"] ?? payload["text"] ?? payload["error"]) ??
-        stringOrNull(tool["content_summary"]) ??
-        errorSummary);
+    const detail = textKind
+      ? stringOrNull(payload["text"])
+      : partialGitInitialization
+        ? `Stopped during ${String(payload["failed_stage"] ?? "unknown")} at ${String(payload["repo_root"] ?? "?")}; partial Git metadata may remain.`
+        : (stringOrNull(payload["detail"] ?? payload["text"] ?? payload["error"]) ??
+          stringOrNull(tool["content_summary"]) ??
+          errorSummary);
     const toolName = stringOrNull(tool["name"]);
     const target = stringOrNull(tool["target"]);
     // INV-105 disclosure (QA-070): unsupported per-harness knobs the route could
@@ -313,6 +322,8 @@ export function timelineEvents(
         attemptId,
         title,
         detail,
+        textKind,
+        textDelta,
         severity,
         toolName,
         target,
