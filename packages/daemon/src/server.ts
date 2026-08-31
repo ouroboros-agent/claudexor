@@ -1,4 +1,6 @@
 import { type Server, type Socket, createServer } from "node:net";
+
+import { normalizeCancelReasonCode, type CancelReasonCode } from "@claudexor/schema";
 import { RpcFollowers } from "./rpc-followers.js";
 import {
   assertNoInlineSecretValues,
@@ -171,7 +173,7 @@ export class DaemonServer {
   private async stopOnce(): Promise<void> {
     for (const controller of this.controllers.values()) {
       try {
-        controller.abort(new Error("daemon shutdown"));
+        controller.abort("host_cancelled" satisfies CancelReasonCode);
       } catch {
         /* already gone */
       }
@@ -359,7 +361,7 @@ export class DaemonServer {
       case "claudexor.list":
         return productCommandRecords(this.allRecords()).map(publicJobRecord);
       case "claudexor.cancel": {
-        return this.cancelJob(String(params?.id));
+        return this.cancelJob(String(params?.id), normalizeCancelReasonCode(params?.reason_code));
       }
       case "claudexor.delegationFence": {
         const runId = String(params?.runId ?? "");
@@ -390,7 +392,7 @@ export class DaemonServer {
 
   /** Daemon-owned cancellation primitive used by RPC and the Delegate drain
    * barrier. It is safe to repeat and preserves queued-admission cleanup. */
-  cancelJob(jid: string): { id: string; cancelled: true } {
+  cancelJob(jid: string, reasonCode?: CancelReasonCode): { id: string; cancelled: true } {
     const rec = this.getRecord(jid);
     if (!rec) throw new Error(`no such job: ${jid}`);
     this.cancelled.add(jid);
@@ -400,7 +402,10 @@ export class DaemonServer {
       if (delegatedFrom) this.opts.delegationAuthority?.cancelAcceptedChild(delegatedFrom, rec.id);
     }
     if (rec.runId) this.opts.delegationAuthority?.beginParentClose(rec.runId);
-    this.controllers.get(jid)?.abort();
+    // The abort reason is the one channel a cancel's provenance rides into
+    // the terminal writers. Only enum members reach this parameter: RunControl
+    // validates the HTTP boundary, normalizeCancelReasonCode the raw RPC.
+    this.controllers.get(jid)?.abort(reasonCode || undefined);
     return { id: jid, cancelled: true };
   }
 

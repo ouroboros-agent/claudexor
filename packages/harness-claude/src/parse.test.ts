@@ -618,7 +618,7 @@ describe("parseClaudeEvent", () => {
       "--max-turns",
       "12",
       "--tools",
-      "Read,Glob,Grep,WebSearch,WebFetch",
+      "Read,Glob,Grep,WebSearch,WebFetch,AskUserQuestion",
       "--allowedTools",
       "Read,Glob,Grep,WebSearch,WebFetch",
       "--disallowedTools",
@@ -644,12 +644,33 @@ describe("parseClaudeEvent", () => {
     const tools = args[args.indexOf("--tools") + 1];
     const allowed = args[args.indexOf("--allowedTools") + 1];
     const denied = args[args.indexOf("--disallowedTools") + 1];
-    expect(tools).toBe("Read,Grep");
+    expect(tools).toBe("Read,Grep,AskUserQuestion");
     expect(allowed).toBe("Read,Grep");
     expect(denied).toContain("Bash");
     expect(denied).toContain("Write");
     expect(denied).toContain("Agent");
     expect(denied).toContain("Glob");
+  });
+
+  it("keeps the readonly AskUserQuestion channel open without pre-approving it", () => {
+    const spec = HarnessRunSpec.parse({
+      session_id: "ses-readonly-ask",
+      intent: "review",
+      prompt: "review",
+      cwd: "/tmp",
+      access: "readonly",
+    });
+    const args = claudeArgsForSpec(spec, true);
+    const tools = (args[args.indexOf("--tools") + 1] ?? "").split(",");
+    const allowed = (args[args.indexOf("--allowedTools") + 1] ?? "").split(",");
+    const denied = (args[args.indexOf("--disallowedTools") + 1] ?? "").split(",");
+    // In --tools so the readonly interactive run can raise questions at all…
+    expect(tools).toContain("AskUserQuestion");
+    // …but NOT in --allowedTools: pre-approval would suppress the
+    // control_request the interaction bridge listens for.
+    expect(allowed).not.toContain("AskUserQuestion");
+    // The mutation surface stays denied.
+    for (const tool of ["Bash", "Write", "Edit"]) expect(denied).toContain(tool);
   });
 
   it("maps web policy off to comma-form disallowed tools and merges user deny lists", () => {
@@ -669,7 +690,95 @@ describe("parseClaudeEvent", () => {
     expect(denyValue).toContain("WebSearch");
     expect(denyValue).toContain("WebFetch");
     expect(denyValue).toContain("Bash(rm:*)");
-    expect(args).not.toContain("--allowedTools");
+    // workspace_write pre-approves bare Bash (the capability-loss fix); the
+    // caller's narrower deny PATTERN rides beside it and wins by precedence.
+    const allowValue = args[args.indexOf("--allowedTools") + 1] ?? "";
+    expect(allowValue).toContain("Bash");
+  });
+
+  it("workspace_write pre-approves Bash; readonly and an explicit deny do not", () => {
+    // Live-verified (claude 2.1.221): under acceptEdits the interaction
+    // bridge denies every non-edit-shaped command (python3/pytest/curl) and
+    // neither dontAsk nor auto helps — only the allowlist restores the
+    // declared workspace_write capability. Claude has no FS/network sandbox,
+    // so this is BROADER than codex's seatbelt: disclosed as the typed
+    // write_mechanism="tool_policy" capability, never a name branch.
+    const base = {
+      session_id: "ses-test",
+      intent: "implement" as const,
+      prompt: "x",
+      cwd: "/tmp",
+      external_context_policy: "live" as const,
+      tool_permission_policy: { web: "live" as const, allow: [], deny: [] },
+    };
+    const write = claudeArgsForSpec(HarnessRunSpec.parse({ ...base, access: "workspace_write" }));
+    const writeAllow = (write[write.indexOf("--allowedTools") + 1] ?? "").split(",");
+    expect(writeAllow).toContain("Bash");
+
+    const readonly = claudeArgsForSpec(HarnessRunSpec.parse({ ...base, access: "readonly" }));
+    const roAllow = (readonly[readonly.indexOf("--allowedTools") + 1] ?? "").split(",");
+    expect(roAllow).not.toContain("Bash");
+    const roDeny = (readonly[readonly.indexOf("--disallowedTools") + 1] ?? "").split(",");
+    expect(roDeny).toContain("Bash");
+
+    const denied = claudeArgsForSpec(
+      HarnessRunSpec.parse({
+        ...base,
+        access: "workspace_write",
+        tool_permission_policy: { web: "live" as const, allow: [], deny: ["Bash"] },
+      }),
+    );
+    const deniedAllow = (denied[denied.indexOf("--allowedTools") + 1] ?? "").split(",");
+    expect(deniedAllow).not.toContain("Bash");
+  });
+
+  it("Bash pre-approval never widens inherit_native or a caller-scoped shell", () => {
+    const base = {
+      session_id: "ses-test",
+      intent: "implement" as const,
+      prompt: "x",
+      cwd: "/tmp",
+      external_context_policy: "live" as const,
+    };
+    // inherit_native defers to the user's own claude settings — injecting
+    // --allowedTools Bash would silently override them.
+    const native = claudeArgsForSpec(
+      HarnessRunSpec.parse({
+        ...base,
+        access: "inherit_native",
+        tool_permission_policy: { web: "live" as const, allow: [], deny: [] },
+      }),
+    );
+    const nativeAllow = native.indexOf("--allowedTools");
+    expect(nativeAllow === -1 || !native[nativeAllow + 1]?.split(",").includes("Bash")).toBe(true);
+
+    // A caller who SCOPED the shell with a Bash(...) allow pattern made an
+    // explicit narrowing; bare Bash must not ride beside it.
+    const scoped = claudeArgsForSpec(
+      HarnessRunSpec.parse({
+        ...base,
+        access: "workspace_write",
+        tool_permission_policy: { web: "live" as const, allow: ["Bash(git *)"], deny: [] },
+      }),
+    );
+    const scopedAllow = (scoped[scoped.indexOf("--allowedTools") + 1] ?? "").split(",");
+    expect(scopedAllow).toContain("Bash(git *)");
+    expect(scopedAllow).not.toContain("Bash");
+  });
+
+  it("a caller deny of AskUserQuestion keeps it out of readonly --tools", () => {
+    const spec = HarnessRunSpec.parse({
+      session_id: "ses-test",
+      intent: "explain",
+      prompt: "x",
+      cwd: "/tmp",
+      access: "readonly",
+      external_context_policy: "live",
+      tool_permission_policy: { web: "live", allow: [], deny: ["AskUserQuestion"] },
+    });
+    const args = claudeArgsForSpec(spec, true);
+    const tools = (args[args.indexOf("--tools") + 1] ?? "").split(",");
+    expect(tools).not.toContain("AskUserQuestion");
   });
 
   it("translates a headless ExitPlanMode error result to a benign thinking event", () => {

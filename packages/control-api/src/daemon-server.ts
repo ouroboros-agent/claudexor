@@ -1598,6 +1598,10 @@ export class DaemonControlApiServer {
           parent: rec,
           descendantsAfterFence: () => this.delegatedDescendants(rec.runId ?? rec.id),
           pollMs: this.opts.pollMs,
+          // The typed class rides the abort into the terminal writers; the
+          // free-text reason stays audit-only (it was ALWAYS dropped before —
+          // even Claudexor's own ctrl-c relay coerced to user_cancelled).
+          reasonCode: body.control.reason_code,
         });
         activeDescendants = cancelled.descendants;
       } catch (error) {

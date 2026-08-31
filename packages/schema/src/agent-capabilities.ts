@@ -1,6 +1,6 @@
 import { z } from "zod/v3";
 import { AccessProfile, ModeKind, ProviderFamily } from "./primitives.js";
-import { AdapterStatus, EffortHint, ReadonlyMechanism } from "./harness.js";
+import { AdapterStatus, EffortHint, ReadonlyMechanism, WriteMechanism } from "./harness.js";
 import { WorkspaceMode } from "./thread.js";
 import { AttachmentInputClass } from "./attachment.js";
 import { OutputSchemaDialect } from "./output-schema-dialect.js";
@@ -127,6 +127,9 @@ export const CatalogHarness = z
       .describe("Access profiles the adapter can enforce."),
     readonlyMechanism: ReadonlyMechanism.describe(
       "HOW read-only is enforced (fs_sandbox | permission_deny | tool_allowlist | none) — none means read-only intent is advisory for this harness.",
+    ),
+    writeMechanism: WriteMechanism.default("none").describe(
+      "HOW workspace_write is confined (fs_sandbox | tool_policy | none) — tool_policy means an allowed shell is unconfined (no FS/network fence); consumers choosing lanes by confinement read THIS field, never a harness name.",
     ),
     delegation: DelegationCapability.describe(
       "Whether this installed runtime can offer Delegate through this harness.",

@@ -209,7 +209,7 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
               { source: "api_key_env", kind: "http_header", relocatable_by: ["ENV"] },
             ],
           },
-          access_control: { readonly_mechanism: "none" },
+          access_control: { readonly_mechanism: "none", write_mechanism: "none" },
           isolation: { supported_containment: ["env_or_file_injection"] },
           attachment_inputs: [
             {

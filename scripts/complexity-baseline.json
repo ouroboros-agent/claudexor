@@ -30,7 +30,7 @@
   "packages/orchestrator/src/orchestrator.ts": 7631,
   "packages/orchestrator/src/planRun.ts": 612,
   "packages/review/src/reviewEngine.ts": 1234,
-  "packages/schema/src/control.ts": 1608,
+  "packages/schema/src/control.ts": 1611,
   "packages/schema/src/harness.ts": 1054,
   "packages/schema/src/setup.ts": 700,
   "packages/schema/src/telemetry.ts": 601

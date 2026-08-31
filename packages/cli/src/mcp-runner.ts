@@ -341,7 +341,11 @@ async function recoveryQuery(
       method: "POST",
       headers: { authorization: `Bearer ${addr.token}`, "content-type": "application/json" },
       body: JSON.stringify({
-        control: { kind: "cancel", reason: "MCP host requested durable run cancellation" },
+        control: {
+          kind: "cancel",
+          reason: "MCP host requested durable run cancellation",
+          reason_code: "host_cancelled",
+        },
       }),
     });
     const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
@@ -484,7 +488,11 @@ export function makeCancelBridge(
         method: "POST",
         headers: { Authorization: `Bearer ${addr.token}`, "Content-Type": "application/json" },
         body: JSON.stringify({
-          control: { kind: "cancel", reason: "mcp host cancelled the tool call" },
+          control: {
+            kind: "cancel",
+            reason: "mcp host cancelled the tool call",
+            reason_code: "host_cancelled",
+          },
         }),
       });
       posted = response.ok;

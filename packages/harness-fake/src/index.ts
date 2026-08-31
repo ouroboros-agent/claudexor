@@ -111,7 +111,7 @@ function buildManifest(id: string, provider: ProviderFamily): HarnessManifest {
         preferred_source: "none",
         credential_transports: [{ source: "none", kind: "none", relocatable_by: ["none"] }],
       },
-      access_control: { readonly_mechanism: "none" },
+      access_control: { readonly_mechanism: "none", write_mechanism: "none" },
       isolation: { supported_containment: ["env_or_file_injection"] },
       // The offline fixture declares MCP injection so the engine's delegate-belt
       // path (agent --delegate) is exercisable deterministically; the fake spawns

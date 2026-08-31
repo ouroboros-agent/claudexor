@@ -54,6 +54,12 @@ export const RunReason = z
     "stuck_no_progress",
     "wall_clock_exceeded",
     "user_cancelled",
+    // Host-initiated cancellations (2026-08-30): the daemon/an integrating
+    // host stopped the run, not a human — and the specific case where the
+    // owning task on the caller's side is gone. Absent reason still coerces
+    // to user_cancelled for wire compatibility.
+    "host_cancelled",
+    "owner_task_gone",
     "crash_interrupted",
     "workspace_unavailable",
     // D-16 work_state / context reasons.

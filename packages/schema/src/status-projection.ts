@@ -70,7 +70,18 @@ export function runOutcomeLabel(facts: RunOutcomeFacts): string {
     case "failed":
       return facts.reason ? `Failed (${facts.reason.replaceAll("_", " ")})` : "Failed";
     case "cancelled":
-      return facts.reason === "wall_clock_exceeded" ? "Time limit reached" : "Cancelled";
+      // The new provenance must survive to the human label too, or the whole
+      // reason_code chain ends in a byte-identical "Cancelled".
+      switch (facts.reason) {
+        case "wall_clock_exceeded":
+          return "Time limit reached";
+        case "host_cancelled":
+          return "Stopped by host";
+        case "owner_task_gone":
+          return "Owner task gone";
+        default:
+          return "Cancelled";
+      }
     case "interrupted":
       return "Interrupted";
     case "succeeded":
@@ -305,14 +316,23 @@ export function requiredActionsFor(
   return actions;
 }
 
-/** ACP stop-reason projection. A daemon-enforced hard time limit is a typed
- * refusal: the user did not cancel the turn. Legacy cancellations without a
- * reason remain cancelled because their initiator cannot be reconstructed. */
+/** ACP stop-reason projection. ACP `cancelled` means THE USER cancelled the
+ * turn; every cancellation the user did not initiate — the daemon's hard time
+ * limit, a host/daemon shutdown, the owning task disappearing — is a typed
+ * refusal, or the IDE attributes a host kill to its user. Legacy cancellations
+ * without a reason remain cancelled because their initiator cannot be
+ * reconstructed. */
 export function acpStopReason(
   lifecycle: string,
   reason: RunReason | null,
 ): "cancelled" | "refusal" | "end_turn" {
-  if (lifecycle === "cancelled") return reason === "wall_clock_exceeded" ? "refusal" : "cancelled";
+  if (lifecycle === "cancelled") {
+    const notUser =
+      reason === "wall_clock_exceeded" ||
+      reason === "host_cancelled" ||
+      reason === "owner_task_gone";
+    return notUser ? "refusal" : "cancelled";
+  }
   if (lifecycle === "failed" || lifecycle === "interrupted") return "refusal";
   return "end_turn";
 }

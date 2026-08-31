@@ -17,7 +17,7 @@ export const CODEX_CAPABILITY_PROFILE: HarnessCapabilityProfile =
       ],
       managed_login: CODEX_MANAGED_LOGIN,
     },
-    access_control: { readonly_mechanism: "fs_sandbox" },
+    access_control: { readonly_mechanism: "fs_sandbox", write_mechanism: "fs_sandbox" },
     isolation: { supported_containment: ["host_user_context", "env_or_file_injection"] },
     mcp_injection: true,
     // Codex's workspace-write seatbelt cancels the belt's daemon-crossing MCP

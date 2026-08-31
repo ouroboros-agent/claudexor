@@ -355,6 +355,10 @@ export function createClaudeAdapter(deps: Partial<ClaudeRuntimeDeps> = {}): Harn
           ...CLAUDE_CAPABILITY_PROFILE,
           access_control: {
             readonly_mechanism: readonlyProfile.supported ? "tool_allowlist" : "none",
+            // workspace_write pre-approves Bash with no FS/network fence
+            // (claude has no sandbox): BROADER than codex's seatbelt, said
+            // typed here instead of prose in another repo.
+            write_mechanism: "tool_policy",
           },
           auth: {
             ...CLAUDE_CAPABILITY_PROFILE.auth,
@@ -696,7 +700,13 @@ function toolPermissionArgs(spec: HarnessRunSpec): string[] {
   const args: string[] = [];
   if (spec.access === "readonly") {
     const builtins = CLAUDE_READONLY_BUILTIN_TOOLS.filter((tool) => allow.has(tool));
-    args.push("--tools", builtins.join(","));
+    // AskUserQuestion rides --tools outside the allow filter (live-verified
+    // 2.1.221): in the constant it dies in the allow filter; in `allow` it
+    // would be pre-approved in --allowedTools, suppressing the very
+    // control_request the bridge needs. One-shot readonly = harmless no-op.
+    // A caller's explicit deny wins (never both --tools and --disallowedTools).
+    const asks = deny.has("AskUserQuestion") ? [] : ["AskUserQuestion"];
+    args.push("--tools", [...builtins, ...asks].join(","));
   }
   if (allow.size > 0) args.push("--allowedTools", [...allow].join(","));
   if (deny.size > 0) args.push("--disallowedTools", [...deny].join(","));
@@ -717,6 +727,20 @@ function toolPermissionSets(spec: HarnessRunSpec): { allow: Set<string>; deny: S
       deny.add(tool);
       allow.delete(tool);
     }
+  } else if (
+    (spec.access === "workspace_write" || spec.access === "full") &&
+    !deny.has("Bash") &&
+    ![...allow].some((tool) => tool.startsWith("Bash("))
+  ) {
+    // workspace_write/full ONLY: pre-approve Bash — under acceptEdits the
+    // bridge denied every non-edit command (pytest/node/curl), a silent
+    // capability loss on every daemon run; live-verified 2.1.221 (dontAsk
+    // hard-refuses pre-bridge, auto is a no-op, only the allowlist works).
+    // inherit_native must not be widened, and a caller's Bash(...) allow
+    // pattern is an explicit narrowing this must not undo. No FS/net
+    // sandbox exists, so this is BROADER than codex's seatbelt — disclosed
+    // as the typed write_mechanism capability (owner decision 2026-08-30).
+    allow.add("Bash");
   }
   if (policy === "off") {
     for (const tool of CLAUDE_WEB_TOOLS) {

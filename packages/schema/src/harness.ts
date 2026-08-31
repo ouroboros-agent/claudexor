@@ -287,9 +287,20 @@ export const ReadonlyMechanism = z
   );
 export type ReadonlyMechanism = z.infer<typeof ReadonlyMechanism>;
 
+export const WriteMechanism = z
+  .enum(["fs_sandbox", "tool_policy", "none"])
+  .describe(
+    "How workspace_write access is CONFINED for a harness: a filesystem/network sandbox (codex seatbelt), a tool-permission policy with no FS/network fence (claude — an allowed shell is unconfined), or none (write intent is advisory).",
+  );
+export type WriteMechanism = z.infer<typeof WriteMechanism>;
+
 export const AccessControlCapabilities = z
   .object({
     readonly_mechanism: ReadonlyMechanism.default("none"),
+    // Typed disclosure of the workspace_write asymmetry (owner decision
+    // 2026-08-30): a consumer choosing lanes by confinement reads THIS field,
+    // never a harness-name branch.
+    write_mechanism: WriteMechanism.default("none"),
   })
   .default({})
   .describe("Declared access-control facts for a harness.");

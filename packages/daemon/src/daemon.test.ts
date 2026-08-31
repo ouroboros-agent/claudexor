@@ -239,6 +239,48 @@ describe("DaemonServer", () => {
     }
   });
 
+  it("normalizes reason_code at the real RPC dispatch: forgery coerced, typed code delivered", async () => {
+    // sol/grok finding: the earlier tests pinned the normalizer helpers, not
+    // the claudexor.cancel call site — a later change passing params.reason_code
+    // into abort() unvalidated would keep them green. This drives the actual
+    // DaemonServer dispatch through the real client.
+    const dir = tempDir("cancel-rpc");
+    const authority = commandAuthority(dir);
+    const socketPath = join(dir, "daemon.sock");
+    const seen: unknown[] = [];
+    const server = new DaemonServer({
+      socketPath,
+      token: "token",
+      commands: authority.slot,
+      runner: (_params, ctx) =>
+        new Promise((resolve) => {
+          ctx.signal.addEventListener("abort", () => {
+            seen.push(ctx.signal.reason);
+            resolve({ lifecycle: "cancelled" });
+          });
+        }),
+    });
+    await server.start();
+    try {
+      const client = new DaemonClient(socketPath, "token");
+      const first = await client.enqueue({ n: 1 }, { idempotencyKey: "c-1", clientId: "test" });
+      // Forgery attempt: wall_clock_exceeded is daemon-internal, NOT client vocabulary.
+      await client.call("claudexor.cancel", { id: first.id, reason_code: "wall_clock_exceeded" });
+      await terminal(client, first.id);
+      const second = await client.enqueue({ n: 2 }, { idempotencyKey: "c-2", clientId: "test" });
+      await client.call("claudexor.cancel", { id: second.id, reason_code: "host_cancelled" });
+      await terminal(client, second.id);
+      // Forged deadline coerced away at the boundary: abort(undefined) leaves
+      // the platform's default AbortError as the reason, never the string.
+      expect(seen[0]).not.toBe("wall_clock_exceeded");
+      expect(typeof seen[0]).not.toBe("string");
+      expect(seen[1]).toBe("host_cancelled"); // typed code rides the abort signal
+    } finally {
+      await server.stop();
+      authority.journal.close();
+    }
+  });
+
   it("drops a disconnected RPC follower without crashing other followers", async () => {
     // Keep the fixture name short: macOS caps Unix-domain socket paths.
     const dir = tempDir("epipe");
