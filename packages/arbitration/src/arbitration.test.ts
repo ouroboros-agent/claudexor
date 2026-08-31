@@ -254,7 +254,7 @@ describe("arbitrate", () => {
     // its VALUE produced (the configured label rendered both as 100%, leaving
     // decisive_axis unable to explain itself — final-lane finding).
     const scorecard = res.decision.ranking_scorecard ?? [];
-    const fmt = (label) => scorecard.find((row) => row.label === label)?.axes?.tests ?? "";
+    const fmt = (label: string) => scorecard.find((row) => row.label === label)?.axes?.tests ?? "";
     expect(fmt("strong")).toContain("90%");
     expect(fmt("weak")).toContain("10%");
   });
