@@ -1,9 +1,20 @@
 # Changelog
 
-Release history for Claudexor. The current version is declared in the root
-`package.json` (the version SSOT); tags `v*` correspond to GitHub Releases.
+Release and candidate history for Claudexor. The current version is declared
+in the root `package.json` (the version SSOT); published versions are available
+on GitHub Releases.
 
-- **v3.9.3** (2026-08-30): delegated run timelines preserve typed text-fragment
+- **v3.9.4** (2026-08-31): includes the typed delegation text and whitespace
+  preservation prepared for 3.9.3, together with harness-independent release
+  review by two distinct approved model families. Claude read-only runs retain
+  AskUserQuestion; workspace-write command execution honors caller denies and
+  scoped Bash permissions, with enforcement strength exposed by the typed
+  `write_mechanism` capability. Interactive runs support structured output;
+  runs without configured gates report that absence without inventing passed
+  or failed checks. Cancellation reasons retain their typed user/host/owner
+  provenance across the control boundary.
+- **v3.9.3** (2026-08-30, unpublished candidate, superseded by 3.9.4):
+  delegated run timelines preserve typed text-fragment
   metadata and original whitespace so hosts can join streamed words without
   inserting event separators into model prose. Complete messages, tool events,
   final answers, and omission disclosures retain their distinct semantics.

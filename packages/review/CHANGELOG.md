@@ -1,5 +1,16 @@
 # @claudexor/review
 
+## 3.9.4
+
+### Patch Changes
+
+- @claudexor/config@3.9.4
+- @claudexor/context@3.9.4
+- @claudexor/core@3.9.4
+- @claudexor/schema@3.9.4
+- @claudexor/util@3.9.4
+- @claudexor/workspace@3.9.4
+
 ## 3.9.3
 
 ### Patch Changes
