@@ -109,12 +109,23 @@ function effectiveTestFraction(c: CandidateEvidence): number {
   return c.testsTotal > 0 ? c.testsPassed / c.testsTotal : 0;
 }
 
-/** Human label for test evidence: honest "n/a" when no tests exist at all —
- * label-only surface, so it may re-derive augmented-computed counts. */
+/** Human label for test evidence on VERDICT surfaces (why_winner,
+ * final_checks): honest "n/a" when no tests exist at all — label-only, so it
+ * may re-derive augmented-computed counts through `configuredTestCounts`. */
 function testEvidenceLabel(c: CandidateEvidence): string {
   const { passed, total } = configuredTestCounts(c);
   if (total === 0) return "n/a";
   return `${((passed / total) * 100).toFixed(0)}%`;
+}
+
+/** The RANKING-axis format: describes the same raw counts the axis VALUE
+ * ranks on (QA-028 — value and label on one surface may never disagree; the
+ * configured label rendered two errored candidates as "100% vs 100%" while
+ * raw 1/10-vs-9/10 decided the ordering, leaving the persisted decisive_axis
+ * unable to explain itself). Verdict surfaces keep `testEvidenceLabel`. */
+function rawTestAxisLabel(c: CandidateEvidence): string {
+  if (c.testsTotal === 0) return "n/a";
+  return `${(effectiveTestFraction(c) * 100).toFixed(0)}%`;
 }
 
 /**
@@ -160,7 +171,7 @@ const AXES: RankingAxis[] = [
   {
     key: "tests",
     value: (c) => effectiveTestFraction(c),
-    format: (c) => testEvidenceLabel(c),
+    format: (c) => rawTestAxisLabel(c),
   },
   {
     key: "clean_review",

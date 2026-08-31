@@ -250,6 +250,13 @@ describe("arbitrate", () => {
     });
     const res = arbitrate([weak, strong]);
     expect(res.ranking[0]?.label).toBe("strong");
+    // QA-028 on the ranking surface: the axis FORMAT explains the ordering
+    // its VALUE produced (the configured label rendered both as 100%, leaving
+    // decisive_axis unable to explain itself — final-lane finding).
+    const scorecard = res.decision.ranking_scorecard ?? [];
+    const fmt = (label) => scorecard.find((row) => row.label === label)?.axes?.tests ?? "";
+    expect(fmt("strong")).toContain("90%");
+    expect(fmt("weak")).toContain("10%");
   });
 
   it("adopts a no-gate run on a VERIFIED clean cross-family review, basis disclosed", () => {
