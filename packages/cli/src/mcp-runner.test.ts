@@ -183,7 +183,32 @@ describe("makeCancelBridge (host cancel -> typed daemon cancel)", () => {
     expect(posts).toHaveLength(1);
     expect(posts[0]).toContain("/runs/run-9/control");
     expect(posts[0]).toContain('"kind":"cancel"');
+    expect(posts[0]).toContain('"reason_code":"host_cancelled"');
   });
+
+  it.each(["user_cancelled", "owner_task_gone"])(
+    "preserves the caller's typed %s cancellation cause",
+    async (reason) => {
+      const fetch = vi.fn(async () => ({ ok: true }));
+      vi.stubGlobal("fetch", fetch);
+      const { makeCancelBridge } = await import("./mcp-runner.js");
+      const controller = new AbortController();
+      controller.abort(reason);
+      await makeCancelBridge(addr, controller.signal)({ runId: "run-cause" });
+      expect(fetch).toHaveBeenCalledWith(
+        expect.stringContaining("/runs/run-cause/control"),
+        expect.objectContaining({
+          body: JSON.stringify({
+            control: {
+              kind: "cancel",
+              reason: "calling surface cancelled the run",
+              reason_code: reason,
+            },
+          }),
+        }),
+      );
+    },
+  );
 
   it("does not mark a failed cancel delivery as acknowledged and retries", async () => {
     let posts = 0;

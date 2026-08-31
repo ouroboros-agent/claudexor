@@ -204,7 +204,7 @@ export class AcpServer {
         }
       })
       .onNotification(acp.methods.agent.session.cancel, async ({ params }) => {
-        this.activeRuns.get(params.sessionId)?.abort();
+        this.activeRuns.get(params.sessionId)?.abort("user_cancelled");
       });
 
     const connection = app.connect(stream);

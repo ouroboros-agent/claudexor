@@ -2,6 +2,7 @@ import {
   ControlProblem,
   isTerminalLifecycle,
   ModeKind,
+  normalizeCancelReasonCode,
   type RunOutcomeFacts,
 } from "@claudexor/schema";
 import {
@@ -470,9 +471,8 @@ async function journalRecoveryQuery(input: Record<string, unknown>): Promise<unk
 }
 
 /**
- * Cancel bridge: once the run is BOUND (we know its id), an aborted host
- * signal posts the typed cancel control exactly once. Runs on the poll tick
- * so an abort that races run-binding still lands.
+ * Once a run is bound, forward a typed abort cause, defaulting untyped host
+ * signals to host_cancelled. Poll ticks preserve aborts that race run-binding.
  */
 export function makeCancelBridge(
   addr: ControlApiAddress,
@@ -490,8 +490,8 @@ export function makeCancelBridge(
         body: JSON.stringify({
           control: {
             kind: "cancel",
-            reason: "mcp host cancelled the tool call",
-            reason_code: "host_cancelled",
+            reason: "calling surface cancelled the run",
+            reason_code: normalizeCancelReasonCode(signal.reason) ?? "host_cancelled",
           },
         }),
       });

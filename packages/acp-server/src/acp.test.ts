@@ -622,6 +622,7 @@ describe("AcpServer official SDK projection", () => {
   it("propagates session/cancel to the active daemon prompt", async () => {
     const cwd = project();
     let aborted = false;
+    let abortReason: unknown;
     await withClient(
       async (params, hooks) => {
         if (params.mode === "__acp_session_new") return { sessionId: "thread-cancel", cwd };
@@ -630,6 +631,7 @@ describe("AcpServer official SDK projection", () => {
             "abort",
             () => {
               aborted = true;
+              abortReason = hooks?.signal?.reason;
               resolve();
             },
             { once: true },
@@ -649,5 +651,6 @@ describe("AcpServer official SDK projection", () => {
       },
     );
     expect(aborted).toBe(true);
+    expect(abortReason).toBe("user_cancelled");
   });
 });
