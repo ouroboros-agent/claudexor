@@ -96,21 +96,25 @@ function openBlockerCount(c: CandidateEvidence): number {
 }
 
 /**
- * Test pass-fraction. Zero configured tests is zero test EVIDENCE (0, never a
- * vacuous 1): a candidate with no tests must not score "100%" in rankings or
- * user-facing decision strings. (The held-out split axis was retired in the
- * v0.15 triage: no producer ever populated it — re-add WITH a real held-out
- * runner if that anti-reward-hacking design returns.)
+ * Test pass-fraction — the RANKING value, reading the RAW producer counts on
+ * purpose. Routing it through `configuredTestCounts` was reproduced to change
+ * existing ordering: two harness-errored candidates with 1/10 and 9/10 test
+ * evidence both re-derived to 1/1 = 100% and the smaller-diff 1/10 candidate
+ * won the axis. Zero tests is zero test EVIDENCE (0, never a vacuous 1).
+ * (The held-out split axis was retired in the v0.15 triage: no producer ever
+ * populated it — re-add WITH a real held-out runner if that
+ * anti-reward-hacking design returns.)
  */
 function effectiveTestFraction(c: CandidateEvidence): number {
-  const { passed, total } = configuredTestCounts(c);
-  return total > 0 ? passed / total : 0;
+  return c.testsTotal > 0 ? c.testsPassed / c.testsTotal : 0;
 }
 
-/** Human label for test evidence: honest "n/a" when no tests exist at all. */
+/** Human label for test evidence: honest "n/a" when no tests exist at all —
+ * label-only surface, so it may re-derive augmented-computed counts. */
 function testEvidenceLabel(c: CandidateEvidence): string {
-  if (configuredTestCounts(c).total === 0) return "n/a";
-  return `${(effectiveTestFraction(c) * 100).toFixed(0)}%`;
+  const { passed, total } = configuredTestCounts(c);
+  if (total === 0) return "n/a";
+  return `${((passed / total) * 100).toFixed(0)}%`;
 }
 
 /**
@@ -324,22 +328,31 @@ export function arbitrate(
     ? compareTuples(scoreTuple(winner), scoreTuple(runnerUp)) === 0
     : false;
 
-  const requiredOk = requiredGatesPassed(winner);
   const blockerCount = openBlockerCount(winner);
   const hasDiff = (winner.diffBytes ?? winner.diffSize ?? 0) > 0;
   const harnessFailed = winner.gates.some((g) => g.id === "harness" && g.status === "failed");
   // v3 AXES (D8/D18): the harness pseudo-gate row is process evidence, not a
-  // configured deterministic check — it feeds lifecycle, never the checks
-  // axis (the old lattice let it flip hasGates and reroute the whole tree).
-  // No `testsTotal > 0` disjunct here: the counts derive from the same gate
-  // rows, and a producer that computed them over the augmented array would
-  // re-admit the pseudo-gate through that back door.
+  // configured deterministic check — it feeds lifecycle and RANKING, never the
+  // checks axis (the old lattice let it flip hasGates and reroute the whole
+  // tree). So EVERY input to the checks axis is configured-derived: the gates
+  // via `configuredGates`, the counts via `configuredTestCounts` (a producer
+  // that computed counts over the augmented array cannot re-admit the
+  // pseudo-gate through the numbers), and the required predicate over the
+  // configured rows — `requiredGatesPassed` reads the augmented gates for the
+  // score tuple and must not leak here, or a configured-green run whose
+  // harness errored renders "required gates passed" beside checks=failed on
+  // one record. Gate-less producers keep their raw test counts, so failing
+  // tests without gates still fail checks (base behavior).
   const realGates = configuredGates(winner);
-  const checksConfigured = realGates.length > 0;
+  const cfgCounts = configuredTestCounts(winner);
+  const checksConfigured = cfgCounts.total > 0 || realGates.length > 0;
+  const cfgRequired = realGates.filter((g) => g.required);
+  const cfgRequiredOk =
+    cfgRequired.length === 0 ? true : cfgRequired.every((g) => g.status === "passed");
   const checksPassed =
     checksConfigured &&
-    requiredOk &&
-    (winner.testsTotal === 0 || winner.testsPassed === winner.testsTotal);
+    cfgRequiredOk &&
+    (cfgCounts.total === 0 || cfgCounts.passed === cfgCounts.total);
   const checks = checksConfigured ? (checksPassed ? "passed" : "failed") : "not_configured";
   const reviewRan = winner.reviewVerified === true;
   // Accepted blockers ALWAYS surface as review=blocked — even from an

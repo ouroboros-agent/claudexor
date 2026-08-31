@@ -933,17 +933,13 @@ export type RunControlTarget = z.infer<typeof RunControlTarget>;
 
 export const RunControl = z
   .object({
-    // `interrupt` was deleted as a fake knob: it mapped to the same daemon
-    // cancel (staged-field doctrine — no vocabulary without distinct behavior).
+    // `interrupt` was deleted as a fake knob mapping to the same daemon cancel
+    // (staged-field doctrine — no vocabulary without distinct behavior).
     kind: z.enum(["cancel"]).describe("Control verb: cancel the run."),
     target: RunControlTarget.default({}),
     reason: z.string().optional().describe("Human-readable reason for the control."),
-    reason_code: z
-      .enum(CANCEL_REASON_CODES)
-      .optional()
-      .describe(
-        "Typed cancellation class riding the abort signal (cancel-reason.ts); absent coerces to user_cancelled.",
-      ),
+    // Typed cancel class (vocabulary: cancel-reason.ts); absent = user_cancelled.
+    reason_code: z.enum(CANCEL_REASON_CODES).optional(),
   })
   .describe("A control verb (cancel) aimed at a run or a narrower target inside it.");
 export type RunControl = z.infer<typeof RunControl>;

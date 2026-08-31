@@ -126,12 +126,17 @@ describe("decideSynthesis", () => {
           output_truncated: false,
         },
       ],
-      testsPassed: 5,
+      // Ranked BELOW the errored candidate (acceptance 0 < 1) so the errored
+      // run really is the runner-up the complementary guard evaluates —
+      // otherwise this test never reaches the branch it names.
+      acceptanceCovered: [],
+      testsPassed: 0,
       testsTotal: 10,
       diffSize: 200,
     });
     const d = decideSynthesis([a, errored, c], "auto");
     expect(d.synthesize).toBe(false);
+    expect(d.sources).toEqual(["A"]);
   });
 
   it("an errored candidate with passed configured gates never outranks a healthy one", () => {
@@ -168,7 +173,9 @@ describe("decideSynthesis", () => {
       diffSize: 10,
     });
     const b = cand("B", { testsPassed: 5, testsTotal: 10, diffSize: 200 });
-    const c = cand("C", { testsPassed: 4, testsTotal: 10, diffSize: 300 });
+    // C ranks below the errored candidate (acceptance 0), so the errored run
+    // is the actual runner-up the suppression predicate inspects.
+    const c = cand("C", { acceptanceCovered: [], testsPassed: 4, testsTotal: 10, diffSize: 300 });
     const d = decideSynthesis([erroredTop, b, c], "auto");
     // The clear-winner suppression may fire — but only about the healthy
     // candidate: the errored run must not be the source it names.

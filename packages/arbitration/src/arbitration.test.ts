@@ -182,6 +182,76 @@ describe("arbitrate", () => {
     expect(res.decision.final_checks).toContain("required gates n/a (none configured)");
   });
 
+  it("fails checks for a gate-less candidate with failing raw tests (base behavior kept)", () => {
+    // sol counterexample 1: dropping the raw testsTotal>0 disjunct turned
+    // 0/10 failing tests with no gates into checks=not_configured + apply.
+    const res = arbitrate([candidate("A", { gates: [], testsPassed: 0, testsTotal: 10 })]);
+    expect(res.decision.facts.checks).toBe("failed");
+    expect(res.decision.apply_recommendation).not.toBe("apply");
+  });
+
+  it("keeps the checks axis on configured gates when the harness errored after a green gate", () => {
+    // sol counterexample 2 / grok M1 / fable m: the augmented requiredOk must
+    // not leak into checks — configured gate passed, harness errored: the
+    // record stays self-consistent (labels and checks both configured-only),
+    // lifecycle still carries the harness failure.
+    const harnessRow = {
+      id: "harness",
+      status: "failed" as const,
+      required: true,
+      command: "codex",
+      exit_code: 1,
+      duration_ms: 1,
+      stdout_tail: null,
+      stderr_tail: null,
+      output_truncated: false,
+    };
+    const res = arbitrate([
+      candidate("A", { gates: [gate(true), harnessRow], testsPassed: 1, testsTotal: 1 }),
+    ]);
+    expect(res.decision.facts.lifecycle).toBe("failed");
+    expect(res.decision.facts.reason).toBe("harness_failed");
+    expect(res.decision.facts.checks).toBe("passed");
+    expect(res.decision.final_checks.join(" ")).toContain("required gates passed");
+    expect(res.decision.apply_recommendation).not.toBe("apply");
+  });
+
+  it("keeps existing test-axis ordering between errored candidates (raw counts rank)", () => {
+    // sol counterexample 3: routing the RANKING fraction through configured
+    // counts made 1/10 and 9/10 both rank 100% and the 1/10 candidate win.
+    const harnessRow = {
+      id: "harness",
+      status: "failed" as const,
+      required: true,
+      command: "codex",
+      exit_code: 1,
+      duration_ms: 1,
+      stdout_tail: null,
+      stderr_tail: null,
+      output_truncated: false,
+    };
+    const weak = candidate("weak", {
+      gates: [gate(true), harnessRow],
+      testsPassed: 1,
+      testsTotal: 10,
+      diffBytes: 1,
+      diffSize: 1,
+      finalReviewClean: false,
+      reviewVerified: false,
+    });
+    const strong = candidate("strong", {
+      gates: [gate(true), harnessRow],
+      testsPassed: 9,
+      testsTotal: 10,
+      diffBytes: 500,
+      diffSize: 500,
+      finalReviewClean: false,
+      reviewVerified: false,
+    });
+    const res = arbitrate([weak, strong]);
+    expect(res.ranking[0]?.label).toBe("strong");
+  });
+
   it("adopts a no-gate run on a VERIFIED clean cross-family review, basis disclosed", () => {
     // No deterministic test gate, but the cross-family review is route-proof
     // verified and clean → applyable, recorded honestly as review-based.

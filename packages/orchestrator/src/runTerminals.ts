@@ -9,8 +9,10 @@
  */
 import { join } from "node:path";
 import {
+  type CancelReasonCode,
   makeOutcomeFacts,
   needsOperatorAttention,
+  normalizeCancelReasonCode,
   RunOutcomeFacts,
   type RunOutcomeFacts as RunOutcomeFactsType,
 } from "@claudexor/schema";
@@ -109,17 +111,17 @@ function terminalEventTypeFor(
 /** Map an abort-signal reason token to its typed terminal RunReason. The
  * abort reason is the ONE channel a cancel's provenance survives on — before
  * this mapping every host-initiated cancel coerced to user_cancelled (the
- * daemon's own ctrl-c relay and the MCP host teardown included). Unknown
- * tokens keep the user_cancelled coercion for wire compatibility. */
+ * daemon's own ctrl-c relay and the MCP host teardown included). The client
+ * vocabulary is read from CANCEL_REASON_CODES so a future member cannot be
+ * silently coerced away here while the HTTP boundary already admits it;
+ * wall_clock_exceeded stays daemon-internal (deliberately NOT in the client
+ * enum — unforgeable). Unknown tokens keep the user_cancelled coercion for
+ * wire compatibility. */
 export function cancelReasonFromSignalToken(
   reason: unknown,
-): "wall_clock_exceeded" | "user_cancelled" | "host_cancelled" | "owner_task_gone" {
-  if (typeof reason === "string") {
-    if (reason === "wall_clock_exceeded") return "wall_clock_exceeded";
-    if (reason === "host_cancelled") return "host_cancelled";
-    if (reason === "owner_task_gone") return "owner_task_gone";
-  }
-  return "user_cancelled";
+): "wall_clock_exceeded" | CancelReasonCode {
+  if (reason === "wall_clock_exceeded") return "wall_clock_exceeded";
+  return normalizeCancelReasonCode(reason) ?? "user_cancelled";
 }
 
 function cancellationFacts(signal: AbortSignal, prior: RunOutcomeFactsType): RunOutcomeFactsType {

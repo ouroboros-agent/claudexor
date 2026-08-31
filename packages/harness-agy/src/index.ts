@@ -159,7 +159,9 @@ export const AGY_CAPABILITY_PROFILE: HarnessCapabilityProfile =
       ],
       managed_login: AGY_MANAGED_LOGIN,
     },
-    access_control: { readonly_mechanism: "permission_deny", write_mechanism: "none" },
+    // workspace_write rides the vendor's `--mode accept-edits` permission
+    // policy — the same class as claude/cursor, not an unconfined "none".
+    access_control: { readonly_mechanism: "permission_deny", write_mechanism: "tool_policy" },
     isolation: {
       supported_containment: ["env_or_file_injection", "private_per_profile_keychain"],
     },
