@@ -1,5 +1,15 @@
 # @claudexor/control-api
 
+## 3.9.5
+
+### Patch Changes
+
+- @claudexor/delivery@3.9.5
+- @claudexor/event-log@3.9.5
+- @claudexor/schema@3.9.5
+- @claudexor/secrets@3.9.5
+- @claudexor/util@3.9.5
+
 ## 3.9.4
 
 ### Patch Changes

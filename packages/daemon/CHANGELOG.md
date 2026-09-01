@@ -1,5 +1,15 @@
 # @claudexor/daemon
 
+## 3.9.5
+
+### Patch Changes
+
+- 6e54444: Request background quota renewal on the last existing poll tick before primary evidence would become stale, while preserving current-time freshness and existing vendor pacing.
+  - @claudexor/core@3.9.5
+  - @claudexor/journal@3.9.5
+  - @claudexor/schema@3.9.5
+  - @claudexor/util@3.9.5
+
 ## 3.9.4
 
 ### Patch Changes
