@@ -206,8 +206,8 @@ at every wire boundary.
   contract.
 - `packages/claudexor`: the bare-name npm bin wrapper — `claudexor` and
   `claudexord` bins that import `@claudexor/cli`'s explicit entry exports;
-  the intended global install (`npm install -g claudexor`, once the npm
-  namespace is live) and the ONE owner of the global bin names.
+  the published global install (`npm install -g claudexor`) and the ONE owner
+  of the global bin names.
 - `packages/mcp-server`, `packages/acp-server`: thin protocol surfaces. The
   MCP server rides the official TypeScript SDK v2 (concurrent dispatch, era
   negotiation down to 2024-10-07, schema-validated arguments, elicitation);
