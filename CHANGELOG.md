@@ -4,6 +4,10 @@ Release and candidate history for Claudexor. The current version is declared
 in the root `package.json` (the version SSOT); published versions are available
 on GitHub Releases.
 
+- **v3.9.5** (2026-09-01): background quota renewal now starts on the last
+  existing poll tick before primary evidence would become stale. The
+  five-minute display and routing freshness contract, single poller, vendor
+  pacing, Retry-After handling, and typed absence semantics remain unchanged.
 - **v3.9.4** (2026-08-31): includes the typed delegation text and whitespace
   preservation prepared for 3.9.3, together with harness-independent release
   review by two distinct approved model families. Claude read-only runs retain

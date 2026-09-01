@@ -1,5 +1,35 @@
 # @claudexor/cli
 
+## 3.9.5
+
+### Patch Changes
+
+- 6e54444: Request background quota renewal on the last existing poll tick before primary evidence would become stale, while preserving current-time freshness and existing vendor pacing.
+- Updated dependencies [6e54444]
+  - @claudexor/daemon@3.9.5
+  - @claudexor/acp-server@3.9.5
+  - @claudexor/artifact-store@3.9.5
+  - @claudexor/config@3.9.5
+  - @claudexor/control-api@3.9.5
+  - @claudexor/core@3.9.5
+  - @claudexor/delivery@3.9.5
+  - @claudexor/gateway@3.9.5
+  - @claudexor/harness-agy@3.9.5
+  - @claudexor/harness-claude@3.9.5
+  - @claudexor/harness-codex@3.9.5
+  - @claudexor/harness-cursor@3.9.5
+  - @claudexor/harness-fake@3.9.5
+  - @claudexor/harness-opencode@3.9.5
+  - @claudexor/harness-raw-api@3.9.5
+  - @claudexor/journal@3.9.5
+  - @claudexor/mcp-server@3.9.5
+  - @claudexor/orchestrator@3.9.5
+  - @claudexor/review@3.9.5
+  - @claudexor/schema@3.9.5
+  - @claudexor/secrets@3.9.5
+  - @claudexor/util@3.9.5
+  - @claudexor/workspace@3.9.5
+
 ## 3.9.4
 
 ### Patch Changes
