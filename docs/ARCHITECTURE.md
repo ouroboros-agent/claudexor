@@ -2313,11 +2313,16 @@ One exhaustive schema-owned trait registry classifies every source along three
 independent axes: vendor-authenticated credential evidence, the primary harness
 whose missing observation creates refresh demand, and whether a top-level
 refresher produces it. Refresh demand is computed per enabled credential
-subject and only a fresh matching primary snapshot satisfies it. Typed absence
-is still a successful, displayable observation, but retains soft demand under
-exponential pacing; reactive rollout/retry and status-line evidence remains
-available to display and routing without triggering or satisfying primary
-demand. The poll lifecycle is a single-flight sweep paced PER VENDOR LANE:
+subject. Display and routing evaluate freshness at the actual current time:
+absent an earlier reset boundary, a snapshot is still fresh exactly five
+minutes after observation and becomes stale only after that boundary.
+Background demand additionally looks through
+the next existing 60-second poll tick, so a matching primary snapshot whose TTL
+or reset boundary is due by that deadline (including equality) no longer
+satisfies demand. Typed absence is still a successful, displayable observation,
+but retains soft demand under exponential pacing; reactive rollout/retry and
+status-line evidence remains available to display and routing without triggering
+or satisfying primary demand. The poll lifecycle is a single-flight sweep paced PER VENDOR LANE:
 each vendor with a registered refresher owns an independent
 completion-anchored exponential backoff (15-minute ceiling) that advances
 after partial/absence outcomes and resets when credential or routability

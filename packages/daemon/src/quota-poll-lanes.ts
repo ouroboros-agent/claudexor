@@ -3,6 +3,8 @@ import type { QuotaAbsence, QuotaSnapshot, QuotaSubject } from "@claudexor/schem
 import { QuotaPollPacer, type QuotaPacerStateStore } from "./quota-poll-pacer.js";
 import { quotaSubjectIdentity, remainingQuotaRefreshDemand } from "./quota-refresh-demand.js";
 
+export const QUOTA_POLL_INTERVAL_MS = 60_000;
+
 /** One refresh cycle's fruit: the snapshots a source observed, plus the typed
  * absences it CLAIMS for subjects it tried and could not observe. Absence is
  * stated by the source, never inferred from an empty snapshot list. */
@@ -60,7 +62,7 @@ export function buildRefresherLanes(
 export interface PollSweepDeps {
   readonly now: () => Date;
   readonly publishClockTransition: () => void;
-  readonly laneHasDemand: (vendor: string | null, now: number) => boolean;
+  readonly laneHasDemand: (vendor: string | null, now: number, dueBefore: number) => boolean;
   readonly currentGeneration: () => number;
   readonly isCurrentGeneration: (generation: number) => boolean;
   readonly runLaneCycle: (lane: PacingLane) => Promise<unknown>;
@@ -80,7 +82,7 @@ export async function performPollSweep(
   for (const lane of lanes) {
     const now = deps.now().getTime();
     if (!lane.pacer.pollEligible(now)) continue;
-    if (!deps.laneHasDemand(lane.vendor, now)) continue;
+    if (!deps.laneHasDemand(lane.vendor, now, now + QUOTA_POLL_INTERVAL_MS)) continue;
     const generation = deps.currentGeneration();
     try {
       await deps.runLaneCycle(lane);
@@ -89,7 +91,10 @@ export async function performPollSweep(
       // outcome: the fresh-generation poll re-decides from scratch.
       if (!deps.isCurrentGeneration(generation)) continue;
       const completedAt = deps.now().getTime();
-      lane.pacer.notePollSuccess(completedAt, deps.laneHasDemand(lane.vendor, completedAt));
+      lane.pacer.notePollSuccess(
+        completedAt,
+        deps.laneHasDemand(lane.vendor, completedAt, completedAt + QUOTA_POLL_INTERVAL_MS),
+      );
     } catch {
       if (deps.isCurrentGeneration(generation)) {
         lane.pacer.notePollFailure(deps.now().getTime());
@@ -105,12 +110,14 @@ export function laneHasDemand(
   vendor: string | null,
   snapshots: readonly QuotaSnapshot[],
   subjects?: readonly QuotaSubject[],
+  dueBefore?: number,
 ): boolean {
-  if (vendor === null) return remainingQuotaRefreshDemand(snapshots, subjects).size > 0;
+  if (vendor === null) return remainingQuotaRefreshDemand(snapshots, subjects, dueBefore).size > 0;
   return (
     remainingQuotaRefreshDemand(
       snapshots.filter((snapshot) => snapshot.subject.harness === vendor),
       subjects?.filter((subject) => subject.harness === vendor),
+      dueBefore,
     ).size > 0
   );
 }
