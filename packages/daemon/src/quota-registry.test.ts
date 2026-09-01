@@ -1125,6 +1125,178 @@ describe("QuotaRegistry", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
+  it("refreshes healthy primary evidence on the last existing tick before TTL expiry", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-quota-horizon-tick-")));
+    const journal = new DurableJournal({ rootDir: root, partition: "global" });
+    const observedAt = Date.parse("2026-07-28T00:00:00.000Z");
+    let nowMs = observedAt + 4 * 60_000;
+    let calls = 0;
+    const subject = quotaSnapshot("codex", null, 0.2).subject;
+    const registry = new QuotaRegistry(
+      journal,
+      [
+        {
+          vendor: "codex",
+          refresh: async () => {
+            calls += 1;
+            return {
+              snapshots: [
+                {
+                  ...quotaSnapshot("codex", null, 0.3),
+                  source: "codex_app_server" as const,
+                  observed_at: new Date(nowMs).toISOString(),
+                },
+              ],
+            };
+          },
+        },
+      ],
+      () => new Date(nowMs),
+      () => [subject],
+    );
+    registry.upsert({
+      ...quotaSnapshot("codex", null, 0.2),
+      source: "codex_app_server",
+      observed_at: new Date(observedAt).toISOString(),
+    });
+
+    await expect(registry.pollStale()).resolves.toBe(true);
+    expect(calls).toBe(1);
+    expect(registry.read().snapshots[0]).toMatchObject({
+      freshness: "fresh",
+      observed_at: new Date(nowMs).toISOString(),
+    });
+    await expect(registry.pollStale()).resolves.toBe(false);
+    expect(calls).toBe(1);
+
+    journal.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("keeps explicit foreground refresh unconditional when background demand is absent", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-quota-fg-demand-")));
+    const journal = new DurableJournal({ rootDir: root, partition: "global" });
+    const observedAt = Date.parse("2026-07-28T00:00:00.000Z");
+    const nowMs = observedAt + 60_000;
+    let calls = 0;
+    const subject = quotaSnapshot("codex", null, 0.2).subject;
+    const registry = new QuotaRegistry(
+      journal,
+      [
+        {
+          vendor: "codex",
+          refresh: async () => {
+            calls += 1;
+            return {
+              snapshots: [
+                {
+                  ...quotaSnapshot("codex", null, 0.3),
+                  source: "codex_app_server" as const,
+                  observed_at: new Date(nowMs).toISOString(),
+                },
+              ],
+            };
+          },
+        },
+      ],
+      () => new Date(nowMs),
+      () => [subject],
+    );
+    registry.upsert({
+      ...quotaSnapshot("codex", null, 0.2),
+      source: "codex_app_server",
+      observed_at: new Date(observedAt).toISOString(),
+    });
+
+    await expect(registry.pollStale()).resolves.toBe(false);
+    expect(calls).toBe(0);
+    await expect(registry.refresh()).resolves.toMatchObject({
+      snapshots: [expect.objectContaining({ observed_at: new Date(nowMs).toISOString() })],
+    });
+    expect(calls).toBe(1);
+
+    journal.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("feeds a pre-aged fresh result into the existing pacer instead of tight re-polling", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-quota-preaged-")));
+    const journal = new DurableJournal({ rootDir: root, partition: "global" });
+    const observedAt = Date.parse("2026-07-28T00:00:00.000Z");
+    let nowMs = observedAt + 4 * 60_000;
+    let calls = 0;
+    const subject = quotaSnapshot("codex", null, 0.2).subject;
+    const registry = new QuotaRegistry(
+      journal,
+      [
+        {
+          vendor: "codex",
+          refresh: async () => {
+            calls += 1;
+            return {
+              snapshots: [
+                {
+                  ...quotaSnapshot("codex", null, 0.3),
+                  source: "codex_app_server" as const,
+                  observed_at: new Date(nowMs - 4 * 60_000 - 30_000).toISOString(),
+                },
+              ],
+            };
+          },
+        },
+      ],
+      () => new Date(nowMs),
+      () => [subject],
+    );
+    registry.upsert({
+      ...quotaSnapshot("codex", null, 0.2),
+      source: "codex_app_server",
+      observed_at: new Date(observedAt).toISOString(),
+    });
+
+    await expect(registry.pollStale()).resolves.toBe(true);
+    expect(calls).toBe(1);
+    expect(registry.read().snapshots[0]?.freshness).toBe("fresh");
+    await expect(registry.pollStale()).resolves.toBe(false);
+    nowMs += 59_999;
+    await expect(registry.pollStale()).resolves.toBe(false);
+    expect(calls).toBe(1);
+    nowMs += 1;
+    await expect(registry.pollStale()).resolves.toBe(true);
+    expect(calls).toBe(2);
+
+    journal.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("does not leak lookahead demand into current-time absence projection", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-quota-horizon-absence-")));
+    const journal = new DurableJournal({ rootDir: root, partition: "global" });
+    const observedAt = Date.parse("2026-07-28T00:00:00.000Z");
+    const nowMs = observedAt + 4 * 60_000;
+    const subject = quotaSnapshot("codex", null, 0.2).subject;
+    const registry = new QuotaRegistry(
+      journal,
+      [{ vendor: "codex", refresh: async () => ({ snapshots: [] }) }],
+      () => new Date(nowMs),
+      () => [subject],
+    );
+    registry.upsert({
+      ...quotaSnapshot("codex", null, 0.2),
+      source: "codex_app_server",
+      observed_at: new Date(observedAt).toISOString(),
+    });
+
+    await expect(registry.pollStale()).resolves.toBe(true);
+    expect(registry.read()).toMatchObject({
+      snapshots: [expect.objectContaining({ freshness: "fresh" })],
+      absences: [],
+    });
+
+    journal.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
   it("polls empty or stale official sources with bounded failure backoff", async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-quota-poll-")));
     const journal = new DurableJournal({ rootDir: join(root, "journal"), partition: "global" });

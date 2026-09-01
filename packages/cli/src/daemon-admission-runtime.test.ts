@@ -1,6 +1,13 @@
-import type { JournalManager, ProjectPartitions } from "@claudexor/daemon";
+import {
+  QUOTA_POLL_INTERVAL_MS,
+  type JournalManager,
+  type ProjectPartitions,
+} from "@claudexor/daemon";
 import { describe, expect, it, vi } from "vitest";
-import { createStartupAdmissionRuntime } from "./daemon-admission-runtime.js";
+import {
+  createDaemonQuotaPoller,
+  createStartupAdmissionRuntime,
+} from "./daemon-admission-runtime.js";
 import { DaemonStartupAdmission } from "./daemon-startup.js";
 
 vi.mock("./daemon-lifecycle.js", () => ({
@@ -189,5 +196,29 @@ describe("startup admission recovery verdict ordering", () => {
     await expect(second).rejects.toThrow("setup failed");
     expect(frozenStartup).toHaveBeenCalledTimes(1);
     expect(fixture.normalPlane.startSetup).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("daemon quota poll cadence", () => {
+  it("uses the shared interval, starts immediately, and owns only one timer", async () => {
+    vi.useFakeTimers();
+    try {
+      const poll = vi.fn();
+      const poller = createDaemonQuotaPoller(poll);
+
+      poller.arm();
+      poller.arm();
+      expect(poll).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(QUOTA_POLL_INTERVAL_MS);
+      expect(poll).toHaveBeenCalledTimes(2);
+      expect(vi.getTimerCount()).toBe(1);
+
+      poller.stop();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

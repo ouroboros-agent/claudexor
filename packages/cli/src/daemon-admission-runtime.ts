@@ -12,6 +12,7 @@
 import {
   daemonDir,
   logPath,
+  QUOTA_POLL_INTERVAL_MS,
   type DaemonServingMode,
   type JournalManager,
   type ProjectPartitions,
@@ -93,7 +94,7 @@ export function createDaemonQuotaPoller(poll: () => void): { arm(): void; stop()
   return {
     arm: () => {
       if (timer) return;
-      timer = setInterval(poll, 60_000);
+      timer = setInterval(poll, QUOTA_POLL_INTERVAL_MS);
       timer.unref();
       poll();
     },

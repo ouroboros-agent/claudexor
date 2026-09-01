@@ -4,6 +4,7 @@ import {
   type QuotaSnapshot,
   type QuotaSubject,
 } from "@claudexor/schema";
+import { quotaSnapshotDueBefore } from "./quota-registry-support.js";
 
 const REFRESH_CAPABLE_HARNESSES = new Set<string>(quotaRefreshDemandHarnesses());
 
@@ -19,13 +20,15 @@ export function quotaSubjectIdentity(subject: QuotaSubject): string {
 export function remainingQuotaRefreshDemand(
   snapshots: readonly QuotaSnapshot[],
   subjects?: readonly QuotaSubject[],
+  dueBefore?: number,
 ): Set<string> {
   const satisfied = new Set(
     snapshots
       .filter(
         (snapshot) =>
           snapshot.freshness === "fresh" &&
-          quotaSourceTraits(snapshot.source).refreshDemandHarness === snapshot.subject.harness,
+          quotaSourceTraits(snapshot.source).refreshDemandHarness === snapshot.subject.harness &&
+          (dueBefore === undefined || !quotaSnapshotDueBefore(snapshot, dueBefore)),
       )
       .map((snapshot) => quotaSubjectIdentity(snapshot.subject)),
   );

@@ -11,6 +11,8 @@ import {
   type QuotaSnapshot,
 } from "@claudexor/schema";
 
+export const QUOTA_FRESHNESS_TTL_MS = 5 * 60_000;
+
 export function snapshotKey(snapshot: QuotaSnapshot): string {
   const subject = snapshot.subject;
   return [
@@ -50,8 +52,21 @@ export function staleAt(snapshot: QuotaSnapshot, now: number): QuotaSnapshot {
   if (snapshot.freshness !== "fresh") return snapshot;
   const observed = Date.parse(snapshot.observed_at);
   const resetExpired = snapshot.constraints.some((constraint) => resetExpiredAt(constraint, now));
-  const tooOld = !Number.isFinite(observed) || now - observed > 5 * 60_000;
+  const tooOld = !Number.isFinite(observed) || now - observed > QUOTA_FRESHNESS_TTL_MS;
   return resetExpired || tooOld ? { ...snapshot, freshness: "stale" } : snapshot;
+}
+
+/** Whether primary evidence will be due by a future demand horizon. Unlike
+ * `staleAt`, the TTL comparison includes equality so the last existing poll
+ * before expiry requests renewal instead of waiting for the following tick. */
+export function quotaSnapshotDueBefore(snapshot: QuotaSnapshot, deadline: number): boolean {
+  if (snapshot.freshness !== "fresh") return true;
+  const observed = Date.parse(snapshot.observed_at);
+  return (
+    !Number.isFinite(observed) ||
+    observed + QUOTA_FRESHNESS_TTL_MS <= deadline ||
+    snapshot.constraints.some((constraint) => resetExpiredAt(constraint, deadline))
+  );
 }
 
 function resetExpiredAt(constraint: Pick<QuotaConstraint, "resets_at">, now: number): boolean {
