@@ -18,6 +18,7 @@ export const CLAUDE_KNOWN_MODELS: readonly string[] = [
   "haiku",
   "fable",
   "best",
+  "claude-fable-5-1",
   "claude-fable-5",
   "claude-sonnet-5",
   "claude-opus-5",

@@ -36,9 +36,10 @@ const stubAdapter = () =>
   });
 
 describe("the claude manifest model truth source", () => {
-  it("advertises the current Opus generation — claude-opus-5 AND the still-active claude-opus-4-5", async () => {
+  it("advertises the newest Fable (claude-fable-5-1) AND the current Opus generation — claude-opus-5 plus the still-active claude-opus-4-5", async () => {
     const manifest = await stubAdapter().discover();
     const known = manifest.capabilities.known_models;
+    expect(known).toContain("claude-fable-5-1");
     expect(known).toContain("claude-opus-5");
     expect(known).toContain("claude-opus-4-5");
   });
@@ -58,6 +59,7 @@ describe("the claude manifest model truth source", () => {
     // flattens the route-scoped list, then `validateModel` judges against it.
     const manifest = await stubAdapter().discover();
     const known = knownModelIdsForRoute(manifest.capabilities.known_models, "local_session");
+    expect(validateModel("claude-fable-5-1", known, "manifest").status).toBe("ok");
     expect(validateModel("claude-opus-5", known, "manifest").status).toBe("ok");
     expect(validateModel("claude-opus-4-5", known, "manifest").status).toBe("ok");
     // STRICT semantics: outside the list → rejected, naming the truth source.
@@ -67,6 +69,14 @@ describe("the claude manifest model truth source", () => {
   });
 
   it("projects vendor quota family names onto the manifest aliases", () => {
+    // The projection inherits catalog order (newest full id first within a
+    // family); nothing routes on it, but `models` listings display it.
+    expect(claudeQuotaModelAliases("Fable")).toEqual([
+      "fable",
+      "claude-fable-5-1",
+      "claude-fable-5",
+      "best",
+    ]);
     expect(claudeQuotaModelAliases(" Opus ")).toEqual([
       "opus",
       "claude-opus-5",

@@ -70,7 +70,7 @@ describe("claude oauth/usage quota source (W5.3, INV-062)", () => {
     expect(byId.get("weekly_scoped:Fable")).toMatchObject({
       used_ratio: 0.17,
       label: "7 day (Fable)",
-      applies_to_models: ["fable", "claude-fable-5", "best"],
+      applies_to_models: ["fable", "claude-fable-5-1", "claude-fable-5", "best"],
     });
   });
 
