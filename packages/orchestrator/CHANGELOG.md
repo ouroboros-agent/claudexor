@@ -1,5 +1,26 @@
 # @claudexor/orchestrator
 
+## 3.9.6
+
+### Patch Changes
+
+- Updated dependencies [dd02e0a]
+  - @claudexor/workspace@3.9.6
+  - @claudexor/delivery@3.9.6
+  - @claudexor/review@3.9.6
+  - @claudexor/arbitration@3.9.6
+  - @claudexor/artifact-store@3.9.6
+  - @claudexor/budget@3.9.6
+  - @claudexor/config@3.9.6
+  - @claudexor/context@3.9.6
+  - @claudexor/core@3.9.6
+  - @claudexor/event-log@3.9.6
+  - @claudexor/gateway@3.9.6
+  - @claudexor/policy@3.9.6
+  - @claudexor/schema@3.9.6
+  - @claudexor/synthesis@3.9.6
+  - @claudexor/util@3.9.6
+
 ## 3.9.5
 
 ### Patch Changes

@@ -1,5 +1,17 @@
 # @claudexor/review
 
+## 3.9.6
+
+### Patch Changes
+
+- Updated dependencies [dd02e0a]
+  - @claudexor/workspace@3.9.6
+  - @claudexor/config@3.9.6
+  - @claudexor/context@3.9.6
+  - @claudexor/core@3.9.6
+  - @claudexor/schema@3.9.6
+  - @claudexor/util@3.9.6
+
 ## 3.9.5
 
 ### Patch Changes

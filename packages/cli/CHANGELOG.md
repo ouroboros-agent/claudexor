@@ -1,5 +1,36 @@
 # @claudexor/cli
 
+## 3.9.6
+
+### Patch Changes
+
+- 7e1269c: Background quota polling no longer lets one revoked, never-logged-in, or failing profile pin its vendor's healthy profiles to the 15-minute retry ceiling: a lane whose fresh evidence is about to expire renews on schedule even mid-ladder. The Claude OAuth source also remembers a proven vendor rejection per presented token and stops re-presenting it on background cycles — until the token changes, a login or profile change, an explicit refresh, or six hours, after which one remembered token is re-verified per cycle — so a rejected token reaches the vendor at most once per six hours instead of every cycle, removing the 401 storm behind the one-hour vendor 429 that blacked out every healthy sibling.
+- Updated dependencies [dd02e0a]
+- Updated dependencies [7e1269c]
+  - @claudexor/workspace@3.9.6
+  - @claudexor/daemon@3.9.6
+  - @claudexor/delivery@3.9.6
+  - @claudexor/orchestrator@3.9.6
+  - @claudexor/review@3.9.6
+  - @claudexor/control-api@3.9.6
+  - @claudexor/acp-server@3.9.6
+  - @claudexor/artifact-store@3.9.6
+  - @claudexor/config@3.9.6
+  - @claudexor/core@3.9.6
+  - @claudexor/gateway@3.9.6
+  - @claudexor/harness-agy@3.9.6
+  - @claudexor/harness-claude@3.9.6
+  - @claudexor/harness-codex@3.9.6
+  - @claudexor/harness-cursor@3.9.6
+  - @claudexor/harness-fake@3.9.6
+  - @claudexor/harness-opencode@3.9.6
+  - @claudexor/harness-raw-api@3.9.6
+  - @claudexor/journal@3.9.6
+  - @claudexor/mcp-server@3.9.6
+  - @claudexor/schema@3.9.6
+  - @claudexor/secrets@3.9.6
+  - @claudexor/util@3.9.6
+
 ## 3.9.5
 
 ### Patch Changes

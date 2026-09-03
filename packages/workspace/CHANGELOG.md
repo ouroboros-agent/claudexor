@@ -1,5 +1,14 @@
 # @claudexor/workspace
 
+## 3.9.6
+
+### Patch Changes
+
+- dd02e0a: Relativize a bare GNU diff 3.8 `Binary files … differ` record that follows a hunk with no `diff` echo (#252), so an owned binary artifact's absolute paths no longer escape the exact-prefix exclusion and repo-relative policy globs of captured workspace diffs.
+  - @claudexor/core@3.9.6
+  - @claudexor/schema@3.9.6
+  - @claudexor/util@3.9.6
+
 ## 3.9.5
 
 ### Patch Changes

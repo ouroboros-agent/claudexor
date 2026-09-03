@@ -4,6 +4,15 @@ Release and candidate history for Claudexor. The current version is declared
 in the root `package.json` (the version SSOT); published versions are available
 on GitHub Releases.
 
+- **v3.9.6** (2026-09-03): background quota polling no longer lets one revoked,
+  never-logged-in, or failing profile pin its vendor's healthy profiles to the
+  15-minute retry ceiling — renewals, evidence installed mid-ladder by a
+  foreground refresh or a harness event, and vendor window resets are never
+  postponed by a sibling's retry ladder; the Claude OAuth source remembers a
+  proven vendor rejection per token instead of re-presenting it every cycle
+  (#263). Captured workspace diffs relativize GNU diff 3.8 bare binary records
+  (#252). The vendor 429 floor, typed absence semantics, and the five-minute
+  freshness contract are unchanged.
 - **v3.9.5** (2026-09-01): background quota renewal now starts on the last
   existing poll tick before primary evidence would become stale. The
   five-minute display and routing freshness contract, single poller, vendor
