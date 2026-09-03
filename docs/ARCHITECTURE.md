@@ -2324,10 +2324,19 @@ but retains soft demand under exponential pacing; reactive rollout/retry and
 status-line evidence remains available to display and routing without triggering
 or satisfying primary demand. The poll lifecycle is a single-flight sweep paced PER VENDOR LANE:
 each vendor with a registered refresher owns an independent
-completion-anchored exponential backoff (15-minute ceiling) that advances
-after partial/absence outcomes and resets when credential or routability
-state changes, so one vendor's permanently unsatisfiable subject never pins a
-sibling vendor's refresh cadence. A typed `rate_limited` poll absence
+completion-anchored exponential RETRY backoff (15-minute ceiling) that
+advances after partial/absence outcomes and resets when credential or
+routability state changes, so one vendor's unsatisfiable subject never pins a
+sibling vendor's refresh cadence. The retry ladder paces subjects that produced
+no evidence and never postpones RENEWAL: a lane whose satisfied primary
+evidence is due by the next poll tick runs even mid-ladder, so a revoked,
+never-logged-in, or failing sibling cannot hold the healthy subjects of its own
+vendor past their five-minute freshness — they renew on the last tick before
+expiry exactly like a lane with no absent subject. An absence-only lane keeps
+the pure ladder, and a lane whose last satisfied subject disappears continues
+at the rung it has earned. Every refresher of a cycle is told whether the cycle
+is an explicit foreground refresh or a paced background poll, so a source may
+re-present on request a credential it otherwise leaves alone. A typed `rate_limited` poll absence
 additionally arms that lane's vendor rate-limit floor — the max of the
 exponential ladder and the vendor's Retry-After when one was sent — kept in
 daemon-private pacer state, never the quota journal (a throttled poll is
@@ -3255,8 +3264,14 @@ code touching one of these areas must honor it or change it explicitly here.
   probed, but a 401/403 cannot prove revocation and yields the same
   `refresh_failed` absence. Only a token proven fresh at rejection remains typed
   `auth_revoked`; a token without refresh capability retains that conservative
-  real-response verdict. Other endpoint failures yield NO snapshot and no auth
-  verdict. The user-scoped status-line payload
+  real-response verdict. A proven rejection is remembered per presented token
+  (its hash, in process memory — never persisted or logged): background cycles
+  re-state the same typed absence without re-presenting that token — the
+  vendor answers repeated 401s with a one-hour 429 that would black out every
+  healthy sibling of the lane — until the token bytes change (any re-login), a
+  daemon-side credential change clears the memory, an explicit foreground
+  refresh re-asks, or six hours elapse. Other endpoint failures yield NO
+  snapshot and no auth verdict. The user-scoped status-line payload
   (installed explicitly by the Claude host-plugin lifecycle) remains a
   SECONDARY source for the legacy null subject only; its collector stores only
   allowlisted windows in the external v3 root and composes/restores any

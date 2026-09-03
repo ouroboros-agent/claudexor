@@ -128,18 +128,27 @@ export class QuotaPollPacer {
   }
 
   /** A cycle for this lane completed: reset on fully satisfied demand, else
-   * exponential backoff anchored at completion (never the stale start). */
-  notePollSuccess(completedAt: number, demandRemains: boolean): void {
+   * exponential backoff anchored at completion (never the stale start) and
+   * capped at `renewalNotBefore` — the tick by which evidence this cycle DID
+   * satisfy must be renewed. The ladder paces subjects that produced no
+   * evidence; it never postpones the renewal of those that did (one revoked or
+   * never-logged-in profile used to pin every healthy sibling of its vendor to
+   * the 15-minute ceiling). Null = no satisfied evidence is due later. */
+  notePollSuccess(
+    completedAt: number,
+    demandRemains: boolean,
+    renewalNotBefore: number | null = null,
+  ): void {
     if (!demandRemains) {
       this.failures = 0;
       this.notBefore = 0;
       return;
     }
-    this.armBackoff(completedAt);
+    this.armBackoff(completedAt, renewalNotBefore);
   }
 
-  notePollFailure(completedAt: number): void {
-    this.armBackoff(completedAt);
+  notePollFailure(completedAt: number, renewalNotBefore: number | null = null): void {
+    this.armBackoff(completedAt, renewalNotBefore);
   }
 
   /** A cycle observed a typed `rate_limited` absence for this vendor: arm the
@@ -165,9 +174,10 @@ export class QuotaPollPacer {
     }
   }
 
-  private armBackoff(completedAt: number): void {
+  private armBackoff(completedAt: number, renewalNotBefore: number | null): void {
     this.failures += 1;
-    this.notBefore =
+    const ladder =
       completedAt + Math.min(POLL_BACKOFF_MS * 2 ** (this.failures - 1), MAX_POLL_BACKOFF_MS);
+    this.notBefore = renewalNotBefore === null ? ladder : Math.min(ladder, renewalNotBefore);
   }
 }

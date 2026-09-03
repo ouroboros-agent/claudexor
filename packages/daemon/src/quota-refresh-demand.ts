@@ -4,13 +4,22 @@ import {
   type QuotaSnapshot,
   type QuotaSubject,
 } from "@claudexor/schema";
-import { quotaSnapshotDueBefore } from "./quota-registry-support.js";
+import { quotaSnapshotDueAt, quotaSnapshotDueBefore } from "./quota-registry-support.js";
 
 const REFRESH_CAPABLE_HARNESSES = new Set<string>(quotaRefreshDemandHarnesses());
 
 /** Demand identity: one credential subject regardless of route or source. */
 export function quotaSubjectIdentity(subject: QuotaSubject): string {
   return [subject.harness, subject.subject_id ?? ""].join("\0");
+}
+
+/** Fresh evidence from the subject's own primary source — the only kind that
+ * satisfies refresh demand; reactive/spool evidence never does. */
+function satisfiesPrimaryDemand(snapshot: QuotaSnapshot): boolean {
+  return (
+    snapshot.freshness === "fresh" &&
+    quotaSourceTraits(snapshot.source).refreshDemandHarness === snapshot.subject.harness
+  );
 }
 
 /** Only fresh matching primary evidence satisfies a registered subject.
@@ -26,8 +35,7 @@ export function remainingQuotaRefreshDemand(
     snapshots
       .filter(
         (snapshot) =>
-          snapshot.freshness === "fresh" &&
-          quotaSourceTraits(snapshot.source).refreshDemandHarness === snapshot.subject.harness &&
+          satisfiesPrimaryDemand(snapshot) &&
           (dueBefore === undefined || !quotaSnapshotDueBefore(snapshot, dueBefore)),
       )
       .map((snapshot) => quotaSubjectIdentity(snapshot.subject)),
@@ -42,4 +50,35 @@ export function remainingQuotaRefreshDemand(
     if (!satisfied.has(key)) demand.add(key);
   }
   return demand;
+}
+
+/** The renewal horizon: the earliest instant strictly after `after` at which
+ * a snapshot that satisfies a registered subject becomes due. Null when no
+ * satisfying evidence is due later than `after`. Evidence already due by
+ * `after` is unsatisfied demand and belongs to the retry ladder, never to
+ * renewal — so a pre-aged result feeds the ladder instead of tight-polling.
+ * An undefined universe keeps the legacy contract: every satisfying primary
+ * snapshot counts. */
+export function earliestQuotaRenewalAt(
+  snapshots: readonly QuotaSnapshot[],
+  subjects: readonly QuotaSubject[] | undefined,
+  after: number,
+): number | null {
+  const registered =
+    subjects === undefined
+      ? null
+      : new Set(
+          subjects
+            .filter((subject) => REFRESH_CAPABLE_HARNESSES.has(subject.harness))
+            .map(quotaSubjectIdentity),
+        );
+  let earliest: number | null = null;
+  for (const snapshot of snapshots) {
+    if (!satisfiesPrimaryDemand(snapshot)) continue;
+    if (registered !== null && !registered.has(quotaSubjectIdentity(snapshot.subject))) continue;
+    const dueAt = quotaSnapshotDueAt(snapshot);
+    if (dueAt <= after) continue;
+    if (earliest === null || dueAt < earliest) earliest = dueAt;
+  }
+  return earliest;
 }

@@ -13,6 +13,7 @@ import { invalidateDoctorCache } from "@claudexor/core";
 import { clearClaudeAuthStatusCache } from "@claudexor/harness-claude";
 import type { QuotaRegistry } from "@claudexor/daemon";
 import { noProjectRepoRoot } from "@claudexor/util";
+import { forgetClaudeOauthRejections } from "./claude-oauth-usage.js";
 import { invalidateStatusProjections } from "./status-projection-cache.js";
 import { credentialUnusableLedger } from "./run-orchestrator.js";
 
@@ -29,6 +30,9 @@ export function bustCredentialStatusCaches(
   // probe transport error. Any explicit credential mutation must invalidate it
   // before status/probe consumers can observe the changed store.
   clearClaudeAuthStatusCache();
+  // The quota poller's remembered vendor rejections are credential state too:
+  // a login or profile change makes every remembered token worth re-asking.
+  forgetClaudeOauthRejections();
   invalidateDoctorCache();
   invalidateStatusProjections();
   quotaRegistry().noteCredentialChange();

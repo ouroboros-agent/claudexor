@@ -4,7 +4,7 @@ import { userInfo } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { loadConfig } from "@claudexor/config";
-import type { QuotaRefreshResult } from "@claudexor/daemon";
+import type { QuotaRefreshCycle, QuotaRefreshResult } from "@claudexor/daemon";
 import {
   canonicalProfileConfigDir,
   CLAUDE_AUTH_REFRESH_TERMINATION_UNCONFIRMED,
@@ -138,6 +138,28 @@ export function parseClaudeOauthCredential(raw: string): ClaudeOauthCredential |
   }
 }
 
+/** A vendor rejection remembered per PRESENTED token (INV-062: the token's
+ * hash, never the token; process memory only; never persisted or logged).
+ * Re-presenting a credential the vendor has already rejected buys nothing and
+ * costs a lot: the vendor answers a 401 storm with a one-hour 429, and the
+ * per-vendor poll floor then blacks out every healthy sibling (live journal:
+ * healthy profiles fresh 20 % of the day beside one revoked row). So a
+ * background cycle re-states the typed `auth_revoked` absence for a
+ * remembered token WITHOUT an HTTP request — the same doctrine as the codex
+ * source's logged-out precheck — until the token bytes change (any re-login,
+ * daemon-side or external), a daemon-side credential change clears the
+ * memory (`forgetClaudeOauthRejections`), an explicit foreground refresh
+ * re-asks, or the safety TTL below elapses (bounds a spurious vendor 401). */
+const REVOKED_TOKEN_REPROBE_MS = 6 * 60 * 60_000;
+const rejectedTokens = new Map<string, number>();
+
+/** Daemon-side credential change (login/logout/profile mutation): every
+ * remembered rejection is re-verified on the next cycle. Fail-open by
+ * contract — over-clearing costs at most one probe. */
+export function forgetClaudeOauthRejections(): void {
+  rejectedTokens.clear();
+}
+
 const VENDOR_REFRESH_REQUIRED_DETAIL =
   "OAuth access token freshness is unknown; Claude Code did not expose a refreshable expiry for quota reading";
 const VENDOR_REFRESH_FAILED_DETAIL =
@@ -260,6 +282,9 @@ export interface ClaudeOauthUsageDeps {
   fetchUsage: (accessToken: string) => Promise<unknown>;
   now: () => Date;
   platform: NodeJS.Platform;
+  /** Remembered vendor rejections, `sha256(token)` → observed-at ms; the
+   * daemon uses the process-wide memory, tests inject their own. */
+  rejections: Map<string, number>;
 }
 
 /** Ceiling on a vendor-supplied Retry-After (7 days, aligned with the
@@ -354,15 +379,19 @@ function claudeOauthAbsence(
  * read fault is the tagged reason it carries, an expired refreshable token is
  * automatically refreshed by Claude Code without inference, and a fetch
  * refusal is refresh_failed unless a known-fresh credential is explicitly rejected.
+ * A remembered rejection is re-stated without re-presenting the token on
+ * background cycles (see `rejectedTokens`); a foreground cycle always asks.
  * Absence is stated, never inferred. */
 export async function refreshClaudeOauthUsageQuota(
   deps: Partial<ClaudeOauthUsageDeps> = {},
+  cycle?: QuotaRefreshCycle,
 ): Promise<QuotaRefreshResult> {
   const readCredential = deps.readCredential ?? readClaudeOauthCredential;
   const refreshCredential = deps.refreshCredential ?? refreshCredentialDefault;
   const fetchUsage = deps.fetchUsage ?? fetchUsageDefault;
   const now = deps.now ?? (() => new Date());
   const platform = deps.platform ?? process.platform;
+  const rejections = deps.rejections ?? rejectedTokens;
   const notLoggedInDetail =
     platform === "darwin"
       ? "no OAuth credential in the keychain item (no login, or the keychain tool is unavailable)"
@@ -448,8 +477,25 @@ export async function refreshClaudeOauthUsageQuota(
         }
       }
     }
+    const tokenKey = sha256(credential.accessToken);
+    const rejectedAt = rejections.get(tokenKey);
+    if (rejectedAt !== undefined && !cycle?.foreground) {
+      if (now().getTime() - rejectedAt < REVOKED_TOKEN_REPROBE_MS) {
+        absences.push(
+          claudeOauthAbsence(
+            candidate.subjectId,
+            "auth_revoked",
+            `oauth/usage rejected this token at ${new Date(rejectedAt).toISOString()}; not re-asked until the token changes, a login or profile change, an explicit refresh, or ${REVOKED_TOKEN_REPROBE_MS / 3_600_000} h elapse`,
+            now(),
+          ),
+        );
+        continue;
+      }
+      rejections.delete(tokenKey);
+    }
     try {
       const usage = await fetchUsage(credential.accessToken);
+      rejections.delete(tokenKey);
       const snapshot = parseClaudeOauthUsage(
         usage,
         candidate.subjectId,
@@ -483,6 +529,11 @@ export async function refreshClaudeOauthUsageQuota(
         tagged === "auth_revoked" &&
         credential.hasRefreshToken &&
         (credential.expiresAtMs === null || needsVendorRefresh(credential, observedAt));
+      // Only a PROVEN rejection is remembered: an unproven one waits for the
+      // vendor-owned token refresh and is re-presented once that happened.
+      if (tagged === "auth_revoked" && !rejectedWithoutFreshnessProof) {
+        rejections.set(tokenKey, observedAt.getTime());
+      }
       absences.push({
         ...claudeOauthAbsence(
           candidate.subjectId,

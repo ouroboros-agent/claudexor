@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { QuotaSnapshot, QuotaSubject } from "@claudexor/schema";
-import { remainingQuotaRefreshDemand } from "./quota-refresh-demand.js";
+import { earliestQuotaRenewalAt, remainingQuotaRefreshDemand } from "./quota-refresh-demand.js";
 import { staleAt } from "./quota-registry-support.js";
 
 const subject = (harness: string, subjectId: string | null): QuotaSubject => ({
@@ -86,5 +86,56 @@ describe("remainingQuotaRefreshDemand", () => {
         Date.now(),
       ),
     ).toEqual(new Set(["codex\0work"]));
+  });
+});
+
+describe("earliestQuotaRenewalAt (#263: renewal is not retry)", () => {
+  const owner = subject("codex", "work");
+  const observed = Date.parse("2026-08-09T00:00:00.000Z");
+  const ttl = 5 * 60_000;
+  const primary = snapshot(owner, "codex_app_server");
+
+  it("names the due instant of satisfying evidence due strictly after the horizon", () => {
+    expect(earliestQuotaRenewalAt([primary], [owner], observed + 60_000)).toBe(observed + ttl);
+    // Evidence already due by the horizon (pre-aged, stale) is unsatisfied
+    // demand for the retry ladder, never a renewal — no tight re-poll.
+    expect(earliestQuotaRenewalAt([primary], [owner], observed + ttl)).toBeNull();
+    expect(
+      earliestQuotaRenewalAt([{ ...primary, freshness: "stale" }], [owner], observed),
+    ).toBeNull();
+    expect(earliestQuotaRenewalAt([], [owner], observed)).toBeNull();
+  });
+
+  it("takes the earliest of TTL and reset boundaries across satisfied subjects", () => {
+    const other = subject("codex", "other");
+    const withReset: QuotaSnapshot = {
+      ...snapshot(other, "codex_app_server"),
+      constraints: [
+        {
+          id: "primary",
+          label: "5 hour",
+          used_ratio: 0.2,
+          window_seconds: 18_000,
+          resets_at: "2026-08-09T00:01:30.000Z",
+          cooldown_until: null,
+        },
+      ],
+    };
+    expect(earliestQuotaRenewalAt([primary, withReset], [owner, other], observed)).toBe(
+      Date.parse("2026-08-09T00:01:30.000Z"),
+    );
+    // Past the reset boundary only the TTL of the sibling remains.
+    expect(earliestQuotaRenewalAt([primary, withReset], [owner, other], observed + 100_000)).toBe(
+      observed + ttl,
+    );
+  });
+
+  it("ignores reactive evidence and unregistered subjects; legacy universe counts any primary", () => {
+    expect(
+      earliestQuotaRenewalAt([snapshot(owner, "codex_rollout")], [owner], observed),
+    ).toBeNull();
+    expect(earliestQuotaRenewalAt([primary], [subject("codex", "other")], observed)).toBeNull();
+    expect(earliestQuotaRenewalAt([primary], [], observed)).toBeNull();
+    expect(earliestQuotaRenewalAt([primary], undefined, observed)).toBe(observed + ttl);
   });
 });
