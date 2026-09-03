@@ -2329,10 +2329,12 @@ advances after partial/absence outcomes and resets when credential or
 routability state changes, so one vendor's unsatisfiable subject never pins a
 sibling vendor's refresh cadence. The retry ladder paces subjects that produced
 no evidence and never postpones RENEWAL: a lane whose satisfied primary
-evidence is due by the next poll tick runs even mid-ladder, so a revoked,
-never-logged-in, or failing sibling cannot hold the healthy subjects of its own
-vendor past their five-minute freshness — they renew on the last tick before
-expiry exactly like a lane with no absent subject. An absence-only lane keeps
+evidence is due by the next poll tick runs even mid-ladder — whether that
+evidence came from the lane's own cycle, an explicit foreground refresh, or an
+ingested harness event — so a revoked, never-logged-in, or failing sibling
+cannot hold the healthy subjects of its own vendor past their five-minute
+freshness — they renew on the last tick before expiry exactly like a lane with
+no absent subject. Only the vendor rate-limit floor is never bypassed. An absence-only lane keeps
 the pure ladder, and a lane whose last satisfied subject disappears continues
 at the rung it has earned. Every refresher of a cycle is told whether the cycle
 is an explicit foreground refresh or a paced background poll, so a source may

@@ -52,18 +52,13 @@ export function remainingQuotaRefreshDemand(
   return demand;
 }
 
-/** The renewal horizon: the earliest instant strictly after `after` at which
- * a snapshot that satisfies a registered subject becomes due. Null when no
- * satisfying evidence is due later than `after`. Evidence already due by
- * `after` is unsatisfied demand and belongs to the retry ladder, never to
- * renewal — so a pre-aged result feeds the ladder instead of tight-polling.
- * An undefined universe keeps the legacy contract: every satisfying primary
- * snapshot counts. */
-export function earliestQuotaRenewalAt(
+/** Satisfying primary evidence of registered subjects, paired with its due
+ * instant. An undefined universe keeps the legacy contract: every satisfying
+ * primary snapshot counts. */
+function* satisfyingEvidence(
   snapshots: readonly QuotaSnapshot[],
   subjects: readonly QuotaSubject[] | undefined,
-  after: number,
-): number | null {
+): Generator<readonly [QuotaSnapshot, number]> {
   const registered =
     subjects === undefined
       ? null
@@ -72,13 +67,47 @@ export function earliestQuotaRenewalAt(
             .filter((subject) => REFRESH_CAPABLE_HARNESSES.has(subject.harness))
             .map(quotaSubjectIdentity),
         );
-  let earliest: number | null = null;
   for (const snapshot of snapshots) {
     if (!satisfiesPrimaryDemand(snapshot)) continue;
     if (registered !== null && !registered.has(quotaSubjectIdentity(snapshot.subject))) continue;
-    const dueAt = quotaSnapshotDueAt(snapshot);
+    yield [snapshot, quotaSnapshotDueAt(snapshot)];
+  }
+}
+
+/** The renewal horizon: the earliest instant strictly after `after` at which
+ * a snapshot that satisfies a registered subject becomes due. Null when no
+ * satisfying evidence is due later than `after`. Evidence already due by
+ * `after` is unsatisfied demand and belongs to the retry ladder, never to
+ * renewal — so a pre-aged result feeds the ladder instead of tight-polling. */
+export function earliestQuotaRenewalAt(
+  snapshots: readonly QuotaSnapshot[],
+  subjects: readonly QuotaSubject[] | undefined,
+  after: number,
+): number | null {
+  let earliest: number | null = null;
+  for (const [, dueAt] of satisfyingEvidence(snapshots, subjects)) {
     if (dueAt <= after) continue;
     if (earliest === null || dueAt < earliest) earliest = dueAt;
   }
   return earliest;
+}
+
+/** The latest observation instant among satisfying evidence whose renewal is
+ * due in `(after, deadline]` — what the poll sweep compares with the retry
+ * ladder's arm time: evidence observed after the ladder was armed (a
+ * foreground refresh, an ingested harness event) bypasses the ladder. Null
+ * when no satisfying evidence is due in that window. */
+export function latestQuotaRenewalObservedAt(
+  snapshots: readonly QuotaSnapshot[],
+  subjects: readonly QuotaSubject[] | undefined,
+  after: number,
+  deadline: number,
+): number | null {
+  let latest: number | null = null;
+  for (const [snapshot, dueAt] of satisfyingEvidence(snapshots, subjects)) {
+    if (dueAt <= after || dueAt > deadline) continue;
+    const observed = Date.parse(snapshot.observed_at);
+    if (latest === null || observed > latest) latest = observed;
+  }
+  return latest;
 }

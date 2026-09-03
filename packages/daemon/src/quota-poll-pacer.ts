@@ -82,6 +82,10 @@ export function quotaPacerFileStore(dir: string): QuotaPacerStateStore {
 export class QuotaPollPacer {
   private failures = 0;
   private notBefore = 0;
+  /** Completion instant of the cycle that armed the current retry ladder
+   * (0 = no ladder armed). Evidence observed AFTER it was not known to the
+   * ladder and may bypass it. */
+  private armedAt = 0;
   private rateLimitedNotBefore = 0;
   /** When the active floor was observed (0 = unknown, e.g. store-loaded). */
   private rateLimitedSince = 0;
@@ -106,10 +110,20 @@ export class QuotaPollPacer {
   noteCredentialChange(): void {
     this.failures = 0;
     this.notBefore = 0;
+    this.armedAt = 0;
   }
 
-  pollEligible(now: number): boolean {
-    return now >= this.notBefore && now >= this.rateLimitedNotBefore;
+  /** May the lane poll now? The vendor rate-limit floor is absolute. The retry
+   * ladder is not: `renewalDueObservedAt` — the latest observation instant of
+   * satisfying evidence whose renewal is due by the next tick — bypasses the
+   * ladder when it post-dates the ladder's arm, because that evidence (a
+   * foreground refresh, an ingested harness event) was installed after the
+   * ladder was armed and the ladder must not postpone its renewal. Evidence
+   * the arming cycle itself produced is capped by `armBackoff` instead. */
+  pollEligible(now: number, renewalDueObservedAt: number | null = null): boolean {
+    if (now < this.rateLimitedNotBefore) return false;
+    if (now >= this.notBefore) return true;
+    return renewalDueObservedAt !== null && renewalDueObservedAt > this.armedAt;
   }
 
   /** The active vendor rate-limit floor, or null when none is in effect. */
@@ -142,6 +156,7 @@ export class QuotaPollPacer {
     if (!demandRemains) {
       this.failures = 0;
       this.notBefore = 0;
+      this.armedAt = 0;
       return;
     }
     this.armBackoff(completedAt, renewalNotBefore);
@@ -176,6 +191,7 @@ export class QuotaPollPacer {
 
   private armBackoff(completedAt: number, renewalNotBefore: number | null): void {
     this.failures += 1;
+    this.armedAt = completedAt;
     const ladder =
       completedAt + Math.min(POLL_BACKOFF_MS * 2 ** (this.failures - 1), MAX_POLL_BACKOFF_MS);
     this.notBefore = renewalNotBefore === null ? ladder : Math.min(ladder, renewalNotBefore);

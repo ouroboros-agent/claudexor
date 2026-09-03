@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { QuotaSnapshot, QuotaSubject } from "@claudexor/schema";
-import { earliestQuotaRenewalAt, remainingQuotaRefreshDemand } from "./quota-refresh-demand.js";
+import {
+  earliestQuotaRenewalAt,
+  latestQuotaRenewalObservedAt,
+  remainingQuotaRefreshDemand,
+} from "./quota-refresh-demand.js";
 import { staleAt } from "./quota-registry-support.js";
 
 const subject = (harness: string, subjectId: string | null): QuotaSubject => ({
@@ -137,5 +141,55 @@ describe("earliestQuotaRenewalAt (#263: renewal is not retry)", () => {
     expect(earliestQuotaRenewalAt([primary], [subject("codex", "other")], observed)).toBeNull();
     expect(earliestQuotaRenewalAt([primary], [], observed)).toBeNull();
     expect(earliestQuotaRenewalAt([primary], undefined, observed)).toBe(observed + ttl);
+  });
+});
+
+describe("latestQuotaRenewalObservedAt (#263: evidence installed after the ladder was armed)", () => {
+  const owner = subject("codex", "work");
+  const other = subject("codex", "other");
+  const observed = Date.parse("2026-08-09T00:00:00.000Z");
+  const minute = 60_000;
+  const ttl = 5 * minute;
+  const primary = snapshot(owner, "codex_app_server");
+  const later: QuotaSnapshot = {
+    ...snapshot(other, "codex_app_server"),
+    observed_at: "2026-08-09T00:02:00.000Z",
+  };
+
+  it("names the latest observation among evidence whose renewal falls in (after, deadline]", () => {
+    const both = [primary, later];
+    const owners = [owner, other];
+    expect(
+      latestQuotaRenewalObservedAt(
+        both,
+        owners,
+        observed + 4.5 * minute,
+        observed + ttl + 2 * minute,
+      ),
+    ).toBe(observed + 2 * minute);
+    // Only `primary` is due by this deadline.
+    expect(latestQuotaRenewalObservedAt(both, owners, observed + 4 * minute, observed + ttl)).toBe(
+      observed,
+    );
+    // Nothing due by the deadline; evidence already due by `after` is the
+    // ladder's business (unsatisfied demand), never a renewal.
+    expect(
+      latestQuotaRenewalObservedAt([primary], [owner], observed, observed + minute),
+    ).toBeNull();
+    expect(
+      latestQuotaRenewalObservedAt([primary], [owner], observed + ttl, observed + ttl + minute),
+    ).toBeNull();
+  });
+
+  it("ignores reactive evidence and unregistered subjects; legacy universe counts any primary", () => {
+    const window = [observed + 4 * minute, observed + ttl] as const;
+    expect(
+      latestQuotaRenewalObservedAt([snapshot(owner, "codex_rollout")], [owner], ...window),
+    ).toBeNull();
+    expect(
+      latestQuotaRenewalObservedAt([primary], [subject("codex", "other")], ...window),
+    ).toBeNull();
+    expect(latestQuotaRenewalObservedAt([primary], [], ...window)).toBeNull();
+    expect(latestQuotaRenewalObservedAt([primary], undefined, ...window)).toBe(observed);
   });
 });

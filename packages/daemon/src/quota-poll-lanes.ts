@@ -3,6 +3,7 @@ import type { QuotaAbsence, QuotaSnapshot, QuotaSubject } from "@claudexor/schem
 import { QuotaPollPacer, type QuotaPacerStateStore } from "./quota-poll-pacer.js";
 import {
   earliestQuotaRenewalAt,
+  latestQuotaRenewalObservedAt,
   quotaSubjectIdentity,
   remainingQuotaRefreshDemand,
 } from "./quota-refresh-demand.js";
@@ -72,14 +73,18 @@ export function buildRefresherLanes(
   return { entries, lanes: [...new Set(entries.map((entry) => entry.lane))] };
 }
 
-/** One lane's demand at a poll horizon. The two facts answer different
+/** One lane's demand at a poll horizon. The three facts answer different
  * questions: `remains` (some registered subject lacks satisfying primary
  * evidence by the horizon) drives the retry ladder; `renewalNotBefore` (the
  * last poll tick before the earliest evidence satisfied at this horizon
- * expires; null when none) caps it. */
+ * expires; null when none) caps it; `renewalDueObservedAt` (the latest
+ * observation instant of satisfying evidence whose renewal is due by the
+ * horizon; null when none) lets evidence installed after the ladder was armed
+ * bypass it. */
 export interface LaneDemand {
   readonly remains: boolean;
   readonly renewalNotBefore: number | null;
+  readonly renewalDueObservedAt: number | null;
 }
 
 export interface PollSweepDeps {
@@ -92,15 +97,17 @@ export interface PollSweepDeps {
 }
 
 /** One background poll sweep: drive every vendor lane in order, running a
- * coalesced cycle for each lane that is past its pacer gates and still has
- * refresh demand, so one vendor's backoff never starves a sibling vendor's
- * freshness. After a cycle the lane's retry ladder advances on remaining
- * demand but is capped at the renewal tick of the evidence the cycle DID
- * satisfy: the ladder paces subjects that produced no evidence, it never
- * postpones the renewal of those that did (one revoked or never-logged-in
- * profile used to pin every healthy sibling of its vendor to the 15-minute
- * ceiling). Resolves true when any lane refreshed. Single-flight of the
- * sweep itself belongs to the caller. */
+ * coalesced cycle for each lane that still has refresh demand and is past its
+ * pacer gates, so one vendor's backoff never starves a sibling vendor's
+ * freshness. The retry ladder paces subjects that produced no evidence and
+ * never postpones a renewal: after a cycle it advances on remaining demand
+ * but is capped at the renewal tick of the evidence the cycle DID satisfy,
+ * and evidence installed while it is armed (a foreground refresh, an ingested
+ * harness event) bypasses it when its renewal comes due — one revoked or
+ * never-logged-in profile used to pin every healthy sibling of its vendor to
+ * the 15-minute ceiling. The vendor rate-limit floor is never bypassed.
+ * Resolves true when any lane refreshed. Single-flight of the sweep itself
+ * belongs to the caller. */
 export async function performPollSweep(
   lanes: readonly PacingLane[],
   deps: PollSweepDeps,
@@ -109,8 +116,8 @@ export async function performPollSweep(
   let ran = false;
   for (const lane of lanes) {
     const now = deps.now().getTime();
-    if (!lane.pacer.pollEligible(now)) continue;
-    if (!deps.laneDemand(lane.vendor, now, now + QUOTA_POLL_INTERVAL_MS).remains) continue;
+    const due = deps.laneDemand(lane.vendor, now, now + QUOTA_POLL_INTERVAL_MS);
+    if (!due.remains || !lane.pacer.pollEligible(now, due.renewalDueObservedAt)) continue;
     const generation = deps.currentGeneration();
     try {
       await deps.runLaneCycle(lane);
@@ -142,6 +149,7 @@ export function laneDemand(
   vendor: string | null,
   snapshots: readonly QuotaSnapshot[],
   subjects: readonly QuotaSubject[] | undefined,
+  now: number,
   dueBefore: number,
 ): LaneDemand {
   const laneSnapshots =
@@ -154,6 +162,7 @@ export function laneDemand(
   return {
     remains: remainingQuotaRefreshDemand(laneSnapshots, laneSubjects, dueBefore).size > 0,
     renewalNotBefore: renewalAt === null ? null : renewalAt - QUOTA_POLL_INTERVAL_MS,
+    renewalDueObservedAt: latestQuotaRenewalObservedAt(laneSnapshots, laneSubjects, now, dueBefore),
   };
 }
 

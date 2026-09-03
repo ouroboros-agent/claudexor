@@ -401,7 +401,7 @@ export class QuotaRegistry {
       now: this.now,
       publishClockTransition: () => this.publishClockTransitionIfNeeded(),
       laneDemand: (vendor, now, dueBefore) =>
-        laneDemand(vendor, this.activeSnapshots(now), this.subjects?.(), dueBefore),
+        laneDemand(vendor, this.activeSnapshots(now), this.subjects?.(), now, dueBefore),
       currentGeneration: () => this.refreshCoordinator.currentGeneration(),
       isCurrentGeneration: (generation) => this.refreshCoordinator.isCurrent(generation),
       runLaneCycle: (lane) => this.refreshCycle(false, lane),
