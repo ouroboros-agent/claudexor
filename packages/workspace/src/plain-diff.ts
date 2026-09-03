@@ -50,8 +50,15 @@ export function relativizePlainDiffHeaders(
       inHunk = true;
       continue;
     }
-    if (line.startsWith("Binary files ") && line.endsWith(" differ") && !inHunk) {
+    // A bare `Binary files … differ` record is structural wherever it stands:
+    // hunk content always carries a ' '/'+'/'-' prefix, so it cannot forge
+    // this line. GNU diff 3.8 emits it right after the previous file's hunks
+    // with no `diff …` command echo in between (#252), so the previous hunk
+    // must not hide it from relativization — an unrelativized absolute path
+    // would escape the exact-prefix exclusion and repo-relative policy globs.
+    if (line.startsWith("Binary files ") && line.endsWith(" differ")) {
       lines[index] = swap(line);
+      inHunk = false;
     }
   }
   return lines.join("\n");

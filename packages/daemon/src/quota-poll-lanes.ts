@@ -1,7 +1,13 @@
 import { QUOTA_GAP_ABSENCE_REASONS } from "@claudexor/schema";
 import type { QuotaAbsence, QuotaSnapshot, QuotaSubject } from "@claudexor/schema";
 import { QuotaPollPacer, type QuotaPacerStateStore } from "./quota-poll-pacer.js";
-import { quotaSubjectIdentity, remainingQuotaRefreshDemand } from "./quota-refresh-demand.js";
+import {
+  earliestFreshRenewalAt,
+  earliestQuotaRenewalAt,
+  latestQuotaRenewalObservedAt,
+  quotaSubjectIdentity,
+  remainingQuotaRefreshDemand,
+} from "./quota-refresh-demand.js";
 
 export const QUOTA_POLL_INTERVAL_MS = 60_000;
 
@@ -13,7 +19,16 @@ export interface QuotaRefreshResult {
   absences?: QuotaAbsence[];
 }
 
-export type QuotaRefresher = () => Promise<QuotaRefreshResult>;
+/** Which kind of cycle is asking: a paced background poll of one vendor lane,
+ * or an explicit foreground refresh (`POST /v2/quota`, the atomic Accounts
+ * snapshot) — the user's "ask the vendor again now", which a source may honor
+ * by re-presenting a credential it would otherwise leave alone. A source that
+ * ignores the argument keeps the pre-existing contract. */
+export interface QuotaRefreshCycle {
+  readonly foreground: boolean;
+}
+
+export type QuotaRefresher = (cycle?: QuotaRefreshCycle) => Promise<QuotaRefreshResult>;
 
 /** A refresher bound to its vendor pacing lane. Refreshers of one vendor
  * share ONE QuotaPollPacer, so a permanently unsatisfiable subject of one
@@ -59,20 +74,48 @@ export function buildRefresherLanes(
   return { entries, lanes: [...new Set(entries.map((entry) => entry.lane))] };
 }
 
+/** One lane's demand at a poll horizon. The three facts answer different
+ * questions: `remains` (some registered subject lacks satisfying primary
+ * evidence by the horizon) drives the retry ladder; `renewalNotBefore` (the
+ * last poll tick before the earliest evidence satisfied at this horizon
+ * expires — or the next tick, when evidence observed since the cycle began
+ * hits a vendor window boundary before it; null when none) caps it;
+ * `renewalDueObservedAt` (the latest
+ * observation instant of satisfying evidence whose renewal is due by the
+ * horizon; null when none) lets evidence installed after the ladder was armed
+ * bypass it. */
+export interface LaneDemand {
+  readonly remains: boolean;
+  readonly renewalNotBefore: number | null;
+  readonly renewalDueObservedAt: number | null;
+}
+
 export interface PollSweepDeps {
   readonly now: () => Date;
   readonly publishClockTransition: () => void;
-  readonly laneHasDemand: (vendor: string | null, now: number, dueBefore: number) => boolean;
+  readonly laneDemand: (
+    vendor: string | null,
+    now: number,
+    dueBefore: number,
+    since: number,
+  ) => LaneDemand;
   readonly currentGeneration: () => number;
   readonly isCurrentGeneration: (generation: number) => boolean;
   readonly runLaneCycle: (lane: PacingLane) => Promise<unknown>;
 }
 
 /** One background poll sweep: drive every vendor lane in order, running a
- * coalesced cycle for each lane that is past its pacer gates and still has
- * refresh demand, so one vendor's backoff never starves a sibling vendor's
- * freshness. Resolves true when any lane refreshed. Single-flight of the
- * sweep itself belongs to the caller. */
+ * coalesced cycle for each lane that still has refresh demand and is past its
+ * pacer gates, so one vendor's backoff never starves a sibling vendor's
+ * freshness. The retry ladder paces subjects that produced no evidence and
+ * never postpones a renewal: after a cycle it advances on remaining demand
+ * but is capped at the renewal tick of the evidence the cycle DID satisfy,
+ * and evidence installed while it is armed (a foreground refresh, an ingested
+ * harness event) bypasses it when its renewal comes due — one revoked or
+ * never-logged-in profile used to pin every healthy sibling of its vendor to
+ * the 15-minute ceiling. The vendor rate-limit floor is never bypassed.
+ * Resolves true when any lane refreshed. Single-flight of the sweep itself
+ * belongs to the caller. */
 export async function performPollSweep(
   lanes: readonly PacingLane[],
   deps: PollSweepDeps,
@@ -81,8 +124,8 @@ export async function performPollSweep(
   let ran = false;
   for (const lane of lanes) {
     const now = deps.now().getTime();
-    if (!lane.pacer.pollEligible(now)) continue;
-    if (!deps.laneHasDemand(lane.vendor, now, now + QUOTA_POLL_INTERVAL_MS)) continue;
+    const due = deps.laneDemand(lane.vendor, now, now + QUOTA_POLL_INTERVAL_MS, now);
+    if (!due.remains || !lane.pacer.pollEligible(now, due.renewalDueObservedAt)) continue;
     const generation = deps.currentGeneration();
     try {
       await deps.runLaneCycle(lane);
@@ -91,13 +134,23 @@ export async function performPollSweep(
       // outcome: the fresh-generation poll re-decides from scratch.
       if (!deps.isCurrentGeneration(generation)) continue;
       const completedAt = deps.now().getTime();
-      lane.pacer.notePollSuccess(
+      const demand = deps.laneDemand(
+        lane.vendor,
         completedAt,
-        deps.laneHasDemand(lane.vendor, completedAt, completedAt + QUOTA_POLL_INTERVAL_MS),
+        completedAt + QUOTA_POLL_INTERVAL_MS,
+        now,
       );
+      lane.pacer.notePollSuccess(completedAt, demand.remains, demand.renewalNotBefore);
     } catch {
       if (deps.isCurrentGeneration(generation)) {
-        lane.pacer.notePollFailure(deps.now().getTime());
+        const failedAt = deps.now().getTime();
+        const demand = deps.laneDemand(
+          lane.vendor,
+          failedAt,
+          failedAt + QUOTA_POLL_INTERVAL_MS,
+          now,
+        );
+        lane.pacer.notePollFailure(failedAt, demand.renewalNotBefore);
       }
     }
   }
@@ -105,21 +158,31 @@ export async function performPollSweep(
 }
 
 /** Per-lane refresh demand: a vendor lane sees only its own subjects and
- * snapshots; an anonymous lane keeps the pre-existing global semantics. */
-export function laneHasDemand(
+ * snapshots; an anonymous lane keeps the pre-existing global semantics.
+ * `since` is the start of the cycle being judged: evidence it observed whose
+ * window resets before the next tick is renewal due at that tick. */
+export function laneDemand(
   vendor: string | null,
   snapshots: readonly QuotaSnapshot[],
-  subjects?: readonly QuotaSubject[],
-  dueBefore?: number,
-): boolean {
-  if (vendor === null) return remainingQuotaRefreshDemand(snapshots, subjects, dueBefore).size > 0;
-  return (
-    remainingQuotaRefreshDemand(
-      snapshots.filter((snapshot) => snapshot.subject.harness === vendor),
-      subjects?.filter((subject) => subject.harness === vendor),
-      dueBefore,
-    ).size > 0
-  );
+  subjects: readonly QuotaSubject[] | undefined,
+  now: number,
+  dueBefore: number,
+  since: number,
+): LaneDemand {
+  const laneSnapshots =
+    vendor === null
+      ? snapshots
+      : snapshots.filter((snapshot) => snapshot.subject.harness === vendor);
+  const laneSubjects =
+    vendor === null ? subjects : subjects?.filter((subject) => subject.harness === vendor);
+  const renewalAt =
+    earliestFreshRenewalAt(laneSnapshots, laneSubjects, since, now, dueBefore) ??
+    earliestQuotaRenewalAt(laneSnapshots, laneSubjects, dueBefore);
+  return {
+    remains: remainingQuotaRefreshDemand(laneSnapshots, laneSubjects, dueBefore).size > 0,
+    renewalNotBefore: renewalAt === null ? null : renewalAt - QUOTA_POLL_INTERVAL_MS,
+    renewalDueObservedAt: latestQuotaRenewalObservedAt(laneSnapshots, laneSubjects, now, dueBefore),
+  };
 }
 
 export interface LaneCycleSelection {
@@ -131,7 +194,9 @@ export interface LaneCycleSelection {
  * each vendor lane's rate-limit floor: a vendor that just said 429 is not
  * re-fanned-out by an explicit refresh — its skip is returned for additive
  * disclosure. A poll-scoped cycle was already gated by the sweep. Anonymous
- * lanes never carry a floor and always run. */
+ * lanes never carry a floor and always run. Every running refresher is bound
+ * to the cycle kind (foreground vs poll), so a source can honor an explicit
+ * refresh while the registry keeps calling `refresh()`. */
 export function selectCycleEntries(
   refresherLanes: RefresherLanes,
   scope: PacingLane | null,
@@ -147,11 +212,14 @@ export function selectCycleEntries(
         })
       : [];
   const skippedVendors = new Set(skipped.map((row) => row.vendor));
-  const running = refresherLanes.entries.filter((entry) =>
-    scope === null
-      ? entry.lane.vendor === null || !skippedVendors.has(entry.lane.vendor)
-      : entry.lane === scope,
-  );
+  const cycle: QuotaRefreshCycle = { foreground: scope === null };
+  const running = refresherLanes.entries
+    .filter((entry) =>
+      scope === null
+        ? entry.lane.vendor === null || !skippedVendors.has(entry.lane.vendor)
+        : entry.lane === scope,
+    )
+    .map((entry) => ({ lane: entry.lane, refresh: () => entry.refresh(cycle) }));
   return { running, skipped };
 }
 

@@ -1,4 +1,4 @@
-import type { QuotaVendorRefresher } from "@claudexor/daemon";
+import type { QuotaRefreshCycle, QuotaVendorRefresher } from "@claudexor/daemon";
 import type { QuotaSource } from "@claudexor/schema";
 import { refreshClaudeOauthUsageQuota } from "./claude-oauth-usage.js";
 import { refreshClaudeStatuslineQuota } from "./claude-statusline.js";
@@ -18,11 +18,18 @@ export interface QuotaRefresherRegistration {
 
 /** The daemon's top-level refreshers and the source each owns. Schema traits
  * independently declare which sources must appear here; the parity test keeps
- * composition, vocabulary, and pacing-lane assignment in lockstep. */
+ * composition, vocabulary, and pacing-lane assignment in lockstep. Only the
+ * claude OAuth source reads the cycle kind (an explicit foreground refresh
+ * re-presents a token it remembers as rejected); the others take no options
+ * from the cycle. */
 export const QUOTA_REFRESHER_REGISTRATIONS = [
-  { source: "codex_app_server", vendor: "codex", refresh: refreshCodexQuota },
-  { source: "claude_statusline", vendor: "claude", refresh: refreshClaudeStatuslineQuota },
-  { source: "claude_oauth_usage", vendor: "claude", refresh: () => refreshClaudeOauthUsageQuota() },
+  { source: "codex_app_server", vendor: "codex", refresh: () => refreshCodexQuota() },
+  { source: "claude_statusline", vendor: "claude", refresh: () => refreshClaudeStatuslineQuota() },
+  {
+    source: "claude_oauth_usage",
+    vendor: "claude",
+    refresh: (cycle?: QuotaRefreshCycle) => refreshClaudeOauthUsageQuota({}, cycle),
+  },
   { source: "agy_command_usage", vendor: "agy", refresh: () => refreshAgyQuota() },
 ] as const satisfies readonly QuotaRefresherRegistration[];
 

@@ -56,17 +56,26 @@ export function staleAt(snapshot: QuotaSnapshot, now: number): QuotaSnapshot {
   return resetExpired || tooOld ? { ...snapshot, freshness: "stale" } : snapshot;
 }
 
+/** The instant at which a fresh snapshot stops satisfying primary demand: its
+ * TTL expiry or its earliest reset boundary, whichever comes first. A stale or
+ * unreadable observation is already due (-Infinity). One owner for "when is
+ * this evidence due" — the demand horizon check and the lane renewal cap both
+ * read it, so they can never disagree by a tick. */
+export function quotaSnapshotDueAt(snapshot: QuotaSnapshot): number {
+  if (snapshot.freshness !== "fresh") return Number.NEGATIVE_INFINITY;
+  const observed = Date.parse(snapshot.observed_at);
+  if (!Number.isFinite(observed)) return Number.NEGATIVE_INFINITY;
+  const resets = snapshot.constraints
+    .map((constraint) => (constraint.resets_at ? Date.parse(constraint.resets_at) : Number.NaN))
+    .filter((at) => Number.isFinite(at));
+  return Math.min(observed + QUOTA_FRESHNESS_TTL_MS, ...resets);
+}
+
 /** Whether primary evidence will be due by a future demand horizon. Unlike
  * `staleAt`, the TTL comparison includes equality so the last existing poll
  * before expiry requests renewal instead of waiting for the following tick. */
 export function quotaSnapshotDueBefore(snapshot: QuotaSnapshot, deadline: number): boolean {
-  if (snapshot.freshness !== "fresh") return true;
-  const observed = Date.parse(snapshot.observed_at);
-  return (
-    !Number.isFinite(observed) ||
-    observed + QUOTA_FRESHNESS_TTL_MS <= deadline ||
-    snapshot.constraints.some((constraint) => resetExpiredAt(constraint, deadline))
-  );
+  return quotaSnapshotDueAt(snapshot) <= deadline;
 }
 
 function resetExpiredAt(constraint: Pick<QuotaConstraint, "resets_at">, now: number): boolean {

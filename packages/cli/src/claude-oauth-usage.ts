@@ -4,7 +4,7 @@ import { userInfo } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { loadConfig } from "@claudexor/config";
-import type { QuotaRefreshResult } from "@claudexor/daemon";
+import type { QuotaRefreshCycle, QuotaRefreshResult } from "@claudexor/daemon";
 import {
   canonicalProfileConfigDir,
   CLAUDE_AUTH_REFRESH_TERMINATION_UNCONFIRMED,
@@ -136,6 +136,52 @@ export function parseClaudeOauthCredential(raw: string): ClaudeOauthCredential |
   } catch {
     return null;
   }
+}
+
+/** A vendor rejection remembered per PRESENTED token (INV-062: the token's
+ * hash, never the token; process memory only; never persisted or logged).
+ * Re-presenting a credential the vendor has already rejected buys nothing and
+ * costs a lot: the vendor answers a 401 storm with a one-hour 429, and the
+ * per-vendor poll floor then blacks out every healthy sibling (live journal:
+ * healthy profiles fresh 20 % of the day beside one revoked row). So a
+ * background cycle re-states the typed `auth_revoked` absence for a
+ * remembered token WITHOUT an HTTP request — the same doctrine as the codex
+ * source's logged-out precheck — until the token bytes change (any re-login,
+ * daemon-side or external), a daemon-side credential change clears the
+ * memory (`forgetClaudeOauthRejections`), an explicit foreground refresh
+ * re-asks, or the safety TTL below elapses (bounds a spurious vendor 401) —
+ * and then ONE remembered token is re-verified per cycle, never all at once:
+ * N dead tokens expiring together must not become an N-request burst, the
+ * very storm the memory exists to prevent. The memory is bounded by recent
+ * rejection churn: each cycle releases the oldest expired entry whether or
+ * not its token is still presented, so an entry lives at most the TTL plus
+ * one cycle per older expired sibling. */
+const REVOKED_TOKEN_REPROBE_MS = 6 * 60 * 60_000;
+const rejectedTokens = new Map<string, number>();
+/** Bumped by every forget: a cycle that started before a credential change
+ * must not restore a rejection it observed with the pre-change credentials
+ * (the same fence the registry's credential generation gives its own writes). */
+let rejectionEpoch = 0;
+
+/** Daemon-side credential change (login/logout/profile mutation): every
+ * remembered rejection is re-verified on the next cycle. Fail-open by
+ * contract — over-clearing costs at most one probe. */
+export function forgetClaudeOauthRejections(): void {
+  rejectedTokens.clear();
+  rejectionEpoch += 1;
+}
+
+/** Release the OLDEST expired entry (age past the TTL, or a negative age
+ * after a wall-clock step) so its token is re-verified this cycle; younger
+ * expired siblings wait for a later cycle. */
+function releaseExpiredRejection(nowMs: number): void {
+  let oldest: [string, number] | null = null;
+  for (const entry of rejectedTokens) {
+    const age = nowMs - entry[1];
+    if (age < REVOKED_TOKEN_REPROBE_MS && age >= 0) continue;
+    if (oldest === null || entry[1] < oldest[1]) oldest = entry;
+  }
+  if (oldest !== null) rejectedTokens.delete(oldest[0]);
 }
 
 const VENDOR_REFRESH_REQUIRED_DETAIL =
@@ -354,15 +400,22 @@ function claudeOauthAbsence(
  * read fault is the tagged reason it carries, an expired refreshable token is
  * automatically refreshed by Claude Code without inference, and a fetch
  * refusal is refresh_failed unless a known-fresh credential is explicitly rejected.
+ * A remembered rejection is re-stated without re-presenting the token on
+ * background cycles (see `rejectedTokens`); a foreground cycle always asks.
  * Absence is stated, never inferred. */
 export async function refreshClaudeOauthUsageQuota(
   deps: Partial<ClaudeOauthUsageDeps> = {},
+  cycle?: QuotaRefreshCycle,
 ): Promise<QuotaRefreshResult> {
   const readCredential = deps.readCredential ?? readClaudeOauthCredential;
   const refreshCredential = deps.refreshCredential ?? refreshCredentialDefault;
   const fetchUsage = deps.fetchUsage ?? fetchUsageDefault;
   const now = deps.now ?? (() => new Date());
   const platform = deps.platform ?? process.platform;
+  // Rejections observed by THIS cycle count only if no credential change
+  // intervened; one expired memory is released for re-verification per cycle.
+  const epoch = rejectionEpoch;
+  releaseExpiredRejection(now().getTime());
   const notLoggedInDetail =
     platform === "darwin"
       ? "no OAuth credential in the keychain item (no login, or the keychain tool is unavailable)"
@@ -448,8 +501,25 @@ export async function refreshClaudeOauthUsageQuota(
         }
       }
     }
+    const tokenKey = sha256(credential.accessToken);
+    const rejectedAt = rejectedTokens.get(tokenKey);
+    if (rejectedAt !== undefined && !cycle?.foreground) {
+      // The SAME observation re-stated: its instant is the vendor's real
+      // rejection time, not this cycle's clock (stable projection signature,
+      // honest "revoked at" for downstream readers).
+      absences.push(
+        claudeOauthAbsence(
+          candidate.subjectId,
+          "auth_revoked",
+          `oauth/usage rejected this token at ${new Date(rejectedAt).toISOString()}; not re-asked until the token changes, a login or profile change, an explicit refresh, or ${REVOKED_TOKEN_REPROBE_MS / 3_600_000} h elapse (then one remembered token is re-verified per cycle)`,
+          new Date(rejectedAt),
+        ),
+      );
+      continue;
+    }
     try {
       const usage = await fetchUsage(credential.accessToken);
+      rejectedTokens.delete(tokenKey);
       const snapshot = parseClaudeOauthUsage(
         usage,
         candidate.subjectId,
@@ -483,6 +553,11 @@ export async function refreshClaudeOauthUsageQuota(
         tagged === "auth_revoked" &&
         credential.hasRefreshToken &&
         (credential.expiresAtMs === null || needsVendorRefresh(credential, observedAt));
+      // Only a PROVEN rejection is remembered: an unproven one waits for the
+      // vendor-owned token refresh and is re-presented once that happened.
+      if (tagged === "auth_revoked" && !rejectedWithoutFreshnessProof && epoch === rejectionEpoch) {
+        rejectedTokens.set(tokenKey, observedAt.getTime());
+      }
       absences.push({
         ...claudeOauthAbsence(
           candidate.subjectId,

@@ -1482,7 +1482,13 @@ describe("QuotaRegistry", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it("keeps exponential pacing while any enabled subject remains unsatisfied", async () => {
+  it("retry pacing for an unsatisfied subject never postpones a satisfied sibling's renewal (#263)", async () => {
+    // Before #263 this case pinned the bug: a lane with one satisfied and one
+    // never-observed subject climbed the retry ladder as if NOTHING had been
+    // observed, so the satisfied subject's renewal waited up to 15 minutes.
+    // The ladder still advances after each partial cycle (the never-observed
+    // subject is retried exponentially), but a renewal that comes due before
+    // the ladder elapses runs anyway.
     const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-quota-partial-backoff-")));
     const journal = new DurableJournal({ rootDir: root, partition: "global" });
     let nowMs = Date.parse("2026-07-28T00:00:00.000Z");
@@ -1519,6 +1525,19 @@ describe("QuotaRegistry", () => {
     nowMs += 60_000;
     await expect(registry.pollStale()).resolves.toBe(true);
     expect(calls).toBe(3);
+    // Ladder rung 4 minutes (until t=7m); renewal of the observed subject is
+    // due at t=7m too (observed t=3m, TTL 5m, last tick before expiry).
+    nowMs += 4 * 60_000;
+    await expect(registry.pollStale()).resolves.toBe(true);
+    expect(calls).toBe(4);
+    // Ladder rung now 8 minutes (until t=15m) — but the subject observed at
+    // t=7m is due at t=12m, so the renewal runs at t=11m instead of waiting.
+    nowMs += 3 * 60_000;
+    await expect(registry.pollStale()).resolves.toBe(false);
+    expect(calls).toBe(4);
+    nowMs += 60_000;
+    await expect(registry.pollStale()).resolves.toBe(true);
+    expect(calls).toBe(5);
 
     journal.close();
     rmSync(root, { recursive: true, force: true });
