@@ -149,7 +149,13 @@ export function parseClaudeOauthCredential(raw: string): ClaudeOauthCredential |
  * source's logged-out precheck — until the token bytes change (any re-login,
  * daemon-side or external), a daemon-side credential change clears the
  * memory (`forgetClaudeOauthRejections`), an explicit foreground refresh
- * re-asks, or the safety TTL below elapses (bounds a spurious vendor 401). */
+ * re-asks, or the safety TTL below elapses (bounds a spurious vendor 401) —
+ * and then ONE remembered token is re-verified per cycle, never all at once:
+ * N dead tokens expiring together must not become an N-request burst, the
+ * very storm the memory exists to prevent. The memory is bounded by recent
+ * rejection churn: each cycle releases the oldest expired entry whether or
+ * not its token is still presented, so an entry lives at most the TTL plus
+ * one cycle per older expired sibling. */
 const REVOKED_TOKEN_REPROBE_MS = 6 * 60 * 60_000;
 const rejectedTokens = new Map<string, number>();
 /** Bumped by every forget: a cycle that started before a credential change
@@ -165,17 +171,17 @@ export function forgetClaudeOauthRejections(): void {
   rejectionEpoch += 1;
 }
 
-/** Size of the rejection memory — observability for tests and diagnostics. */
-export function rememberedClaudeOauthRejections(): number {
-  return rejectedTokens.size;
-}
-
-/** Entries older than the re-probe TTL are re-asked on sight anyway; drop
- * them so a hash of a token that was rotated or removed does not outlive it. */
-function pruneExpiredRejections(nowMs: number): void {
-  for (const [tokenKey, rejectedAt] of rejectedTokens) {
-    if (nowMs - rejectedAt >= REVOKED_TOKEN_REPROBE_MS) rejectedTokens.delete(tokenKey);
+/** Release the OLDEST expired entry (age past the TTL, or a negative age
+ * after a wall-clock step) so its token is re-verified this cycle; younger
+ * expired siblings wait for a later cycle. */
+function releaseExpiredRejection(nowMs: number): void {
+  let oldest: [string, number] | null = null;
+  for (const entry of rejectedTokens) {
+    const age = nowMs - entry[1];
+    if (age < REVOKED_TOKEN_REPROBE_MS && age >= 0) continue;
+    if (oldest === null || entry[1] < oldest[1]) oldest = entry;
   }
+  if (oldest !== null) rejectedTokens.delete(oldest[0]);
 }
 
 const VENDOR_REFRESH_REQUIRED_DETAIL =
@@ -407,9 +413,9 @@ export async function refreshClaudeOauthUsageQuota(
   const now = deps.now ?? (() => new Date());
   const platform = deps.platform ?? process.platform;
   // Rejections observed by THIS cycle count only if no credential change
-  // intervened; the pruning keeps the memory bounded by live tokens.
+  // intervened; one expired memory is released for re-verification per cycle.
   const epoch = rejectionEpoch;
-  pruneExpiredRejections(now().getTime());
+  releaseExpiredRejection(now().getTime());
   const notLoggedInDetail =
     platform === "darwin"
       ? "no OAuth credential in the keychain item (no login, or the keychain tool is unavailable)"
@@ -498,18 +504,18 @@ export async function refreshClaudeOauthUsageQuota(
     const tokenKey = sha256(credential.accessToken);
     const rejectedAt = rejectedTokens.get(tokenKey);
     if (rejectedAt !== undefined && !cycle?.foreground) {
-      if (now().getTime() - rejectedAt < REVOKED_TOKEN_REPROBE_MS) {
-        absences.push(
-          claudeOauthAbsence(
-            candidate.subjectId,
-            "auth_revoked",
-            `oauth/usage rejected this token at ${new Date(rejectedAt).toISOString()}; not re-asked until the token changes, a login or profile change, an explicit refresh, or ${REVOKED_TOKEN_REPROBE_MS / 3_600_000} h elapse`,
-            now(),
-          ),
-        );
-        continue;
-      }
-      rejectedTokens.delete(tokenKey);
+      // The SAME observation re-stated: its instant is the vendor's real
+      // rejection time, not this cycle's clock (stable projection signature,
+      // honest "revoked at" for downstream readers).
+      absences.push(
+        claudeOauthAbsence(
+          candidate.subjectId,
+          "auth_revoked",
+          `oauth/usage rejected this token at ${new Date(rejectedAt).toISOString()}; not re-asked until the token changes, a login or profile change, an explicit refresh, or ${REVOKED_TOKEN_REPROBE_MS / 3_600_000} h elapse (then one remembered token is re-verified per cycle)`,
+          new Date(rejectedAt),
+        ),
+      );
+      continue;
     }
     try {
       const usage = await fetchUsage(credential.accessToken);

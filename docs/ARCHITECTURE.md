@@ -3270,7 +3270,8 @@ code touching one of these areas must honor it or change it explicitly here.
   vendor answers repeated 401s with a one-hour 429 that would black out every
   healthy sibling of the lane — until the token bytes change (any re-login), a
   daemon-side credential change clears the memory, an explicit foreground
-  refresh re-asks, or six hours elapse. Other endpoint failures yield NO
+  refresh re-asks, or six hours elapse — after which the memory re-verifies
+  one remembered token per cycle, never all at once. Other endpoint failures yield NO
   snapshot and no auth verdict. The user-scoped status-line payload
   (installed explicitly by the Claude host-plugin lifecycle) remains a
   SECONDARY source for the legacy null subject only; its collector stores only

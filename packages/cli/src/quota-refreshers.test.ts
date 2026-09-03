@@ -1,6 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { quotaSourceTraits, quotaSourcesProducedByRefreshers } from "@claudexor/schema";
+import { refreshClaudeOauthUsageQuota } from "./claude-oauth-usage.js";
 import { QUOTA_REFRESHER_REGISTRATIONS, quotaRefreshers } from "./quota-refreshers.js";
+
+vi.mock("./claude-oauth-usage.js", () => ({
+  refreshClaudeOauthUsageQuota: vi.fn(async () => ({ snapshots: [] })),
+}));
 
 describe("quota refresher composition", () => {
   it("matches every schema source declared as produced by a refresher", () => {
@@ -22,5 +27,21 @@ describe("quota refresher composition", () => {
     expect(
       QUOTA_REFRESHER_REGISTRATIONS.find(({ source }) => source === "claude_statusline")?.vendor,
     ).toBe("claude");
+  });
+
+  it("forwards the cycle kind to the claude OAuth source (foreground re-asks a remembered token)", async () => {
+    const registration = QUOTA_REFRESHER_REGISTRATIONS.find(
+      ({ source }) => source === "claude_oauth_usage",
+    );
+    await registration?.refresh({ foreground: true });
+    expect(vi.mocked(refreshClaudeOauthUsageQuota)).toHaveBeenLastCalledWith(
+      {},
+      { foreground: true },
+    );
+    await registration?.refresh({ foreground: false });
+    expect(vi.mocked(refreshClaudeOauthUsageQuota)).toHaveBeenLastCalledWith(
+      {},
+      { foreground: false },
+    );
   });
 });
