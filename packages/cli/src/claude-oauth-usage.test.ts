@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   claudeOauthKeychainItem,
   forgetClaudeOauthRejections,
+  rememberedClaudeOauthRejections,
   parseClaudeOauthCredential,
   parseClaudeOauthUsage,
   readClaudeOauthCredential,
@@ -879,6 +880,66 @@ describe("remembered vendor rejections (#263: a dead token is not re-presented o
       { foreground: false },
     );
     expect(fetches.n).toBe(3);
+  });
+
+  it("a cycle that started before a credential change cannot restore a cleared rejection", async () => {
+    // The mutation hook clears the memory while a poll is still waiting on the
+    // vendor; the obsolete 401 must not be remembered (the same fence the
+    // registry's credential generation gives its own writes).
+    const fetches = { n: 0 };
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const inFlight = refreshClaudeOauthUsageQuota(
+      {
+        readCredential: async () => fresh(),
+        fetchUsage: async () => {
+          fetches.n += 1;
+          await gate;
+          throw Object.assign(new Error("oauth/usage responded 401"), {
+            quotaAbsenceReason: "auth_revoked" as const,
+          });
+        },
+        now: () => new Date(t0),
+      },
+      { foreground: false },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    forgetClaudeOauthRejections();
+    release();
+    expect((await inFlight).absences?.[0]).toMatchObject({ reason: "auth_revoked" });
+    // The next background cycle asks the vendor again instead of trusting the
+    // stale verdict.
+    await refreshClaudeOauthUsageQuota(
+      {
+        readCredential: async () => fresh(),
+        fetchUsage: revoke(fetches),
+        now: () => new Date(t0 + 60_000),
+      },
+      { foreground: false },
+    );
+    expect(fetches.n).toBe(2);
+  });
+
+  it("prunes remembered rejections past the TTL even when their token is never seen again", async () => {
+    const fetches = { n: 0 };
+    await refreshClaudeOauthUsageQuota(
+      { readCredential: async () => fresh(), fetchUsage: revoke(fetches), now: () => new Date(t0) },
+      { foreground: false },
+    );
+    expect(rememberedClaudeOauthRejections()).toBe(1);
+    // A rotated token is a new key; the old hash is dropped once it expires.
+    await refreshClaudeOauthUsageQuota(
+      {
+        readCredential: async () => ({ ...fresh(), accessToken: "tok-rotated" }),
+        fetchUsage: revoke(fetches),
+        now: () => new Date(t0 + 6 * 60 * 60_000),
+      },
+      { foreground: false },
+    );
+    expect(fetches.n).toBe(2);
+    expect(rememberedClaudeOauthRejections()).toBe(1);
   });
 
   it("never remembers an unproven rejection or a legacy call without a cycle kind", async () => {
