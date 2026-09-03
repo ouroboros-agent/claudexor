@@ -18,6 +18,7 @@ function primarySnapshot(
   subject: QuotaSubject,
   source: QuotaSource,
   observedAtMs: number,
+  resetsAtMs: number | null = null,
 ): QuotaSnapshot {
   return {
     subject,
@@ -27,7 +28,7 @@ function primarySnapshot(
         label: "5 hour",
         used_ratio: 0.2,
         window_seconds: 18_000,
-        resets_at: null,
+        resets_at: resetsAtMs === null ? null : new Date(resetsAtMs).toISOString(),
         cooldown_until: null,
       },
     ],
@@ -211,6 +212,52 @@ describe("QuotaRegistry poll sweep: renewal is never postponed by a sibling's re
       }),
   );
 
+  it("a vendor window reset within the next tick is picked up on that tick, not at the sibling's rung", async () =>
+    withJournal("claudexor-quota-263-reset-", async (journal) => {
+      const clock = { nowMs: Date.parse("2026-09-03T17:00:00.000Z") };
+      let calls = 0;
+      const healthy = subjectOf("claude", "healthy");
+      const dead = subjectOf("claude", "dead");
+      // The vendor's five-hour window resets at tick 20; afterwards it reports
+      // the next window. Real evidence carries `resets_at` — the renewal
+      // observed on the last tick before the reset is born due at the reset.
+      const resetAt = clock.nowMs + 20 * 60_000;
+      const registry = new QuotaRegistry(
+        journal,
+        [
+          {
+            vendor: "claude",
+            refresh: async () => {
+              calls += 1;
+              const window = clock.nowMs < resetAt ? resetAt : resetAt + 5 * 3_600_000;
+              return {
+                snapshots: [primarySnapshot(healthy, "claude_oauth_usage", clock.nowMs, window)],
+                absences: [absenceOf(dead, "auth_revoked", clock.nowMs)],
+              };
+            },
+          },
+        ],
+        () => new Date(clock.nowMs),
+        () => [healthy, dead],
+      );
+      const { cadence, staleTicks } = await driveTicks(
+        registry,
+        clock,
+        40,
+        () => calls,
+        "healthy",
+        "auth_revoked",
+      );
+      // The renewal at tick 19 observes evidence that resets at 20 — due by
+      // the next tick, yet observed by that very cycle, so it is renewal due
+      // at 20, never ladder demand: the lane polls at 20 and the healthy
+      // subject is never stale. Before this fix the ladder (rung 15) took
+      // over and the healthy subject was stale from tick 20 to 33.
+      expect(staleTicks).toBe(0);
+      expect(cadence).toContain(19);
+      expect(cadence).toContain(20);
+    }));
+
   it("a cycle that throws keeps the renewal cap: the satisfied sibling's renewal is not postponed to the rung", async () =>
     withJournal("claudexor-quota-263-throw-", async (journal) => {
       const clock = { nowMs: Date.parse("2026-09-03T17:00:00.000Z") };
@@ -289,10 +336,15 @@ describe("QuotaRegistry poll sweep: renewal is never postponed by a sibling's re
       // For the rest of the hour the lane is floor-paused even though the
       // healthy snapshot's renewal comes due every five minutes; the healthy
       // subject is honestly stale + a derived poll_paced row, never re-asked.
-      const paused = await driveTicks(registry, clock, 50, () => calls, "healthy");
-      expect(paused.cadence).toEqual([]);
+      const paused = await driveTicks(registry, clock, 20, () => calls, "healthy");
+      // An explicit refresh during the pause honours the floor as well (a
+      // skipped lane, no vendor call), so it installs no post-arm evidence:
+      // the ladder bypass never reaches a floored lane.
+      await registry.refresh();
+      const stillPaused = await driveTicks(registry, clock, 30, () => calls, "healthy");
+      expect([...paused.cadence, ...stillPaused.cadence]).toEqual([]);
       expect(calls).toBe(throttledAt);
-      expect(paused.staleTicks).toBeGreaterThan(40);
+      expect(paused.staleTicks + stillPaused.staleTicks).toBeGreaterThan(40);
       expect(registry.read().absences.map((a) => a.reason)).toContain("poll_paced");
       // After the floor the lane resumes on the renewal cadence.
       throttle = false;

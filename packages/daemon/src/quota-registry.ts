@@ -400,8 +400,8 @@ export class QuotaRegistry {
     const sweep = performPollSweep(this.refresherLanes.lanes, {
       now: this.now,
       publishClockTransition: () => this.publishClockTransitionIfNeeded(),
-      laneDemand: (vendor, now, dueBefore) =>
-        laneDemand(vendor, this.activeSnapshots(now), this.subjects?.(), now, dueBefore),
+      laneDemand: (vendor, now, dueBefore, since) =>
+        laneDemand(vendor, this.activeSnapshots(now), this.subjects?.(), now, dueBefore, since),
       currentGeneration: () => this.refreshCoordinator.currentGeneration(),
       isCurrentGeneration: (generation) => this.refreshCoordinator.isCurrent(generation),
       runLaneCycle: (lane) => this.refreshCycle(false, lane),

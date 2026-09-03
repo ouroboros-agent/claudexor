@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { QuotaSnapshot, QuotaSubject } from "@claudexor/schema";
 import {
+  earliestFreshRenewalAt,
   earliestQuotaRenewalAt,
   latestQuotaRenewalObservedAt,
   remainingQuotaRefreshDemand,
@@ -141,6 +142,43 @@ describe("earliestQuotaRenewalAt (#263: renewal is not retry)", () => {
     expect(earliestQuotaRenewalAt([primary], [subject("codex", "other")], observed)).toBeNull();
     expect(earliestQuotaRenewalAt([primary], [], observed)).toBeNull();
     expect(earliestQuotaRenewalAt([primary], undefined, observed)).toBe(observed + ttl);
+  });
+});
+
+describe("earliestFreshRenewalAt (#263: a window reset within the next tick is renewal, not retry)", () => {
+  const owner = subject("codex", "work");
+  const observed = Date.parse("2026-08-09T00:00:00.000Z");
+  const minute = 60_000;
+  const resetting: QuotaSnapshot = {
+    ...snapshot(owner, "codex_app_server"),
+    constraints: [
+      {
+        id: "primary",
+        label: "5 hour",
+        used_ratio: 0.2,
+        window_seconds: 18_000,
+        resets_at: "2026-08-09T00:00:30.000Z",
+        cooldown_until: null,
+      },
+    ],
+  };
+
+  it("names a reset due within (now, deadline] for evidence observed since the cycle began", () => {
+    expect(
+      earliestFreshRenewalAt([resetting], [owner], observed, observed, observed + minute),
+    ).toBe(observed + 30_000);
+    // Observed before the cycle began (pre-aged): the ladder's business.
+    expect(
+      earliestFreshRenewalAt([resetting], [owner], observed + 1, observed, observed + minute),
+    ).toBeNull();
+    // Already due, or due beyond the deadline: not this cycle's renewal.
+    expect(
+      earliestFreshRenewalAt([resetting], [owner], observed, observed + 30_000, observed + minute),
+    ).toBeNull();
+    expect(
+      earliestFreshRenewalAt([resetting], [owner], observed, observed, observed + 20_000),
+    ).toBeNull();
+    expect(earliestFreshRenewalAt([], [owner], observed, observed, observed + minute)).toBeNull();
   });
 });
 

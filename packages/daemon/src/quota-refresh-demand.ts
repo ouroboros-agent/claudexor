@@ -92,6 +92,27 @@ export function earliestQuotaRenewalAt(
   return earliest;
 }
 
+/** The earliest due instant — strictly after `now`, no later than `deadline`
+ * — of satisfying evidence observed at or after `since`: a vendor window
+ * boundary (`resets_at`) that falls within the next tick of the very cycle
+ * that observed the evidence. Such evidence is renewal due at the next tick,
+ * never ladder demand; a pre-aged result (observed before `since`) still
+ * feeds the ladder. Null when there is none. */
+export function earliestFreshRenewalAt(
+  snapshots: readonly QuotaSnapshot[],
+  subjects: readonly QuotaSubject[] | undefined,
+  since: number,
+  now: number,
+  deadline: number,
+): number | null {
+  let earliest: number | null = null;
+  for (const [snapshot, dueAt] of satisfyingEvidence(snapshots, subjects)) {
+    if (dueAt <= now || dueAt > deadline || Date.parse(snapshot.observed_at) < since) continue;
+    if (earliest === null || dueAt < earliest) earliest = dueAt;
+  }
+  return earliest;
+}
+
 /** The latest observation instant among satisfying evidence whose renewal is
  * due in `(after, deadline]` — what the poll sweep compares with the retry
  * ladder's arm time: evidence observed after the ladder was armed (a

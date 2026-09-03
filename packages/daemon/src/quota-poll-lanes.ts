@@ -2,6 +2,7 @@ import { QUOTA_GAP_ABSENCE_REASONS } from "@claudexor/schema";
 import type { QuotaAbsence, QuotaSnapshot, QuotaSubject } from "@claudexor/schema";
 import { QuotaPollPacer, type QuotaPacerStateStore } from "./quota-poll-pacer.js";
 import {
+  earliestFreshRenewalAt,
   earliestQuotaRenewalAt,
   latestQuotaRenewalObservedAt,
   quotaSubjectIdentity,
@@ -77,7 +78,9 @@ export function buildRefresherLanes(
  * questions: `remains` (some registered subject lacks satisfying primary
  * evidence by the horizon) drives the retry ladder; `renewalNotBefore` (the
  * last poll tick before the earliest evidence satisfied at this horizon
- * expires; null when none) caps it; `renewalDueObservedAt` (the latest
+ * expires — or the next tick, when evidence observed since the cycle began
+ * hits a vendor window boundary before it; null when none) caps it;
+ * `renewalDueObservedAt` (the latest
  * observation instant of satisfying evidence whose renewal is due by the
  * horizon; null when none) lets evidence installed after the ladder was armed
  * bypass it. */
@@ -90,7 +93,12 @@ export interface LaneDemand {
 export interface PollSweepDeps {
   readonly now: () => Date;
   readonly publishClockTransition: () => void;
-  readonly laneDemand: (vendor: string | null, now: number, dueBefore: number) => LaneDemand;
+  readonly laneDemand: (
+    vendor: string | null,
+    now: number,
+    dueBefore: number,
+    since: number,
+  ) => LaneDemand;
   readonly currentGeneration: () => number;
   readonly isCurrentGeneration: (generation: number) => boolean;
   readonly runLaneCycle: (lane: PacingLane) => Promise<unknown>;
@@ -116,7 +124,7 @@ export async function performPollSweep(
   let ran = false;
   for (const lane of lanes) {
     const now = deps.now().getTime();
-    const due = deps.laneDemand(lane.vendor, now, now + QUOTA_POLL_INTERVAL_MS);
+    const due = deps.laneDemand(lane.vendor, now, now + QUOTA_POLL_INTERVAL_MS, now);
     if (!due.remains || !lane.pacer.pollEligible(now, due.renewalDueObservedAt)) continue;
     const generation = deps.currentGeneration();
     try {
@@ -130,12 +138,18 @@ export async function performPollSweep(
         lane.vendor,
         completedAt,
         completedAt + QUOTA_POLL_INTERVAL_MS,
+        now,
       );
       lane.pacer.notePollSuccess(completedAt, demand.remains, demand.renewalNotBefore);
     } catch {
       if (deps.isCurrentGeneration(generation)) {
         const failedAt = deps.now().getTime();
-        const demand = deps.laneDemand(lane.vendor, failedAt, failedAt + QUOTA_POLL_INTERVAL_MS);
+        const demand = deps.laneDemand(
+          lane.vendor,
+          failedAt,
+          failedAt + QUOTA_POLL_INTERVAL_MS,
+          now,
+        );
         lane.pacer.notePollFailure(failedAt, demand.renewalNotBefore);
       }
     }
@@ -144,13 +158,16 @@ export async function performPollSweep(
 }
 
 /** Per-lane refresh demand: a vendor lane sees only its own subjects and
- * snapshots; an anonymous lane keeps the pre-existing global semantics. */
+ * snapshots; an anonymous lane keeps the pre-existing global semantics.
+ * `since` is the start of the cycle being judged: evidence it observed whose
+ * window resets before the next tick is renewal due at that tick. */
 export function laneDemand(
   vendor: string | null,
   snapshots: readonly QuotaSnapshot[],
   subjects: readonly QuotaSubject[] | undefined,
   now: number,
   dueBefore: number,
+  since: number,
 ): LaneDemand {
   const laneSnapshots =
     vendor === null
@@ -158,7 +175,9 @@ export function laneDemand(
       : snapshots.filter((snapshot) => snapshot.subject.harness === vendor);
   const laneSubjects =
     vendor === null ? subjects : subjects?.filter((subject) => subject.harness === vendor);
-  const renewalAt = earliestQuotaRenewalAt(laneSnapshots, laneSubjects, dueBefore);
+  const renewalAt =
+    earliestFreshRenewalAt(laneSnapshots, laneSubjects, since, now, dueBefore) ??
+    earliestQuotaRenewalAt(laneSnapshots, laneSubjects, dueBefore);
   return {
     remains: remainingQuotaRefreshDemand(laneSnapshots, laneSubjects, dueBefore).size > 0,
     renewalNotBefore: renewalAt === null ? null : renewalAt - QUOTA_POLL_INTERVAL_MS,
