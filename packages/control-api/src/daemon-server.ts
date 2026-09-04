@@ -2548,6 +2548,7 @@ function summarizeRun(
     primaryHarness: typeof p["primaryHarness"] === "string" ? p["primaryHarness"] : undefined,
     routingGoal: parsedRoutingGoal.success ? parsedRoutingGoal.data : undefined,
     model: typeof p["model"] === "string" ? p["model"] : undefined,
+    review: task?.review_requested ?? (typeof p["review"] === "boolean" ? p["review"] : undefined),
     reviewerPanel: parsedReviewerPanel?.success ? parsedReviewerPanel.data : undefined,
     protectedPathApprovals: parsedProtectedPathApprovals?.success
       ? parsedProtectedPathApprovals.data

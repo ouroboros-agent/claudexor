@@ -8,6 +8,7 @@ import type {
   WorkState,
 } from "@claudexor/schema";
 import { parseUnifiedDiff } from "@claudexor/core";
+import { reviewAllowsApply } from "@claudexor/schema";
 import { pathGuard } from "@claudexor/policy";
 import { sha256 } from "@claudexor/util";
 
@@ -86,6 +87,9 @@ function applyHint(decision: DecisionRecord | null, lifecycle: string | null): s
       // "run a review first" is a dead loop (QA-032B). The real next step is the
       // typed risk override; the fresh final check then runs at apply time.
       return "Accept the risk to apply it anyway (`claudexor decision <run> --accept-risk`).";
+    }
+    if (facts.review === "not_run" && facts.review_requested === false) {
+      return "Inspect the patch and retry the final check before applying.";
     }
     if (facts.review === "not_run" || facts.checks === "not_configured") {
       return "Add a test check or get a clean cross-family review, then re-run. (Accepting the risk only unblocks a change that was reviewed and blocked.)";
@@ -182,10 +186,9 @@ export function validateApplyGate(input: ApplyGateInput): string | null {
   if (workVeto === "incomplete") {
     return "This change can't be applied — the run reported the work is incomplete. Re-run until it finishes.";
   }
-  // Apply requires a succeeded lifecycle with an APPROVED review and checks
-  // not failed (INV-112 verification-basis rules unchanged).
+  // Review opt-out is frozen separately from its verdict (INV-112).
   const applyable =
-    facts?.lifecycle === "succeeded" && facts.review === "approved" && facts.checks !== "failed";
+    facts?.lifecycle === "succeeded" && reviewAllowsApply(facts) && facts.checks !== "failed";
   if (!applyable && !override) {
     // Jargon soup rewritten to plain language (F5). The raw axes (lifecycle,
     // review, checks) remain the machine detail on `decision.facts` and the
@@ -226,7 +229,7 @@ export function validateApplyGate(input: ApplyGateInput): string | null {
   if (typeof recorded !== "string" || recorded.length === 0)
     return "work product patch hash is required before apply";
   if (recorded !== sha256(input.patch))
-    return "patch artifact hash does not match the reviewed work product";
+    return "patch artifact hash does not match the recorded work product";
   if (!input.originalRepoRoot) return "run original project is unknown; refusing apply";
   try {
     if (realpathSync(input.originalRepoRoot) !== realpathSync(input.targetRepoRoot)) {

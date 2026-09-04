@@ -188,6 +188,10 @@
               },
               "description": "Harness-scoped effort map (harness id to effort); an entry here wins over the scalar effort and the per-harness settings default."
             },
+            "review": {
+              "type": "boolean",
+              "description": "Agent model review: ordinary runs default off; true selects an automatic panel. Explicit reviewer controls, best-of and untilClean request review. Capped attempts default to review unless explicitly false."
+            },
             "reviewerModels": {
               "type": "object",
               "additionalProperties": {

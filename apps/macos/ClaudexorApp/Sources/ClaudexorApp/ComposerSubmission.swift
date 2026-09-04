@@ -161,6 +161,7 @@ extension ThreadsScreen {
         councilEnabled = false
         councilMembers = 2
         reviewDraft = .init()
+        reviewChanges = false
         testCommandText = ""
         composerModels = [:]
         poolModelCatalogs = [:]
@@ -183,6 +184,7 @@ extension ThreadsScreen {
             councilMembers: councilMembers,
             browser: browser,
             reviewDraft: reviewDraft,
+            reviewChanges: reviewChanges,
             testCommandText: testCommandText,
             composerModels: composerModels
         )
@@ -204,6 +206,7 @@ extension ThreadsScreen {
         councilMembers = draft.councilMembers
         browser = draft.browser
         reviewDraft = draft.reviewDraft
+        reviewChanges = draft.reviewChanges
         testCommandText = draft.testCommandText
         composerModels = draft.composerModels
     }

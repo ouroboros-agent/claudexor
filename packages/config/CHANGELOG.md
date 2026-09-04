@@ -4,8 +4,9 @@
 
 ### Patch Changes
 
-- @claudexor/schema@3.9.8
-- @claudexor/util@3.9.8
+- Updated dependencies
+  - @claudexor/schema@3.9.8
+  - @claudexor/util@3.9.8
 
 ## 3.9.7
 

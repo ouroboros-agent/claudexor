@@ -1,5 +1,39 @@
 import type { AccessProfile, ModeKind } from "./primitives.js";
 
+export interface RunReviewRequest {
+  mode?: ModeKind;
+  review?: boolean;
+  n?: number;
+  attempts?: number | null;
+  untilClean?: boolean;
+  reviewerPanel?: unknown;
+  reviewerModels?: unknown;
+  reviewerEfforts?: unknown;
+}
+
+/** Resolve review intent independently of executor routing. Persist the result
+ * at acceptance; historical requests must use restoreRecordedRunReviewRequest. */
+export function resolveRunReviewRequested(value: RunReviewRequest): boolean {
+  if ((value.mode ?? "agent") !== "agent") return false;
+  return (
+    value.review ??
+    (hasArrayEntries(value.reviewerPanel) ||
+      hasRecordEntries(value.reviewerModels) ||
+      hasRecordEntries(value.reviewerEfforts) ||
+      (value.n ?? 1) > 1 ||
+      value.untilClean === true ||
+      value.attempts != null)
+  );
+}
+
+/** Absence on a previously accepted Agent means the historical review-on
+ * contract. Never apply the new ordinary-run default to a replay. */
+export function restoreRecordedRunReviewRequest<T extends RunReviewRequest>(value: T): T {
+  return (value.mode ?? "agent") === "agent" && value.review === undefined
+    ? { ...value, review: true }
+    : value;
+}
+
 /**
  * Resolve the requested/effective access pair once for every run producer.
  * Ask and Plan clamp to readonly; Agent inherits the configured default only
@@ -128,6 +162,7 @@ export function runControlApplicability(value: { mode?: ModeKind }): RunControlA
  * schema (not baked in as a union) so `.omit`/`.shape` consumers survive. */
 export function runStartStrategyViolations(value: {
   mode?: ModeKind;
+  review?: boolean;
   deepScan?: boolean;
   untilClean?: boolean;
   attempts?: number | null;
@@ -146,6 +181,21 @@ export function runStartStrategyViolations(value: {
 }): string[] {
   const mode = value.mode ?? "agent";
   const violations: string[] = [];
+  if (value.review !== undefined && mode !== "agent") {
+    violations.push(`review only applies to agent runs; mode is '${mode}'`);
+  }
+  if (
+    value.review === false &&
+    (hasArrayEntries(value.reviewerPanel) ||
+      hasRecordEntries(value.reviewerModels) ||
+      hasRecordEntries(value.reviewerEfforts) ||
+      (value.n ?? 1) > 1 ||
+      value.untilClean === true)
+  ) {
+    violations.push(
+      "review=false conflicts with explicit reviewer controls, best-of, or untilClean",
+    );
+  }
   if (value.deepScan === true && mode !== "ask") {
     violations.push(`deepScan is an ask strategy; mode is '${mode}'`);
   }

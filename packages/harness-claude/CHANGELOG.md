@@ -4,10 +4,13 @@
 
 ### Patch Changes
 
-- @claudexor/core@3.9.8
-- @claudexor/schema@3.9.8
-- @claudexor/secrets@3.9.8
-- @claudexor/util@3.9.8
+- Pin Claude Code 2.1.261 so Fable 5.1 is runnable through the managed installer, and refresh its effort and native protocol recordings. Preserve historical asynchronous MCP startup coverage separately from current connection evidence.
+- 069c6e3: Admit `claude-fable-5-1` (Claude Fable 5.1) to the Claude manifest known-model list, so an explicit Fable 5.1 pin is accepted and the Fable weekly window names the id; the model itself requires Claude Code 2.1.251 or newer.
+- Updated dependencies
+  - @claudexor/schema@3.9.8
+  - @claudexor/core@3.9.8
+  - @claudexor/secrets@3.9.8
+  - @claudexor/util@3.9.8
 
 ## 3.9.7
 

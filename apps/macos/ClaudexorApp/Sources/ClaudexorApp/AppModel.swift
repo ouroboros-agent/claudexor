@@ -620,7 +620,7 @@ final class AppModel {
     func startRun(prompt: String, mode: RunMode, harnesses: [HarnessFamily], primary: HarnessFamily?,
                   routingGoal: String, model: String?, n: Int, capUsd: Double?,
                   access: String = "workspace_write", web: String = "auto",
-                  tests: [TestCommandInvocation] = [], reviewerPanel: [ReviewerPanelEntry]? = nil,
+                  tests: [TestCommandInvocation] = [], review: Bool? = nil, reviewerPanel: [ReviewerPanelEntry]? = nil,
                   protectedPathApprovals: [ProtectedPathApproval]? = nil,
                   repoRootOverride: String? = nil) async {
         guard mode != .unknown else {
@@ -654,6 +654,9 @@ final class AppModel {
         )
         optimistic.repoRoot = launchRepoRoot.isEmpty ? nil : launchRepoRoot
         optimistic.tests = tests
+        optimistic.reviewRequested = composerReviewWire(
+            mode: mode, requestedReview: review, hasExplicitPanel: !(reviewerPanel ?? []).isEmpty,
+            untilClean: mode.strategyFlags.untilClean)
         optimistic.reviewerPanel = reviewerPanel
         optimistic.protectedPathApprovals = protectedPathApprovals
         liveTasks.insert(optimistic, at: 0)
@@ -681,6 +684,7 @@ final class AppModel {
                                       primaryHarness: primary?.rawValue,
                                       routingGoal: routingGoal,
                                       model: model?.isEmpty == false ? model : nil,
+                                      review: optimistic.reviewRequested,
                                       reviewerPanel: reviewerPanel,
                                       n: mode == .bestOfN ? max(n, flags.defaultN ?? 2) : nil,
                                       paidBudget: capUsd.map { .finite(maxUsd: $0) }, access: access,
@@ -715,6 +719,7 @@ final class AppModel {
                     started.runDir = info.runDir
                     started.repoRoot = prev.repoRoot
                     started.tests = prev.tests
+                    started.reviewRequested = prev.reviewRequested
                     started.reviewerPanel = prev.reviewerPanel
                     started.protectedPathApprovals = prev.protectedPathApprovals
                     if let idx { liveTasks[idx] = started } else { liveTasks.insert(started, at: 0) }
@@ -742,6 +747,7 @@ final class AppModel {
                     }
                     row.repoRoot = prev.repoRoot
                     row.tests = prev.tests
+                    row.reviewRequested = prev.reviewRequested
                     row.reviewerPanel = prev.reviewerPanel
                     row.protectedPathApprovals = prev.protectedPathApprovals
                     if let idx { liveTasks[idx] = row } else { liveTasks.insert(row, at: 0) }
@@ -1373,6 +1379,10 @@ final class AppModel {
                 model: model.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.flatMap { $0.isEmpty ? nil : $0 },
                 // Harness-scoped map: specific beats the scalar and defaults.
                 models: normalizedTurnModels(options.models),
+                review: composerReviewWire(
+                    mode: mode, requestedReview: options.review,
+                    hasExplicitPanel: !(options.reviewerPanel ?? []).isEmpty,
+                    untilClean: repair.untilClean == true),
                 reviewerPanel: options.reviewerPanel,
                 access: !mode.isReadOnly ? options.access : nil,
                 web: options.web,

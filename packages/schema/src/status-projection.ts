@@ -95,6 +95,7 @@ export function runOutcomeLabel(facts: RunOutcomeFacts): string {
   if (facts.work_state?.state === "needs_input") return needsInputLabel(facts);
   if (facts.work_state?.state === "incomplete") return "Incomplete";
   if (facts.review === "blocked" || facts.checks === "failed") return "Needs review";
+  if (facts.review_requested === false && facts.review === "not_run") return "Done · not reviewed";
   if (facts.review === "not_run" || facts.checks === "not_configured") {
     return "Done · not verified";
   }
@@ -133,7 +134,9 @@ export function outcomeBanner(
   if (facts.lifecycle !== "succeeded") return runOutcomeLabel(facts);
   switch (delivery.applyState) {
     case "applied":
-      return "Applied";
+      return facts.review_requested === false && facts.review === "not_run"
+        ? "Applied · not reviewed"
+        : "Applied";
     case "applied_review_blocked":
       return "Applied · review blocked";
     case "reverted":
@@ -152,14 +155,17 @@ export function outcomeBanner(
   if (vetoLabel) return delivery.hasApplyableChange ? `${vetoLabel} — NOT APPLIED` : vetoLabel;
   const needsReview = facts.review === "blocked" || facts.checks === "failed";
   const unverified = facts.review === "not_run" || facts.checks === "not_configured";
+  const notReviewed = facts.review_requested === false && facts.review === "not_run";
   // Nothing to apply (answer / plan / report / no changes): the quality alone.
   if (!delivery.hasApplyableChange) {
     if (needsReview) return "Needs review";
+    if (notReviewed) return "Done · not reviewed";
     if (unverified) return "Done · not verified";
     return "Done";
   }
   // A patch candidate exists but has NOT been applied — always disclose that.
   if (needsReview) return "Needs review — NOT APPLIED";
+  if (notReviewed) return "Candidate ready · not reviewed — NOT APPLIED";
   if (unverified) return "Candidate ready · not verified — NOT APPLIED";
   return "Candidate ready — NOT APPLIED";
 }
@@ -351,6 +357,9 @@ export function makeOutcomeFacts(
     noChanges: partial.noChanges ?? false,
     checks: partial.checks ?? "not_configured",
     review: partial.review ?? "not_run",
+    ...(partial.review_requested !== undefined
+      ? { review_requested: partial.review_requested }
+      : {}),
     reason: partial.reason ?? null,
     ...(partial.work_state ? { work_state: partial.work_state } : {}),
   };

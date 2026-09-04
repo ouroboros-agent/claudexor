@@ -160,7 +160,7 @@ explicit-port preview tunnel.
 
 ### Updates
 
-**v3.8.0 and v3.9.0 release exceptions.** These owner-authorized releases omit
+**v3.8.0, v3.9.0 and v3.9.7 release exceptions.** These owner-authorized releases omit
 the three
 custom Ed25519 documents rather than publishing unsigned substitutes. Existing
 app installs therefore cannot take the in-place engine update to those
@@ -251,18 +251,25 @@ does not bypass built-in critical/security human gates.
 
 ### Reviewers and approvals
 
-Two Agent-only power knobs shape review; Ask and Plan reject both, and Council
-is the explicit multi-harness critique path for Plan:
+Ordinary Agent runs skip internal model review by default, whether the executor
+is pinned or selected automatically. Completed changes remain normally applicable
+and show **Not reviewed**; required checks and patch-integrity checks still apply.
+Ask and Plan reject these Agent-only controls; Council is Plan's critique path:
 
+- **Review** — `--review` enables automatic panel selection. Best-of and
+  `--until-clean` include review. Explicit `--attempts N` keeps its review-based
+  repair default; `--no-review --attempts N` repairs against configured checks
+  and work completion without model reviewers.
 - **Reviewers** — pick exactly who reviews a change. Pass `--reviewer-panel` a
   comma-separated list of unpinned `harness=model:effort` entries (model and
   effort are optional); repeat a harness to review through several models. For
   a deterministic account per slot, use the round-trippable
   `--reviewer-panel-json '<array>'` form with `credentialProfileId`. Example:
-  `--reviewer-panel-json '[{"harness":"cursor","model":"grok-4.6","credentialProfileId":"review-cursor"}]'`.
+  `--reviewer-panel-json '[{"harness":"claude","model":"claude-fable-5-1","credentialProfileId":"review-claude"}]'`.
   An omitted profile uses the canonical account pool; a named profile is strict
-  and never silently falls back. Omitted entirely, the engine chooses a
-  cross-family panel automatically and discloses families it skips.
+  and never silently falls back. An explicit panel or reviewer model/effort
+  override enables review without another flag. With `--review` and no panel,
+  the engine chooses a cross-family panel and discloses families it skips.
 - **Approvals** — mark paths that must clear a human before a change touching
   them can be applied. Set canonical repo-relative globs in the versioned
   `.claudexor/config.yaml` (empty by default):
@@ -519,10 +526,11 @@ per thread. An explicit one-harness pool infers that harness as primary unless
 `--primary-harness` is supplied; an explicit primary must belong to the pool.
 The thread remembers its primary, pool, and (since 2.1) its
 credential profile; the engine owns routing, surfaces only send the choice.
-Reviewer panels are explicit when needed (`--reviewer-panel
-"claude=claude-opus-4-8:max,cursor=gemini-3.5-flash"` or the structured
-`--reviewer-panel-json` form); a clean verified
-review/apply gate requires at least two distinct observed provider families.
+Model review is opt-in for ordinary Agent. An explicit panel (`--reviewer-panel
+"claude=claude-fable-5-1:max,codex=gpt-6-astra:ultra"` or the structured
+`--reviewer-panel-json` form) enables it. Requested review needs at least two
+distinct observed provider families to count as clean and verified. Deliberately
+unreviewed work remains applicable subject to its independent checks.
 
 Native harness auth is preferred where readiness-proven; API keys are fallback
 secret refs in the v2-owned `0600` file store. `auto` is native-first, an

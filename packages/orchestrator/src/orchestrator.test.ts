@@ -9231,6 +9231,7 @@ describe("Orchestrator", () => {
       repoRoot: repo,
       prompt: "x",
       mode: "agent",
+      review: true,
       harnesses: ["fake-impl"],
       authPreference: "subscription",
       n: 1,
@@ -9287,6 +9288,7 @@ describe("Orchestrator", () => {
         repoRoot: repo,
         prompt: "x",
         mode: "agent",
+        review: true,
         harnesses: ["fake-impl"],
         n: 1,
       });

@@ -144,7 +144,7 @@ struct AdvancedReviewControls: View {
                         .help("Reviewer entries need harness[=model[:effort]] or harness[:effort]; supported effort values come from each harness manifest. Pinned entries use a JSON array with credentialProfileId.")
                 }
             }
-            Text("Empty = automatic cross-family review panel.")
+            Text("An explicit panel enables review. Leave empty to use automatic reviewers when Review changes is on.")
                 .font(.caption2).foregroundStyle(.secondary)
         }
     }

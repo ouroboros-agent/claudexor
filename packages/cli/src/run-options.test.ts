@@ -4,10 +4,23 @@ import {
   parseReviewerEffortFlags,
   parseReviewerModelFlags,
   parseReviewerPanelFlags,
+  parseReviewFlags,
   parseTestCommandFlags,
 } from "./run-options.js";
 
 describe("run option parsing", () => {
+  it("preserves explicit review false and best-of intent independently of width", () => {
+    expect(parseReviewFlags([], [])).toBeUndefined();
+    expect(parseReviewFlags([true], [])).toBe(true);
+    expect(parseReviewFlags(["false"], [])).toBe(false);
+    expect(parseReviewFlags([], [true])).toBe(false);
+    expect(parseReviewFlags([], ["false"])).toBe(true);
+    expect(parseReviewFlags([], [], true)).toBe(true);
+    expect(() => parseReviewFlags([], [true], true)).toThrow(/Best-of includes review/);
+    expect(() => parseReviewFlags([true], [true])).toThrow(/cannot be combined/);
+    expect(() => parseReviewFlags(["yes"], [])).toThrow(/only true or false/);
+  });
+
   it("aggregates repeated protected-path approval flags", () => {
     expect(
       parseProtectedPathApprovalFlags(["packages/**/*.test.ts", "apps/macos/**,docs/**"]),

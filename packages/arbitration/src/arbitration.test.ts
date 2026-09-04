@@ -35,6 +35,28 @@ function candidate(label: string, over: Partial<CandidateEvidence> = {}): Candid
 }
 
 describe("arbitrate", () => {
+  it("keeps unreviewed apply permission separate from verification evidence and legacy absence", () => {
+    const unreviewed = candidate("A", {
+      reviewVerified: false,
+      finalReviewClean: false,
+      gates: [],
+      testsPassed: 0,
+      testsTotal: 0,
+    });
+    const off = arbitrate([unreviewed], { reviewRequested: false }).decision;
+    expect(off.facts).toMatchObject({ review: "not_run", review_requested: false });
+    expect(off.apply_recommendation).toBe("apply");
+    expect(off.verification_basis).toBe("none");
+    expect(arbitrate([unreviewed]).decision.apply_recommendation).toBe("human_review");
+    expect(arbitrate([unreviewed], { reviewRequested: true }).decision.apply_recommendation).toBe(
+      "human_review",
+    );
+    const checked = arbitrate(
+      [candidate("A", { reviewVerified: false, finalReviewClean: false })],
+      { reviewRequested: false },
+    ).decision;
+    expect(checked.verification_basis).toBe("deterministic_checks");
+  });
   it("ranks a green candidate over one failing a required gate", () => {
     const a = candidate("A");
     const b = candidate("B", { gates: [gate(false)] });

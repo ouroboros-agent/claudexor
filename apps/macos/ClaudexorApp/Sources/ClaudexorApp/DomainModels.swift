@@ -333,13 +333,15 @@ struct TurnOptions: Equatable {
     /// Harness-scoped per-turn models (harness id -> model id). Built by the
     /// composer's per-harness pickers; empty entries are dropped before send.
     var models: [String: String] = [:]
+    /// Ordinary Agent skips internal model review; explicit strategies/panels enable it.
+    var review: Bool = false
     var reviewerPanel: [ReviewerPanelEntry]? = nil
     var protectedPathApprovals: [ProtectedPathApproval]? = nil
     /// QA-010: optional deterministic gate command(s) the operator authorizes for
     /// THIS turn (Create especially — the project's test script does not exist
     /// until the run scaffolds it). Rides the run-start request's typed `tests`
     /// field so it becomes a post-candidate acceptance gate, never inferred from
-    /// prompt text. Empty = review-only acceptance.
+    /// prompt text. Empty = no deterministic checks configured.
     var tests: [TestCommandInvocation] = []
     /// Per-turn auth route REQUEST ("subscription" | "api_key"); nil = auto /
     /// inherit the thread preference. The effective route is a post-run receipt.
@@ -562,6 +564,8 @@ struct TaskRun: Identifiable, Hashable {
     var externalContextPolicy: String?
     /** Deterministic gate commands attached to this run, for honest Retry parity. */
     var tests: [TestCommandInvocation] = []
+    /// Frozen intent from the server; absent on legacy runs, never inferred from defaults.
+    var reviewRequested: Bool?
     var reviewerPanel: [ReviewerPanelEntry]?
     var protectedPathApprovals: [ProtectedPathApproval]?
     /// Model identity the harness stream actually reported (route evidence).

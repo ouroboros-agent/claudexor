@@ -73,6 +73,14 @@ Two axes that must never share a control:
   (repair attempts stay inside that lane), N racing candidates, a planning
   council, a scout swarm, or delegated sub-runs.
 
+An ordinary executor call does not implicitly recruit model reviewers. Review
+is a separate, visible intention: an explicit panel or review choice requests
+it, and strategies that promise reviewed comparison retain it. Permission to
+apply and verification evidence are separate facts. Deliberately unreviewed
+work can be delivered under the independent patch and check contracts without
+claiming that a reviewer approved it; historical runs retain the intention
+under which they were accepted.
+
 Accounts are symmetric citizens — literally one kind: every account is a
 named registry row with the same Enabled toggle and the same Remove, and an
 existing legacy default-store login is absorbed into that model as an

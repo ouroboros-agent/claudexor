@@ -605,12 +605,23 @@ invariant or operator decision before proceeding.
   `blocked` run; a mutated patch invalidates the override. The human
   decision is never client-faked state. verify: apply-gate tests; canary
   `[INV-112:apply-needs-verified-review]`.
-- **INV-112** A clean CROSS-FAMILY VERIFIED review is sufficient
-  verification even without a deterministic test gate;
-  `DecisionRecord.verification_basis` discloses what backed an applyable
-  outcome, so a no-test run adopted on review evidence never reads as
-  "tests passed". Gates alone do not make a patch applyable. verify:
-  arbitration verification_basis tests.
+- **INV-112** Ordinary Agent work defaults to no internal model review,
+  independently of how its executor was selected. Explicit review controls
+  request review; Best-of and until-clean retain it, while capped repair
+  defaults to review unless explicitly disabled. The resolved intent is
+  persisted separately from the observed result. Only a recorded opt-out
+  permits successful unreviewed work to be applied normally, with honest
+  `not_run` review facts and no extra risk-acceptance step for that absence.
+  Required checks, independent policy findings, work-completion requirements,
+  and fresh patch-integrity verification remain enforced. Historical records
+  without the intent field retain the previous review-required meaning.
+  Requested review must actually pass; it is never fabricated as approved.
+  A clean cross-family verified review is sufficient verification even
+  without a deterministic test gate. `DecisionRecord.verification_basis`
+  records actual evidence, including deterministic checks or none for an
+  unreviewed result; an opt-out is not verification evidence. verify:
+  arbitration verification_basis tests; `packages/orchestrator/src/review-policy.test.ts`;
+  `packages/canary/src/review-policy.story.ts`; historical replay and delivery tests.
 - **INV-113** Every path that can mutate the live project tree is
   enumerated in ARCHITECTURE with its fence, and each has one: envelope
   delivery, manual apply, race adoption, and thread apply

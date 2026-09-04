@@ -5,7 +5,11 @@ import type {
   ReviewFinding,
   WorkState,
 } from "@claudexor/schema";
-import { DecisionRecord as DecisionRecordSchema, isBlocking } from "@claudexor/schema";
+import {
+  DecisionRecord as DecisionRecordSchema,
+  isBlocking,
+  reviewAllowsApply,
+} from "@claudexor/schema";
 
 /** Evidence assembled for one tournament candidate. */
 export interface CandidateEvidence {
@@ -300,6 +304,8 @@ function pairwise(a: CandidateEvidence, b: CandidateEvidence): PairwiseCompariso
 export function arbitrate(
   candidates: CandidateEvidence[],
   opts: {
+    /** Frozen run intent; absence preserves historical review-required behavior. */
+    reviewRequested?: boolean;
     spendUsd?: number | null;
     estimatedSpend?: boolean;
     /** QA-010b: settled cash vs subscription-valuation split from the ledger,
@@ -320,6 +326,7 @@ export function arbitrate(
           noChanges: true,
           checks: "not_configured",
           review: "not_run",
+          ...(opts.reviewRequested !== undefined ? { review_requested: opts.reviewRequested } : {}),
           reason: "harness_failed",
         },
         why_winner: "no candidates",
@@ -405,19 +412,28 @@ export function arbitrate(
     noChanges,
     checks,
     review,
+    ...(opts.reviewRequested !== undefined ? { review_requested: opts.reviewRequested } : {}),
     reason,
     ...(workState ? { work_state: workState } : {}),
   } as const;
   // Honest disclosure of WHAT verified an applyable run. "both" requires a
   // DETERMINISTIC check — a real test count or a REQUIRED gate that passed —
   // not mere presence. A no-check run adopted on review evidence is
-  // cross_family_review. Only an APPROVED review is applyable-quality.
+  // cross_family_review. Review permission and verification evidence differ.
   const gateVerified =
     (winner.testsTotal > 0 && winner.testsPassed === winner.testsTotal) ||
     realGates.some((g) => g.required && g.status === "passed");
   const applyable =
-    lifecycle === "succeeded" && review === "approved" && checks !== "failed" && !workVeto;
-  const verificationBasis = applyable ? (gateVerified ? "both" : "cross_family_review") : "none";
+    lifecycle === "succeeded" && reviewAllowsApply(facts) && checks !== "failed" && !workVeto;
+  const verificationBasis = !applyable
+    ? "none"
+    : review === "approved"
+      ? gateVerified
+        ? "both"
+        : "cross_family_review"
+      : gateVerified
+        ? "deterministic_checks"
+        : "none";
 
   // The decisive axis for the WINNER vs the runner-up: the first axis on which
   // they differ (null on an exact tie, where route order decided).
@@ -477,7 +493,9 @@ export function arbitrate(
     accepted_risks: acceptedRisks,
     final_checks: [
       requiredGateLabel(winner),
-      `final cross-family review ${winner.finalReviewClean ? "clean" : "not clean"}`,
+      opts.reviewRequested === false
+        ? "model review not requested"
+        : `final cross-family review ${winner.finalReviewClean ? "clean" : "not clean"}`,
       ...(tiedWithRunnerUp
         ? [
             `tie: winner chosen by route order (no distinguishing evidence vs ${runnerUp?.label ?? "runner-up"})`,

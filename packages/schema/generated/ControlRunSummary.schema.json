@@ -358,6 +358,10 @@
           "type": "string",
           "description": "Scalar model requested for the run."
         },
+        "review": {
+          "type": "boolean",
+          "description": "Resolved model-review intent; absent on historical runs that retain review-required semantics."
+        },
         "reviewerPanel": {
           "type": "array",
           "items": {
@@ -994,6 +998,10 @@
                   ],
                   "description": "Review axis: approved (clean cross-family verified review), blocked (open accepted findings), or not_run.",
                   "default": "not_run"
+                },
+                "review_requested": {
+                  "type": "boolean",
+                  "description": "Frozen model-review intent. False permits an honestly unreviewed result; absent historical records retain the review requirement."
                 },
                 "reason": {
                   "anyOf": [

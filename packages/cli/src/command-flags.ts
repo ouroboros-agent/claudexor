@@ -52,6 +52,8 @@ export const AGENT_MODE_FLAGS: readonly string[] = [
   "allow-protected-path",
   "deny-path",
   "output-schema",
+  "review",
+  "no-review",
   "reviewer-panel",
   "reviewer-panel-json",
   "reviewer-model",
@@ -136,6 +138,11 @@ export const CLI_FLAGS: readonly CliFlagSpec[] = [
   ),
   valueFlag("synthesis", "<mode>", "Best-of-N synthesis: auto (default, only n>=3)|always|never"),
   valueFlag("attempts", "<N>", "Convergence cap (agent): repair loop up to N attempts"),
+  booleanFlag("review", "Enable internal model review with an automatically selected panel"),
+  booleanFlag(
+    "no-review",
+    "Skip internal model review; completed work remains applicable without a review verdict",
+  ),
   booleanFlag("until-clean", "Convergence (agent): iterate until the review/gates are clean"),
   booleanFlag("deep-scan", "Deep scan (ask): bounded multi-scout research sweep with synthesis"),
   booleanFlag("resume", "Continue the most recently updated thread (shorthand for --thread <id>)"),
@@ -184,12 +191,12 @@ export const CLI_FLAGS: readonly CliFlagSpec[] = [
   valueFlag(
     "reviewer-panel",
     "<list>",
-    'Explicit reviewers, e.g. "claude=claude-opus-4-8:max,cursor=gemini-3.1-pro,cursor=gemini-3.5-flash,cursor=gpt-5.5-extra-high"',
+    'Enable review with explicit reviewers, e.g. "claude=claude-opus-4-8:max,cursor=gemini-3.1-pro,cursor=gemini-3.5-flash,cursor=gpt-5.5-extra-high"',
   ),
   valueFlag(
     "reviewer-panel-json",
     "'<json-array>'",
-    "Structured reviewer entries as a JSON array; use credentialProfileId for a strict per-slot account pin",
+    "Enable review with structured reviewer entries as a JSON array; use credentialProfileId for a strict per-slot account pin",
   ),
   valueFlag(
     "reviewer-model",

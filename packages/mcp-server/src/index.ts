@@ -325,10 +325,16 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
       },
       ...(runControlApplicability({ mode }).reviewerPanel.applicable
         ? {
+            review: {
+              type: "boolean",
+              description:
+                "Enable internal model review. Ordinary Agent defaults to false; true selects reviewers automatically. An explicit reviewer panel or reviewer overrides also enable review. Best-of and until-clean retain review.",
+            },
             reviewerPanel: {
               type: "array",
               minItems: 1,
-              description: "Explicit reviewer panel entries, preserving order and duplicates.",
+              description:
+                "Enable review with explicit panel entries, preserving order and duplicates; no additional review flag is needed.",
               items: {
                 type: "object",
                 additionalProperties: false,
@@ -340,13 +346,13 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
               type: "object",
               additionalProperties: false,
               properties: reviewerModelProperties,
-              description: "Per-provider reviewer model overrides.",
+              description: "Enable review with per-provider reviewer model overrides.",
             },
             reviewerEfforts: {
               type: "object",
               additionalProperties: false,
               properties: reviewerEffortProperties,
-              description: "Per-provider reviewer effort overrides.",
+              description: "Enable review with per-provider reviewer effort overrides.",
             },
           }
         : {}),
@@ -443,7 +449,7 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
     ),
     mk(
       "claudexor_run",
-      "Enqueue an Agent-mode Claudexor run. Returns a durable run handle plus any immediate start facts; use claudexor_run_status/result for the terminal WorkProduct.",
+      "Enqueue an Agent-mode Claudexor run. Internal model review is off by default; review:true selects a panel automatically, and an explicit reviewerPanel enables review. Returns a durable run handle plus any immediate start facts; use claudexor_run_status/result for the terminal WorkProduct.",
       { mode: "agent" },
     ),
     mk(

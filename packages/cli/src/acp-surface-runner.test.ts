@@ -20,6 +20,12 @@ import {
 } from "./acp-surface-runner.js";
 
 describe("ACP run-control projection", () => {
+  it.each([true, false])("preserves review=%s through the thread projection", (review) => {
+    expect(
+      projectAcpRunControls({ mode: "__acp_session_prompt", runMode: "agent", review }),
+    ).toEqual({ mode: "agent", review });
+  });
+
   it("maps the Agent race alias to the strict n vocabulary", () => {
     expect(
       projectAcpRunControls({

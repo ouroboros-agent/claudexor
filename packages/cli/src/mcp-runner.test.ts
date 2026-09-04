@@ -656,39 +656,50 @@ describe("mcp daemon body mapping", () => {
     }
   });
 
-  it("requests a durable handle instead of waiting for terminal when MCP marks a run deferred", async () => {
-    const { mcpSurfaceRunner } = await import("./mcp-runner.js");
-    const daemonRun = await import("./daemon-run.js");
-    const ensureSpy = vi.spyOn(daemonRun, "ensureDaemon").mockResolvedValue({
-      client: {} as never,
-      addr: { baseUrl: "http://x", token: "t" } as never,
-      engine: { engineVersion: null, engineBuildSha: null, servingMode: "normal" },
-    });
-    const enqueueSpy = vi.spyOn(daemonRun, "enqueueAndAwait").mockResolvedValue({
-      runId: "run-durable",
-      runDir: "/tmp/run-durable",
-      status: "running",
-      jobId: "job-durable",
-    });
-    const detailSpy = vi.spyOn(daemonRun, "fetchRunDetail");
-    try {
-      const result = await mcpSurfaceRunner()({ mode: "agent", prompt: "go", deferred: true });
-      expect(enqueueSpy).toHaveBeenCalledWith(
-        expect.anything(),
-        expect.anything(),
-        expect.anything(),
-        expect.objectContaining({ waitForTerminal: false }),
-      );
-      expect(result).toMatchObject({ runId: "run-durable", status: "running" });
-      expect(result).toMatchObject({ runFacts: null });
-      expect(detailSpy).not.toHaveBeenCalled();
-      expect(ensureSpy).toHaveBeenCalledOnce();
-    } finally {
-      ensureSpy.mockRestore();
-      enqueueSpy.mockRestore();
-      detailSpy.mockRestore();
-    }
-  });
+  it.each([true, false, undefined])(
+    "preserves review=%s when requesting a durable MCP run handle",
+    async (review) => {
+      const { mcpSurfaceRunner } = await import("./mcp-runner.js");
+      const daemonRun = await import("./daemon-run.js");
+      const ensureSpy = vi.spyOn(daemonRun, "ensureDaemon").mockResolvedValue({
+        client: {} as never,
+        addr: { baseUrl: "http://x", token: "t" } as never,
+        engine: { engineVersion: null, engineBuildSha: null, servingMode: "normal" },
+      });
+      const enqueueSpy = vi.spyOn(daemonRun, "enqueueAndAwait").mockResolvedValue({
+        runId: "run-durable",
+        runDir: "/tmp/run-durable",
+        status: "running",
+        jobId: "job-durable",
+      });
+      const detailSpy = vi.spyOn(daemonRun, "fetchRunDetail");
+      try {
+        const result = await mcpSurfaceRunner()({
+          mode: "agent",
+          prompt: "go",
+          deferred: true,
+          review,
+        });
+        expect(enqueueSpy).toHaveBeenCalledWith(
+          expect.anything(),
+          expect.anything(),
+          expect.anything(),
+          expect.objectContaining({ waitForTerminal: false }),
+        );
+        expect(enqueueSpy.mock.calls[0]?.[2]).toMatchObject(review === undefined ? {} : { review });
+        if (review === undefined)
+          expect(enqueueSpy.mock.calls[0]?.[2]).not.toHaveProperty("review");
+        expect(result).toMatchObject({ runId: "run-durable", status: "running" });
+        expect(result).toMatchObject({ runFacts: null });
+        expect(detailSpy).not.toHaveBeenCalled();
+        expect(ensureSpy).toHaveBeenCalledOnce();
+      } finally {
+        ensureSpy.mockRestore();
+        enqueueSpy.mockRestore();
+        detailSpy.mockRestore();
+      }
+    },
+  );
 
   it("projects detail when a deferred MCP start already observes a failed terminal", async () => {
     const { mcpSurfaceRunner } = await import("./mcp-runner.js");

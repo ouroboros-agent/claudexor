@@ -4,7 +4,9 @@
 
 ### Patch Changes
 
-- @claudexor/schema@3.9.8
+- Make internal model review opt-in for ordinary Agent work, independently of executor selection. Preserve explicit panels, Best-of, and requested review cycles; persist intent separately from results and retain historical behavior on replay. Deliberately unreviewed changes remain normally applicable with honest Not reviewed status while required checks and patch integrity remain enforced. Expose the same choice through API, CLI, MCP, ACP, and the native composer.
+- Updated dependencies
+  - @claudexor/schema@3.9.8
 
 ## 3.9.7
 

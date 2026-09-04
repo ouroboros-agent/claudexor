@@ -48,6 +48,12 @@ engine strategies are flags on a mode, never modes:
   cancellation, or no-progress stall), `--create` (create-from-scratch intent),
   `--delegate` (the delegation belt — see below).
 
+Ordinary Agent model review is opt-in. `review: true` (`--review`) requests the
+automatic panel; explicit reviewer panel/model/effort controls request it too.
+Best-of and until-clean retain review. Capped `attempts` defaults to review but
+allows explicit `review: false`; the ordinary GUI Single uses that form with
+its existing three-attempt cap. Executor selection never determines review.
+
 ### Delegation belt (`agent --delegate`, D32)
 
 `--delegate` (agent-only) injects a SCOPED Claudexor MCP belt into the harness
@@ -1131,8 +1137,9 @@ branch for 30 days and exposes explicit restore/purge routes.
 
 Each candidate gets its own `WorkspaceEnvelope`. The orchestrator reserves
 budget, runs the harness, captures diff from git, runs deterministic gates,
-reviews/revalidates findings, optionally synthesizes a new checked candidate,
-and arbitrates. `--create` runs the same envelope pipeline with the
+reviews/revalidates findings when requested, optionally synthesizes a new checked candidate,
+and arbitrates. Best-of requests review; ordinary Single and `--create` do not
+unless explicitly enabled. `--create` runs the same envelope pipeline with the
 create-from-scratch intent (the CLI verb `claudexor create` maps here).
 An isolated candidate refused by the secret fence is excluded when another
 safe working candidate survives; an all-refused race, an in-place cleanup
@@ -1144,6 +1151,9 @@ One envelope is carried forward across repair attempts. `--attempts` stops at
 the explicit cap. `--until-clean` has no fixed iteration cap and stops on
 convergence, cancellation, budget/quota exhaustion, or no-progress stall after
 eligible harness rotation.
+Explicit review-off capped repair keeps deterministic gates, policy findings,
+and work-report completion as its convergence conditions; it does not wait for
+a model review that was never requested.
 
 ### Plan
 
@@ -2037,12 +2047,15 @@ any cwd (project store, user Ask store, or — only when a daemon is already run
 the daemon registry); read-only lookups (`inspect`/`apply`) never auto-start a
 daemon, while acting paths (`agent`/`best-of`/`create`, `decision`) do.
 
-A run is applyable only at `succeeded`/decision `success` (or a `blocked` run
-unblocked by the typed override above). A clean CROSS-FAMILY VERIFIED review is
-sufficient verification even without a deterministic test gate;
-`DecisionRecord.verification_basis` (`cross_family_review | both`)
-discloses what backed an applyable outcome, so a no-test run adopted on review
-evidence never reads as "tests passed". Immediately before any envelope patch
+A successful run can be applied when its requested review passed or its frozen
+`review_requested` is explicitly false and its review result is `not_run`.
+Historical absence preserves the review requirement. Independent failed checks,
+policy findings and unfinished work still block; the existing patch-bound risk
+override remains separate. A clean cross-family verified review is sufficient
+verification even without a deterministic test gate.
+`DecisionRecord.verification_basis` (`none | deterministic_checks | cross_family_review | both`)
+records actual evidence, so permitted unreviewed work never claims approval and
+a no-test reviewed run never claims tests passed. Immediately before any envelope patch
 mutation, the delivery-owned `verifyAndDeliver` service runs the FINAL
 VERIFIER: the patch is applied onto a
 FRESH worktree at its own base sha and the deterministic gates re-run there,
@@ -2068,7 +2081,7 @@ its model in the stream, and codex (whose `--json` stream omits the model)
 recovers the model it actually ran from its own session rollout transcript
 (`observed_model_source: "transcript"`). An unobserved reviewer stays
 `accepted_model_arg` and does not satisfy the cross-family gate. For `ungated` /
-`review_not_run` outcomes the apply gate states the real path forward (add a gate
+`review_not_run` outcomes without a recorded opt-out, the apply gate states the real path forward (add a gate
 or obtain a verified review) — the risk override applies only to `blocked` runs.
 The derived `ApplyEligibility` verdict is delivery-state aware: it consults the
 effective `RunApplyState` BEFORE the pre-delivery gate, so a change already in
@@ -2216,9 +2229,21 @@ fence (Bible INV-113); an unlisted mutation path is a release blocker:
    recovery therefore remove the same marker-bound child; malformed recovery
    identity preserves both the marker and envelope base for manual recovery.
 
+Review intent is resolved by `resolveRunReviewRequested` at command acceptance,
+before global reviewer defaults are merged, and persisted in accepted params
+without changing the original idempotency digest. New TaskContracts and outcome
+facts carry `review_requested`; the field remains optional without a parse-time
+default so historical hashes and review-required semantics remain intact. Exact
+Retry, Run Again and feedback reruns preserve the source intent.
+Review-off runs skip reviewer resolution, its preflight, evidence preparation,
+sessions and budget leases. They retain deterministic policy findings and report
+`review: not_run`, never `approved`. `reviewAllowsApply` is the shared predicate
+used by arbitration, delivery, RunFacts validation and in-place projection;
+the latter reports `applied` with a not-reviewed label instead of a false block.
+
 Reviewer selection is Agent-only and schema-owned. Ask and Plan reject reviewer
-panels and protected-path approvals; Council is Plan's critique path. The
-automatic Agent selector uses provider-family
+panels, review switches and protected-path approvals; Council is Plan's critique path.
+When requested, the automatic Agent selector uses provider-family
 diversity plus optional per-family `reviewerModels` / `reviewerEfforts` hints.
 For release and dogfood gates, the `reviewerPanel` field on
 `ControlRunStartRequest` carries an
@@ -2237,7 +2262,7 @@ or review-incompatible harnesses fail the run before review starts. If an
 adapter can enumerate models, an explicit reviewer model must be present in that
 inventory, and an empty/unavailable inventory is treated as unverifiable for
 that explicit model. If an adapter cannot enumerate models, the explicit model
-must match the harness manifest's non-authoritative known-good hints; otherwise
+must match the harness manifest's known-good list; otherwise
 the run fails loudly with a `claudexor models --harness` hint instead of letting
 the native CLI fail later as unparseable review output.
 Same-family panels are allowed for diagnostics and repeated-model comparison,
@@ -2271,6 +2296,10 @@ Codex's token-only usage remains unpriced unless explicit
 `CLAUDEXOR_CODEX_PRICE_INPUT`, `_OUTPUT`, and `_CACHED` rates cover every used
 token category. Model names never imply a fallback tariff. Subscription cash
 remains exact zero independently of that optional valuation.
+Persisted routing cost averages carry a cost-evidence generation in the existing
+metrics file. Older unclassified costs are read as unknown while duration,
+sample counts and auth routing survive. A new explicitly unpriced attempt
+clears the cost average; auth-only updates preserve compatible observations.
 Mixed review panels settle
 native reviewers to valuation and API-key reviewers to cash independently;
 their aggregate is never blindly charged as cash. Candidate and reviewer

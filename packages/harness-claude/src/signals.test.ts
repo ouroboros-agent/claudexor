@@ -6,7 +6,7 @@ import { HarnessEvent } from "@claudexor/schema";
 import { createClaudeParser } from "./parse.js";
 
 /**
- * D-16c fixture-parity: the SIGNAL-bearing claude 2.1.165 frames (context
+ * D-16c fixture-parity: the SIGNAL-bearing claude 2.1.261 frames (context
  * exhaustion, compaction boundary, the typed rate-limit heartbeat) map onto
  * typed HarnessEvents — never dropped, never prose-matched. These fixtures
  * live in fixtures/signals/ (out of the top-level conformance loop, which
@@ -36,12 +36,48 @@ function parseFixture(name: string): HarnessEvent[] {
 }
 
 describe("claude D-16 signal fixtures", () => {
-  it("required-mcp-pending: preserves the live async startup status without a fatal", () => {
+  it("required-mcp-connected: preserves the current native startup status", () => {
     const parser = createClaudeParser({ requiredMcpServers: ["claudexor"] });
     const raw = JSON.parse(
-      readFileSync(join(SIGNALS, "required-mcp-pending.jsonl"), "utf8").trim(),
+      readFileSync(join(SIGNALS, "required-mcp-connected.jsonl"), "utf8").trim(),
     );
     const events = parser(raw, "sig") ?? [];
+    expect(events).toHaveLength(1);
+    expect(events[0]?.type).toBe("started");
+    expect(events[0]?.payload?.["mcp_servers"]).toEqual([
+      { name: "claudexor", status: "connected" },
+    ]);
+    expect(events.some((event) => event.type === "error")).toBe(false);
+    expect(() => HarnessEvent.parse(events[0])).not.toThrow();
+  });
+
+  it("preserves the historical 2.1.165 async pending startup without a fatal", () => {
+    // Exact sanitized native frame from the 2026-07-26 recording. Current
+    // 2.1.261 probes waited for handshake and emitted connected; this keeps
+    // the older provisional-status regression without calling it fresh proof.
+    const raw = {
+      type: "system",
+      subtype: "init",
+      cwd: "/tmp/fixture-repo",
+      session_id: "00000000-0000-4000-8000-000000000000",
+      tools: ["Task", "AskUserQuestion", "Bash", "Edit", "Read", "Write", "ToolSearch"],
+      mcp_servers: [{ name: "claudexor", status: "pending" }],
+      model: "claude-opus-4-8[1m]",
+      permissionMode: "acceptEdits",
+      slash_commands: [],
+      apiKeySource: "none",
+      claude_code_version: "2.1.165",
+      output_style: "default",
+      agents: [],
+      skills: [],
+      plugins: [],
+      analytics_disabled: false,
+      product_feedback_disabled: false,
+      uuid: "fixture-uuid-required-mcp-pending",
+      memory_paths: { auto: "/home/user/.claude/projects/-tmp-fixture-repo/memory/" },
+      fast_mode_state: "off",
+    };
+    const events = createClaudeParser({ requiredMcpServers: ["claudexor"] })(raw, "sig") ?? [];
     expect(events).toHaveLength(1);
     expect(events[0]?.type).toBe("started");
     expect(events[0]?.payload?.["mcp_servers"]).toEqual([{ name: "claudexor", status: "pending" }]);
@@ -77,12 +113,12 @@ describe("claude D-16 signal fixtures", () => {
     // status:"allowed" is a routine heartbeat — recognized (dropped==0 above)
     // but it must NOT emit a rate_limit signal that would arm rotation.
     expect(events.some((e) => e.rate_limit !== undefined)).toBe(false);
-    // The 2.1.165 post_turn_summary frame is likewise recognized plumbing.
+    // Native system metadata is likewise recognized plumbing.
     expect(events.some((e) => e.type === "context")).toBe(false);
     expect(events.some((e) => e.type === "message" && e.final === true)).toBe(true);
   });
 
-  it("treats the VM-observed allowed_warning heartbeat as advisory, not a cooldown", () => {
+  it("treats the current native allowed_warning heartbeat as advisory, not a cooldown", () => {
     const events = parseFixture("allowed-warning-rate-limit-event.jsonl");
     expect(events).toEqual([]);
   });

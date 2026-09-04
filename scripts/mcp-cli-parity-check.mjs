@@ -102,6 +102,11 @@ const MCP_TO_CLI = {
       "the CLI scalar projects to PaidBudget.finite; omission preserves the configured tagged budget",
   },
   access: { cli: "access" },
+  review: {
+    cli: null,
+    tools: AGENT_RUN_TOOL_NAMES,
+    reason: "boolean Agent review intent; CLI --review and --no-review preserve true and false",
+  },
   reviewerPanel: { cli: "reviewer-panel", tools: AGENT_RUN_TOOL_NAMES },
   reviewerModels: { cli: "reviewer-model", tools: AGENT_RUN_TOOL_NAMES },
   reviewerEfforts: { cli: "reviewer-effort", tools: AGENT_RUN_TOOL_NAMES },
@@ -117,6 +122,8 @@ const BOOLEAN_FLAG_MAP = {
   },
   "deep-scan": { mcp: "deepScan", reason: "ask-only deep-scan strategy" },
   council: { mcp: "council", reason: "plan-only council strategy" },
+  review: { mcp: "review", reason: "explicit Agent internal review opt-in" },
+  "no-review": { mcp: "review", reason: "explicit false Agent internal review intent" },
   "until-clean": { mcp: null, reason: "convergence strategy; not exposed one-shot (CLI/app only)" },
   create: { mcp: null, reason: "encoded in the claudexor_create TOOL NAME" },
   delegate: {

@@ -4,10 +4,10 @@
 
 ### Patch Changes
 
-- Support GPT-6 Astra in Codex model selection and preserve its reasoning levels through Ultra. Update the pinned Codex CLI to 0.153.3 and refresh the recorded model and effort catalog from the vendor's visible model list.
-- Keep token costs unknown without explicit rates instead of inferring prices from model names or a generic fallback.
-  - @claudexor/core@3.9.8
+- Support GPT-6 Astra through Ultra, pin Codex CLI 0.153.3, and refresh native stream recordings including nonterminal SSE timeout retries. Keep unpriced token usage unknown and retire incompatible saved cost averages instead of using generic fallback tariffs.
+- Updated dependencies
   - @claudexor/schema@3.9.8
+  - @claudexor/core@3.9.8
   - @claudexor/secrets@3.9.8
   - @claudexor/util@3.9.8
 

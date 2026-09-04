@@ -4,21 +4,24 @@
 
 ### Patch Changes
 
-- @claudexor/arbitration@3.9.8
-- @claudexor/artifact-store@3.9.8
-- @claudexor/budget@3.9.8
-- @claudexor/config@3.9.8
-- @claudexor/context@3.9.8
-- @claudexor/core@3.9.8
-- @claudexor/delivery@3.9.8
-- @claudexor/event-log@3.9.8
-- @claudexor/gateway@3.9.8
-- @claudexor/policy@3.9.8
-- @claudexor/review@3.9.8
-- @claudexor/schema@3.9.8
-- @claudexor/synthesis@3.9.8
-- @claudexor/util@3.9.8
-- @claudexor/workspace@3.9.8
+- Make internal model review opt-in for ordinary Agent work, independently of executor selection. Preserve explicit panels, Best-of, and requested review cycles; persist intent separately from results and retain historical behavior on replay. Deliberately unreviewed changes remain normally applicable with honest Not reviewed status while required checks and patch integrity remain enforced. Expose the same choice through API, CLI, MCP, ACP, and the native composer.
+- Updated dependencies
+- Updated dependencies
+  - @claudexor/schema@3.9.8
+  - @claudexor/arbitration@3.9.8
+  - @claudexor/delivery@3.9.8
+  - @claudexor/budget@3.9.8
+  - @claudexor/config@3.9.8
+  - @claudexor/context@3.9.8
+  - @claudexor/core@3.9.8
+  - @claudexor/event-log@3.9.8
+  - @claudexor/gateway@3.9.8
+  - @claudexor/policy@3.9.8
+  - @claudexor/review@3.9.8
+  - @claudexor/workspace@3.9.8
+  - @claudexor/synthesis@3.9.8
+  - @claudexor/artifact-store@3.9.8
+  - @claudexor/util@3.9.8
 
 ## 3.9.7
 

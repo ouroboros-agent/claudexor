@@ -208,6 +208,24 @@ extension ThreadsScreen {
             // parent-owned draft projects the exact values the send path reads.
             if runControlApplicability.reviewers.applicable {
                 OptionSection(title: "Review controls") {
+                    let strategyRequiresReview = agentStrategy == .bestOf || agentStrategy == .untilClean
+                    let panelRequestsReview = !reviewerPanelEntries.isEmpty
+                    Toggle("Review changes", isOn: Binding(
+                        get: { reviewChanges || strategyRequiresReview || panelRequestsReview },
+                        set: { reviewChanges = $0 }
+                    ))
+                    .toggleStyle(.switch).tint(Theme.accent)
+                    .disabled(strategyRequiresReview || panelRequestsReview)
+                    Text(strategyRequiresReview
+                         ? "This strategy includes model review."
+                         : panelRequestsReview
+                            ? "Your reviewer panel enables review. Remove the panel to turn review off."
+                            : reviewChanges
+                                ? "Claudexor selects an internal reviewer panel automatically."
+                                : "No internal reviewers. Completed changes remain applicable and show Not reviewed.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                     AdvancedReviewControls(
                         draft: $reviewDraft,
                         harnessChoices: poolFamilies,

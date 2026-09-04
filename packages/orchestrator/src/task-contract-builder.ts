@@ -23,6 +23,7 @@ import { resolveContractGates } from "./contract-gates.js";
 interface TaskContractBuildInput {
   repoRoot: string;
   prompt: string;
+  review?: boolean;
   instructions?: string;
   baseRef?: string;
   delegate?: boolean;
@@ -104,6 +105,7 @@ export function buildTaskContract(
       [...(input.protectedPathApprovals ?? [])].map((approval) => [approval.path, approval]),
     ).values(),
   ];
+  const reviewRequested = mode === "agent" && input.review === true;
   return TaskContractSchema.parse({
     schema_version: SCHEMA_VERSION,
     task_id: taskId,
@@ -111,6 +113,15 @@ export function buildTaskContract(
     repo: { root: input.repoRoot, base_ref: input.baseRef ?? "HEAD", dirty_policy: "snapshot" },
     mode: { kind: mode },
     delegation_requested: input.delegate === true,
+    review_requested: reviewRequested,
+    ...(mode === "agent" && !reviewRequested
+      ? {
+          convergence: {
+            require_final_cross_family_clean_review: false,
+            require_final_diff_stable_after_review: false,
+          },
+        }
+      : {}),
     run_lineage: {
       parent_run_id: input.parentRunId ?? null,
       delegated_from_run_id: input.delegatedFromRunId ?? null,

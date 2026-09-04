@@ -101,7 +101,7 @@ export const CLI_COMMANDS: readonly CliCommandSpec[] = [
     id: "agent",
     positionalPatterns: [{ min: 0, max: null }],
     usageArgs: '"<prompt>" [opts]',
-    summary: "Run a task (default mode: agent)",
+    summary: "Run a task (default mode: agent; internal model review is opt-in)",
     flags: [...RUN_FLAGS, "mode"],
     mutability: "write",
     stability: "stable",

@@ -98,6 +98,7 @@ struct TurnStartAdmissionTests {
             method: "POST", path: "/v2/threads/thread-readonly/turns"))
         let body = try #require(try turnStartRequestObject(request))
         #expect(body["access"] as? String == "readonly")
+        #expect(body["review"] as? Bool == false)
         #expect(body["attempts"] == nil)
         #expect(body["untilClean"] == nil)
     }
@@ -931,7 +932,7 @@ struct TurnStartAdmissionTests {
         let model = turnStartModel(port: 12_365)
         let draft = try JSONDecoder().decode(
             RunAgainDraft.self,
-            from: Data(#"{"sourceRunId":"run-old","request":{"prompt":"old","mode":"agent"},"accessChoice":{"required":true},"differences":[]}"#.utf8))
+            from: Data(#"{"sourceRunId":"run-old","request":{"prompt":"old","mode":"agent","review":true},"accessChoice":{"required":true},"differences":[]}"#.utf8))
         let requests = TurnStartRecorder()
         TurnStartStubURLProtocol.handler = { request in
             requests.record(request)
@@ -955,6 +956,7 @@ struct TurnStartAdmissionTests {
         let object = try #require(decoded)
         #expect(object["prompt"] as? String == "new")
         #expect(object["access"] as? String == "workspace_write")
+        #expect(object["review"] as? Bool == true)
     }
 
     @MainActor

@@ -29,6 +29,17 @@ describe("command registry — the one owner of the CLI surface", () => {
     expect(new Set(CLI_FLAGS.map((f) => f.name)).size).toBe(CLI_FLAGS.length); // unique names
   });
 
+  it("advertises review opt-in only for Agent commands", () => {
+    for (const name of ["agent", "best-of", "create"]) {
+      const command = CLI_COMMANDS.find((entry) => entry.id === name)!;
+      expect(command.flags).toEqual(expect.arrayContaining(["review", "no-review"]));
+    }
+    for (const mode of ["ask", "plan"] as const) {
+      expect(runModeFlagScopeError(mode, ["review"])).toContain("--review");
+      expect(runModeFlagScopeError(mode, ["no-review"])).toContain("--no-review");
+    }
+  });
+
   it("every command references only declared flags", () => {
     for (const cmd of CLI_COMMANDS) {
       for (const flag of cmd.flags)
@@ -165,6 +176,8 @@ describe("command registry — the one owner of the CLI surface", () => {
       "allow-protected-path",
       "deny-path",
       "output-schema",
+      "review",
+      "no-review",
       "reviewer-panel",
       "reviewer-panel-json",
       "reviewer-model",

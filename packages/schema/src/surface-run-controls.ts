@@ -16,6 +16,9 @@ import { runStartStrategyViolations } from "./run-strategy.js";
  * per-tool race `n` minimum, prompt/cwd requirements).
  */
 export function validateSurfaceRunControls(obj: Record<string, unknown>): string | null {
+  if (obj.review !== undefined && typeof obj.review !== "boolean") {
+    return "review must be a boolean";
+  }
   const primaryHarnessError = validateOptionalNonEmptyString(obj.primaryHarness, "primaryHarness");
   if (primaryHarnessError) return primaryHarnessError;
   if (

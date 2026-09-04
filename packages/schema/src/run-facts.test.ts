@@ -953,6 +953,17 @@ describe("RunFacts invariant validator (GH #29)", () => {
     };
     expect(validateRunFactsInvariants(clean).apply.eligibility?.eligible).toBe(true);
 
+    const unreviewed = {
+      ...clean,
+      outcome: makeOutcomeFacts("succeeded", { review: "not_run", review_requested: false }),
+      review: { state: "not_run", blocker_ids: [], blockers: 0 },
+    };
+    expect(validateRunFactsInvariants(unreviewed).apply.eligibility?.eligible).toBe(true);
+    // Request intent survives a durable wire roundtrip separately from verdict.
+    expect(
+      validateRunFactsInvariants(JSON.parse(JSON.stringify(unreviewed))).outcome,
+    ).toMatchObject({ review: "not_run", review_requested: false });
+
     expect(() =>
       validateRunFactsInvariants({
         ...clean,

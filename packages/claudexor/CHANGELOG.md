@@ -4,7 +4,8 @@
 
 ### Patch Changes
 
-- @claudexor/cli@3.9.8
+- Updated dependencies
+  - @claudexor/cli@3.9.8
 
 ## 3.9.7
 

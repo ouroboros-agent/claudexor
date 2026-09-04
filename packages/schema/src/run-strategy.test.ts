@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   resolveRunAccess,
+  resolveRunReviewRequested,
+  restoreRecordedRunReviewRequest,
   runAccessStrategyViolation,
   runControlApplicability,
   runExecutionWorkspaceViolation,
@@ -9,6 +11,53 @@ import {
 } from "./run-strategy.js";
 
 describe("run access and strategy", () => {
+  it("defaults ordinary Agent review off independently of executor routing", () => {
+    for (const request of [{}, { mode: "agent" as const }, { n: 1 }]) {
+      expect(resolveRunReviewRequested(request)).toBe(false);
+    }
+    expect(resolveRunReviewRequested({ mode: "ask" })).toBe(false);
+    expect(resolveRunReviewRequested({ mode: "plan" })).toBe(false);
+  });
+
+  it("preserves explicit review, panel and repair intent", () => {
+    for (const request of [
+      { review: true },
+      { n: 2 },
+      { attempts: 3 },
+      { untilClean: true },
+      { reviewerPanel: [{ harness: "codex" }] },
+      { reviewerModels: { openai: "model" } },
+      { reviewerEfforts: { openai: "high" } },
+    ])
+      expect(resolveRunReviewRequested(request)).toBe(true);
+    expect(resolveRunReviewRequested({ review: false, attempts: 3 })).toBe(false);
+    expect(runStartStrategyViolations({ review: false, attempts: 3 })).toEqual([]);
+    expect(resolveRunReviewRequested({ reviewerModels: {}, reviewerEfforts: {} })).toBe(false);
+  });
+
+  it("rejects contradictory review controls without silently changing intent", () => {
+    for (const request of [
+      { n: 2 },
+      { untilClean: true },
+      { reviewerPanel: [{ harness: "codex" }] },
+      { reviewerModels: { openai: "model" } },
+      { reviewerEfforts: { openai: "high" } },
+    ])
+      expect(runStartStrategyViolations({ ...request, review: false })).toContain(
+        "review=false conflicts with explicit reviewer controls, best-of, or untilClean",
+      );
+    for (const mode of ["ask", "plan"] as const) {
+      expect(runStartStrategyViolations({ mode, review: false })[0]).toMatch(/review only applies/);
+    }
+  });
+
+  it("restores historical review intent only for accepted Agent requests", () => {
+    const historical = { mode: "agent" as const, n: 1 };
+    expect(restoreRecordedRunReviewRequest(historical)).toEqual({ ...historical, review: true });
+    expect(historical).not.toHaveProperty("review");
+    expect(restoreRecordedRunReviewRequest({ review: false })).toEqual({ review: false });
+    expect(restoreRecordedRunReviewRequest({ mode: "ask" as const })).toEqual({ mode: "ask" });
+  });
   it("resolves explicit and configured Agent access while clamping Ask and Plan", () => {
     expect(resolveRunAccess({ mode: "agent", access: "readonly" }, "full")).toEqual({
       requested: "readonly",

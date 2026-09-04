@@ -114,6 +114,7 @@ import {
   parseReviewerEffortFlags,
   parseReviewerModelFlags,
   parseReviewerPanelFlags,
+  parseReviewFlags,
 } from "./run-options.js";
 
 const CLI_VERSION = CLAUDEXOR_VERSION;
@@ -313,6 +314,7 @@ async function orchestrate(
   let reviewerEffortOverrides: Partial<Record<ProviderFamily, EffortHint>> | undefined;
   let resolvedReviewerModels: Partial<Record<ProviderFamily, string>> | undefined;
   let resolvedReviewerPanel: ControlReviewerPanelEntry[] | undefined;
+  let review: boolean | undefined;
   let resolvedWebPolicy: ReturnType<typeof webPolicy> = undefined;
   let resolvedAccess: ReturnType<typeof accessProfile> = undefined;
   let resolvedEffort: EffortHint | undefined;
@@ -336,6 +338,11 @@ async function orchestrate(
     reviewerEffortOverrides = reviewerEfforts(args);
     resolvedReviewerModels = reviewerModels(args);
     resolvedReviewerPanel = reviewerPanel(args);
+    review = parseReviewFlags(
+      flagValues(args, "review"),
+      flagValues(args, "no-review"),
+      forced.race === true,
+    );
     resolvedWebPolicy = webPolicy(args);
     resolvedAccess = accessProfile(args);
     resolvedEffort = effortHint(args);
@@ -400,6 +407,7 @@ async function orchestrate(
       primaryHarness: resolvedPrimaryHarness,
       model: resolvedModel,
       effort: resolvedEffort,
+      review,
       reviewerPanel: resolvedReviewerPanel,
       reviewerModels: resolvedReviewerModels,
       reviewerEfforts: reviewerEffortOverrides,
@@ -445,6 +453,7 @@ async function orchestrate(
     paidBudget,
     routingGoal: routingGoal?.success ? routingGoal.data : undefined,
     credentialProfileId,
+    review,
     reviewerPanel: resolvedReviewerPanel,
     reviewerModels: resolvedReviewerModels,
     reviewerEfforts: reviewerEffortOverrides,
@@ -477,6 +486,7 @@ interface DaemonRunParams {
   paidBudget: PaidBudget | undefined;
   routingGoal: ReturnType<typeof RoutingGoal.parse> | undefined;
   credentialProfileId: string | undefined;
+  review: boolean | undefined;
   reviewerPanel: ControlReviewerPanelEntry[] | undefined;
   reviewerModels: Partial<Record<ProviderFamily, string>> | undefined;
   reviewerEfforts: Partial<Record<ProviderFamily, EffortHint>> | undefined;
@@ -607,6 +617,7 @@ async function daemonRun(
     ...(p.resolvedWebPolicy ? { web: p.resolvedWebPolicy } : {}),
     ...(p.resolvedModel ? { model: p.resolvedModel } : {}),
     ...(p.resolvedEffort ? { effort: p.resolvedEffort } : {}),
+    ...(p.review !== undefined ? { review: p.review } : {}),
     ...(p.reviewerPanel ? { reviewerPanel: p.reviewerPanel } : {}),
     ...(p.reviewerModels ? { reviewerModels: p.reviewerModels } : {}),
     ...(p.reviewerEfforts ? { reviewerEfforts: p.reviewerEfforts } : {}),

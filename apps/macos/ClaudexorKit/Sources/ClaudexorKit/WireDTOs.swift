@@ -69,14 +69,22 @@ public struct RunOutcomeFacts: Codable, Sendable, Equatable, Hashable {
     public let checks: String
     /// ReviewState: not_run | approved | blocked | ...
     public let review: String
+    /// Frozen review intent; nil preserves historical review requirements.
+    public let reviewRequested: Bool?
     /// Typed reason qualifying a non-clean terminal; null on a clean success.
     public let reason: String?
 
-    public init(lifecycle: String, noChanges: Bool, checks: String, review: String, reason: String?) {
+    private enum CodingKeys: String, CodingKey {
+        case lifecycle, noChanges, checks, review, reason
+        case reviewRequested = "review_requested"
+    }
+
+    public init(lifecycle: String, noChanges: Bool, checks: String, review: String, reason: String?, reviewRequested: Bool? = nil) {
         self.lifecycle = lifecycle
         self.noChanges = noChanges
         self.checks = checks
         self.review = review
+        self.reviewRequested = reviewRequested
         self.reason = reason
     }
 }

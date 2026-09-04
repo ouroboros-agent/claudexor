@@ -113,6 +113,12 @@ export const ControlRunStartRequest = z
       .describe(
         "Harness-scoped effort map (harness id to effort); an entry here wins over the scalar effort and the per-harness settings default.",
       ),
+    review: z
+      .boolean()
+      .optional()
+      .describe(
+        "Agent model review: ordinary runs default off; true selects an automatic panel. Explicit reviewer controls, best-of and untilClean request review. Capped attempts default to review unless explicitly false.",
+      ),
     reviewerModels: z
       .record(ProviderFamily, NonBlankString)
       .optional()
@@ -615,6 +621,12 @@ export const ControlRunSummary = z
     primaryHarness: z.string().optional().describe("Primary harness the run preferred."),
     routingGoal: RoutingGoal.optional(),
     model: z.string().optional().describe("Scalar model requested for the run."),
+    review: z
+      .boolean()
+      .optional()
+      .describe(
+        "Resolved model-review intent; absent on historical runs that retain review-required semantics.",
+      ),
     reviewerPanel: z
       .array(ControlReviewerPanelEntry)
       .optional()

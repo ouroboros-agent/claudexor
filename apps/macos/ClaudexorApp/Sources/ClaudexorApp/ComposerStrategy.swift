@@ -25,7 +25,7 @@ enum AgentStrategy: String, CaseIterable, Identifiable, Hashable {
     }
     var blurb: String {
         switch self {
-        case .single: return "One primary-biased envelope; apply explicitly after review."
+        case .single: return "One candidate with optional model review; completed changes can be applied normally."
         case .bestOf: return "N candidates in isolated envelopes, cross-reviewed, best wins."
         case .untilClean: return "One envelope repaired until gates/review are clean."
         case .create: return "Scaffold a brand-new repo or component."
@@ -139,4 +139,19 @@ func composerRunApplicabilityShape(
     guard access != .readOnly else { return .readOnly }
     guard mode.apiValue == "agent" else { return .readOnly }
     return repair.untilClean == true || repair.attempts != nil ? .agentConvergence : .agentOther
+}
+
+/// Project the composer's explicit review choice. Ordinary Single keeps its
+/// existing repair cap while opting out of model review. Selecting a strategy
+/// that promises review, or a reviewer panel, is itself an explicit review request.
+func composerReviewWire(
+    mode: RunMode,
+    requestedReview: Bool?,
+    hasExplicitPanel: Bool,
+    untilClean: Bool
+) -> Bool? {
+    guard mode.apiValue == "agent" else { return nil }
+    if hasExplicitPanel || mode == .bestOfN || mode == .maxAttempts
+        || mode == .untilClean || untilClean { return true }
+    return requestedReview ?? false
 }

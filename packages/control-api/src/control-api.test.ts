@@ -9446,6 +9446,48 @@ describe("DaemonControlApiServer", () => {
     });
   });
 
+  it.each([undefined, false, true])(
+    "preserves recorded review=%s through Retry, Run Again and decision rerun",
+    async (review) => {
+      const { daemon, record } = fakeDaemon();
+      if (review !== undefined) record.params = { ...(record.params as object), review };
+      let enqueued: Record<string, unknown> | undefined;
+      const wrapped: DaemonFacadeClient = {
+        ...daemon,
+        async enqueue(params, options) {
+          enqueued = params as Record<string, unknown>;
+          return daemon.enqueue(params, options);
+        },
+      };
+      await withDaemonServer(wrapped, async (base) => {
+        const headers = {
+          authorization: `Bearer ${token}`,
+          "Idempotency-Key": `review-retry-${String(review)}`,
+        };
+        const retried = await apiFetch(`${base}/runs/run-d1/retry`, {
+          method: "POST",
+          headers,
+          body: "{}",
+        });
+        expect(retried.status).toBe(200);
+        expect(enqueued?.["review"]).toBe(review ?? true);
+        const again = await apiFetch(`${base}/runs/run-d1/run-again`, { headers });
+        expect(again.status).toBe(200);
+        expect(((await again.json()) as { request: { review: boolean } }).request.review).toBe(
+          review ?? true,
+        );
+        const rerun = await apiFetch(`${base}/runs/run-d1/decision`, {
+          method: "POST",
+          headers: { ...headers, "Idempotency-Key": `review-feedback-${String(review)}` },
+          body: JSON.stringify({ action: "rerun_with_feedback", feedback: "Complete the work." }),
+        });
+        expect(rerun.status).toBe(200);
+        expect(enqueued?.["review"]).toBe(review ?? true);
+        if (review === undefined) expect(record.params).not.toHaveProperty("review");
+      });
+    },
+  );
+
   it("Exact Retry creates a fresh idempotent command linked to the immutable source request", async () => {
     const { daemon, record } = fakeDaemon();
     let enqueued: Record<string, unknown> | undefined;

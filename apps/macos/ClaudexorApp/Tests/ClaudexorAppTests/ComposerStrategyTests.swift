@@ -83,6 +83,34 @@ import ClaudexorKit
         ).attempts == nil)
     }
 
+    @Test func ordinaryAgentKeepsRepairCapWithoutModelReview() throws {
+        let options = TurnOptions()
+        let review = composerReviewWire(mode: .agent, requestedReview: options.review,
+                                       hasExplicitPanel: false, untilClean: false)
+        #expect(review == false)
+        let repair = composerRepairWire(mode: .agent, access: .workspaceWrite,
+                                        requestedAttempts: options.maxAttempts, requestedUntilClean: false)
+        #expect(repair.attempts == 3)
+        #expect(composerRunApplicabilityShape(mode: .agent, access: .workspaceWrite,
+                                              repair: repair) == .agentConvergence)
+        let body = ThreadTurnRequest(prompt: "go", mode: "agent", attempts: repair.attempts, review: review)
+        let obj = try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(body)) as? [String: Any])
+        #expect(obj["review"] as? Bool == false)
+        #expect(obj["attempts"] as? Int == 3)
+        let start = StartRunRequest(prompt: "go", mode: "agent", review: false)
+        let startObj = try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(start)) as? [String: Any])
+        #expect(startObj["review"] as? Bool == false)
+    }
+
+    @Test func explicitReviewChoicesAndStrategiesOverrideOrdinaryDefault() {
+        #expect(composerReviewWire(mode: .agent, requestedReview: true, hasExplicitPanel: false, untilClean: false) == true)
+        #expect(composerReviewWire(mode: .agent, requestedReview: false, hasExplicitPanel: true, untilClean: false) == true)
+        #expect(composerReviewWire(mode: .bestOfN, requestedReview: false, hasExplicitPanel: false, untilClean: false) == true)
+        #expect(composerReviewWire(mode: .agent, requestedReview: false, hasExplicitPanel: false, untilClean: true) == true)
+        #expect(composerReviewWire(mode: .plan, requestedReview: true, hasExplicitPanel: true, untilClean: true) == nil)
+        #expect(composerReviewWire(mode: .ask, requestedReview: true, hasExplicitPanel: true, untilClean: true) == nil)
+    }
+
     @Test func readOnlyAgentDropsConvergenceControlsAndReconcilesUntilClean() {
         let single = composerRepairWire(
             mode: .agent,

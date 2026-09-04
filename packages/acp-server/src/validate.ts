@@ -44,6 +44,7 @@ export function validateRunControls(params: unknown): RunControlError | null {
     "paidBudget",
     "access",
     "protectedPathApprovals",
+    "review",
     "reviewerPanel",
     "reviewerModels",
     "reviewerEfforts",

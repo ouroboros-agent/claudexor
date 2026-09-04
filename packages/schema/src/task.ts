@@ -204,6 +204,12 @@ export const TaskContract = z
       })
       .describe("Repository the run operates on and how a dirty tree is handled."),
     mode: z.object({ kind: ModeKind }).describe("Canonical run mode for this task."),
+    review_requested: z
+      .boolean()
+      .optional()
+      .describe(
+        "Resolved model-review intent frozen for this run; absent on historical contracts, which retain review-required semantics. This is intent, not a review verdict.",
+      ),
     delegation_requested: z
       .boolean()
       .default(false)

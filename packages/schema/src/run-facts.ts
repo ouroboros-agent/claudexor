@@ -1,6 +1,6 @@
 import { z } from "zod/v3";
 import { ApplyEligibility } from "./apply-eligibility.js";
-import { ReviewState, RunOutcomeFacts } from "./decision.js";
+import { ReviewState, RunOutcomeFacts, reviewAllowsApply } from "./decision.js";
 import { Id, IsoTimestamp, ModeKind, SchemaVersion } from "./primitives.js";
 import { RequiredAction, needsDecision, requiredActionsFor } from "./status-projection.js";
 
@@ -469,9 +469,9 @@ export function validateRunFactsInvariants(value: unknown): RunFacts {
     if (outcome.work_state?.state === "needs_input" || outcome.work_state?.state === "incomplete") {
       violations.push("apply eligibility cannot bypass an unfinished work_state");
     }
-    if (!apply.operator_decision_present && outcome.review !== "approved") {
+    if (!apply.operator_decision_present && !reviewAllowsApply(outcome)) {
       violations.push(
-        "apply eligibility without an operator decision requires outcome.review=approved",
+        "apply eligibility without an operator decision requires outcome.review=approved or an explicit review opt-out",
       );
     }
     if (!apply.operator_decision_present && outcome.checks === "failed") {

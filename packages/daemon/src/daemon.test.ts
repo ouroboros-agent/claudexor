@@ -152,6 +152,62 @@ async function terminal(client: DaemonClient, id: string): Promise<JobRecord> {
 }
 
 describe("DaemonServer", () => {
+  it("freezes review intent at acceptance without changing wire idempotency or historical params", async () => {
+    const dir = tempDir("review-intent");
+    const authority = commandAuthority(dir);
+    const socketPath = join(dir, "daemon.sock");
+    const historical = {
+      prompt: "old Agent",
+      mode: "agent",
+      scope: { kind: "project", root: dir },
+    };
+    authority.store.accept({
+      id: "job-old",
+      params: historical,
+      idempotencyKey: "old",
+      clientId: "test",
+    });
+    authority.store.update("job-old", { state: "succeeded" });
+    const observed: unknown[] = [];
+    const server = new DaemonServer({
+      socketPath,
+      token: "token",
+      commands: authority.slot,
+      runner: async (params) => {
+        observed.push(params);
+        return { lifecycle: "succeeded" };
+      },
+    });
+    await server.start();
+    try {
+      const client = new DaemonClient(socketPath, "token");
+      const old = await client.enqueue(historical, { idempotencyKey: "old", clientId: "test" });
+      expect(old).toMatchObject({ id: "job-old", reused: true });
+      expect(authority.store.get("job-old")?.params).not.toHaveProperty("review");
+      for (const [index, controls, expected] of [
+        [0, {}, false],
+        [1, { review: true }, true],
+        [2, { attempts: 3 }, true],
+        [3, { attempts: 3, review: false }, false],
+        [4, { reviewerPanel: [{ harness: "codex" }] }, true],
+        [5, { prompt: "", attachments: [{ resourceId: "resource-attachment-only" }] }, false],
+      ] as const) {
+        const request = { ...historical, prompt: "new Agent", ...controls };
+        const options = { idempotencyKey: `review-${index}`, clientId: "test" };
+        const first = await client.enqueue(request, options);
+        const completed = await terminal(client, first.id);
+        expect(completed.params).toMatchObject({ review: expected });
+        const replay = await client.enqueue(request, options);
+        expect(replay).toMatchObject({ id: first.id, reused: true });
+        const lookup = authority.store.find({ params: request, ...options });
+        expect(lookup?.id).toBe(first.id);
+      }
+      expect(observed).toHaveLength(6);
+    } finally {
+      await server.stop();
+      authority.journal.close();
+    }
+  });
   it("never replaces a regular file at the configured socket path", async () => {
     const dir = tempDir("unsafe-socket");
     const socketPath = join(dir, "keep.txt");

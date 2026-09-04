@@ -1018,3 +1018,10 @@ preserving why the row was adjudicated: `declined-with-evidence` and
 | 3.9.5 | whole-tree immune scan | operator | IMM-3 | the explicit non-default `review --delta-scope` path still describes the retired Cursor/Sol release ceremony even though schema v7 accepts only full-scope release evidence | backlog | capped at WARN by INV-139; tracked separately in #257 rather than expanding this quota-freshness release |
 
 Acceptance status: fixed rows record source/test adjudication only. Frozen VM evidence for v3.1.1 and intermediate-SHA review do not satisfy the signed exact-candidate packaged/manual VM gates in `docs/CHECKLISTS.md`; those remain open until their final receipts are recorded.
+
+| 3.9.8 | Astra initial | Fable | AR-001 | Historical CLI-version anchors in source comments | declined | Behavior-neutral history remains true; current native recordings and pin are independently verified. |
+| 3.9.8 | Astra initial | Fable | AR-002 | Inert test-version stubs retain older CLI values | declined | The relevant version-trust tests use the current pin; unrelated stubs do not change runtime or gate behavior. |
+| 3.9.8 | Astra initial | Sol | ASTRA-398-COST-001 | Legacy fallback-derived cost EMA survived unpriced usage and influenced API routing | fixed | Combined release preparation: packages/budget/src/metrics.ts and metrics.test.ts invalidate incompatible cost history while preserving other telemetry and current observations. |
+| 3.9.8 | Astra initial | Sol | ASTRA-398-DOC-001 | README update exceptions omitted 3.9.7 | fixed | README Updates now matches the canonical integration limitation list. |
+| 3.9.8 | pre-freeze | UI acceptance | REVIEW-UI-001 | Empty panel caption implied automatic review while ordinary review was off | fixed | ComposerReviewControls explains explicit panels and the Review changes switch. |
+| 3.9.8 | pre-freeze | immune scan | IS-004 | Existing private decision markers in exceptional account errors | declined | Pre-existing unrelated copy debt; no effect on ordinary Agent, new models or credential transport. |

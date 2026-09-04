@@ -473,6 +473,9 @@ export function buildRunFacts(
   );
   const outcome: RunOutcomeFacts = {
     ...terminalOutcome,
+    ...(contract?.review_requested !== undefined
+      ? { review_requested: contract.review_requested }
+      : {}),
     checks: gate.checks,
     ...(gate.checks === "failed" && terminalOutcome.lifecycle === "succeeded"
       ? { reason: "checks_failed" as const }

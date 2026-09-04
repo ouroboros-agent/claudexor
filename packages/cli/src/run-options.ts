@@ -124,3 +124,23 @@ export function parseReviewerEffortFlags(
   const strings = stringFlagValues(values, "reviewer-effort");
   return parseReviewerEffortMap(strings.length > 0 ? strings.join(",") : undefined);
 }
+
+/** Preserve omitted, enabled, and disabled review intent through CLI booleans. */
+export function parseReviewFlags(
+  reviewValues: Array<string | boolean>,
+  noReviewValues: Array<string | boolean>,
+  bestOf = false,
+): boolean | undefined {
+  if (reviewValues.length && noReviewValues.length)
+    throw new Error("--review and --no-review cannot be combined");
+  const values = reviewValues.length ? reviewValues : noReviewValues;
+  for (const value of values) {
+    if (![true, false, "true", "false"].includes(value))
+      throw new Error("--review and --no-review accept only true or false");
+  }
+  const last = values.at(-1);
+  const enabled = last === true || last === "true";
+  const review = values.length ? (reviewValues.length ? enabled : !enabled) : undefined;
+  if (bestOf && review === false) throw new Error("Best-of includes review; remove --no-review");
+  return review ?? (bestOf ? true : undefined);
+}

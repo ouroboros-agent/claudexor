@@ -47,7 +47,7 @@ import { buildRunOrchestrator } from "./run-orchestrator.js";
 import { delegationBeltForRun } from "./delegation-belt-descriptor.js";
 import { loadConfig } from "@claudexor/config";
 import { engineBuildIdentity, noProjectRepoRoot, redactSecrets } from "@claudexor/util";
-import { type ResourceAttachmentRef } from "@claudexor/schema";
+import { restoreRecordedRunReviewRequest, type ResourceAttachmentRef } from "@claudexor/schema";
 import { scheduleStartupRetention } from "./retention-service.js";
 import { controlServices } from "./control-services.js";
 import { AuthReadinessService } from "@claudexor/gateway";
@@ -206,7 +206,7 @@ export async function main(): Promise<void> {
       runtimeIdentity: { version: servingIdentity.version, buildSha: servingIdentity.sha },
       runtimeLeaseOwner: rootAuthority.lease.owner,
       runner: async (params, ctx) => {
-        const p = normalizeRunStartRequest(params);
+        const p = restoreRecordedRunReviewRequest(normalizeRunStartRequest(params));
         const mode = p.mode;
         const noProjectAsk = mode === "ask" && p.scope.kind === "none";
         const repoRoot = p.scope.kind === "project" ? p.scope.root : NO_PROJECT_ROOT;
@@ -403,6 +403,7 @@ export async function main(): Promise<void> {
               : resources().resolve((p as { attachments?: ResourceAttachmentRef[] }).attachments),
             browser: (p as { browser?: boolean }).browser === true,
             mode: p.mode,
+            review: p.review,
             contextMode: noProjectAsk
               ? "off"
               : p.scope.kind === "project"

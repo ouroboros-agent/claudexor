@@ -70,6 +70,10 @@
           "additionalProperties": false,
           "description": "Canonical run mode for this task."
         },
+        "review_requested": {
+          "type": "boolean",
+          "description": "Resolved model-review intent frozen for this run; absent on historical contracts, which retain review-required semantics. This is intent, not a review verdict."
+        },
         "delegation_requested": {
           "type": "boolean",
           "default": false,

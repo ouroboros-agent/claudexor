@@ -4,10 +4,16 @@ Release and candidate history for Claudexor. The current version is declared
 in the root `package.json` (the version SSOT); published versions are available
 on GitHub Releases.
 
-- **v3.9.8** (2026-09-05): GPT-6 Astra is available in Codex model selection
-  with reasoning levels through Ultra. The pinned Codex CLI is updated to
-  0.153.3, with refreshed vendor model and stream evidence. Codex token costs
-  stay unknown without explicit rates instead of inheriting a generic tariff.
+- **v3.9.8** (2026-09-05): ordinary Agent work now defaults to no internal
+  model review, independently of executor selection. Explicit panels and
+  review opt-in, Best-of, and requested review cycles remain available;
+  deliberately unreviewed work can be applied normally with an honest status
+  while required checks and patch integrity remain enforced. Recorded intent
+  preserves historical run/retry behavior. Adds GPT-6 Astra through Ultra and
+  Claude Fable 5.1 (#259), with Codex CLI 0.153.3 and Claude Code 2.1.261.
+  Refreshed native protocol evidence preserves SSE retries and historical MCP
+  startup handling. Unpriced Codex usage and incompatible saved cost averages
+  stay unknown instead of inheriting generic tariffs.
 - **v3.9.7** (2026-09-04): the published release of the 3.9.6 code below,
   shipped under an owner-authorized publication exception (no custom Ed25519
   review attestation or runtime manifests, so in-place engine update and

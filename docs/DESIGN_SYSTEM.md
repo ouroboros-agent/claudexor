@@ -21,8 +21,8 @@ WORKSPACE (D42) — the current thread's Changes / Artifacts / Evidence (plus a
 remote-only Terminal on remote threads), filtered
 to a run when you select its chat receipt. Its
 single real differentiator from a bare harness is multi-vendor
-**race + review** with the winner adopted into the tree. It must feel instantly
-familiar to users of Claude Code / Cursor / Codex, with honest run outcomes and a
+**race + review** when Best-of is selected, with the winner adopted into the tree.
+It must feel instantly familiar to users of Claude Code / Cursor / Codex, with honest run outcomes and a
 calm, native, matte-glass surface (the desktop shows faintly through the window;
 nothing animates when idle).
 
@@ -753,7 +753,9 @@ views in the shared design-system files; screens compose them.
   field, never UI-invented state:
   - the **Agent strategy** picker. `Single` means one candidate lane carried
     through up to three real repair attempts by default (`maxAttempts: 3` on
-    the wire), not one provider invocation. Best-of, Until clean, and Create
+    the wire), not one provider invocation. Ordinary Single also sends `review: false`: its
+    repair cap preserves mechanical checks and work completion without starting model
+    reviewers. Best-of, Until clean, and Create
     use their own controls; the canonical strategy normalizer drops hidden
     Single attempt values whenever they do not apply. Under Read-only, Until
     clean and Max attempts disappear, Single sends neither convergence field,
@@ -783,11 +785,18 @@ views in the shared design-system files; screens compose them.
     (typed, policy-governed fallback), and the route actually taken is
     disclosed as a badge on the finished run — the composer never claims what
     "will be charged";
-  - for **Agent only**, the **reviewer panel editor** (ordered explicit
+  - for **Agent only**, a **Review changes** switch, off for ordinary Single and
+    Create. Enabling it requests an automatically selected internal model-review
+    panel. Best-of and Until clean show review enabled by their strategy. Adding
+    an explicit reviewer panel enables review without another switch; remove the
+    panel to turn it off. Completed review-off changes show **Not reviewed** and
+    remain normally applicable without an accept-risk interaction. The
+    **reviewer panel editor** (ordered explicit
     `harness[=model[:effort]]` entries; invalid entries block Send with an
-    inline reason) and typed **protected-path approvals** for auto-protected
-    gate/test paths; Ask and Plan omit both controls, and Council is Plan's
-    multi-harness critique path;
+    inline reason) remains available alongside typed **protected-path approvals**
+    for auto-protected gate/test paths. Ask and Plan omit these controls, and
+    Council is Plan's multi-harness critique path. Protected-path approvals remain
+    independent of the review switch.
   - the **browser** toggle (see below);
   - the **Workspace** section with the **isolated-workspace toggle** (a draft
     thread can choose `isolated` — turns accumulate in a persistent thread
@@ -949,7 +958,8 @@ views in the shared design-system files; screens compose them.
   Apply is offered through the server-gated apply bar once unblocked. The
   unblocked state is server-derived (a persisted decision from ANY surface
   collapses the bar) — never a local accept/unblock flag. The turn's
-  apply-state is shown honestly: `applied` is green, `applied_review_blocked`
+  apply-state is shown honestly: `applied` is green and includes **not reviewed**
+  when model review did not run; `applied_review_blocked`
   is amber (never a green "succeeded"), `reverted` is neutral; while a mutation
   is still safely revertable the turn offers Revert (server-owned `revert_run`;
   it refuses when the tree diverged, and the refusal is surfaced verbatim).

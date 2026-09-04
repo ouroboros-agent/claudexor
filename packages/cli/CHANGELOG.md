@@ -4,30 +4,34 @@
 
 ### Patch Changes
 
+- Make internal model review opt-in for ordinary Agent work, independently of executor selection. Preserve explicit panels, Best-of, and requested review cycles; persist intent separately from results and retain historical behavior on replay. Deliberately unreviewed changes remain normally applicable with honest Not reviewed status while required checks and patch integrity remain enforced. Expose the same choice through API, CLI, MCP, ACP, and the native composer.
 - Updated dependencies
-  - @claudexor/harness-codex@3.9.8
+- Updated dependencies
+- Updated dependencies
+- Updated dependencies [069c6e3]
+  - @claudexor/schema@3.9.8
+  - @claudexor/orchestrator@3.9.8
+  - @claudexor/delivery@3.9.8
+  - @claudexor/mcp-server@3.9.8
   - @claudexor/acp-server@3.9.8
-  - @claudexor/artifact-store@3.9.8
+  - @claudexor/harness-codex@3.9.8
+  - @claudexor/harness-claude@3.9.8
   - @claudexor/config@3.9.8
   - @claudexor/control-api@3.9.8
   - @claudexor/core@3.9.8
   - @claudexor/daemon@3.9.8
-  - @claudexor/delivery@3.9.8
   - @claudexor/gateway@3.9.8
   - @claudexor/harness-agy@3.9.8
-  - @claudexor/harness-claude@3.9.8
   - @claudexor/harness-cursor@3.9.8
   - @claudexor/harness-fake@3.9.8
   - @claudexor/harness-opencode@3.9.8
   - @claudexor/harness-raw-api@3.9.8
-  - @claudexor/journal@3.9.8
-  - @claudexor/mcp-server@3.9.8
-  - @claudexor/orchestrator@3.9.8
   - @claudexor/review@3.9.8
-  - @claudexor/schema@3.9.8
+  - @claudexor/workspace@3.9.8
+  - @claudexor/artifact-store@3.9.8
+  - @claudexor/journal@3.9.8
   - @claudexor/secrets@3.9.8
   - @claudexor/util@3.9.8
-  - @claudexor/workspace@3.9.8
 
 ## 3.9.7
 

@@ -4,7 +4,8 @@
 
 ### Patch Changes
 
-- @claudexor/arbitration@3.9.8
+- Updated dependencies
+  - @claudexor/arbitration@3.9.8
 
 ## 3.9.7
 

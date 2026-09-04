@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import type { HarnessEvent } from "@claudexor/schema";
 import { HarnessRunSpec } from "@claudexor/schema";
 import { normalizeEffort, resolveEffort } from "@claudexor/core";
@@ -45,6 +46,12 @@ const HELP_2_1_165_NARROW = [
 ].join("\n");
 
 describe("the claude ladder is a property of the INSTALLED binary", () => {
+  it("keeps the release snapshot equal to the recorded 2.1.261 help ladder", () => {
+    const help = readFileSync(new URL("../fixtures/help-2.1.261.txt", import.meta.url), "utf8");
+    expect(CLAUDE_EFFORT_SNAPSHOT_VERIFIED_AGAINST).toBe("2.1.261");
+    expect(parseClaudeEffortHelp(help)).toEqual(CLAUDE_EFFORT_SNAPSHOT);
+  });
+
   it("finds the list however far the help wraps it, so a narrow terminal does not silently cost the ladder", () => {
     // A truncated window returns null, which falls back to the recorded
     // snapshot — i.e. it would advertise ANOTHER version's ladder, the exact
@@ -252,18 +259,19 @@ describe("the claude effort probe degrades gracefully", () => {
     // ...while a MISMATCHED installed version distrusts the snapshot: the run
     // ladder is honestly empty, so the normalizer sends NO flag rather than a
     // level another version advertised (INV-105 — an installed 2.1.89 must
-    // never be handed the 2.1.165 snapshot's xhigh).
+    // never be handed the current snapshot's xhigh).
     expect(claudeAdvertisedEffortsForRun(fallback, "2.1.89 (Claude Code)")).toEqual([]);
     expect(normalizeEffort("xhigh", claudeAdvertisedEffortsForRun(fallback, "2.1.89"))).toBeNull();
   });
 
   it("snapshot trust is exact-version, and an unknown/unparseable version never vouches", () => {
-    expect(claudeSnapshotTrustedForVersion("2.1.165")).toBe(true);
-    expect(claudeSnapshotTrustedForVersion("2.1.165 (Claude Code)")).toBe(true);
+    expect(claudeSnapshotTrustedForVersion("2.1.261")).toBe(true);
+    expect(claudeSnapshotTrustedForVersion("2.1.261 (Claude Code)")).toBe(true);
+    expect(claudeSnapshotTrustedForVersion("2.1.165")).toBe(false);
     expect(claudeSnapshotTrustedForVersion("2.1.89")).toBe(false);
     // A LONGER dotted token is a different version, not a prefix match.
-    expect(claudeSnapshotTrustedForVersion("2.1.165.1")).toBe(false);
-    expect(claudeSnapshotTrustedForVersion("2.1.1650")).toBe(false);
+    expect(claudeSnapshotTrustedForVersion("2.1.261.1")).toBe(false);
+    expect(claudeSnapshotTrustedForVersion("2.1.2610")).toBe(false);
     expect(claudeSnapshotTrustedForVersion(null)).toBe(false);
     expect(claudeSnapshotTrustedForVersion("claude (version unknown)")).toBe(false);
   });

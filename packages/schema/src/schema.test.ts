@@ -120,6 +120,10 @@ describe("TaskContract", () => {
     expect(tc.budget.routing_goal).toBe("auto");
     expect(tc.constraints.protected_path_approvals).toEqual([]);
     expect(tc.convergence.require_tests_pass).toBe(true);
+    expect(tc).not.toHaveProperty("review_requested");
+    expect(TaskContract.parse({ ...tc, review_requested: false }).review_requested).toBe(false);
+    expect(ControlRunStartRequest.parse({ prompt: "hello" })).not.toHaveProperty("review");
+    expect(RecordedControlRunStartRequest.parse({ prompt: "hello" })).not.toHaveProperty("review");
   });
 
   it("separates active access from immutable historical decoding, including nested grants", () => {

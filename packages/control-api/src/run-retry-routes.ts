@@ -9,6 +9,7 @@ import {
   ControlRunStartRequest,
   RETIRED_EXTERNAL_SANDBOX_FULL,
   TaskContract,
+  restoreRecordedRunReviewRequest,
 } from "@claudexor/schema";
 import type { EffortHint } from "@claudexor/schema";
 import type {
@@ -88,7 +89,9 @@ async function exactRetry(
     idempotencyKey = runStart.requiredIdempotencyKey(req);
     const replay = await sourceReplayInput(ctx, source);
     sourceTurnProvenance = replay.turn;
-    const recorded = RecordedControlRunStartRequest.parse(replay.params);
+    const recorded = restoreRecordedRunReviewRequest(
+      RecordedControlRunStartRequest.parse(replay.params),
+    );
     const { turnId: _turnId, retryOf: _retryOf, ...original } = recorded;
     // QA-035: Exact Retry replays the IMMUTABLE original request. The stored
     // params omit any model/effort the caller left to settings, so re-reading
@@ -290,8 +293,8 @@ async function runAgain(ctx: RunRetryRouteContext, id: string, res: ServerRespon
   const source = await ctx.findRun(id);
   if (!source) return ctx.json(res, 404, { error: "no such run" });
   try {
-    const recorded = RecordedControlRunStartRequest.parse(
-      (await sourceReplayInput(ctx, source)).params,
+    const recorded = restoreRecordedRunReviewRequest(
+      RecordedControlRunStartRequest.parse((await sourceReplayInput(ctx, source)).params),
     );
     const retiredAccess = recorded.access === RETIRED_EXTERNAL_SANDBOX_FULL;
     const { access: recordedAccess, ...withoutRecordedAccess } = recorded;

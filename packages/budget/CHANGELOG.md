@@ -4,8 +4,10 @@
 
 ### Patch Changes
 
-- @claudexor/schema@3.9.8
-- @claudexor/util@3.9.8
+- Support GPT-6 Astra through Ultra, pin Codex CLI 0.153.3, and refresh native stream recordings including nonterminal SSE timeout retries. Keep unpriced token usage unknown and retire incompatible saved cost averages instead of using generic fallback tariffs.
+- Updated dependencies
+  - @claudexor/schema@3.9.8
+  - @claudexor/util@3.9.8
 
 ## 3.9.7
 

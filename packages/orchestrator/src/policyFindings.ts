@@ -23,6 +23,7 @@ export function policyFindings(
   autoProtectedPaths: string[] = [],
   protectedPathApprovals: ProtectedPathApproval[] = [],
   denyPaths: string[] = [],
+  reviewRequested = true,
 ): {
   findings: ReviewFinding[];
   risk: { level: string; reasons: string[]; changedFiles: number };
@@ -171,7 +172,7 @@ export function policyFindings(
         status: "accepted",
       }),
     );
-  } else if (depth.crossFamily && !reviewVerified) {
+  } else if (reviewRequested && depth.crossFamily && !reviewVerified) {
     findings.push(
       ReviewFindingSchema.parse({
         id: newId("find"),

@@ -40,6 +40,12 @@ import {
 } from "./candidateEvidence.js";
 import { capabilityIntents } from "@claudexor/gateway";
 import { policyFindings } from "./policyFindings.js";
+import {
+  reviewCandidateRuns,
+  resolveEngineReview,
+  unreviewedCandidateEvidence,
+  evaluateUnreviewedConvergence,
+} from "./candidateReview.js";
 
 import { join } from "node:path";
 import type {
@@ -102,6 +108,8 @@ import {
   QuotaSnapshot as QuotaSnapshotSchema,
   isBlocking,
   makeOutcomeFacts,
+  reviewAllowsApply,
+  workStateVetoes,
   strictifyOutputSchema,
   estimateEffectiveAuthRoute,
 } from "@claudexor/schema";
@@ -348,6 +356,8 @@ export interface ThreadContinuityContext {
 }
 
 export interface RunInput {
+  /** Frozen model-review intent from the accepting surface; optional for embedders. */
+  review?: boolean;
   repoRoot: string;
   /**
    * Tree the harness actually executes in, when different from `repoRoot`.
@@ -708,6 +718,7 @@ export class Orchestrator {
       throw new Error(`unknown mode: ${String(resolved.mode)}`);
     }
     const mode: ModeKind = parsedMode.data;
+    if (mode === "agent") resolved.review = resolveEngineReview(resolved, this.deps);
     if (resolved.delegate === true && mode !== "agent") {
       throw new Error(`Delegate is an agent-only strategy (got mode=${mode})`);
     }
@@ -830,6 +841,7 @@ export class Orchestrator {
     taskId: string,
     mode: ModeKind,
   ): Promise<{ reviewers: ReviewerSpec[] } | { failed: OrchestratorResult }> {
+    if (input.review === false) return { reviewers: [] };
     try {
       // Auto-panel dropped knobs (reviewerEfforts) → ignored-settings channel (QA-070):
       const warn = (d: string) => void log.emit("review.preflight", { ignored_settings: [d] });
@@ -2981,11 +2993,12 @@ export class Orchestrator {
     // (explore/plan/readonly_audit) build and attach the compact atlas.
 
     const reviewDir = join(paths.root, "review-evidence");
-    writeEvidencePacket(reviewDir, {
-      userIntent: redactSecrets(input.prompt),
-      diff: "(per-candidate diffs are supplied to reviewers individually)\n",
-      tests: renderTestsEvidence(contract),
-    });
+    if (contract.review_requested !== false)
+      writeEvidencePacket(reviewDir, {
+        userIntent: redactSecrets(input.prompt),
+        diff: "(per-candidate diffs are supplied to reviewers individually)\n",
+        tests: renderTestsEvidence(contract),
+      });
 
     let adapters: RoutedAdapter[];
     try {
@@ -3744,7 +3757,12 @@ export class Orchestrator {
     const configuredFamilies = new Set(reviewers.map((r) => r.providerFamily)).size;
     if (reviewableRuns.length === 0 || reviewers.length === 0) {
       log.emit("review.skipped", {
-        reason: reviewers.length === 0 ? "no_reviewers" : "no_changes",
+        reason:
+          contract.review_requested === false
+            ? "not_requested"
+            : reviewers.length === 0
+              ? "no_reviewers"
+              : "no_changes",
         reviewable_candidates: reviewableRuns.length,
         configured_reviewers: reviewers.length,
         configured_provider_families: configuredFamilies,
@@ -3964,7 +3982,10 @@ export class Orchestrator {
 
     let result: ReturnType<typeof arbitrate>;
     try {
-      result = arbitrate(evidences, arbitrationBudgetOptions(ledger));
+      result = arbitrate(evidences, {
+        ...arbitrationBudgetOptions(ledger),
+        reviewRequested: contract.review_requested,
+      });
     } catch (err) {
       // Arbitration throws end terminally with artifacts, never as an orphan.
       return failTerminally(
@@ -4015,7 +4036,11 @@ export class Orchestrator {
     // budget reason IS a RunReason.
     const budgetTerminal = ledger.terminal();
     if (facts.lifecycle === "succeeded" && budgetTerminal) {
-      facts = makeOutcomeFacts("failed", { reason: budgetTerminal, noChanges: facts.noChanges });
+      facts = makeOutcomeFacts("failed", {
+        reason: budgetTerminal,
+        noChanges: facts.noChanges,
+        review_requested: contract.review_requested,
+      });
     }
     // FinalVerifier blocks adoption until the patch and gates pass on a fresh base.
     let finalVerify: FinalVerifyRecord | null = null;
@@ -4099,12 +4124,13 @@ export class Orchestrator {
           ? winnerEvidence.findings.filter((f) => isBlocking(f)).length
           : 0;
         const resultKind = hasDiff ? "patch" : winnerAnswer.length > 0 ? "answer" : "none";
-        // Only a fully verified, applyable success may auto-adopt; a not-verified
-        // or needs-decision terminal remains an inspectable artifact.
+        // Adoption honors the frozen review policy and all independent checks.
+        // Unfinished work or a needs-decision terminal remains inspectable.
         const adoptable =
           facts.lifecycle === "succeeded" &&
-          facts.review === "approved" &&
-          facts.checks !== "failed";
+          reviewAllowsApply(facts) &&
+          facts.checks !== "failed" &&
+          !workStateVetoes(facts);
         let adopted: boolean | null = null;
         let applyState: "not_applied" | "applied" | "applied_review_blocked" | "reverted" =
           "not_applied";
@@ -4228,8 +4254,9 @@ export class Orchestrator {
         path: "final/summary.md",
         state:
           (facts.lifecycle === "succeeded" &&
-            facts.review === "approved" &&
-            facts.checks !== "failed") ||
+            reviewAllowsApply(facts) &&
+            facts.checks !== "failed" &&
+            !workStateVetoes(facts)) ||
           winnerAnswer.length > 0
             ? "ready"
             : "diagnostic",
@@ -4455,155 +4482,29 @@ export class Orchestrator {
     signal?: AbortSignal,
     reservationEstimateUsd?: number,
   ): Promise<CandidateEvidence[]> {
-    const evidences: CandidateEvidence[] = [];
-    for (const run of runs) {
-      const candidateCwd = run.reviewCwd ?? cwd;
-      const candidateEvidenceDir = this.prepareReviewEvidenceDir(reviewDir, candidateCwd);
-      try {
-        writeText(
-          join(candidateEvidenceDir, "TESTS.txt"),
-          renderTestsEvidence(contract, run.gates).trim() + "\n",
-        );
-        // a candidate that changed NO files has nothing to review — never
-        // spend a reviewer panel on "(empty diff)" (a trivial greeting in agent mode used to
-        // cost two reviewers). It still flows through policy gates and arbitration
-        // (so a failing test gate or no_op outcome is unchanged), just unreviewed.
-        const hasDiff = run.diff.trim().length > 0;
-        // Reviewer panels spend real money: reserve before, settle the observed cost.
-        const reviewLease =
-          hasDiff && reviewers.length > 0
-            ? ledger?.reserve({
-                taskId: taskId ?? "task",
-                attemptId: run.attemptId,
-                intent: "review",
-                harnessId: "review-panel",
-                cost: attemptCostEvidence("review-panel", run.attemptId, reservationEstimateUsd),
-              })
-            : undefined;
-        const result =
-          hasDiff && reviewers.length > 0 && (reviewLease?.granted ?? true)
-            ? await this.reviewScoped({
-                candidateLabel: run.label,
-                diff: run.diff,
-                evidenceDir: candidateEvidenceDir,
-                artifactsDir: join(paths.reviewsDir, `${run.attemptId}-reviewers`),
-                cwd: candidateCwd,
-                reviewers,
-                reviewerTimeoutMs: reviewerTimeoutMs(this.config(contract.repo.root)),
-                envInheritance: envInheritance(this.config(cwd)),
-                signal,
-                onReviewerEvent: (event) => log.emit(event.type, { ...event }),
-              })
-            : {
-                findings: [],
-                routeProofs: [],
-                reviewerRequests: [],
-                crossFamilyHealthy: false,
-                healthyProviders: [],
-                crossFamilyVerified: false,
-                distinctProviders: [],
-                reviewSpendUsd: 0,
-                reviewSpendEstimated: false,
-                reviewCashUsd: 0,
-                reviewCashKnowledge: "unknown" as const,
-                reviewValuationUsd: 0,
-                reviewValuationKnowledge: "unknown" as const,
-                reviewUnknownUsd: 0,
-              };
-        if (reviewLease?.granted) {
-          ledger?.settle(
-            reviewLease.lease?.lease_id ?? "",
-            reviewUsageCostSettlement(
-              result.reviewCashUsd,
-              result.reviewValuationUsd,
-              {
-                cash: result.reviewCashKnowledge,
-                valuation: result.reviewValuationKnowledge,
-              },
-              [`attempt:${run.attemptId}`, "review:panel"],
-              result.reviewUnknownUsd,
-            ),
-          );
-          if ((result.reviewSpendUsd ?? 0) > 0) {
-            log.emit("budget.observation", {
-              harness_id: "review-panel",
-              attempt_id: run.attemptId,
-              kind: "spend",
-              usd: result.reviewSpendUsd,
-              cash_usd: result.reviewCashUsd,
-              valuation_usd: result.reviewValuationUsd,
-              unknown_usd: result.reviewUnknownUsd,
-              estimated: result.reviewSpendEstimated === true,
-            });
-          }
-        } else if (reviewLease && !reviewLease.granted) {
-          log.emit("budget.lease.created", {
-            granted: false,
-            reason: reviewLease.reason,
-            attempt_id: run.attemptId,
-            harness_id: "review-panel",
-          });
-        }
-        const revalidated = await revalidateFindings(result.findings, {
-          candidateRoot: candidateCwd,
-          evidenceDir: candidateEvidenceDir,
-        });
-        // The high-risk human gate must key off the ACTUAL cross-family verification
-        // (stream-observed route proofs), not the preliminary routeVerified (families
-        // merely configured). Otherwise a high-risk diff skips its NEEDS_HUMAN gate
-        // when two families were configured but their route proofs went unverified.
-        // Mirrors the convergence path (actualReviewVerified).
-        const candidateReviewVerified =
-          reviewVerified && result.crossFamilyHealthy && result.crossFamilyVerified;
-        // Typed policy gate (risk + protected paths) merges with reviewer findings.
-        const policy = policyFindings(
-          run,
-          candidateReviewVerified,
-          contract.constraints.protected_paths,
-          contract.constraints.auto_protected_paths,
-          contract.constraints.protected_path_approvals,
-          contract.constraints.deny_paths,
-        );
-        const allFindings = [...policy.findings, ...revalidated];
-        const inconclusive = allFindings.some(
-          (f) => f.severity === "INSUFFICIENT_EVIDENCE" || f.status === "insufficient_evidence",
-        );
-        const noBlockers = !allFindings.some((f) => isBlocking(f));
-        const reviewClean =
-          result.crossFamilyHealthy && result.crossFamilyVerified && noBlockers && !inconclusive;
-        store.writeYaml(join(paths.reviewsDir, `${run.attemptId}.yaml`), {
-          attempt_id: run.attemptId,
-          review_verified: candidateReviewVerified,
-          final_review_clean: reviewClean,
-          cross_family_healthy: result.crossFamilyHealthy,
-          cross_family_verified: result.crossFamilyVerified,
-          healthy_providers: result.healthyProviders,
-          verified_providers: result.distinctProviders,
-          reviewer_requests: result.reviewerRequests,
-          risk: policy.risk,
-          findings: allFindings,
-          route_proofs: result.routeProofs,
-        });
-        for (const f of allFindings)
-          log.emit("finding.revalidated", {
-            attempt_id: run.attemptId,
-            severity: f.severity,
-            status: f.status,
-          });
-        evidences.push(
-          toCandidateEvidence(run, contract, allFindings, reviewClean, candidateReviewVerified),
-        );
-      } finally {
-        this.recordReviewEvidenceCleanup(
-          store,
-          join(paths.reviewsDir, `${run.attemptId}-evidence-cleanup.yaml`),
-          run.attemptId,
-          candidateEvidenceDir,
-          candidateCwd,
-        );
-      }
-    }
-    return evidences;
+    return reviewCandidateRuns(
+      {
+        runs,
+        reviewers,
+        reviewVerified,
+        reviewDir,
+        cwd,
+        contract,
+        store,
+        paths,
+        log,
+        ledger,
+        taskId,
+        signal,
+        reservationEstimateUsd,
+      },
+      {
+        prepareReviewEvidenceDir: this.prepareReviewEvidenceDir.bind(this),
+        recordReviewEvidenceCleanup: this.recordReviewEvidenceCleanup.bind(this),
+        reviewScoped: this.reviewScoped.bind(this),
+        config: this.config.bind(this),
+      },
+    );
   }
 
   private prepareReviewEvidenceDir(sourceDir: string, _candidateCwd: string): string {
@@ -4727,11 +4628,12 @@ export class Orchestrator {
     }
 
     const reviewDir = join(paths.root, "review-evidence");
-    writeEvidencePacket(reviewDir, {
-      userIntent: redactSecrets(input.prompt),
-      diff: "(per-attempt)\n",
-      tests: renderTestsEvidence(contract),
-    });
+    if (contract.review_requested !== false)
+      writeEvidencePacket(reviewDir, {
+        userIntent: redactSecrets(input.prompt),
+        diff: "(per-attempt)\n",
+        tests: renderTestsEvidence(contract),
+      });
     const reviewersOutcome = await this.resolveReviewersWithArtifacts(
       input,
       log,
@@ -5129,6 +5031,14 @@ export class Orchestrator {
         let conv: ReturnType<typeof evaluateConvergence>;
         try {
           conv = await (async () => {
+            if (contract.review_requested === false) {
+              const evidence = unreviewedCandidateEvidence(run, contract, store, paths, log);
+              lastFindings = evidence.findings;
+              lastFinalReviewClean = false;
+              actualReviewVerified = false;
+              log.emit("review.skipped", { reason: "not_requested", attempt_id: attemptId });
+              return evaluateUnreviewedConvergence(evidence, contract);
+            }
             const candidateReviewCwd = run.reviewCwd ?? input.repoRoot;
             const candidateReviewEvidenceDir = this.prepareReviewEvidenceDir(
               reviewDir,
@@ -5437,7 +5347,7 @@ export class Orchestrator {
             actualReviewVerified,
           ),
         ],
-        arbitrationBudgetOptions(ledger),
+        { ...arbitrationBudgetOptions(ledger), reviewRequested: contract.review_requested },
       );
       decision = arb.decision;
       store.writeYaml(join(paths.arbitrationDir, "decision.yaml"), decision);
@@ -5456,6 +5366,7 @@ export class Orchestrator {
       facts = makeOutcomeFacts("failed", {
         reason: convBudgetTerminal,
         noChanges: facts.noChanges,
+        review_requested: contract.review_requested,
       });
     }
     // A reviewer escalation to a human forces the REVIEW axis to blocked.
@@ -5524,7 +5435,10 @@ export class Orchestrator {
       // attempts, so it is "applied" even when review blocked (Revert offered).
       const convHasDiff = lastRun.diff.trim().length > 0;
       const convAdoptable =
-        facts.lifecycle === "succeeded" && facts.review === "approved" && facts.checks !== "failed";
+        facts.lifecycle === "succeeded" &&
+        reviewAllowsApply(facts) &&
+        facts.checks !== "failed" &&
+        !workStateVetoes(facts);
       const convAdopted: boolean | null = input.inPlace === true && convHasDiff ? true : null;
       const convApplyState: "not_applied" | "applied" | "applied_review_blocked" | "reverted" =
         convAdopted === true

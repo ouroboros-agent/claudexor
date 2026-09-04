@@ -1,6 +1,11 @@
 import { type Server, type Socket, createServer } from "node:net";
 
-import { normalizeCancelReasonCode, type CancelReasonCode } from "@claudexor/schema";
+import {
+  ControlRunStartRequest,
+  resolveRunReviewRequested,
+  normalizeCancelReasonCode,
+  type CancelReasonCode,
+} from "@claudexor/schema";
 import { RpcFollowers } from "./rpc-followers.js";
 import {
   assertNoInlineSecretValues,
@@ -434,12 +439,18 @@ export class DaemonServer {
     operation?: string,
   ) {
     const store = commandStoreForRequest(this.opts.commands, params);
+    const parsed = ControlRunStartRequest.safeParse(params);
+    const acceptedParams =
+      parsed.success && parsed.data.mode === "agent"
+        ? { ...(params as Record<string, unknown>), review: resolveRunReviewRequested(parsed.data) }
+        : params;
     return store.accept({
       id: newId("job"),
-      params,
+      params: acceptedParams,
       idempotencyKey,
       clientId,
-      idempotencyParams,
+      // Resolved defaults belong to accepted execution, never the wire digest.
+      idempotencyParams: idempotencyParams ?? params,
       operation,
     });
   }

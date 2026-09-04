@@ -18,10 +18,8 @@ export const CLAUDE_KNOWN_MODELS: readonly string[] = [
   "haiku",
   "fable",
   "best",
-  // Claude Fable 5.1 needs Claude Code >= 2.1.251: older CLIs (incl. the
-  // 2.1.165 pin) refuse it at the vendor with "version 2.1.251 or newer is
-  // required". Live-verified through Claudexor on 2.1.258 (observed_model
-  // claude-fable-5-1).
+  // Fable 5.1 requires Claude Code >= 2.1.251. Re-verified through the
+  // pinned 2.1.261 CLI with observed_model claude-fable-5-1.
   "claude-fable-5-1",
   "claude-fable-5",
   "claude-sonnet-5",

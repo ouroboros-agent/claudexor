@@ -53,9 +53,13 @@ export function winnerNeedsHuman(
 /** Typed terminal evidence for a fresh-verified race whose live delivery was
  * refused (D8): the process succeeded but the deterministic delivery gate
  * refused — checks=failed, a needs-decision block that fires run.blocked. */
-export function deliveryRefusalDecisionFields(evidenceFacts: string[], reason: string) {
+export function deliveryRefusalDecisionFields(
+  evidenceFacts: string[],
+  reason: string,
+  prior?: RunOutcomeFacts,
+) {
   return {
-    facts: makeOutcomeFacts("succeeded", { checks: "failed", reason: "checks_failed" }),
+    facts: makeOutcomeFacts("succeeded", { ...prior, checks: "failed", reason: "checks_failed" }),
     apply_recommendation: "inspect" as const,
     evidence_facts: [...evidenceFacts, `delivery refused: ${redactSecrets(reason)}`],
   };
@@ -91,7 +95,11 @@ export function writeRaceDeliveryDecision(
   store.writeYaml(path, {
     ...input.decision,
     ...(input.deliveryFailureReason
-      ? deliveryRefusalDecisionFields(input.decision.evidence_facts, input.deliveryFailureReason)
+      ? deliveryRefusalDecisionFields(
+          input.decision.evidence_facts,
+          input.deliveryFailureReason,
+          input.facts,
+        )
       : needsDecision
         ? blockedDecisionOverride(input.decision.evidence_facts, input.facts, input.finalVerify)
         : { facts: input.facts }),

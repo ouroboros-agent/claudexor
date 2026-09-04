@@ -53,6 +53,8 @@ public struct StartRunRequest: Codable, Sendable {
     /// Harness-scoped model map (harness id -> model id). Specific beats
     /// general: an entry wins over the scalar `model` and settings defaults.
     public var models: [String: String]?
+    /// Optional internal model-review intent; explicit panels also enable review.
+    public var review: Bool?
     public var reviewerPanel: [ReviewerPanelEntry]?
     public var reviewerModels: [String: String]?
     public var reviewerEfforts: [String: String]?
@@ -75,7 +77,7 @@ public struct StartRunRequest: Codable, Sendable {
                 execution: RunExecution = RunExecution(), harnesses: [String]? = nil,
                 primaryHarness: String? = nil, routingGoal: String? = nil, model: String? = nil,
                 models: [String: String]? = nil,
-                reviewerPanel: [ReviewerPanelEntry]? = nil,
+                review: Bool? = nil, reviewerPanel: [ReviewerPanelEntry]? = nil,
                 reviewerModels: [String: String]? = nil, reviewerEfforts: [String: String]? = nil,
                 n: Int? = nil, paidBudget: PaidBudget? = nil, access: String? = nil,
                 web: String? = nil,
@@ -91,6 +93,7 @@ public struct StartRunRequest: Codable, Sendable {
         self.routingGoal = routingGoal
         self.model = model
         self.models = models
+        self.review = review
         self.reviewerPanel = reviewerPanel
         self.reviewerModels = reviewerModels
         self.reviewerEfforts = reviewerEfforts
@@ -262,6 +265,7 @@ public struct RunSummary: Codable, Sendable, Identifiable, Equatable {
     public let primaryHarness: String?
     public let routingGoal: String?
     public let model: String?
+    public let review: Bool?
     public let reviewerPanel: [ReviewerPanelEntry]?
     public let protectedPathApprovals: [ProtectedPathApproval]?
     public let n: Int?

@@ -140,6 +140,7 @@ struct ComposerDraftSnapshot: Equatable {
     var councilMembers: Int = 2
     var browser: Bool = false
     var reviewDraft: ComposerReviewDraft = .init()
+    var reviewChanges: Bool = false
     var testCommandText: String = ""
     var composerModels: [String: String] = [:]
 }
@@ -191,6 +192,8 @@ enum ComposerDraftRecovery {
             ? defaults.councilMembers : current.councilMembers
         recovered.browser = current.browser == attempted.browser
             ? defaults.browser : current.browser
+        recovered.reviewChanges = current.reviewChanges == attempted.reviewChanges
+            ? defaults.reviewChanges : current.reviewChanges
         recovered.reviewDraft = current.reviewDraft == attempted.reviewDraft
             ? defaults.reviewDraft : current.reviewDraft
         recovered.testCommandText = sameTestCommand(

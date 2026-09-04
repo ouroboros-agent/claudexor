@@ -43,6 +43,7 @@ struct ThreadsScreen: View {
     /// Parent-owned complete Advanced draft. Incomplete rows remain visible to
     /// Send validity and survive popover dismissal; only valid rows serialize.
     @State var reviewDraft = ComposerReviewDraft()
+    @State var reviewChanges = false
     /// QA-010: optional Create-turn deterministic test command (argv text). Shown
     /// only for the Create agent strategy; parsed into the run's typed `tests`
     /// gate. Not sticky across threads.
@@ -89,6 +90,7 @@ struct ThreadsScreen: View {
             maxAttempts: maxAttempts,
             browser: browserRequest.browser,
             models: composerModels,
+            review: reviewChanges,
             reviewerPanel: runControlApplicability.reviewers.applicable && !reviewerPanelEntries.isEmpty
                 ? reviewerPanelEntries : nil,
             protectedPathApprovals:
