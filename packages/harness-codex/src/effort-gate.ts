@@ -17,13 +17,12 @@ import {
  * Whether the recorded snapshot may be TRUSTED for arg emission against the
  * installed binary (INV-105). The snapshot is another CLI version's recorded
  * `model/list` answer, so it is only that binary's truth on the exact version
- * it was captured from: 0.144.1 advertises `ultra` on gpt-5.6-sol, an older
- * codex may not, and an install whose live probe failed used to be handed the
- * 0.144.1 catalog anyway — `model_reasoning_effort="ultra"` then went to a CLI
- * that refuses the value. Mirrors `claudeSnapshotTrustedForVersion`.
+ * it was captured from. A failed live probe on an older CLI must not send
+ * newer snapshot levels that the installed version may refuse. Mirrors
+ * `claudeSnapshotTrustedForVersion`.
  *
  * The installed version string is whatever `codex --version` printed
- * (e.g. `codex-cli 0.144.1`), so the comparison extracts the full dotted
+ * (e.g. `codex-cli 0.153.3`), so the comparison extracts the full dotted
  * numeric token and requires it to EQUAL the snapshot stamp exactly. An
  * unknown or unparseable version can never vouch for the snapshot.
  */

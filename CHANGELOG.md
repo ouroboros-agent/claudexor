@@ -4,6 +4,10 @@ Release and candidate history for Claudexor. The current version is declared
 in the root `package.json` (the version SSOT); published versions are available
 on GitHub Releases.
 
+- **v3.9.8** (2026-09-05): GPT-6 Astra is available in Codex model selection
+  with reasoning levels through Ultra. The pinned Codex CLI is updated to
+  0.153.3, with refreshed vendor model and stream evidence. Codex token costs
+  stay unknown without explicit rates instead of inheriting a generic tariff.
 - **v3.9.7** (2026-09-04): the published release of the 3.9.6 code below,
   shipped under an owner-authorized publication exception (no custom Ed25519
   review attestation or runtime manifests, so in-place engine update and

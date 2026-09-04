@@ -1,5 +1,12 @@
 # @claudexor/config
 
+## 3.9.8
+
+### Patch Changes
+
+- @claudexor/schema@3.9.8
+- @claudexor/util@3.9.8
+
 ## 3.9.7
 
 ### Patch Changes

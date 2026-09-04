@@ -396,7 +396,7 @@ ladders disagree with the snapshot. Codex model membership is account-scoped,
 so its recorded fallback covers the union of verified account catalogs: every
 live model must match its recorded ladder/default, while a recorded-only model
 does not make another account stale. Effort ceilings are per MODEL, not per
-harness (gpt-5.6-sol takes `ultra`, gpt-5.4 stops at `xhigh`), so
+harness (gpt-6-astra and gpt-5.6-sol take `ultra`, gpt-5.4 stops at `xhigh`), so
 `effortLevelsForModel` narrows the harness-wide merged ladder for the routed
 model. The shared normalizer then passes an ADVERTISED level through verbatim,
 clamps an unadvertised one onto the nearest advertised level INSIDE the merged
@@ -2018,13 +2018,14 @@ former `/runs/:id/input` endpoint and `RunInput` DTO were removed as dead code
 rather than left as an always-`unsupported` stub.
 
 A run blocked by the winning candidate's `NEEDS_HUMAN` findings (reviewer
-escalation, protected-path change, critical-risk diff) is a terminal `blocked`
-state whose findings surface inline on the blocking turn and in the
+escalation, protected-path change, critical-risk diff) retains lifecycle
+`succeeded` with review-blocked outcome facts, projected as `run.blocked`.
+Its findings surface inline on the blocking turn and in the
 run-filtered workspace's Outcome facts (there is no separate Review Queue
 screen). The gate is winner-only and fail-closed: losing candidates' findings
 are disclosed run evidence that never blocks the selected deliverable, while a
 winner missing its review evidence record blocks exactly like an escalated
-one. Since v0.9 the human decision is a TYPED server action:
+one. The human decision is a typed server action:
 `POST /v2/runs/:id/decision` records `accept_risk` / `override_needs_human` as an
 auditable, patch-hash-bound record in the owning journal. The single-owner
 Control API apply gate reads that authority; the mirrored
@@ -2266,6 +2267,10 @@ exact, for candidates and each reviewer route. It is projected BESIDE cash on
 `ControlBudgetSnapshot` (`valuationUsd` + `valuationKnowledge`, also on the MCP
 read result), so a native-subscription run reads as exact `$0` cash with a
 non-null valuation; an unknown valuation stays null, never a fabricated `$0`.
+Codex's token-only usage remains unpriced unless explicit
+`CLAUDEXOR_CODEX_PRICE_INPUT`, `_OUTPUT`, and `_CACHED` rates cover every used
+token category. Model names never imply a fallback tariff. Subscription cash
+remains exact zero independently of that optional valuation.
 Mixed review panels settle
 native reviewers to valuation and API-key reviewers to cash independently;
 their aggregate is never blindly charged as cash. Candidate and reviewer
@@ -2505,9 +2510,10 @@ the rapid-refill breaker `rapid_refill_breaker` → `capacity_exhausted` with a
 typed cause), the `compact_boundary` system frame → a compaction event, and the
 top-level typed `rate_limit_event` → the existing `rate_limit` signal (a routine
 `allowed` heartbeat surfaces nothing and never arms rotation). Codex exec
-0.144.1 surfaces oversized input only as a stderr JSON-RPC error
-(`input_error_code: input_too_large`), NOT a typed stream frame, so codex stays
-honestly generic (no context event) until upstream surfaces a typed code. A
+0.153.3's recorded oversized-input case surfaces a stderr JSON-RPC error
+(`input_error_code: input_too_large`) before model execution, without a typed
+context stream frame. The Codex adapter has no token-window context mapping;
+this character-limit capture does not establish a token-window limit. A
 terminal `capacity_exhausted` with no completed WorkReport maps to
 `interrupted / context_capacity_exhausted`.
 

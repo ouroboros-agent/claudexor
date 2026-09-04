@@ -505,6 +505,34 @@ describe("parseCodexEvent", () => {
     }
   });
 
+  it("keeps recorded SSE idle-timeout retries nonterminal until the stream fails", () => {
+    const reason = "stream disconnected before completion: idle timeout waiting for SSE";
+    const state = {};
+    const retries = [1, 2, 3, 4, 5].flatMap(
+      (attempt) =>
+        parseCodexEvent(
+          { type: "error", message: `Reconnecting... ${attempt}/5 (${reason})` },
+          "s-sse-timeout",
+          state,
+        ) ?? [],
+    );
+    expect(retries.map((event) => event.type)).toEqual(Array(5).fill("status"));
+    expect(retries.map((event) => event.status?.attempt)).toEqual([1, 2, 3, 4, 5]);
+    for (const event of retries) {
+      expect(event.status).toMatchObject({ kind: "api_retry", error_category: "timeout" });
+      expect(event.transient?.kind).toBe("timeout");
+      expect(event.error).toBeUndefined();
+      expect(() => HarnessEvent.parse(event)).not.toThrow();
+    }
+    const failed = parseCodexEvent(
+      { type: "turn.failed", error: { message: reason } },
+      "s-sse-timeout",
+      state,
+    )?.[0];
+    expect(failed?.type).toBe("error");
+    expect(failed?.transient?.kind).toBe("stream_disconnect");
+  });
+
   it("keeps a real post-reconnect exhaustion as an error", () => {
     const exhausted = parseCodexEvent(
       { type: "error", message: "request timed out" },

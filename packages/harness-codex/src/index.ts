@@ -424,10 +424,10 @@ export function createCodexAdapter(deps: Partial<CodexRuntimeDeps> = {}): Harnes
           effort_levels_verified_against: efforts.live
             ? version
             : CODEX_EFFORT_SNAPSHOT_VERIFIED_AGAINST,
-          // Explicit models outside this verified union fail before native execution.
-          // Membership is account-scoped, so retain still-route-visible ids and add
-          // every model advertised by the pinned CLI captures recorded below.
+          // Explicit models must belong to this union of current and historical
+          // account-visible captures; hidden vendor models are not supported hints.
           known_models: [
+            "gpt-6-astra",
             "gpt-5.6",
             "gpt-5.6-sol",
             "gpt-5.6-terra",
@@ -738,7 +738,7 @@ async function* runCodex(
   // Probed in THIS run's resolved env, so a credential profile or API-key route
   // gets its OWN account's catalog, not whichever one landed in the cache first.
   // INV-105 on the RUN: version-gate snapshot-fallback trust (an installed
-  // codex that is not 0.144.1 is never sent the snapshot's levels), and
+  // codex outside the pinned version is never sent the snapshot's levels), and
   // disclose a DROP/CLAMP on the same catalog the args resolve with — preflight
   // passed this level against the DEFAULT account's manifest, but THIS env's
   // catalog may drop it or clamp it onto the routed model's ceiling.
@@ -756,8 +756,7 @@ async function* runCodex(
     authRoute === "subscription" ? ("vendor_native" as const) : ("managed_api_key" as const);
   const credentialSource =
     authRoute === "subscription" ? ("native_session" as const) : ("api_key_env" as const);
-  // Codex reports tokens but no $cost; estimate it from the (hint/configured)
-  // model so the budget ledger does not see every codex run as free.
+  // Codex reports tokens, not cash; only explicit rates may supply an estimate.
   const model = spec.model_hint ?? process.env.CLAUDEXOR_CODEX_MODEL ?? null;
   // capture the native thread id (thread.started) so we can read the model
   // codex recorded in its own rollout transcript; cache that one read.

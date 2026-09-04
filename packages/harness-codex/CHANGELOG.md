@@ -1,5 +1,16 @@
 # @claudexor/harness-codex
 
+## 3.9.8
+
+### Patch Changes
+
+- Support GPT-6 Astra in Codex model selection and preserve its reasoning levels through Ultra. Update the pinned Codex CLI to 0.153.3 and refresh the recorded model and effort catalog from the vendor's visible model list.
+- Keep token costs unknown without explicit rates instead of inferring prices from model names or a generic fallback.
+  - @claudexor/core@3.9.8
+  - @claudexor/schema@3.9.8
+  - @claudexor/secrets@3.9.8
+  - @claudexor/util@3.9.8
+
 ## 3.9.7
 
 ### Patch Changes

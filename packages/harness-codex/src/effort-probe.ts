@@ -41,16 +41,20 @@ export interface CodexEffortCatalog {
 }
 
 /**
- * Recorded fallback coverage, built from live account-scoped `model/list`
- * captures on the CLI version stamped below. Presence is a union, not a claim
- * that every account advertises every model: the freshness gate requires each
- * live entry to be represented exactly while permitting snapshot-only entries.
+ * Recorded fallback coverage: the pinned CLI's visible `model/list` capture,
+ * plus unchanged ladders retained from historical account captures. Presence
+ * is a union, not a claim that every account advertises every model: the
+ * freshness gate checks live entries while permitting snapshot-only entries.
  * Used ONLY when the live probe cannot answer; it is vendor evidence, never an
- * allow-list this repo maintains by hand. (`defaultModel` is the entry that
- * carried `isDefault: true` in every capture used here.)
+ * allow-list this repo maintains by hand. `defaultModel` comes from the pinned
+ * CLI capture; historical defaults do not override its `isDefault: true`.
  */
 export const CODEX_EFFORT_SNAPSHOT: CodexEffortCatalog = {
   models: {
+    "gpt-6-astra": {
+      levels: ["low", "medium", "high", "xhigh", "max", "ultra"],
+      default: "medium",
+    },
     "gpt-5.6-sol": {
       levels: ["low", "medium", "high", "xhigh", "max", "ultra"],
       default: "low",
@@ -66,7 +70,7 @@ export const CODEX_EFFORT_SNAPSHOT: CodexEffortCatalog = {
     "gpt-5.3-codex-spark": { levels: ["low", "medium", "high", "xhigh"], default: "high" },
     "gpt-5.2": { levels: ["low", "medium", "high", "xhigh"], default: "medium" },
   },
-  defaultModel: "gpt-5.6-sol",
+  defaultModel: "gpt-6-astra",
 };
 
 /** Vendor CLI version `CODEX_EFFORT_SNAPSHOT` was captured from. Aliases the

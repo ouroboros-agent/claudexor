@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HarnessEvent, ModelEffortCapability } from "@claudexor/schema";
@@ -225,19 +225,19 @@ describe("codex effort probe degrades gracefully", () => {
     expect(emittedEffort(args)).toBe("max");
   });
 
-  it("the recorded snapshot matches the live model/list capture it was taken from", () => {
-    // `isDefault: true` rode gpt-5.6-sol in that capture (live-verified 0.144.1).
-    expect(CODEX_EFFORT_SNAPSHOT.defaultModel).toBe("gpt-5.6-sol");
-    expect(Object.keys(CODEX_EFFORT_SNAPSHOT.models).sort()).toEqual([
-      "gpt-5.2",
-      "gpt-5.3-codex-spark",
-      "gpt-5.4",
-      "gpt-5.4-mini",
-      "gpt-5.5",
-      "gpt-5.6-luna",
-      "gpt-5.6-sol",
-      "gpt-5.6-terra",
-    ]);
+  it("the snapshot matches every visible model in the pinned CLI capture and keeps historical coverage", () => {
+    const capture = JSON.parse(
+      readFileSync(new URL("../fixtures/models-0.153.3.json", import.meta.url), "utf8"),
+    ) as { data: unknown[] };
+    const recorded = readModelListEfforts(capture.data);
+    expect(recorded).not.toBeNull();
+    expect(CODEX_EFFORT_SNAPSHOT.defaultModel).toBe(recorded!.defaultModel);
+    expect(CODEX_EFFORT_SNAPSHOT.models).toMatchObject(recorded!.models);
+    // A model absent from this account's new capture retains its prior ladder.
+    expect(CODEX_EFFORT_SNAPSHOT.models["gpt-5.2"]).toEqual({
+      levels: ["low", "medium", "high", "xhigh"],
+      default: "medium",
+    });
     expect(unionEffortLevels(CODEX_EFFORT_SNAPSHOT.models)).toEqual([
       "low",
       "medium",
@@ -257,7 +257,7 @@ describe("the effort probe is cached, not re-spawned per call", () => {
   function stubAdapter(probeEfforts: () => Promise<CodexEffortCatalog | null>, nowMs = () => 0) {
     let calls = 0;
     const adapter = createCodexAdapter({
-      detectVersion: async () => "codex-cli 0.144.1",
+      detectVersion: async () => "codex-cli 0.153.3",
       probeLogin: async () => ({ authed: true, method: "chatgpt", probeError: null }),
       hasApiKey: () => false,
       probeEfforts: async () => {
@@ -297,7 +297,7 @@ describe("the effort probe is cached, not re-spawned per call", () => {
       "max",
       "ultra",
     ]);
-    expect(manifest.capabilities.effort_levels_verified_against).toBe("0.144.1");
+    expect(manifest.capabilities.effort_levels_verified_against).toBe("0.153.3");
     expect(manifest.capabilities.known_models_verified_against).toBe(CODEX_VENDOR_CLI_VERSION);
     expect(manifest.capabilities.known_models).toEqual(
       expect.arrayContaining(Object.keys(CODEX_EFFORT_SNAPSHOT.models)),
@@ -309,7 +309,7 @@ describe("the effort probe is cached, not re-spawned per call", () => {
     clearCodexEffortCache();
     const { adapter } = stubAdapter(async () => CODEX_EFFORT_SNAPSHOT);
     const manifest = await adapter.discover();
-    expect(manifest.capabilities.effort_levels_verified_against).toBe("codex-cli 0.144.1");
+    expect(manifest.capabilities.effort_levels_verified_against).toBe("codex-cli 0.153.3");
     clearCodexEffortCache();
   });
 });
@@ -726,7 +726,7 @@ describe("an effort dropped AFTER preflight is disclosed on the run (INV-105)", 
     clearCodexEffortCache();
     let cliArgs: string[] | undefined;
     const adapter = createCodexAdapter({
-      detectVersion: async () => "codex-cli 0.144.1",
+      detectVersion: async () => "codex-cli 0.153.3",
       probeLogin: async () => ({ authed: true, method: "chatgpt", probeError: null }),
       hasApiKey: () => false,
       probeEfforts: async () => profileCatalog,
@@ -764,12 +764,12 @@ describe("an effort dropped AFTER preflight is disclosed on the run (INV-105)", 
 
 describe("the snapshot fallback drives arg emission ONLY on the version it was captured from (INV-105)", () => {
   it("snapshot trust is exact-version, and an unknown/unparseable version never vouches", () => {
-    expect(codexSnapshotTrustedForVersion("0.144.1")).toBe(true);
-    expect(codexSnapshotTrustedForVersion("codex-cli 0.144.1")).toBe(true);
+    expect(codexSnapshotTrustedForVersion("0.153.3")).toBe(true);
+    expect(codexSnapshotTrustedForVersion("codex-cli 0.153.3")).toBe(true);
     expect(codexSnapshotTrustedForVersion("codex-cli 0.98.0")).toBe(false);
     // A LONGER dotted token is a different version, not a prefix match.
-    expect(codexSnapshotTrustedForVersion("0.144.1.1")).toBe(false);
-    expect(codexSnapshotTrustedForVersion("0.144.10")).toBe(false);
+    expect(codexSnapshotTrustedForVersion("0.153.3.1")).toBe(false);
+    expect(codexSnapshotTrustedForVersion("0.153.30")).toBe(false);
     expect(codexSnapshotTrustedForVersion(null)).toBe(false);
     expect(codexSnapshotTrustedForVersion("codex (version unknown)")).toBe(false);
   });
@@ -830,8 +830,8 @@ describe("the snapshot fallback drives arg emission ONLY on the version it was c
     });
 
   it("a MISMATCHED-version snapshot fallback sends NO effort flag and discloses the drop", async () => {
-    // The confirmed C3 defect: installed codex != 0.144.1, model/list probe
-    // failed, the 0.144.1 snapshot filled in, and model_reasoning_effort went
+    // The C3 regression shape: installed codex differs from the pinned CLI,
+    // the live probe failed, and the snapshot's model_reasoning_effort went
     // to a binary that may reject it. The version gate must drop the flag and
     // say so through the existing INV-105 drop seam.
     clearCodexEffortCache();
@@ -1035,7 +1035,7 @@ describe("an effort the run CLAMPED is disclosed too (INV-105) — a moved level
     clearCodexEffortCache();
     let cliArgs: string[] | undefined;
     const adapter = createCodexAdapter({
-      detectVersion: async () => "codex-cli 0.144.1",
+      detectVersion: async () => "codex-cli 0.153.3",
       probeLogin: async () => ({ authed: true, method: "chatgpt", probeError: null }),
       hasApiKey: () => false,
       probeEfforts: async () => catalog,
