@@ -238,7 +238,7 @@ with the candidate's unsigned manifest), regenerates the remote SBOM
 deterministically from the promoted unsigned manifest, `cmp`s it against the
 provenance-verified candidate SBOM, and ships the CANDIDATE bytes (A-5).
 
-Package versions 3.8.0 and 3.9.0 each have an owner-authorized release
+Package versions 3.8.0, 3.9.0, and 3.9.7 each have an owner-authorized release
 exception. A publish
 dispatch may set `skip_custom_ed25519: true` only for those exact versions and
 only when `review_attestation_b64`, `runtime_manifest_b64`, and
@@ -253,6 +253,10 @@ client verifiers stay fail-closed. DMG/ZIP signing and notarization, npm
 publication, SBOMs, GitHub artifact provenance, and npm provenance are
 unchanged. The 3.9.0 exception is the owner decision of 2026-08-28 for the
 quota-throttling/cursor-belt release (no attestation wave is run for it). The
+3.9.7 exception is the owner decision of 2026-09-04 to publish the #263/#252
+quota-pacing fix (five operator review waves, PR #264) from the operator host,
+where the offline signing keys and the macOS full gate are not available;
+3.9.6 was prepared and tagged but never published. The
 verifier rejects this waiver for every other version, and the
 default `false` path retains the normal schema-v7 and signed-manifest gates.
 

@@ -354,11 +354,13 @@ pnpm test
   assembled in the publish run. The remote SBOM is regenerated
   from the promoted unsigned manifest and must `cmp` byte-identical to the
   candidate SBOM before the candidate bytes ship.
-- One-release exceptions for the exact versions 3.8.0 and 3.9.0: the
+- One-release exceptions for the exact versions 3.8.0, 3.9.0, and 3.9.7: the
   owner-authorized publish may set
   `skip_custom_ed25519: true` with all three custom-Ed25519 inputs empty (the
   3.9.0 exception is the owner decision of 2026-08-28 for the
-  quota-throttling/cursor-belt release). Verify
+  quota-throttling/cursor-belt release; the 3.9.7 exception is the owner
+  decision of 2026-09-04 for the #263 quota-pacing release from the operator
+  host without the offline keys). Verify
   that the final asset set omits `REVIEW_ATTESTATION.json`,
   `runtime-manifest.json`, and `remote-runtime-manifest.json` and never promotes
   the unsigned candidate manifests under those names. Record that the existing
@@ -397,7 +399,7 @@ pnpm test
   full Node toolchain; POSIX local harness installation additionally proves the
   exact adjacent npm entrypoint without PATH fallback. A Windows support claim has a native
   extract/probe/handshake/graceful-stop smoke receipt.
-- Except for the explicit 3.8.0, 3.8.1, 3.8.2, 3.9.0, 3.9.1, and 3.9.2 waivers above, the publish
+- Except for the explicit 3.8.0, 3.8.1, 3.8.2, 3.9.0, 3.9.1, 3.9.2, and 3.9.7 waivers above, the publish
   input is an annotated stable tag on exact `origin/main` plus a signed schema-v7
   attestation. It binds the candidate SHA/tree/version, exact
   full-gate receipt, sealed evidence manifest/diff/wave, and the two required

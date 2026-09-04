@@ -1,5 +1,25 @@
 # @claudexor/orchestrator
 
+## 3.9.7
+
+### Patch Changes
+
+- @claudexor/arbitration@3.9.7
+- @claudexor/artifact-store@3.9.7
+- @claudexor/budget@3.9.7
+- @claudexor/config@3.9.7
+- @claudexor/context@3.9.7
+- @claudexor/core@3.9.7
+- @claudexor/delivery@3.9.7
+- @claudexor/event-log@3.9.7
+- @claudexor/gateway@3.9.7
+- @claudexor/policy@3.9.7
+- @claudexor/review@3.9.7
+- @claudexor/schema@3.9.7
+- @claudexor/synthesis@3.9.7
+- @claudexor/util@3.9.7
+- @claudexor/workspace@3.9.7
+
 ## 3.9.6
 
 ### Patch Changes

@@ -1,5 +1,12 @@
 # claudexor
 
+## 3.9.7
+
+### Patch Changes
+
+- Owner-authorized publication exception for 3.9.7 (owner decision 2026-09-04): the release ships without the custom Ed25519 review attestation and runtime manifests, so in-place engine update and first-time remote bootstrap are unavailable for this version; signed/notarized app artifacts, npm provenance, SBOMs, and GitHub artifact provenance are unchanged. 3.9.6 was prepared and tagged but never published.
+  - @claudexor/cli@3.9.7
+
 ## 3.9.6
 
 ### Patch Changes

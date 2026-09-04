@@ -233,7 +233,7 @@ describe("one-release custom Ed25519 waiver", () => {
     });
   });
 
-  it.each(["3.8.0", "3.9.0"])(
+  it.each(["3.8.0", "3.9.0", "3.9.7"])(
     "accepts an exact v%s publish with all three custom inputs empty",
     (version) => {
       withPublishFixture(version, (fixture) => {
@@ -261,15 +261,15 @@ describe("one-release custom Ed25519 waiver", () => {
     });
   });
 
-  it.each(["3.3.17", "3.8.4", "3.9.1", "3.9.2"])(
-    "rejects the waiver for every package version outside the exact 3.8.0/3.9.0 list (%s)",
+  it.each(["3.3.17", "3.8.4", "3.9.1", "3.9.2", "3.9.6"])(
+    "rejects the waiver for every package version outside the exact 3.8.0/3.9.0/3.9.7 list (%s)",
     (version) => {
       withPublishFixture(version, (fixture) => {
         const result = verifyPublish(fixture, { SKIP_CUSTOM_ED25519_INPUT: "true" });
 
         expect(result.status).toBe(1);
         expect(result.stderr).toContain(
-          "release input rejected: skip_custom_ed25519 is authorized only for package versions 3.8.0 and 3.9.0",
+          "release input rejected: skip_custom_ed25519 is authorized only for package versions 3.8.0, 3.9.0, and 3.9.7",
         );
       });
     },

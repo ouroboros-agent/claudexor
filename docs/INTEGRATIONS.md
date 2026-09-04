@@ -35,7 +35,7 @@ release. The existing signed runtime manifest remains the
 publication authority, so an embedder does not create a second artifact or
 trust root.
 
-Releases `3.8.0` and `3.9.0` are explicit owner-authorized exceptions: their
+Releases `3.8.0`, `3.9.0`, and `3.9.7` are explicit owner-authorized exceptions: their
 GitHub Releases omit
 the custom signed runtime and remote-runtime manifests instead of publishing
 unsigned files. Existing app installs cannot use in-place engine update for

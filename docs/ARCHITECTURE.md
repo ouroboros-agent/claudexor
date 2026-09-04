@@ -2828,8 +2828,8 @@ macOS UI/UX SSOT. This section keeps only the engine-facing facts.
 
 ### Remote SSH execution
 
-Releases `3.8.0` and `3.9.0` are owner-authorized publication exceptions:
-their
+Releases `3.8.0`, `3.9.0`, and `3.9.7` are owner-authorized publication
+exceptions: their
 GitHub Releases omit `runtime-manifest.json` and
 `remote-runtime-manifest.json` rather than shipping unsigned substitutes.
 Consequently, an existing app cannot update its engine in place to those
@@ -2986,7 +2986,7 @@ continue.
 ### Engine runtime updater (M7, D22/D23)
 
 The mechanism below is the normal release contract. The version-specific
-`3.8.0` and `3.9.0` exceptions documented above deliberately have no signed
+`3.8.0`, `3.9.0`, and `3.9.7` exceptions documented above deliberately have no signed
 manifest assets, so clients refuse rather than weaken this verifier.
 
 The app updates its **engine runtime closure** in place without a new DMG. The

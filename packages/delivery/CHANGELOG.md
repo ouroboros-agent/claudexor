@@ -1,5 +1,16 @@
 # @claudexor/delivery
 
+## 3.9.7
+
+### Patch Changes
+
+- @claudexor/core@3.9.7
+- @claudexor/policy@3.9.7
+- @claudexor/review@3.9.7
+- @claudexor/schema@3.9.7
+- @claudexor/util@3.9.7
+- @claudexor/workspace@3.9.7
+
 ## 3.9.6
 
 ### Patch Changes

@@ -4,6 +4,12 @@ Release and candidate history for Claudexor. The current version is declared
 in the root `package.json` (the version SSOT); published versions are available
 on GitHub Releases.
 
+- **v3.9.7** (2026-09-04): the published release of the 3.9.6 code below,
+  shipped under an owner-authorized publication exception (no custom Ed25519
+  review attestation or runtime manifests, so in-place engine update and
+  first-time remote bootstrap are unavailable for this version; signed and
+  notarized app artifacts, npm provenance, and SBOMs are unchanged). 3.9.6 was
+  prepared and tagged but never published.
 - **v3.9.6** (2026-09-03): background quota polling no longer lets one revoked,
   never-logged-in, or failing profile pin its vendor's healthy profiles to the
   15-minute retry ceiling — renewals, evidence installed mid-ladder by a

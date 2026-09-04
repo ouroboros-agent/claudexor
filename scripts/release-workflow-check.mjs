@@ -128,8 +128,8 @@ for (const [label, pattern] of [
     /remote_runtime_manifest_b64:\s*\n\s*description:[^\n]*owner-signed four-target SSH runtime manifest/,
   ],
   [
-    "the v3.8.0/v3.9.0 custom Ed25519 waiver is an explicit boolean defaulting false",
-    /skip_custom_ed25519:\s*\n\s*description:[^\n]*v3\.8\.0 or v3\.9\.0 publish only[^\n]*\n\s*required:\s*false\n\s*type:\s*boolean\n\s*default:\s*false/,
+    "the v3.8.0/v3.9.0/v3.9.7 custom Ed25519 waiver is an explicit boolean defaulting false",
+    /skip_custom_ed25519:\s*\n\s*description:[^\n]*v3\.8\.0, v3\.9\.0, or v3\.9\.7 publish only[^\n]*\n\s*required:\s*false\n\s*type:\s*boolean\n\s*default:\s*false/,
   ],
   [
     "the v3.8.1/v3.8.2/v3.9.1/v3.9.2 Cursor review waiver is an explicit boolean defaulting false",
@@ -661,8 +661,8 @@ for (const [label, pattern] of [
     /skipCustomEd25519\s*&&\s*customEd25519Inputs\.some\(\(value\)\s*=>\s*value\s*!==\s*""\)/,
   ],
   [
-    "waiver is permanently pinned to the exact package versions 3.8.0 and 3.9.0",
-    /skipCustomEd25519\s*&&\s*!\["3\.8\.0",\s*"3\.9\.0"\]\.includes\(version\)/,
+    "waiver is permanently pinned to the exact package versions 3.8.0, 3.9.0, and 3.9.7",
+    /skipCustomEd25519\s*&&\s*!\["3\.8\.0",\s*"3\.9\.0",\s*"3\.9\.7"\]\.includes\(version\)/,
   ],
   [
     "Cursor review waiver is permanently pinned to package versions 3.8.1, 3.8.2, 3.9.1, and 3.9.2",

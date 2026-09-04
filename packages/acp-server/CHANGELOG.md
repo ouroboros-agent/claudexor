@@ -1,5 +1,12 @@
 # @claudexor/acp-server
 
+## 3.9.7
+
+### Patch Changes
+
+- @claudexor/schema@3.9.7
+- @claudexor/util@3.9.7
+
 ## 3.9.6
 
 ### Patch Changes
