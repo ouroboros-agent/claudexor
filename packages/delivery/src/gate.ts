@@ -39,6 +39,10 @@ export interface ApplyGateInput {
   /** Fresh verifier result for this delivery attempt. When omitted, the
    * persisted decision result is used for read-only eligibility projection. */
   finalVerify?: FinalVerifyRecord | null;
+  /** Thread contribution preflight precedes the aggregate patch's mandatory
+   * verifyAndDeliver. Defer only a missing saved verifier; never report it as
+   * passed or ignore an explicit fresh result or a recorded failed verifier. */
+  deferFinalVerify?: boolean;
   /**
    * The run's effective MUTABLE delivery/apply state (delivery_state overlay →
    * work_product snapshot), threaded in by the same owner that projects
@@ -200,7 +204,9 @@ export function validateApplyGate(input: ApplyGateInput): string | null {
   // override can change that. Failed verify GATES may be overridden through
   // the same accept_risk path as any blocked run.
   const fv = input.finalVerify !== undefined ? input.finalVerify : input.decision.final_verify;
-  if (!fv?.attempted) {
+  const verifyDeferred =
+    input.deferFinalVerify === true && input.finalVerify === undefined && fv == null;
+  if (!fv?.attempted && !verifyDeferred) {
     // A blocked run authorized by a hash-bound override skips FinalVerifier by
     // construction; the read-only projection reports deliverable and the fresh
     // check runs at apply (QA-032). The apply path supplies `finalVerify` and so
@@ -208,7 +214,7 @@ export function validateApplyGate(input: ApplyGateInput): string | null {
     if (isOverrideVerifyPending(input)) return null;
     return "This change needs a fresh final check before it can be applied.";
   }
-  if (fv.attempted) {
+  if (fv?.attempted) {
     if (fv.applied_cleanly === false) {
       return `This change no longer applies onto a fresh copy of the code (${fv.reason ?? "conflict"}). Re-run the task.`;
     }

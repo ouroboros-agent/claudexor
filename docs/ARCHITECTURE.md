@@ -2157,8 +2157,12 @@ fence (Bible INV-113); an unlisted mutation path is a release blocker:
    accumulated worktree diff. Fences: one per-thread mutation queue refuses
    apply as `thread_busy` while a mutating turn is queued/running; every run
    after the durable delivered-prefix watermark must be applyable (a later
-   success cannot launder an earlier blocked contribution); a secret-like-token
-   scan refuses the patch; delivery reuses `verifyAndDeliver` with a fresh
+   success cannot launder an earlier blocked contribution). This preflight
+   defers only a missing per-run final verifier, because turns may already be
+   adopted into the isolated thread workspace. Review intent, independent
+   checks, work completion, patch hashes and original-root binding still gate
+   every contribution. A secret-like-token scan refuses the patch; delivery
+   reuses `verifyAndDeliver` with a fresh
    verifier and exact target preimage. Success advances the persistent thread
    branch and watermark with journaled thread state.
 5. **Automatic git init** — a NON-GIT project folder is initialized before a

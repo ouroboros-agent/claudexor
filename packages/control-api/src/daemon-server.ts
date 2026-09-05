@@ -2073,7 +2073,10 @@ export class DaemonControlApiServer {
       runIdempotentDelivery: (input) => runIdempotentDelivery(this.opts.services, input),
       readPatch,
       applyGateError: (record, patch, projectRoot) =>
-        applyGateError(record, patch, projectRoot, this.operatorDecisionFor(record)),
+        validateApplyGate({
+          ...applyGateInputFor(record, patch, projectRoot, this.operatorDecisionFor(record)),
+          deferFinalVerify: true,
+        }),
       appendAudit: appendRunAuditEvent,
       gateSpecs: gateSpecsForRun,
     };

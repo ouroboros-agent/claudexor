@@ -98,6 +98,10 @@ importers:
       yaml:
         specifier: ^2.6.1
         version: 2.9.0
+    devDependencies:
+      '@claudexor/schema':
+        specifier: workspace:*
+        version: link:../schema
 
   packages/claudexor:
     dependencies:
