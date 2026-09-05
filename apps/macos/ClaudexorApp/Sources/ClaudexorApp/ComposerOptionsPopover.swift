@@ -336,9 +336,9 @@ extension ThreadsScreen {
                     // QA-010: Create scaffolds a brand-new project, so its test
                     // script does not exist until the run writes it — yet the
                     // operator already knows the command they expect (`npm test`).
-                    // Offer ONE optional typed gate field here so acceptance can be
-                    // deterministic instead of review-only. The engine runs it as a
-                    // post-candidate gate; it is never inferred from the prompt.
+                    // Offer ONE optional typed gate field here to add deterministic
+                    // evidence alongside the selected review policy. The engine runs
+                    // it after the candidate; it is never inferred from the prompt.
                     if agentStrategy == .create { testCommandField }
                 }
             }
@@ -388,7 +388,7 @@ extension ThreadsScreen {
                         .help("Enter a command (the first word is the program), or leave it empty")
                 }
             }
-            .help("Optional deterministic gate run AFTER the candidate scaffolds the project (e.g. `npm test`). Whitespace-separated argv — the first word is the program, the rest its arguments; wrap an argument that contains spaces in quotes (\"my dir\"), and backslash-escape a literal quote. Not a shell: no pipes, globs, or variables. Empty = review-only acceptance.")
+            .help("Optional deterministic gate run AFTER the candidate scaffolds the project (e.g. `npm test`). Whitespace-separated argv — the first word is the program, the rest its arguments; wrap an argument that contains spaces in quotes (\"my dir\"), and backslash-escape a literal quote. Not a shell: no pipes, globs, or variables. Empty adds no test command. Model review follows the review controls above.")
         }
     }
 
