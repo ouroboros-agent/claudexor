@@ -61,6 +61,28 @@ static int run_interactive(void) {
   return 0;
 }
 
+/* Diagnostic sibling of run_interactive: preserve fgets and the console mode,
+ * but report only mode/read facts, never the input or an authentication URL. */
+static int run_input_probe(void) {
+  HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
+  DWORD mode = 0;
+  BOOL mode_ok = GetConsoleMode(input, &mode);
+  printf("INPUT_READY\t%lu\t%lu\t%d\t%lu\t%u\t%u\n",
+         (unsigned long)GetCurrentProcessId(), (unsigned long)GetFileType(input),
+         mode_ok != FALSE, (unsigned long)mode, GetConsoleCP(), GetConsoleOutputCP());
+  fflush(stdout);
+  char code[512];
+  BOOL read_ok = fgets(code, sizeof(code), stdin) != NULL;
+  size_t length = read_ok ? strlen(code) : 0;
+  while (length > 0 && (code[length - 1] == '\r' || code[length - 1] == '\n'))
+    code[--length] = '\0';
+  printf("INPUT_RETURNED\t%d\t%zu\t%d\t%d\n", read_ok != FALSE,
+         length, read_ok && strcmp(code, "one-shot-win32-code-77") == 0,
+         ferror(stdin) != 0);
+  fflush(stdout);
+  return 0; /* Measurement completed; content equality is reported separately. */
+}
+
 static int conin_available(void) {
   HANDLE input = CreateFileW(L"CONIN$", GENERIC_READ | GENERIC_WRITE,
                              FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
@@ -299,6 +321,8 @@ static int run_fake_agy(int argc, wchar_t **argv) {
 }
 
 int wmain(int argc, wchar_t **argv) {
+  if (argc == 2 && wcscmp(argv[1], L"--input-probe") == 0)
+    return run_input_probe();
   int fake = run_fake_agy(argc, argv);
   if (fake >= 0) return fake;
   if (argc >= 2 && wcscmp(argv[1], L"--argv") == 0) {
