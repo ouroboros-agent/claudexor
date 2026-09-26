@@ -2832,21 +2832,27 @@ and `recorded-live-final-text-2.1.283.jsonl`, replayed 1:1 by the conformance
 tests): the message is written to the live stdin as a user frame whose `uuid`
 is the message id, Claude Code queues it at once (`command_lifecycle queued`
 within ~10 ms = `accepted`) and picks it up inside the same turn right after
-the current tool batch (the replay echo / `command_lifecycle started` =
-`delivered`, surfaced as the `live_input_delivered` status event keyed by
-`message_id`; `result.user_message_uuids` lists every consumed uuid). A
+the current tool batch (the replay echo, `command_lifecycle started` or
+`completed`, or the result's `user_message_uuids` = `delivered`, surfaced once
+as the `live_input_delivered` status event keyed by `message_id`). The managed
+vendor pin (2.1.281) carries the same frames and flag; the pickup itself is
+recorded on 2.1.283. A
 message that arrives while the model composes its final text stays queued
 and runs as the NEXT native turn inside the same run: the run loop's
 `session.onIo` seam hands the adapter the live handle, `closeStdinOn` returns
-false while a message is `queued|started` or a run-owned background task is
-open (`system/task_started` … `system/task_notification`, so a background
+false while a message is written-but-unreceipted, `queued` or `started`, or a
+run-owned background task is open (`system/task_started` with
+`is_backgrounded: true` … `system/task_notification`, so a background
 continuation is kept too), the second `system/init` folds into the one
 `started` (a `native_turn_started` status marks the turn), each result's
 `usage.cost_usd` is the delta of the cumulative `total_cost_usd`, and the last
 result's final text is the run's answer. No `queued` frame within 2 s answers
-`delivery_unknown`/`response_timeout`, a lost stdin `delivery_unknown`/
-`transport_lost`, and a `cancelled|discarded|refused` lifecycle state is typed
-`live_input_refused` without failing the run. Cursor declares `none` (no
+`delivery_unknown`/`response_timeout` (the stdin handle swallows write errors,
+so a dead pipe surfaces this way), a session closed with the message still
+unreceipted `delivery_unknown`/`transport_lost`, and a `cancelled|discarded|
+refused` lifecycle state before consumption is typed `live_input_refused`
+without failing the run. A one-shot argv run (no interaction channel; never
+the daemon's shape) has no live session and answers `not_active`/`no_live_session`. Cursor declares `none` (no
 persistent live-input channel: its prompt is piped once, then EOF); agy,
 opencode and raw-api declare `none`. There is no CLI verb or MCP tool for
 messages in this release (`claudexor follow` is the later surface), and the

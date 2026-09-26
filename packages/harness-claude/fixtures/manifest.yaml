@@ -219,7 +219,7 @@ fixtures:
     source: recorded
     cli_version: "2.1.283"
     recorded_at: "2026-09-26"
-    capture: "live subscription; production adapter path; Bash sleep 12 s + Bash sleep 3 s; live message written 1.5 s after the first tool_call"
+    capture: "live subscription; production adapter path; two Bash steps (python3 time.sleep 12 s, then 3 s); live message written 1.5 s after the first tool_call"
     sanitized: "ids, signature, account, environment fingerprint, paths, rate-limit telemetry"
     expectations:
       final_messages: 1

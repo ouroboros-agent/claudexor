@@ -220,9 +220,11 @@ describe("claude live input: closeStdinOn (the hold)", () => {
     expect(live.closeStdinOn(SESSION, result([MSG]))).toBe(true);
   });
 
-  it("holds stdin open for a run-owned BACKGROUND task until its notification, never for a foreground tool", () => {
+  it("holds stdin open for a run-owned BACKGROUND task until its notification, never for a foreground tool or a task that omits the claim", () => {
     const { live, observe } = openSession();
     observe({ type: "system", subtype: "task_started", task_id: "fg", is_backgrounded: false });
+    // monitor/workflow-style tasks carry no is_backgrounded field at all: no hold.
+    observe({ type: "system", subtype: "task_started", task_id: "m1", task_type: "monitor" });
     observe(result(["initial"]));
     expect(live.closeStdinOn(SESSION, result(["initial"]))).toBe(true);
     const bg = openSession();
@@ -237,6 +239,37 @@ describe("claude live input: closeStdinOn (the hold)", () => {
     });
     expect(bg.live.closeStdinOn(SESSION, { type: "system", subtype: "task_notification" })).toBe(
       true,
+    );
+  });
+
+  it("holds stdin open from the write until queued, and releases the hold once the acceptance deadline passes", async () => {
+    const { live, observe } = openSession(30);
+    const receipt = live.message(SESSION, { messageId: MSG, text: "x" });
+    // A result that lands in the write→queued gap must not close the session.
+    observe(result(["initial"]));
+    expect(live.closeStdinOn(SESSION, result(["initial"]))).toBe(false);
+    await expect(receipt).resolves.toEqual({
+      outcome: "delivery_unknown",
+      reason: "response_timeout",
+    });
+    // Unknown: nothing keeps the session open any more.
+    expect(live.closeStdinOn(SESSION, { type: "system", subtype: "init" })).toBe(true);
+    // A late echo still receipts the message exactly once.
+    const late = observe({ type: "user", isReplay: true, uuid: MSG, message: {} });
+    expect((late ?? []).filter((e) => e.payload?.["code"] === "live_input_delivered")).toHaveLength(
+      1,
+    );
+  });
+
+  it("ignores a cancelled lifecycle frame that arrives AFTER the message was consumed", async () => {
+    const { live, observe } = openSession();
+    const receipt = live.message(SESSION, { messageId: MSG, text: "x" });
+    observe(lifecycle(MSG, "queued"));
+    await receipt;
+    observe(lifecycle(MSG, "started"));
+    const after = observe(lifecycle(MSG, "cancelled"));
+    expect((after ?? []).filter((e) => e.payload?.["code"] === "live_input_refused")).toHaveLength(
+      0,
     );
   });
 });

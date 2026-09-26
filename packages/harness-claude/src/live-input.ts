@@ -26,9 +26,12 @@ type Json = any;
  *
  * Receipts are typed from the adapter's own state, never from vendor prose
  * (INV-049): `accepted` = the `queued` lifecycle frame for this uuid;
- * `delivered` = the replay echo or `started`; `delivery_unknown` = no `queued`
- * within the acceptance deadline or a lost transport; `rejected` = a
- * `cancelled|discarded|refused` lifecycle state before acceptance. A message
+ * `delivered` = the replay echo, `started`, `completed` or the result's
+ * `user_message_uuids`; `delivery_unknown` = no `queued` within the acceptance
+ * deadline (`response_timeout`; the production stdin handle swallows write
+ * errors, so a dead pipe surfaces this way) or a session closed with the
+ * message still unreceipted (`transport_lost`); `rejected` = a
+ * `cancelled|discarded|refused` lifecycle state before consumption. A message
  * never cancels or fails the run.
  */
 export const CLAUDE_LIVE_ACCEPT_DEADLINE_MS = 2_000;
@@ -37,12 +40,15 @@ export const CLAUDE_LIVE_ACCEPT_DEADLINE_MS = 2_000;
 export const LIVE_INPUT_DELIVERED = "live_input_delivered";
 export const LIVE_INPUT_REFUSED = "live_input_refused";
 
-type PendingState = "sent" | "queued" | "started" | "consumed" | "refused";
-/** Forward-only lifecycle: an echo that beats `queued` must not be downgraded by it. */
+type PendingState = "sent" | "queued" | "started" | "unknown" | "consumed" | "refused";
+/** Forward-only lifecycle: an echo that beats `queued` must not be downgraded by it.
+ * `unknown` = the acceptance deadline passed (the message may still land; a late
+ * echo is still receipted) and it no longer holds stdin open. */
 const RANK: Record<PendingState, number> = {
   sent: 0,
   queued: 1,
   started: 2,
+  unknown: 2,
   consumed: 3,
   refused: 3,
 };
@@ -131,7 +137,8 @@ export function createClaudeLiveInput(options: ClaudeLiveInputOptions = {}): Cla
 
   const hasPendingTurnWork = (session: LiveSession): boolean => {
     for (const pending of session.pending.values()) {
-      if (pending.state === "queued" || pending.state === "started") return true;
+      if (pending.state === "sent" || pending.state === "queued" || pending.state === "started")
+        return true;
     }
     return false;
   };
@@ -174,10 +181,15 @@ export function createClaudeLiveInput(options: ClaudeLiveInputOptions = {}): Cla
             consumed(session, sessionId, uuid, "started", receipts);
           } else if (state === "completed") {
             consumed(session, sessionId, uuid, "consumed", receipts);
-          } else if (state === "cancelled" || state === "discarded" || state === "refused") {
+          } else if (
+            (state === "cancelled" || state === "discarded" || state === "refused") &&
+            !pending.announced
+          ) {
             pending.state = "refused";
             // An explicit vendor refusal of THIS submission; a promise already
             // settled as accepted keeps its receipt (the refusal is the status).
+            // Once consumption was announced, a later lifecycle refusal is
+            // ordering noise: the model already acted on the text.
             pending.settle({ outcome: "rejected", reason: "rpc_refused" });
             receipts.push({
               type: "status",
@@ -195,10 +207,12 @@ export function createClaudeLiveInput(options: ClaudeLiveInputOptions = {}): Cla
           consumed(session, sessionId, obj.uuid, "started", receipts);
       } else if (type === "system" && obj.subtype === "task_started") {
         // A run-owned BACKGROUND task keeps the session open past the result;
-        // foreground tools emit the same frame with is_backgrounded:false and
-        // always settle before their turn continues.
+        // foreground tools emit the same frame with is_backgrounded:false.
         const id = taskId(obj);
-        if (id && obj.is_backgrounded !== false) session.openBackgroundTasks.add(id);
+        // Only the CLI's explicit claim holds: task types other than local_bash /
+        // local_agent omit the field entirely (monitor, workflow, …) and must
+        // never strand a finished run on an open stdin.
+        if (id && obj.is_backgrounded === true) session.openBackgroundTasks.add(id);
       } else if (type === "system" && obj.subtype === "task_notification") {
         const id = taskId(obj);
         if (id) session.openBackgroundTasks.delete(id);
@@ -242,10 +256,12 @@ export function createClaudeLiveInput(options: ClaudeLiveInputOptions = {}): Cla
         };
         // Registered BEFORE the write: an echo that beats `queued` still correlates.
         session.pending.set(input.messageId, pending);
-        timer = setTimeout(
-          () => pending.settle({ outcome: "delivery_unknown", reason: "response_timeout" }),
-          acceptDeadlineMs,
-        );
+        timer = setTimeout(() => {
+          // No `queued` within the bound: unknown (the CLI may still take it), and
+          // the message stops holding stdin; a late echo is still receipted.
+          advance(pending, "unknown");
+          pending.settle({ outcome: "delivery_unknown", reason: "response_timeout" });
+        }, acceptDeadlineMs);
         try {
           io.write(userMessageFrame(input.text, input.messageId));
         } catch {
