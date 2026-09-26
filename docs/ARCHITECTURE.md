@@ -2747,11 +2747,14 @@ Three boundaries are reported separately and never conflated:
   reason `admission_persist_failed` (a new key is needed to try again).
 - **Native acceptance** — outcome `accepted`: the harness's documented
   acceptance boundary was observed (Codex: `turn/steer` returned `{turnId}`,
-  carried as `nativeTurnId`); consumption is unproved. No second row is
+  carried as `nativeTurnId`; Claude Code: the `command_lifecycle queued`
+  frame for the message's uuid); consumption is unproved. No second row is
   written: the receipt is the answer and replays under the same key.
 - **Native consumption** — outcome `delivered`: a correlated native
   consumption event was observed (Codex: the `userMessage` echo whose
-  `clientId` equals the message id) and a `message.delivered` row closes the
+  `clientId` equals the message id; Claude Code: the `--replay-user-messages`
+  echo `{type:"user", isReplay:true, uuid}` or the `command_lifecycle started`
+  frame for that uuid) and a `message.delivered` row closes the
   message. Obedience is still unproved — the model may ignore the text. The
   receipt reads `delivered` only when the echo reaches the adapter before it
   answers; for Codex `turn/steer` replies first (the echo followed 2.9 s
@@ -2821,11 +2824,29 @@ of `GET /v2/agent-capabilities`, and an adapter that declares a channel implemen
 `message(sessionId, {messageId, text})` beside `cancel`. Codex declares
 `mid_turn` (app-server `turn/steer` against the snapshotted active turn; a
 turn gap answers `not_active`/`no_active_turn`, an app-server without
-`turn/steer` answers `rejected`/`rpc_refused`). Claude Code declares `none`
-with no adapter code: recorded on Claude Code 2.1.282, a user frame written
-mid-turn while a Bash call ran was consumed only as the NEXT turn after the
-first `result` frame, at which Claudexor closes stdin, so the message could
-never be part of the run's attributed work. Cursor declares `none` (no
+`turn/steer` answers `rejected`/`rpc_refused`). Claude Code declares
+`next_tool_boundary` through the native queue fold of its stream-json stdin
+(`packages/harness-claude/src/live-input.ts`, recorded on Claude Code 2.1.283
+through the real adapter path: `fixtures/stream-json/recorded-live-fold-2.1.283.jsonl`
+and `recorded-live-final-text-2.1.283.jsonl`, replayed 1:1 by the conformance
+tests): the message is written to the live stdin as a user frame whose `uuid`
+is the message id, Claude Code queues it at once (`command_lifecycle queued`
+within ~10 ms = `accepted`) and picks it up inside the same turn right after
+the current tool batch (the replay echo / `command_lifecycle started` =
+`delivered`, surfaced as the `live_input_delivered` status event keyed by
+`message_id`; `result.user_message_uuids` lists every consumed uuid). A
+message that arrives while the model composes its final text stays queued
+and runs as the NEXT native turn inside the same run: the run loop's
+`session.onIo` seam hands the adapter the live handle, `closeStdinOn` returns
+false while a message is `queued|started` or a run-owned background task is
+open (`system/task_started` … `system/task_notification`, so a background
+continuation is kept too), the second `system/init` folds into the one
+`started` (a `native_turn_started` status marks the turn), each result's
+`usage.cost_usd` is the delta of the cumulative `total_cost_usd`, and the last
+result's final text is the run's answer. No `queued` frame within 2 s answers
+`delivery_unknown`/`response_timeout`, a lost stdin `delivery_unknown`/
+`transport_lost`, and a `cancelled|discarded|refused` lifecycle state is typed
+`live_input_refused` without failing the run. Cursor declares `none` (no
 persistent live-input channel: its prompt is piped once, then EOF); agy,
 opencode and raw-api declare `none`. There is no CLI verb or MCP tool for
 messages in this release (`claudexor follow` is the later surface), and the
