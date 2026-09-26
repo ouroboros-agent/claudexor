@@ -1817,7 +1817,12 @@ Endpoint semantics beyond the inventory:
   `claudexor retry` and `claudexor run-again`. Durable idempotent replay is
   resolved before mutable resource, Git, or harness preflight: once a request
   was accepted, a later environment change returns the original command/run
-  handle rather than replacing history with a new refusal. If no command was
+  handle rather than replacing history with a new refusal. A project root that
+  was never registered is a caller fix, not an unreadable replay index:
+  `POST /v2/runs` and Exact Retry answer typed `404 project_not_registered`
+  (`retryable: false`, required action: register the root with
+  `POST /v2/projects` or declare `scope.ephemeral`) instead of the retryable
+  `503 idempotency_status_unavailable`. If no command was
   accepted, a replay may reuse its one journaled runless turn only while that
   turn is still the conversation tail; the recovery boundary refuses a
   historical orphan before enqueue. Already accepted commands remain valid and
