@@ -1,5 +1,11 @@
 # @claudexor/schema
 
+## 3.25.1
+
+### Patch Changes
+
+- @claudexor/util@3.25.1
+
 ## 3.25.0
 
 ### Minor Changes

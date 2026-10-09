@@ -1,5 +1,35 @@
 # @claudexor/cli
 
+## 3.25.1
+
+### Patch Changes
+
+- Carry account resources and explicit reset controls forward from the unpublished 3.25.0 candidate, and use the matching Docker Official Ubuntu image from ECR Public for Linux SSH release verification.
+  - @claudexor/acp-server@3.25.1
+  - @claudexor/artifact-store@3.25.1
+  - @claudexor/config@3.25.1
+  - @claudexor/control-api@3.25.1
+  - @claudexor/core@3.25.1
+  - @claudexor/daemon@3.25.1
+  - @claudexor/delivery@3.25.1
+  - @claudexor/gateway@3.25.1
+  - @claudexor/harness-acp@3.25.1
+  - @claudexor/harness-agy@3.25.1
+  - @claudexor/harness-claude@3.25.1
+  - @claudexor/harness-codex@3.25.1
+  - @claudexor/harness-cursor@3.25.1
+  - @claudexor/harness-fake@3.25.1
+  - @claudexor/harness-opencode@3.25.1
+  - @claudexor/harness-raw-api@3.25.1
+  - @claudexor/journal@3.25.1
+  - @claudexor/mcp-server@3.25.1
+  - @claudexor/orchestrator@3.25.1
+  - @claudexor/review@3.25.1
+  - @claudexor/schema@3.25.1
+  - @claudexor/secrets@3.25.1
+  - @claudexor/util@3.25.1
+  - @claudexor/workspace@3.25.1
+
 ## 3.25.0
 
 ### Minor Changes
