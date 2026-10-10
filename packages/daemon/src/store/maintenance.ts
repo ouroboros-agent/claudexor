@@ -88,7 +88,7 @@ interface Pending {
  * The worker owns a separate read-only connection, never shares a thread or
  * connection with the flusher, never writes a row, and only ENUMERATES sweep
  * candidates older than the process start; every removal is decided on the
- * main thread through the GC (blobs) or a barrier-covered recheck (parts).
+ * main thread through the one owner-generation unlink rule (C10).
  */
 export class MaintenanceController {
   private readonly entry: string;
@@ -139,8 +139,9 @@ export class MaintenanceController {
    * (barrier + synchronous owner recheck); a `.part` stays while its upload
    * is open/uploaded/finalizing or its publish obligation is open, goes when
    * the upload is published and unobligated, and — with no `upload` row —
-   * goes only after a barrier covering the row's deletion still shows no row
-   * (C9); a `.tmp` older than the process start goes at once.
+   * goes only through the owner-generation unlink rule (a barrier covering the
+   * latest change of its row still shows no row, C10); a `.tmp` older than
+   * the process start goes at once.
    */
   async sweepOrphans(): Promise<SweepReport> {
     const listed = await this.sweepCandidates();
@@ -168,11 +169,8 @@ export class MaintenanceController {
         (outcome === "removed" ? report.removedBlobs : report.keptBlobs).push(candidate.sha);
         continue;
       }
-      const decision = await this.decidePart(candidate.uploadId);
-      if (decision === "remove") {
-        unlinkTolerant(candidate.path);
-        report.removedParts.push(candidate.path);
-      } else report.keptParts.push(candidate.path);
+      const decision = await this.decidePart(candidate.uploadId, candidate.path);
+      (decision === "remove" ? report.removedParts : report.keptParts).push(candidate.path);
     }
     if (report.removedTemps.length > 0 || report.removedParts.length > 0) {
       this.store.registerExternal(this.store.paths.uploads);
@@ -193,8 +191,10 @@ export class MaintenanceController {
     if (worker) await worker.terminate();
   }
 
-  /** C2/C9 part decision on main, in one synchronous section per observation. */
-  private async decidePart(uploadId: string): Promise<"keep" | "remove"> {
+  /** C2/C10 part decision on main: live or obligated uploads keep their part,
+   * a published unobligated upload loses it at once, and a rowless part goes
+   * through the one owner-generation unlink rule (the `upload` row is its owner). */
+  private async decidePart(uploadId: string, path: string): Promise<"keep" | "remove"> {
     const observe = (): "keep" | "remove" | "unknown" => {
       const row = this.store.prepare("SELECT state FROM upload WHERE id = ?").get(uploadId) as
         { state: string } | undefined;
@@ -206,11 +206,16 @@ export class MaintenanceController {
       return obligated ? "keep" : "remove";
     };
     const first = observe();
-    if (first !== "unknown") return first;
-    // No row: the deletion that removed it may not be barrier-covered yet.
-    await this.store.synced(this.store.mark());
-    const second = observe();
-    return second === "unknown" ? "remove" : second;
+    if (first === "keep") return "keep";
+    if (first === "remove") {
+      unlinkTolerant(path);
+      return "remove";
+    }
+    const outcome = await this.blobs.owners.unlinkWhenUnowned(`upload:${uploadId}`, {
+      path,
+      owners: () => observe() !== "unknown",
+    });
+    return outcome === "removed" ? "remove" : "keep";
   }
 
   private run<T>(request: MaintenanceRequest): Promise<T> {

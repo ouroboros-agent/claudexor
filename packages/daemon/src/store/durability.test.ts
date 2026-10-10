@@ -180,32 +180,31 @@ describe("durability class (SYNTHESIS_R5 §13.2)", () => {
     const daemonDir = join(root, "snapshot");
     const driven = drive(daemonDir, "normal");
     await until(() => driven.acks.length >= 30, "30 acks");
-    // Snapshot at time T while the writer keeps going: database, WAL, then files.
+    // Snapshot at one instant T: freeze the writer (and its flusher thread),
+    // drain the ACKs already written, copy database, WAL and files, resume.
+    driven.child.kill("SIGSTOP");
+    await new Promise((r) => setTimeout(r, 100));
+    const ackedAtSnapshot = driven.acks.length;
     const snapshot = join(root, "snapshot-copy");
     mkdirSync(join(snapshot, "resource-store", "blobs"), { recursive: true });
     mkdirSync(join(snapshot, "final"), { recursive: true });
     copyFileSync(join(daemonDir, "engine.sqlite"), join(snapshot, "engine.sqlite"));
     if (existsSync(join(daemonDir, "engine.sqlite-wal")))
       copyFileSync(join(daemonDir, "engine.sqlite-wal"), join(snapshot, "engine.sqlite-wal"));
-    const ackedAtSnapshot = driven.acks.length;
-    // Published names only: a `.tmp` still being written may vanish under the copy.
     const copyPublished = (dir: string): void => {
       for (const name of readdirSync(join(daemonDir, dir))) {
         if (name.endsWith(".tmp")) continue;
-        try {
-          copyFileSync(join(daemonDir, dir, name), join(snapshot, dir, name));
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-        }
+        copyFileSync(join(daemonDir, dir, name), join(snapshot, dir, name));
       }
     };
     copyPublished(join("resource-store", "blobs"));
     copyPublished("final");
+    driven.child.kill("SIGCONT");
     driven.child.kill("SIGKILL");
     await driven.killed;
-    // The copy opened on its own is a consistent prefix of the ACKed history:
-    // at least what was acknowledged before the database bytes were copied
-    // minus the writer's in-flight transaction, never a torn row.
+    // The copy opened on its own is a consistent prefix of the history: every
+    // commit acknowledged before the freeze, at most one commit whose ACK had
+    // not reached the pipe yet, never a torn row.
     const db = new DatabaseSync(join(snapshot, "engine.sqlite"));
     let rows: Array<{ id: string; params_sha: string }>;
     try {
@@ -216,7 +215,8 @@ describe("durability class (SYNTHESIS_R5 §13.2)", () => {
     } finally {
       db.close();
     }
-    expect(rows.length).toBeLessThanOrEqual(ackedAtSnapshot);
+    expect(rows.length).toBeGreaterThanOrEqual(ackedAtSnapshot);
+    expect(rows.length).toBeLessThanOrEqual(ackedAtSnapshot + 1);
     rows.forEach((row, index) => expect(row.id).toBe(`cmd-${String(index + 1).padStart(6, "0")}`));
     const blobs = new Set(readdirSync(join(snapshot, "resource-store", "blobs")));
     const finals = new Set(readdirSync(join(snapshot, "final")));

@@ -3205,16 +3205,19 @@ What the core is:
   covering that generation deletes it. Startup replays every open row through
   an idempotent per-kind handler, so their count is unfinished work, never
   history.
-- Blob files are collected only after the barrier of the latest transaction
-  that released a reference to the digest, by a single-flight per-digest
-  handler that re-checks newer releases and every reverse index in one
-  synchronous section before unlinking. The maintenance worker — its own
+- Blob files are collected through that same rule: only after the barrier of
+  the latest transaction that changed a reference to the digest, by a
+  single-flight per-digest handler that re-checks newer changes and every
+  reverse index in one synchronous section before unlinking and deleting the
+  file-mode `blob` row. The maintenance worker — its own
   read-only connection, never the flusher's thread — runs the integrity check
   after admission and on request, exports a consistent snapshot copy, and
   enumerates orphan candidates (blob files, temp files and upload parts older
   than the process start that no row in its snapshot owns); every removal is
-  decided on the request thread, a rowless upload part only after a barrier
-  still shows no row.
+  decided on the request thread by one rule: the main thread records the
+  generation of every committed change to a file's owner rows, the unlink
+  waits for the barrier covering the latest one and, in a single synchronous
+  section, retries if the owner moved, keeps if an owner exists, else unlinks.
 - Retention: each `event` row is written under the daemon's journal fold
   verdict as SQL (retire, slot, group, drop), so the retained set equals the
   folded journal's. Command rows carry a `kind` set once at accept

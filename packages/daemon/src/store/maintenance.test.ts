@@ -64,14 +64,16 @@ function seedRows(store: EngineStore, n: number): void {
     for (let i = 0; i < n; i += 1) insert.run(nextSeq++, Buffer.alloc(900, nextSeq & 0xff));
   });
 }
-/** Push every WAL frame into the database file (retrying a pass that raced the flusher's checkpoint lock). */
-function checkpointAll(store: EngineStore): void {
-  for (let attempt = 0; attempt < 50; attempt += 1) {
+/** Push every WAL frame into the database file, retrying while a flusher pass holds the checkpoint lock. */
+async function checkpointAll(store: EngineStore): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
     const row = store.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get() as {
       busy: number;
       log: number;
     };
     if (Number(row.busy) === 0 && Number(row.log) === 0) return;
+    await new Promise((r) => setTimeout(r, 10));
   }
   throw new Error("could not truncate the WAL");
 }
@@ -90,7 +92,7 @@ const rowTotals = (store: EngineStore) =>
     ).n,
   );
 
-describe("maintenance worker (SYNTHESIS_R5 §6.5, §7 p.6; R5_AMENDMENTS A4, C2, C9)", () => {
+describe("maintenance worker (SYNTHESIS_R5 §6.5, §7 p.6; R5_AMENDMENTS A4, C2, C10)", () => {
   it("runs integrity_check on its own connection and records the fact", async () => {
     const { store, maintenance } = await openStore();
     seedRows(store, 200);
@@ -98,7 +100,7 @@ describe("maintenance worker (SYNTHESIS_R5 §6.5, §7 p.6; R5_AMENDMENTS A4, C2,
     const report = await maintenance.integrityCheck();
     expect(report).toMatchObject({ ok: true, problems: [] });
     expect(store.facts().integrity).toBe("ok");
-    checkpointAll(store);
+    await checkpointAll(store);
     const fd = openSync(store.paths.database, "r+");
     try {
       for (const page of [3, 4, 5, 6])
@@ -243,7 +245,7 @@ describe("maintenance worker (SYNTHESIS_R5 §6.5, §7 p.6; R5_AMENDMENTS A4, C2,
     expect(existsSync(ref.file!)).toBe(true);
   });
 
-  it("C9: a rowless .part goes only after a barrier still shows no row; a row that reappears keeps it", async () => {
+  it("C9/C10: a rowless .part goes only after a barrier still shows no row; a row that reappears keeps it", async () => {
     const { store, maintenance } = await openStore(true);
     mkdirSync(store.paths.uploads, { recursive: true });
     const gone = join(store.paths.uploads, "gone.part");
@@ -296,6 +298,58 @@ describe("maintenance worker (SYNTHESIS_R5 §6.5, §7 p.6; R5_AMENDMENTS A4, C2,
     expect(report.removedParts).toEqual([gone]);
     expect(report.keptParts).toEqual([back]);
     expect(existsSync(back)).toBe(true);
+  });
+
+  it("T-FIN-7 (C10): an upload row that reappears and vanishes during the wait defers the unlink to a new barrier", async () => {
+    const { store, maintenance, blobs } = await openStore(true);
+    mkdirSync(store.paths.uploads, { recursive: true });
+    const part = join(store.paths.uploads, "flap.part");
+    writeFileSync(part, "x");
+    age(part);
+    const key = "upload:flap" as const;
+    const sweeping = maintenance.sweepOrphans();
+    const untilWaiter = () =>
+      new Promise<void>((resolve) => {
+        const poll = () =>
+          store.facts().flusher.pending_waiters >= 1 ? resolve() : setTimeout(poll, 5);
+        poll();
+      });
+    await untilWaiter();
+    const g1 = store.facts().flusher.generation;
+    // The row appears (INSERT + owner change) and its barrier completes; in that
+    // barrier's synchronous acknowledgement the row vanishes again (DELETE +
+    // owner change, no barrier yet).
+    store.transaction(() =>
+      store
+        .prepare(
+          "INSERT INTO upload(id, state, received_bytes, body) VALUES('flap','uploaded',1,x'00')",
+        )
+        .run(),
+    );
+    const g2 = blobs.owners.noteChange(key);
+    let g3 = 0;
+    const flapped = new Promise<void>((resolve) => {
+      const off = store.onSynced((g) => {
+        if (g < g2 || g3 !== 0) return;
+        store.transaction(() => store.prepare("DELETE FROM upload WHERE id = 'flap'").run());
+        g3 = blobs.owners.noteChange(key);
+        off();
+        resolve();
+      });
+    });
+    store.flusherControl.tick();
+    await flapped;
+    await new Promise((r) => setTimeout(r, 20));
+    // No durable prefix may show `uploaded` without its part: the unlink waits for g3.
+    expect(g3).toBeGreaterThan(g2);
+    expect(g2).toBeGreaterThan(g1);
+    expect(existsSync(part)).toBe(true);
+    expect(blobs.owners.generationOf(key)).toBe(g3);
+    store.flusherControl.tick();
+    const report = await sweeping;
+    expect(report.removedParts).toEqual([part]);
+    expect(existsSync(part)).toBe(false);
+    expect(blobs.owners.generationOf(key)).toBeUndefined();
   });
 
   it("serializes requests on one worker and refuses after stop", async () => {

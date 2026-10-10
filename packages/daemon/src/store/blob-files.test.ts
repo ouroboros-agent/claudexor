@@ -150,7 +150,7 @@ describe("blob files (SYNTHESIS_R5 §6.5)", () => {
     expect(blobRows(store)).toEqual([republished.sha256, obligated.sha256].sort());
   });
 
-  it("T-GC-3: the GC is bound to the LATEST unref and waits for its barrier before unlinking", async () => {
+  it("T-GC-3: the GC is bound to the LATEST owner change and waits for its barrier before unlinking", async () => {
     const store = await openStore(true);
     const blobs = new BlobFiles(store);
     const bytes = body(80_000, 4);
@@ -161,7 +161,7 @@ describe("blob files (SYNTHESIS_R5 §6.5)", () => {
     });
     // Delete A (unref g1) and start the GC; it waits for the barrier covering g1.
     store.transaction(() => store.prepare("DELETE FROM command WHERE id = 'A'").run());
-    const g1 = blobs.noteUnref(refA.sha256);
+    const g1 = blobs.noteOwnerChange(refA.sha256);
     const collecting = blobs.gc(refA.sha256);
     expect(blobs.gc(refA.sha256)).toBe(collecting); // single-flight per digest
     // The barrier for g1 completes; in the SAME synchronous section as its
@@ -176,7 +176,7 @@ describe("blob files (SYNTHESIS_R5 §6.5)", () => {
           commandWithParams(store, "B", refB.sha256);
         });
         store.transaction(() => store.prepare("DELETE FROM command WHERE id = 'B'").run());
-        g2 = blobs.noteUnref(refA.sha256);
+        g2 = blobs.noteOwnerChange(refA.sha256);
         off();
         resolve();
       });
@@ -188,14 +188,14 @@ describe("blob files (SYNTHESIS_R5 §6.5)", () => {
     expect(g2).toBeGreaterThan(g1);
     expect(store.facts().flusher.acknowledged_generation).toBeLessThan(g2);
     expect(existsSync(refA.file!)).toBe(true);
-    expect(blobs.unrefGenerationOf(refA.sha256)).toBe(g2);
+    expect(blobs.owners.generationOf(`blob:${refA.sha256}`)).toBe(g2);
     // Had B's deletion lost its barrier (power loss) the recovered prefix would
     // own the blob; only once g2 is proven may the file go.
     store.flusherControl.tick();
     expect(await collecting).toBe("removed");
     expect(existsSync(refA.file!)).toBe(false);
     expect(blobRows(store)).toEqual([]);
-    expect(blobs.unrefGenerationOf(refA.sha256)).toBeUndefined();
+    expect(blobs.owners.generationOf(`blob:${refA.sha256}`)).toBeUndefined();
   });
 
   it("gc tolerates a file already gone and leaves inline rows alone", async () => {
