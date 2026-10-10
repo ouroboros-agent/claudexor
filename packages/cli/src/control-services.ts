@@ -188,12 +188,7 @@ export function controlServices(
     }),
     // F3 nested-project disclosure: each project carries its recomputed
     // nesting relations — surfaces disclose "nested inside <root>", never refuse.
-    listProjects: async () => {
-      const store = projects();
-      return {
-        projects: store.list().map((p) => ({ ...p, nesting: store.nestingFor(p.id) })) as unknown[],
-      };
-    },
+    listProjects: async () => ({ projects: projects().listWithNesting() as unknown[] }),
     // QA-067: filesystem routes are a remote-runtime-only surface — the local
     // daemon never serves them (the routes answer 501 without these services).
     ...remoteFilesystemServices(projects),

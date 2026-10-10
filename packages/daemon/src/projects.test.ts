@@ -2,8 +2,9 @@ import { mkdtempSync, mkdirSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DurableJournal } from "@claudexor/journal";
+import { SCHEMA_VERSION } from "@claudexor/schema";
 import { describe, expect, it, vi } from "vitest";
-import { ProjectStore } from "./projects.js";
+import { ProjectStore, projectNesting } from "./projects.js";
 import { rmSync as __rmSyncReap } from "node:fs";
 import { afterAll as __afterAllReap } from "vitest";
 
@@ -145,5 +146,112 @@ describe("ProjectStore", () => {
     );
     expect(reloaded.list()).toEqual([]);
     expect(reloaded.unregister("prj-missing")).toBeUndefined();
+  });
+});
+
+/** A registry replayed from synthetic registrations (roots need not exist). */
+function syntheticRegistry(roots: readonly string[]) {
+  const journal = new DurableJournal({
+    rootDir: join(realpathSync(reapMk(join(tmpdir(), "claudexor-nesting-"))), "state"),
+    partition: "global",
+  });
+  const at = new Date(0).toISOString();
+  journal.appendBatch(
+    roots.map((root, index) => ({
+      type: "project.registered",
+      payload: {
+        project: {
+          schema_version: SCHEMA_VERSION,
+          id: `prj-${String(index).padStart(6, "0")}`,
+          root,
+          created_at: at,
+          updated_at: at,
+        },
+      },
+    })),
+  );
+  return { journal, store: new ProjectStore(journal) };
+}
+
+/** The pre-batch projection: one `nestingFor` scan per project. */
+function perProject(store: ProjectStore) {
+  return store.list().map((project) => ({ ...project, nesting: store.nestingFor(project.id) }));
+}
+
+/** 2035 roots: workspaces with nested packages and prefix-but-not-parent siblings. */
+function liveSizedRoots(): string[] {
+  const roots: string[] = [];
+  for (let user = 0; roots.length < 2035; user += 1) {
+    roots.push(`/Users/u${user}`);
+    for (let p = 0; p < 20 && roots.length < 2035; p += 1) {
+      roots.push(`/Users/u${user}/work/p${p}`);
+      if (roots.length < 2035) roots.push(`/Users/u${user}/work/p${p}x`);
+      if (p % 3 === 0 && roots.length < 2035) {
+        roots.push(`/Users/u${user}/work/p${p}/packages/core`);
+      }
+    }
+  }
+  return roots;
+}
+
+describe("whole-registry nesting (one pass)", () => {
+  it("equals per-project nestingFor on nested, sibling and prefix-but-not-parent roots", () => {
+    const { journal, store } = syntheticRegistry([
+      "/w/a/b/c",
+      "/w",
+      "/w/a",
+      "/w/ab", // a prefix of nothing: "/w/a" is not its parent
+      "/w/a b", // sorts between "/w/a" and "/w/a/b"
+      "/w/a/b",
+      "/w/a/bc",
+      "/w/a/..dots", // `relative` reads this name as "..", so nestingFor leaves it out
+      "/w/sibling-1",
+      "/w/sibling-2",
+      "/w/a/b/c/d/e/f",
+      "/w/é",
+      "/elsewhere/x",
+      "/",
+    ]);
+    const batch = store.listWithNesting();
+    expect(batch).toStrictEqual(perProject(store));
+    const nesting = (root: string) => batch.find((project) => project.root === root)?.nesting;
+    expect(nesting("/w/ab")?.map((n) => `${n.relation} ${n.root}`)).toEqual([
+      "inside /",
+      "inside /w",
+    ]);
+    expect(nesting("/w/a/bc")?.map((n) => n.root)).toEqual(["/", "/w", "/w/a"]);
+    expect(
+      nesting("/w/a")
+        ?.filter((n) => n.relation === "contains")
+        .map((n) => n.root),
+    ).toEqual(["/w/a/b", "/w/a/b/c", "/w/a/b/c/d/e/f", "/w/a/bc"]);
+    journal.close();
+  });
+
+  it("equals per-project nestingFor at 2035 roots while testing each root only against its ancestors", () => {
+    const roots = liveSizedRoots();
+    expect(roots).toHaveLength(2035);
+    const { journal, store } = syntheticRegistry(roots);
+    const nestingFor = vi.spyOn(store, "nestingFor");
+    const batch = store.listWithNesting();
+    expect(nestingFor).not.toHaveBeenCalled();
+    nestingFor.mockRestore();
+    expect(batch).toStrictEqual(perProject(store));
+    expect(batch.reduce((count, project) => count + project.nesting.length, 0)).toBeGreaterThan(
+      2035,
+    );
+    // Complexity: the containment predicate runs once per (root, registered
+    // ancestor) candidate, not once per pair of projects (2035² ≈ 4.1M).
+    let tests = 0;
+    const counted = projectNesting(store.list(), (child, parent) => {
+      tests += 1;
+      return child !== parent && child.startsWith(parent === "/" ? "/" : `${parent}/`);
+    });
+    expect(tests).toBeLessThan(4 * roots.length);
+    expect(tests).toBeGreaterThan(0);
+    expect([...counted.values()].flat().length).toBe(
+      batch.reduce((count, project) => count + project.nesting.length, 0),
+    );
+    journal.close();
   });
 });

@@ -3039,7 +3039,10 @@ nonterminal command to `interrupted_unknown`; mutating commands are never
 auto-replayed.
 The deliberately empty-on-v2-start registry is global. `GET/POST /v2/projects`
 list/register canonical local roots and
-`POST /v2/projects/:id/relink` moves an existing stable project id.
+`POST /v2/projects/:id/relink` moves an existing stable project id. Each project
+discloses its nesting relations with other registered roots (`inside` /
+`contains`, never a refusal); the list computes them for the whole registry in
+one pass, each root checked only against its own registered ancestors.
 `DELETE /v2/projects/:id` retires a project — it removes the registry entry and
 ARCHIVES the project's journal partition (renamed out of the active journal
 tree, never deleted, the same non-destructive move the quarantine path uses),
