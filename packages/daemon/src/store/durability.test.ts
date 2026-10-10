@@ -13,7 +13,6 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { DatabaseSync } from "node:sqlite";
 
 /** The store runs only where `node:sqlite` exists; elsewhere these cases are skipped, not failed. */
 const sqliteAvailable = await import("node:sqlite").then(

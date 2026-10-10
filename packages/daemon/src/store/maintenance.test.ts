@@ -14,7 +14,6 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { DatabaseSync } from "node:sqlite";
 import { BlobFiles, sha256Hex } from "./blob-files.js";
 import { MaintenanceController } from "./maintenance.js";
 import { Obligations } from "./obligations.js";
