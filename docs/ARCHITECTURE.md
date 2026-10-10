@@ -2759,7 +2759,9 @@ LIFECYCLE after restart, never token-level progress. A journal sink failure for 
 journaled event fails the producer/run instead of being swallowed as a live-only
 gap; an event outside the journaled set is never a sink failure.
 `GET /v2/runs/:id` returns the snapshot together with `lastSeq` — the highest seq
-already reflected in that snapshot — so a client subscribes to
+already reflected in that snapshot, read from the live writer's in-memory counter
+or, for a finished run, from the log's last line (a full scan only when that line
+cannot decide) — so a client subscribes to
 `GET /v2/runs/:id/events` with `Last-Event-ID: <lastSeq>` and applies deltas with
 no gaps and no duplicates. The per-run stream replays from the run's
 `events.jsonl` — the one complete per-run event record; the journal partition
