@@ -3039,7 +3039,12 @@ nonterminal command to `interrupted_unknown`; mutating commands are never
 auto-replayed.
 The deliberately empty-on-v2-start registry is global. `GET/POST /v2/projects`
 list/register canonical local roots and
-`POST /v2/projects/:id/relink` moves an existing stable project id. Each project
+`POST /v2/projects/:id/relink` moves an existing stable project id. A
+registration answer carries `created`: true only when that registration made the
+project, false when the root was already registered; an `Idempotency-Key` replay
+repeats its first answer, derived from journal order across restarts, so a
+caller can tell a project it created from one it merely found (`claudexor
+project register` prints `created` or `existing`). Each project
 discloses its nesting relations with other registered roots (`inside` /
 `contains`, never a refusal); the list computes them for the whole registry in
 one pass, each root checked only against its own registered ancestors.

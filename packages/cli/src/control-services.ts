@@ -193,8 +193,8 @@ export function controlServices(
     // daemon never serves them (the routes answer 501 without these services).
     ...remoteFilesystemServices(projects),
     registerProject: async (input: Parameters<ProjectStore["register"]>[0]) => {
-      const project = threads.registerProject(input);
-      return { ...project, nesting: projects().nestingFor(project.id) };
+      const { project, created } = threads.registerProject(input);
+      return { ...project, nesting: projects().nestingFor(project.id), created };
     },
     relinkProject: async (id: string, root: string) => {
       const project = threads.relinkProject(id, root);

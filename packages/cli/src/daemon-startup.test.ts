@@ -331,7 +331,7 @@ describe("copied-journal startup admission integration", () => {
           root: projectRoot,
           idempotencyKey: `register-${index}`,
           clientId: "id-startup-test",
-        }).id,
+        }).project.id,
     );
     for (const projectId of projectIds) {
       const projectJournal = new DurableJournal({

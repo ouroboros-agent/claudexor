@@ -606,7 +606,7 @@
       "auth": "loopback_bearer",
       "request_schema": "ControlProjectRegisterRequest",
       "parameters": [],
-      "response_schema": "ControlProject",
+      "response_schema": "ControlProjectRegisterResponse",
       "error_schema": "ControlProblem"
     },
     {

@@ -33,7 +33,7 @@ function fixture() {
 describe("ProjectStore", () => {
   it("selects registry record types before copies while retaining mixed full history", () => {
     const f = fixture();
-    const project = f.store.register({
+    const { project } = f.store.register({
       root: f.firstRoot,
       idempotencyKey: "filter",
       clientId: "test",
@@ -57,25 +57,55 @@ describe("ProjectStore", () => {
     const f = fixture();
     expect(f.store.list()).toEqual([]);
     const input = { root: f.firstRoot, idempotencyKey: "register-1", clientId: "test" };
-    const project = f.store.register(input);
-    expect(f.store.register(input).id).toBe(project.id);
+    const { project } = f.store.register(input);
+    expect(f.store.register(input).project.id).toBe(project.id);
     expect(() => f.store.register({ ...input, root: f.secondRoot })).toThrow(/different request/);
     f.journal.close();
     const reloaded = new ProjectStore(
       new DurableJournal({ rootDir: f.journalRoot, partition: "global" }),
     );
     expect(reloaded.list()).toEqual([project]);
-    expect(reloaded.register(input).id).toBe(project.id);
+    expect(reloaded.register(input).project.id).toBe(project.id);
+  });
+
+  it("answers whether a registration created the project; a key replay repeats its first answer across restart", () => {
+    const f = fixture();
+    const first = { root: f.firstRoot, idempotencyKey: "created-1", clientId: "test" };
+    expect(f.store.register(first).created).toBe(true);
+    // The same key and request repeats the ORIGINAL answer, not "now it exists".
+    expect(f.store.register(first).created).toBe(true);
+    // A new key for an already-registered root (another spelling) finds it.
+    const second = {
+      root: `${f.base}/first/..//first`,
+      idempotencyKey: "created-2",
+      clientId: "test",
+    };
+    expect(f.store.register(second)).toMatchObject({
+      created: false,
+      project: { root: realpathSync(f.firstRoot) },
+    });
+    f.journal.close();
+    const reloaded = new ProjectStore(
+      new DurableJournal({ rootDir: f.journalRoot, partition: "global" }),
+    );
+    expect(reloaded.register(first).created).toBe(true);
+    expect(reloaded.register(second).created).toBe(false);
+    // Removal retires the key bindings: the root registers as a new project.
+    const { project } = reloaded.register(first);
+    reloaded.unregister(project.id);
+    const again = reloaded.register(first);
+    expect(again.created).toBe(true);
+    expect(again.project.id).not.toBe(project.id);
   });
 
   it("deduplicates canonical roots and relinks one stable project id", () => {
     const f = fixture();
-    const project = f.store.register({
+    const { project } = f.store.register({
       root: f.firstRoot,
       idempotencyKey: "register-1",
       clientId: "test",
     });
-    const same = f.store.register({
+    const { project: same } = f.store.register({
       root: `${f.base}/first/..//first`,
       idempotencyKey: "register-2",
       clientId: "test",
@@ -103,7 +133,11 @@ describe("ProjectStore", () => {
       ).toThrow(/inside the Claudexor runtime tree/);
       // relink is guarded too — the ok project lives OUTSIDE the owned tree.
       const okRoot = realpathSync(reapMk(join(tmpdir(), "claudexor-ok-")));
-      const ok = f.store.register({ root: okRoot, idempotencyKey: "ok", clientId: "test" });
+      const { project: ok } = f.store.register({
+        root: okRoot,
+        idempotencyKey: "ok",
+        clientId: "test",
+      });
       expect(() => f.store.relink(ok.id, ghostRoot)).toThrow(/inside the Claudexor runtime tree/);
     } finally {
       if (prev === undefined) delete process.env["CLAUDEXOR_CONFIG_DIR"];
@@ -116,10 +150,18 @@ describe("ProjectStore", () => {
     const outer = f.firstRoot;
     const inner = join(outer, "packages", "inner");
     mkdirSync(inner, { recursive: true });
-    const outerProj = f.store.register({ root: outer, idempotencyKey: "o", clientId: "t" });
+    const { project: outerProj } = f.store.register({
+      root: outer,
+      idempotencyKey: "o",
+      clientId: "t",
+    });
     // Registering the inner project SUCCEEDS (no refusal) and both sides
     // disclose the overlap.
-    const innerProj = f.store.register({ root: inner, idempotencyKey: "i", clientId: "t" });
+    const { project: innerProj } = f.store.register({
+      root: inner,
+      idempotencyKey: "i",
+      clientId: "t",
+    });
     expect(f.store.list()).toHaveLength(2);
     expect(f.store.nestingFor(innerProj.id)).toEqual([
       { relation: "inside", root: realpathSync(outer), projectId: outerProj.id },
@@ -128,14 +170,18 @@ describe("ProjectStore", () => {
       { relation: "contains", root: realpathSync(inner), projectId: innerProj.id },
     ]);
     // A disjoint project has no nesting.
-    const other = f.store.register({ root: f.secondRoot, idempotencyKey: "s", clientId: "t" });
+    const { project: other } = f.store.register({
+      root: f.secondRoot,
+      idempotencyKey: "s",
+      clientId: "t",
+    });
     expect(f.store.nestingFor(other.id)).toEqual([]);
   });
 
   it("unregisters a project and forgets its root + idempotency bindings, surviving restart (F2 cleanup)", () => {
     const f = fixture();
     const input = { root: f.firstRoot, idempotencyKey: "reg", clientId: "test" };
-    const project = f.store.register(input);
+    const { project } = f.store.register(input);
     expect(f.store.unregister(project.id)?.id).toBe(project.id);
     expect(f.store.list()).toEqual([]);
     // The root frees up and re-registration mints a fresh id (no dangling index).

@@ -20,6 +20,14 @@ interface ProjectMutation {
   registration?: RegistrationBinding;
 }
 
+/** A registration's answer: the project, and whether THIS registration created
+ * it. Derived from journal order on replay, so a key replay after a restart
+ * still repeats its original answer. */
+export interface ProjectRegistration {
+  project: Project;
+  created: boolean;
+}
+
 const REGISTERED = "project.registered";
 const RELINKED = "project.relinked";
 const UNREGISTERED = "project.unregistered";
@@ -30,7 +38,7 @@ export class ProjectStore {
   private readonly projectIdByRoot = new Map<string, string>();
   private readonly registrationByKey = new Map<
     string,
-    { requestDigest: string; projectId: string }
+    { requestDigest: string; projectId: string; created: boolean }
   >();
 
   constructor(private readonly journal: DurableJournal) {
@@ -75,7 +83,7 @@ export class ProjectStore {
     return this.list().map((project) => ({ ...project, nesting: nesting.get(project.id) ?? [] }));
   }
 
-  register(input: { root: string; idempotencyKey: string; clientId: string }): Project {
+  register(input: { root: string; idempotencyKey: string; clientId: string }): ProjectRegistration {
     validateKey(input.idempotencyKey);
     const root = canonicalRoot(input.root);
     assertNotClaudexorOwned(root);
@@ -91,7 +99,7 @@ export class ProjectStore {
       if (prior.requestDigest !== requestDigest) throw conflict();
       const project = this.projects.get(prior.projectId);
       if (!project) throw new Error("project registration points to a missing project");
-      return project;
+      return { project, created: prior.created };
     }
     const existingId = this.projectIdByRoot.get(root);
     const existing = existingId ? this.projects.get(existingId) : undefined;
@@ -109,7 +117,7 @@ export class ProjectStore {
       project,
       registration: { keyDigest, requestDigest, projectId: project.id },
     });
-    return project;
+    return { project, created: !existing };
   }
 
   relink(id: string, rootInput: string): Project {
@@ -199,7 +207,10 @@ export class ProjectStore {
       if (prior && (prior.requestDigest !== requestDigest || prior.projectId !== projectId)) {
         throw new Error("conflicting project registration history");
       }
-      this.registrationByKey.set(keyDigest, { requestDigest, projectId });
+      // The first binding of a key decides its answer: it created the project
+      // exactly when no project with that id existed before this record.
+      if (!prior)
+        this.registrationByKey.set(keyDigest, { requestDigest, projectId, created: !previous });
     }
   }
 }
