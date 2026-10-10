@@ -173,6 +173,7 @@ import {
   ControlSettingsSnapshot,
   ControlSettingsUpdateRequest,
   ControlQuotaRefreshRequest,
+  type ControlQuotaReadRequest,
   ControlAccountPoolsResponse,
   ControlAccountsMigrationRollbackRequest,
   ControlAccountsMigrationRollbackResponse,
@@ -284,7 +285,7 @@ export interface DaemonControlApiOptions {
       journalEvents?: (partition: string, afterCursor?: string) => Promise<unknown>;
       settings?: () => Promise<unknown>;
       updateSettings?: (patch: unknown) => Promise<unknown>;
-      quota?: (input?: { view?: "resources" }) => Promise<unknown>;
+      quota?: (input?: ControlQuotaReadRequest) => Promise<unknown>;
       createAccountReset?: (input: {
         request: ControlAccountResetRequest;
         idempotencyKey: string;

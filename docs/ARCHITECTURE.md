@@ -1025,7 +1025,7 @@ codes retain provenance while their detail explains the state, including false/u
 These resources do not enable paid usage or change routing policy.
 
 The operation catalog advertises `view=resources` on quota and atomic Accounts
-reads. Without it, quota responses keep the strict legacy representation, including
+reads. Without a view selector, quota responses keep the strict legacy representation, including
 the historical Codex reset-credit label at the serializer boundary. A refresh body
 may select one exact `target` (harness and profile id), including a named default
 or a disabled portable profile. It uses the existing refresh coordinator and pacing
@@ -3881,6 +3881,38 @@ refresher produces it, and full-inventory versus incremental-window replacement.
 subject. Display and routing evaluate freshness at the actual current time:
 absent an earlier reset boundary, a snapshot is still fresh exactly five
 minutes after observation and becomes stale only after that boundary.
+Passive consumers can opt in with `GET /v2/quota` and query `view=constraint_freshness`.
+They may request it directly; discovery through the GET quota operation's `view`
+query enum in `/v2/operations` is optional and must not block a passive read.
+The 3.24 engine ignores the selector and returns its legacy shape; 3.25.0 and
+3.25.1 reject it with HTTP 400 (`view must be resources`).
+The strict `ControlQuotaFreshnessResponse` adds required
+`constraints[].freshness` (`fresh`, `stale`, or `unknown`). Each value uses the
+raw snapshot's freshness and observation time, the same five-minute TTL
+(stale only after 300000ms), and only that constraint's reset (stale at or
+after reset). Raw stale/unknown remain so, null resets add no expiry, and null
+usage remains null. Evidence observed before an account reset cutoff is stale
+for every window, exactly as for the aggregate. An expired 5h window therefore
+does not stale a still-fresh weekly sibling in this display projection. The
+historical Codex `reset_credits` label is not a quota window: it carries the
+freshness of the resets facet its count was read from, and `unknown` under an
+unknown snapshot. Snapshot freshness remains the
+conservative aggregate. No usage, reset, observation time, or availability is
+rewritten, and an elapsed reset never implies refill. The read uses existing
+pruning rules without refresh or journal writes. The legacy GET, POST refresh
+(whose `view` remains `resources` only), Accounts responses, raw schemas, routing,
+and refresh demand retain their existing contract. Supporting engines reject empty,
+unknown, and repeated `view`; the catalog's `ControlQuotaQueryResponse` is a union
+of the strict whole-response shapes (legacy, `resources`, and `constraint_freshness`).
+A direct caller accepts only a fully valid explicit response or fully valid
+legacy response. Missing nested freshness in valid legacy data retains conservative
+snapshot freshness, never implies independent freshness or refill. Malformed or
+partial explicit metadata, including mixed explicit/legacy constraints or snapshots,
+is rejected without stripping metadata or silently downgrading. For an engine that
+explicitly rejects the selector with HTTP 400, a caller may make one plain GET
+fallback and validate its strict legacy response; transport failures, HTTP 500/other
+statuses, and malformed successful payloads do not permit that fallback. Neither
+direct reads nor the optional plain-GET fallback trigger provider refresh.
 Background demand additionally looks through
 the next existing 60-second poll tick, so a matching primary snapshot whose TTL
 or reset boundary is due by that deadline (including equality) no longer
