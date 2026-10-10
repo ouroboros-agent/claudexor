@@ -206,6 +206,12 @@ export class EngineStore {
     return this.flusher.register(dir);
   }
 
+  /** A generation covering every commit so far, acknowledged by the next pass (no waiter). */
+  mark(): number {
+    this.assertOpen();
+    return this.flusher.mark();
+  }
+
   /** Resolves after the next pass that started after this call proved its barrier. */
   flushed(): Promise<void> {
     this.assertOpen();

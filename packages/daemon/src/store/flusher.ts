@@ -113,6 +113,13 @@ export class FlusherController {
     return g;
   }
 
+  /** A generation with no waiter: "everything up to now" for an obligation to clear on. */
+  mark(): number {
+    const g = this.nextGeneration();
+    this.send({ g, since: performance.now(), command: { type: "flush", g } });
+    return g;
+  }
+
   /** Resolves once a pass that started after this call proved its barrier. */
   flushed(): Promise<void> {
     const g = this.nextGeneration();
