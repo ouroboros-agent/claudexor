@@ -375,7 +375,7 @@ export async function main(): Promise<void> {
       await runAdmissionCompletion(() => startupBlockedPartitions);
     }
     await shutdownRuntime.wait();
-    lifecycle.finalize();
+    await lifecycle.finalize();
     logLine(logPath(), "claudexord shut down");
     startupDiagnostics.recordStage("shutdown_complete", "claudexord shut down");
   } catch (error) {
@@ -391,7 +391,7 @@ export async function main(): Promise<void> {
     if (shutdownRuntime) {
       try {
         await shutdownRuntime.beginShutdown("startup failure");
-        lifecycle?.finalize();
+        await lifecycle?.finalize();
       } catch (shutdownError) {
         logLine(
           logPath(),

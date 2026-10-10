@@ -3138,7 +3138,9 @@ start from the project base even if their predecessor holds a retained envelope;
 they do not adopt or retain it. In-place runs and race/synthesis/review envelopes
 keep their ordinary lifecycle.
 While running it snapshots its live harness child process groups to
-`daemon/pids.json`; the NEXT startup reaps recorded orphans that survived a
+`daemon/pids.json` (checked every two seconds, written asynchronously and only
+when the set of children changed; shutdown waits for that write before its final
+synchronous snapshot); the NEXT startup reaps recorded orphans that survived a
 crash (pid liveness + command-name recycling guard) and sweeps workspace
 debris under daemon-known project roots. The reap is not a stop proof: it sends
 SIGTERM to each recorded group, deletes the record, and only schedules SIGKILL
