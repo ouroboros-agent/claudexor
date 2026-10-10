@@ -1,4 +1,5 @@
 import type { FoldRecord, FoldVerdict } from "@claudexor/journal";
+import { isHarnessMaintenanceOperation, isModelOperation } from "@claudexor/schema";
 import { journalFoldPolicy } from "../journal-fold-policy.js";
 import type { EngineStore } from "./store.js";
 
@@ -72,62 +73,126 @@ export function appendEvent(
   return { seq, verdict, stored: !verdict.drop };
 }
 
-/** Terminal product commands of the current generation (the `terminal` predicate of
- * `prunableCommandIds`, as the partial index `command_retention` states it). */
-export const COMMAND_RETENTION_COUNT_SQL = `SELECT count(*) AS n FROM command INDEXED BY command_retention
-  WHERE pid = ?1 AND retention_exempt = 0 AND finished_at IS NOT NULL`;
+/** `command.kind` (R5_AMENDMENTS A1): set once at accept, the single source of
+ * both the `GET /v2/runs` predicate (`product`) and the retention `terminal`
+ * predicate (`product`, `delivery`, `maintenance`). */
+export type CommandKind = "product" | "delivery" | "maintenance" | "model" | "account_reset";
 
-/**
- * Bounded prune candidates (SYNTHESIS_R5 §6.6): current generation only, oldest
- * first, finished at least the retention window ago, never a needs-decision
- * run, never a continuation whose predecessor is still retained (today's
- * `continuationExemptions`: `continueFrom` names a run id or a job id).
- */
-export const COMMAND_RETENTION_CANDIDATES_SQL = `SELECT c.id AS id, c.run_id AS run_id
-  FROM command AS c INDEXED BY command_retention
-  WHERE c.pid = ?1 AND c.retention_exempt = 0 AND c.finished_at IS NOT NULL
-    AND c.finished_at <= ?2 AND c.needs_decision = 0
-    AND NOT (c.continue_from IS NOT NULL AND EXISTS (
-      SELECT 1 FROM command AS p WHERE p.id = c.continue_from OR p.run_id = c.continue_from))
-  ORDER BY c.created_at, c.id
-  LIMIT ?3`;
+export function commandKind(id: string, params: unknown): CommandKind {
+  if (id.startsWith("account-reset-")) return "account_reset";
+  if (id.startsWith("delivery-")) return "delivery";
+  if (isModelOperation(params)) return "model";
+  if (isHarnessMaintenanceOperation(params)) return "maintenance";
+  return "product";
+}
+
+/** Bounded count of today's `terminal` set over the live generations (B1 query 1). */
+export const COMMAND_TERMINAL_COUNT_SQL = `SELECT count(*) AS n FROM (
+  SELECT 1 FROM command INDEXED BY command_terminal
+  WHERE live = 1 AND kind IN ('product','delivery','maintenance') AND finished_at IS NOT NULL
+  LIMIT ?1)`;
+
+/** One keyset page of prune candidates, oldest first (B1 query 2 as amended by C1). */
+export const COMMAND_PRUNABLE_PAGE_SQL = `SELECT id, run_id, run_dir, continue_from, created_at
+  FROM command INDEXED BY command_prunable
+  WHERE live = 1 AND kind IN ('product','delivery','maintenance') AND finished_at IS NOT NULL AND needs_decision = 0
+    AND finished_at <= ?1
+    AND (created_at, id) > (?2, ?3)
+  ORDER BY created_at, id LIMIT ?4`;
+
+/** Continuation exemption: `continueFrom` names a live run id or job id that is still retained. */
+export const RETAINED_PREDECESSOR_SQL = `SELECT EXISTS(
+  SELECT 1 FROM command WHERE live = 1 AND (id = ?1 OR run_id = ?1)) AS retained`;
 
 export const COMMAND_RETENTION_CAP = 500;
 export const COMMAND_RETENTION_BATCH = 100;
 
+export interface PrunableCommand {
+  id: string;
+  runId: string | null;
+  runDir: string | null;
+  continueFrom: string | null;
+  createdAt: string;
+}
+
 export interface CommandRetentionInput {
-  pid: number;
   now: Date;
   retentionMs: number;
   cap?: number;
   batch?: number;
+  /** Extra exemption probed per candidate at most once (the retained-envelope file probe, PR-C). */
+  exempt?: (candidate: PrunableCommand) => boolean;
 }
 
-export interface CommandRetentionCandidate {
-  id: string;
-  runId: string | null;
+export interface CommandRetentionSelection {
+  victims: PrunableCommand[];
+  excess: number;
+  /** Unique candidate rows read (keyset paging never re-reads a prefix). */
+  visited: number;
+  pages: number;
 }
 
-export function terminalCommandCount(store: EngineStore, pid: number): number {
-  const row = store.prepare(COMMAND_RETENTION_COUNT_SQL).get(pid) as { n: number | bigint };
+/** Today's `terminal.length`, bounded by `cap + batch` (the excess cannot exceed one batch per call). */
+export function terminalCommandCount(
+  store: EngineStore,
+  cap = COMMAND_RETENTION_CAP,
+  batch = COMMAND_RETENTION_BATCH,
+): number {
+  const row = store.prepare(COMMAND_TERMINAL_COUNT_SQL).get(cap + batch) as { n: number | bigint };
   return Number(row.n);
 }
 
-/** `excess = max(0, terminalCount − cap)` candidates, at most one batch per call. */
+/**
+ * Select at most one batch of victims: the oldest expired terminal commands of
+ * the live generations, skipping needs-decision rows (outside the index) and
+ * continuations whose predecessor is retained, paging by keyset so exempt rows
+ * are visited once. The deletion transaction belongs to the owner (PR-C).
+ */
 export function commandRetentionCandidates(
   store: EngineStore,
   input: CommandRetentionInput,
-): CommandRetentionCandidate[] {
-  const excess = terminalCommandCount(store, input.pid) - (input.cap ?? COMMAND_RETENTION_CAP);
-  if (excess <= 0) return [];
-  const limit = Math.min(excess, input.batch ?? COMMAND_RETENTION_BATCH);
+): CommandRetentionSelection {
+  const cap = input.cap ?? COMMAND_RETENTION_CAP;
+  const batch = input.batch ?? COMMAND_RETENTION_BATCH;
+  const excess = Math.max(0, terminalCommandCount(store, cap, batch) - cap);
+  const selection: CommandRetentionSelection = { victims: [], excess, visited: 0, pages: 0 };
+  if (excess === 0) return selection;
+  const target = Math.min(excess, batch);
   const cutoff = new Date(input.now.getTime() - input.retentionMs).toISOString();
-  return (
-    store.prepare(COMMAND_RETENTION_CANDIDATES_SQL).all(input.pid, cutoff, limit) as Array<{
+  const page = store.prepare(COMMAND_PRUNABLE_PAGE_SQL);
+  const retained = store.prepare(RETAINED_PREDECESSOR_SQL);
+  let after: [string, string] = ["", ""];
+  while (selection.victims.length < target) {
+    const rows = page.all(cutoff, after[0], after[1], batch) as Array<{
       id: string;
       run_id: string | null;
-    }>
-  ).map((row) => ({ id: row.id, runId: row.run_id }));
+      run_dir: string | null;
+      continue_from: string | null;
+      created_at: string;
+    }>;
+    if (rows.length === 0) break;
+    selection.pages += 1;
+    for (const row of rows) {
+      selection.visited += 1;
+      const candidate: PrunableCommand = {
+        id: row.id,
+        runId: row.run_id,
+        runDir: row.run_dir,
+        continueFrom: row.continue_from,
+        createdAt: row.created_at,
+      };
+      const predecessorRetained =
+        candidate.continueFrom !== null &&
+        Number((retained.get(candidate.continueFrom) as { retained: number | bigint }).retained) ===
+          1;
+      if (predecessorRetained || input.exempt?.(candidate)) continue;
+      selection.victims.push(candidate);
+      if (selection.victims.length >= target) break;
+    }
+    const last = rows[rows.length - 1]!;
+    after = [last.created_at, last.id];
+  }
+  return selection;
 }
 
 /** `EXPLAIN QUERY PLAN` rows for a statement (plan gates, SYNTHESIS_R5 §5). */

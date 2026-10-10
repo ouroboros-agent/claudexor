@@ -6,9 +6,11 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { journalFoldPolicy } from "../journal-fold-policy.js";
 import { createPartition } from "./partitions.js";
 import {
-  COMMAND_RETENTION_CANDIDATES_SQL,
-  COMMAND_RETENTION_COUNT_SQL,
+  COMMAND_PRUNABLE_PAGE_SQL,
+  COMMAND_TERMINAL_COUNT_SQL,
+  RETAINED_PREDECESSOR_SQL,
   appendEvent,
+  commandKind,
   commandRetentionCandidates,
   queryPlan,
   terminalCommandCount,
@@ -91,7 +93,6 @@ function recordSequence(): Array<{ type: string; payload: unknown }> {
 
 describe("event retention through the journal fold verdicts (SYNTHESIS_R5 §6.6)", () => {
   it("retains exactly the sequence numbers the folded journal retains", async () => {
-    // Oracle: today's journal, replayed through the daemon fold.
     const options = {
       rootDir: join(root, "journal"),
       partition: "global",
@@ -104,7 +105,6 @@ describe("event retention through the journal fold verdicts (SYNTHESIS_R5 §6.6)
     journals.push(reader);
     const expected = reader.records().map((record) => [record.seq, record.type] as const);
     expect(reader.currentSequence()).toBe(recordSequence().length);
-    // Candidate: the same records as SQL rows under the same verdicts.
     const store = await openStore();
     const generation = store.transaction(() => createPartition(store, "global"));
     const appended = recordSequence().map((record) =>
@@ -165,131 +165,184 @@ describe("event retention through the journal fold verdicts (SYNTHESIS_R5 §6.6)
   });
 });
 
-/** Synthetic command rows: one current generation plus history in older generations. */
-function seedCommands(
-  store: EngineStore,
-  pid: number,
-  options: {
-    count: number;
-    needsDecision?: number;
-    exempt?: number;
-    continuations?: number;
-    prefix: string;
-  },
-): void {
+describe("command kind (R5_AMENDMENTS A1)", () => {
+  it("classifies at accept from id prefix and params", () => {
+    expect(commandKind("account-reset-1", {})).toBe("account_reset");
+    expect(commandKind("delivery-1", {})).toBe("delivery");
+    expect(commandKind("cmd-1", { kind: "model", request: {} })).toBe("model");
+    expect(commandKind("cmd-2", { kind: "harness_maintenance", harness: "codex" })).toBe(
+      "maintenance",
+    );
+    expect(commandKind("cmd-3", { prompt: "hi" })).toBe("product");
+  });
+});
+
+interface Seed {
+  prefix: string;
+  pid: number;
+  count: number;
+  live?: 0 | 1;
+  kind?: string;
+  needsDecision?: number;
+  continuations?: number;
+  /** ISO day the rows were created/finished on. */
+  day?: string;
+}
+function seedCommands(store: EngineStore, seed: Seed): void {
   const insert = store.prepare(
-    `INSERT INTO command(id, pid, operation, state, run_id, continue_from, created_at, finished_at, summary, params_sha, retention_exempt, needs_decision)
-     VALUES(?, ?, 'run.create', 'succeeded', ?, ?, ?, ?, x'00', 'sha', ?, ?)`,
+    `INSERT INTO command(id, pid, operation, state, run_id, continue_from, created_at, finished_at, summary, params_sha, kind, live, needs_decision)
+     VALUES(?, ?, 'run.create', 'succeeded', ?, ?, ?, ?, x'00', 'sha', ?, ?, ?)`,
   );
-  const base = Date.parse("2026-01-01T00:00:00.000Z");
+  const base = Date.parse(seed.day ?? "2026-01-01T00:00:00.000Z");
   store.transaction(() => {
-    for (let i = 0; i < options.count; i += 1) {
-      const id = `${options.prefix}-${String(i).padStart(6, "0")}`;
+    for (let i = 0; i < seed.count; i += 1) {
+      const id = `${seed.prefix}-${String(i).padStart(6, "0")}`;
       const created = new Date(base + i * 60_000).toISOString();
-      const needsDecision = i < (options.needsDecision ?? 0) ? 1 : 0;
-      const exempt =
-        i >= (options.needsDecision ?? 0) &&
-        i < (options.needsDecision ?? 0) + (options.exempt ?? 0)
-          ? 1
-          : 0;
+      const needsDecision = i < (seed.needsDecision ?? 0) ? 1 : 0;
       const continuation =
-        i >= options.count - (options.continuations ?? 0)
-          ? `run-${options.prefix}-${String(i - 1).padStart(6, "0")}`
+        i >= seed.count - (seed.continuations ?? 0)
+          ? `run-${seed.prefix}-${String(i - 1).padStart(6, "0")}`
           : null;
-      insert.run(id, pid, `run-${id}`, continuation, created, created, exempt, needsDecision);
+      insert.run(
+        id,
+        seed.pid,
+        `run-${id}`,
+        continuation,
+        created,
+        created,
+        seed.kind ?? "product",
+        seed.live ?? 1,
+        needsDecision,
+      );
     }
   });
 }
+const NOW = new Date("2026-10-10T00:00:00.000Z");
+const MONTH = 30 * 86_400_000;
 
-describe("bounded command retention statement (SYNTHESIS_R5 §6.6, T-RET-1)", () => {
-  it("selects oldest eligible terminals of the current generation only, bounded per call", async () => {
+describe("bounded command retention (R5_AMENDMENTS B1/C1, T-RET-1)", () => {
+  it("counts today's terminal set over live generations, bounded by cap + batch", async () => {
     const store = await openStore();
-    const [old, current] = store.transaction(() => [
-      createPartition(store, "project:p"),
-      createPartition(store, "project:p"),
-    ]);
-    store.prepare("UPDATE partition SET status = 'quarantined' WHERE id = ?").run(old.pid);
-    seedCommands(store, old.pid, { count: 1500, prefix: "old" });
-    seedCommands(store, current.pid, {
+    seedCommands(store, { prefix: "a", pid: 1, count: 300 });
+    seedCommands(store, { prefix: "b", pid: 2, count: 300 });
+    seedCommands(store, { prefix: "old", pid: 3, count: 500, live: 0 });
+    seedCommands(store, { prefix: "model", pid: 1, count: 50, kind: "model" });
+    seedCommands(store, { prefix: "reset", pid: 1, count: 50, kind: "account_reset" });
+    seedCommands(store, { prefix: "deliv", pid: 1, count: 10, kind: "delivery" });
+    expect(terminalCommandCount(store, 500, 100)).toBe(600); // 610 live terminal rows, bounded at 600
+    expect(terminalCommandCount(store, 1000, 100)).toBe(610);
+  });
+
+  it("two partitions of 400 expired rows under one cap of 500 → 300 victims over three calls", async () => {
+    const store = await openStore();
+    seedCommands(store, { prefix: "p1", pid: 1, count: 400 });
+    seedCommands(store, { prefix: "p2", pid: 2, count: 400 });
+    const victims: string[] = [];
+    for (let call = 0; call < 3; call += 1) {
+      const selection = commandRetentionCandidates(store, { now: NOW, retentionMs: MONTH });
+      expect(selection.victims).toHaveLength(100);
+      expect(selection.pages).toBe(1);
+      store.transaction(() => {
+        const remove = store.prepare("DELETE FROM command WHERE id = ?");
+        for (const victim of selection.victims) remove.run(victim.id);
+      });
+      victims.push(...selection.victims.map((v) => v.id));
+    }
+    expect(victims).toHaveLength(300);
+    expect(new Set(victims).size).toBe(300);
+    expect(victims.slice(0, 2)).toEqual(["p1-000000", "p2-000000"]);
+    expect(commandRetentionCandidates(store, { now: NOW, retentionMs: MONTH }).victims).toEqual([]);
+  });
+
+  it("skips needs-decision rows, retained-envelope holders, continuations of retained predecessors, and never sees live=0", async () => {
+    const store = await openStore();
+    seedCommands(store, {
+      prefix: "cur",
+      pid: 1,
       count: 640,
       needsDecision: 30,
-      exempt: 10,
       continuations: 20,
-      prefix: "cur",
     });
-    const now = new Date("2026-10-10T00:00:00.000Z");
-    expect(terminalCommandCount(store, current.pid)).toBe(630);
-    const candidates = commandRetentionCandidates(store, {
-      pid: current.pid,
-      now,
-      retentionMs: 30 * 86_400_000,
-    });
-    // excess = 630 − 500 = 130 → one batch of 100, oldest first; rows 0–29 are
-    // needs-decision and 30–39 retention-exempt, so the first candidate is row 40.
-    expect(candidates).toHaveLength(100);
-    expect(candidates[0]).toEqual({ id: "cur-000040", runId: "run-cur-000040" });
-    expect(candidates.at(-1)!.id).toBe("cur-000139");
-    expect(candidates.every((c) => c.id.startsWith("cur-"))).toBe(true);
-    // With the whole excess in one batch: everything eligible, minus the 20
-    // continuations (rows 620–639) whose predecessor is still retained.
-    const whole = commandRetentionCandidates(store, {
-      pid: current.pid,
-      now,
-      retentionMs: 30 * 86_400_000,
+    seedCommands(store, { prefix: "old", pid: 2, count: 1500, live: 0 });
+    const envelopeHolders = new Set(["cur-000040", "cur-000041"]);
+    const selection = commandRetentionCandidates(store, {
+      now: NOW,
+      retentionMs: MONTH,
       cap: 20,
       batch: 1000,
+      exempt: (candidate) => envelopeHolders.has(candidate.id),
     });
-    expect(whole).toHaveLength(640 - 30 - 10 - 20);
-    expect(whole.some((c) => Number(c.id.slice(4)) >= 620)).toBe(false);
-    expect(whole.some((c) => Number(c.id.slice(4)) < 40)).toBe(false);
-    // Nothing is eligible before the retention window.
+    expect(selection.excess).toBe(620);
+    // 640 − 30 needs-decision (outside the index) − 2 envelope holders − 20 continuations = 588
+    expect(selection.victims).toHaveLength(588);
+    expect(selection.victims[0]!.id).toBe("cur-000030");
+    expect(selection.victims.some((v) => envelopeHolders.has(v.id))).toBe(false);
+    expect(selection.victims.some((v) => Number(v.id.slice(4)) >= 620)).toBe(false);
+    expect(selection.victims.every((v) => v.id.startsWith("cur-"))).toBe(true);
+    // Nothing is eligible before the retention window; no excess means no candidates.
     expect(
       commandRetentionCandidates(store, {
-        pid: current.pid,
         now: new Date("2026-01-02T00:00:00.000Z"),
-        retentionMs: 30 * 86_400_000,
-      }),
+        retentionMs: MONTH,
+      }).victims,
     ).toEqual([]);
-    // No excess, no candidates.
     expect(
-      commandRetentionCandidates(store, { pid: current.pid, now, retentionMs: 0, cap: 630 }),
+      commandRetentionCandidates(store, { now: NOW, retentionMs: 0, cap: 640 }).victims,
     ).toEqual([]);
   });
 
-  it("plans stay index-bound and identical at 1x and 10x history (T-PLAN)", async () => {
+  it("keyset paging visits exempt prefixes once (C1) and the plans stay index-bound at 1x/10x history (T-PLAN)", async () => {
     const store = await openStore();
-    const [old, current] = store.transaction(() => [
-      createPartition(store, "project:q"),
-      createPartition(store, "project:q"),
-    ]);
-    store.prepare("UPDATE partition SET status = 'quarantined' WHERE id = ?").run(old.pid);
-    seedCommands(store, current.pid, { count: 200, prefix: "cur" });
-    seedCommands(store, old.pid, { count: 200, prefix: "h1" });
+    // 1000 exempt continuations created before 200 victims: every call reads the prefix once, never OFFSET-style.
+    seedCommands(store, {
+      prefix: "pre",
+      pid: 1,
+      count: 1001,
+      continuations: 1000,
+      day: "2026-01-01T00:00:00.000Z",
+    });
+    seedCommands(store, { prefix: "vic", pid: 1, count: 200, day: "2026-02-01T00:00:00.000Z" });
     const plans = () => ({
-      count: queryPlan(store, COMMAND_RETENTION_COUNT_SQL),
-      candidates: queryPlan(store, COMMAND_RETENTION_CANDIDATES_SQL),
+      count: queryPlan(store, COMMAND_TERMINAL_COUNT_SQL),
+      page: queryPlan(store, COMMAND_PRUNABLE_PAGE_SQL),
+      predecessor: queryPlan(store, RETAINED_PREDECESSOR_SQL),
       cursor: queryPlan(
         store,
         "SELECT seq, time, type, payload FROM event WHERE pid = ? AND seq > ? ORDER BY seq",
       ),
     });
     const oneX = plans();
-    // Index-bound on the current generation (SQLite 3.53 still fetches the row
-    // to re-check the partial predicate, so the entry is USING INDEX, not COVERING).
-    expect(oneX.count).toEqual(["SEARCH command USING INDEX command_retention (pid=?)"]);
-    expect(oneX.candidates.join("\n")).toMatch(/SEARCH c USING INDEX command_retention \(pid=\?\)/);
-    expect(oneX.candidates.join("\n")).toMatch(
-      /MULTI-INDEX OR|USING INDEX command_run|PRIMARY KEY/,
+    expect(oneX.count.join("\n")).toMatch(/SCAN command USING (COVERING )?INDEX command_terminal/);
+    expect(oneX.page.join("\n")).toMatch(
+      /SEARCH command USING INDEX command_prunable \(created_at>\?|\(\(created_at,id\)>/,
     );
-    expect(oneX.candidates.join("\n")).not.toMatch(/SCAN c\b/);
+    expect(oneX.page.join("\n")).not.toMatch(/TEMP B-TREE|SCAN command/);
+    expect(oneX.predecessor.join("\n")).toMatch(/MULTI-INDEX OR|command_run|PRIMARY KEY/);
     expect(oneX.cursor.join("\n")).toMatch(/SEARCH event USING PRIMARY KEY \(pid=\? AND seq>\?\)/);
-    expect(oneX.cursor.join("\n")).not.toMatch(/TEMP B-TREE/);
-    seedCommands(store, old.pid, { count: 1800, prefix: "h2" });
-    const tenX = plans();
-    expect(tenX).toEqual(oneX);
-    const now = new Date("2026-10-10T00:00:00.000Z");
-    expect(
-      commandRetentionCandidates(store, { pid: current.pid, now, retentionMs: 0, cap: 100 }),
-    ).toHaveLength(100);
+    const selection = commandRetentionCandidates(store, {
+      now: NOW,
+      retentionMs: MONTH,
+      cap: 500,
+      batch: 100,
+    });
+    // excess = 1201 − 500 = 701 → one batch of 100 victims: `pre-000000` (the
+    // one non-continuation of the prefix) and 99 `vic` rows, after visiting
+    // the 1000 exempt continuations exactly once (11 pages of 100), never
+    // re-reading the prefix per page.
+    expect(selection.victims).toHaveLength(100);
+    expect(selection.victims[0]!.id).toBe("pre-000000");
+    expect(selection.victims[1]!.id).toBe("vic-000000");
+    expect(selection.visited).toBe(1001 + 99);
+    expect(selection.pages).toBe(11);
+    seedCommands(store, { prefix: "hist", pid: 9, count: 12_000, live: 0, needsDecision: 6000 });
+    expect(plans()).toEqual(oneX);
+    const tenX = commandRetentionCandidates(store, {
+      now: NOW,
+      retentionMs: MONTH,
+      cap: 500,
+      batch: 100,
+    });
+    expect(tenX.visited).toBe(selection.visited);
+    expect(tenX.victims).toEqual(selection.victims);
   });
 });

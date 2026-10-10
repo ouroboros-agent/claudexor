@@ -8,7 +8,8 @@ export const ENGINE_APPLICATION_ID = 0x4358454e;
 export const ENGINE_SCHEMA_VERSION = 1;
 
 /**
- * SYNTHESIS_R5 §5, verbatim. STRICT everywhere; WITHOUT ROWID where the
+ * SYNTHESIS_R5 §5 with R5_AMENDMENTS A1 (`command.kind`/`live` replace
+ * `retention_exempt`; obligation `state`/`materialized_g`). STRICT everywhere; WITHOUT ROWID where the
  * primary key is the access path; partial indexes carry the retention and
  * listing predicates so a query over the current generation never visits
  * history. `pid` is the surrogate of one partition generation and the only
@@ -29,21 +30,24 @@ CREATE TABLE command(id TEXT PRIMARY KEY, pid INTEGER NOT NULL, operation TEXT N
   run_id TEXT, task_id TEXT, run_dir TEXT, thread_id TEXT, turn_id TEXT, delegated_from TEXT, continue_from TEXT, scope_root TEXT,
   created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT, summary BLOB NOT NULL, params_sha TEXT NOT NULL, result_sha TEXT,
   error BLOB, last_event_seq INTEGER, response_state TEXT, response_expires_at TEXT, request_resource_id TEXT, response_resource_id TEXT,
-  retention_exempt INTEGER NOT NULL DEFAULT 0, needs_decision INTEGER NOT NULL DEFAULT 0) STRICT;
+  kind TEXT NOT NULL, live INTEGER NOT NULL DEFAULT 1, needs_decision INTEGER NOT NULL DEFAULT 0) STRICT;
 CREATE INDEX command_run       ON command(run_id);
-CREATE INDEX command_active    ON command(pid, state) WHERE state IN ('queued','running');
+CREATE INDEX command_active    ON command(state, pid) WHERE live = 1 AND state IN ('queued','running');
 CREATE INDEX command_thread    ON command(thread_id, state);
 CREATE INDEX command_parent    ON command(delegated_from);
 CREATE INDEX command_continue  ON command(continue_from);
-CREATE INDEX command_list      ON command(created_at DESC, id DESC)        WHERE operation NOT IN ('model.operation.create','account.reset');
-CREATE INDEX command_list_state ON command(state, created_at DESC, id DESC) WHERE operation NOT IN ('model.operation.create','account.reset');
-CREATE INDEX command_retention ON command(pid, created_at, id) WHERE retention_exempt = 0 AND finished_at IS NOT NULL;
-CREATE INDEX command_expiry    ON command(response_state, response_expires_at) WHERE operation = 'model.operation.create';
+CREATE INDEX command_list      ON command(created_at DESC, id DESC)        WHERE live = 1 AND kind = 'product';
+CREATE INDEX command_list_state ON command(state, created_at DESC, id DESC) WHERE live = 1 AND kind = 'product';
+CREATE INDEX command_terminal  ON command(created_at, id)
+  WHERE live = 1 AND kind IN ('product','delivery','maintenance') AND finished_at IS NOT NULL;
+CREATE INDEX command_prunable  ON command(created_at, id)
+  WHERE live = 1 AND kind IN ('product','delivery','maintenance') AND finished_at IS NOT NULL AND needs_decision = 0;
+CREATE INDEX command_expiry    ON command(response_state, response_expires_at) WHERE kind = 'model';
 CREATE INDEX command_params    ON command(params_sha);
 CREATE INDEX command_result    ON command(result_sha) WHERE result_sha IS NOT NULL;
 CREATE TABLE run_terminal(run_id TEXT PRIMARY KEY, pid INTEGER NOT NULL, event BLOB NOT NULL) STRICT;
 CREATE TABLE effect_obligation(kind TEXT NOT NULL, key TEXT NOT NULL, pid INTEGER NOT NULL, created_at TEXT NOT NULL, payload BLOB NOT NULL,
-  PRIMARY KEY(kind, key)) WITHOUT ROWID, STRICT;
+  state TEXT NOT NULL DEFAULT 'pending', materialized_g INTEGER, PRIMARY KEY(kind, key)) WITHOUT ROWID, STRICT;
 CREATE TABLE idempotency(owner TEXT NOT NULL, pid INTEGER NOT NULL, key_digest TEXT NOT NULL, operation TEXT NOT NULL,
   request_digest TEXT NOT NULL, target_id TEXT NOT NULL, result BLOB, created_at TEXT NOT NULL,
   PRIMARY KEY(owner, pid, key_digest)) WITHOUT ROWID, STRICT;

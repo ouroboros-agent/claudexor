@@ -41,9 +41,13 @@ async function pass(store: EngineStore): Promise<FlusherPassReport> {
   });
 }
 const openCount = (store: EngineStore) => store.facts().obligations_open;
+const stateOf = (store: EngineStore, kind: string, key: string) =>
+  (store
+    .prepare("SELECT state, materialized_g FROM effect_obligation WHERE kind = ? AND key = ?")
+    .get(kind, key) as { state: string; materialized_g: number | null } | undefined) ?? null;
 
-describe("effect obligations (SYNTHESIS_R5 §4.6)", () => {
-  it("is created inside the decision's transaction and refuses to be created outside", async () => {
+describe("effect obligations (SYNTHESIS_R5 §4.6, R5_AMENDMENTS A2)", () => {
+  it("is created pending inside the decision's transaction and refuses to be created outside", async () => {
     const store = await openStore();
     const obligations = new Obligations(store);
     expect(() => obligations.create("terminal_files", "run-1", 1, {})).toThrow(
@@ -60,6 +64,8 @@ describe("effect obligations (SYNTHESIS_R5 §4.6)", () => {
         key: "run-1",
         pid: 1,
         payload: { facts: { a: 1 } },
+        state: "pending",
+        materializedGeneration: null,
       }),
     ]);
     // A second terminal for the same run is a constraint violation, not a replay.
@@ -69,56 +75,104 @@ describe("effect obligations (SYNTHESIS_R5 §4.6)", () => {
     expect(openCount(store)).toBe(1);
   });
 
-  it("clears only after synced(g) covers every registration (T-BAR-3 obligation side)", async () => {
+  it("T-OBL-1: a pending row survives synced whatever its registrations; materialized clears after its generation", async () => {
     const store = await openStore();
     const obligations = new Obligations(store);
-    store.transaction(() => obligations.create("terminal_files", "run-2", 1, {}));
+    store.transaction(() => {
+      obligations.create("terminal_files", "partial", 1, {});
+      obligations.create("terminal_files", "empty", 1, {});
+    });
+    // One of two directories registered, never materialized: synced leaves it alone.
     const finalDir = join(root, "run", "final");
     writeExternalFile(store, { dir: finalDir, name: "run_facts.yaml", bytes: Buffer.from("x") });
-    obligations.registerEffect("terminal_files", "run-2", finalDir);
-    store.flusherControl.tick();
-    // Effect done; the clear needs a pass that covers the registration AND the completion mark.
-    obligations.complete("terminal_files", "run-2");
-    expect(openCount(store)).toBe(1);
-    const first = await pass(store);
-    // The tick above ran before `complete()` posted its mark, so only part was covered.
-    if (first.g < store.facts().flusher.generation) {
-      expect(openCount(store)).toBe(1);
-      await pass(store);
-    }
+    obligations.registerEffect("terminal_files", "partial", finalDir);
+    await pass(store);
+    await pass(store);
+    expect(openCount(store)).toBe(2);
+    expect(stateOf(store, "terminal_files", "partial")).toEqual({
+      state: "pending",
+      materialized_g: null,
+    });
+    // Materialize both: the generation is the last registration, or a fresh mark for an empty set.
+    const gPartial = obligations.materialize("terminal_files", "partial");
+    const gEmpty = obligations.materialize("terminal_files", "empty");
+    expect(stateOf(store, "terminal_files", "partial")).toEqual({
+      state: "materialized",
+      materialized_g: gPartial,
+    });
+    expect(gEmpty).toBeGreaterThan(gPartial);
+    expect(openCount(store)).toBe(2);
+    const report = await pass(store);
+    expect(report.g).toBeGreaterThanOrEqual(gEmpty);
     expect(openCount(store)).toBe(0);
     expect(store.facts().flusher.pending_registrations).toBe(0);
   });
 
-  it("stays open while the effect is incomplete, and across a flusher pass", async () => {
+  it("T-OBL-2: a failed file step keeps the row pending; the retry materializes it without a restart", async () => {
+    const store = await openStore();
+    const obligations = new Obligations(store);
+    store.transaction(() => obligations.create("terminal_files", "run-2", 1, { facts: "f" }));
+    const finalDir = join(root, "run-2", "final");
+    const materializeFiles = (fail: boolean) => {
+      writeExternalFile(store, {
+        dir: finalDir,
+        name: "run_facts.yaml",
+        bytes: Buffer.from("facts"),
+      });
+      obligations.registerEffect("terminal_files", "run-2", finalDir);
+      if (fail) throw new Error("EIO: telemetry");
+      writeExternalFile(store, { dir: finalDir, name: "telemetry.yaml", bytes: Buffer.from("t") });
+      obligations.registerEffect("terminal_files", "run-2", finalDir);
+      obligations.materialize("terminal_files", "run-2");
+    };
+    expect(() => materializeFiles(true)).toThrow(/EIO/);
+    await pass(store);
+    expect(stateOf(store, "terminal_files", "run-2")?.state).toBe("pending");
+    expect(openCount(store)).toBe(1);
+    materializeFiles(false);
+    expect(stateOf(store, "terminal_files", "run-2")?.state).toBe("materialized");
+    await pass(store);
+    expect(openCount(store)).toBe(0);
+  });
+
+  it("materializes inside an open transaction when the owner is in one", async () => {
     const store = await openStore();
     const obligations = new Obligations(store);
     store.transaction(() =>
       obligations.create("publish_blob", "upl-1", 0, { sha: "a".repeat(64) }),
     );
     obligations.registerEffect("publish_blob", "upl-1", root);
-    await pass(store);
-    await pass(store);
-    expect(openCount(store)).toBe(1);
-    obligations.complete("publish_blob", "upl-1");
+    store.transaction(() => {
+      store
+        .prepare(
+          "INSERT INTO upload(id, state, received_bytes, body) VALUES('upl-1','published',1,x'00')",
+        )
+        .run();
+      obligations.materialize("publish_blob", "upl-1");
+    });
+    expect(stateOf(store, "publish_blob", "upl-1")?.state).toBe("materialized");
     await pass(store);
     expect(openCount(store)).toBe(0);
   });
 
-  it("startup replays open rows through per-kind idempotent handlers", async () => {
+  it("startup replays open rows (pending or materialized) through per-kind idempotent handlers", async () => {
     const store = await openStore();
     const first = new Obligations(store);
     store.transaction(() => {
       first.create("terminal_files", "run-3", 1, { facts: "f" });
+      first.create("terminal_files", "run-4", 1, { facts: "g" });
       first.create("archive_fs", "proj-1", 1, { from: "a", to: "b" });
       first.create("quarantine_fs", "part-1", 1, {});
     });
+    // run-4 was materialized by the "previous process" but never cleared.
+    first.registerEffect("terminal_files", "run-4", root);
+    first.materialize("terminal_files", "run-4");
     first.close();
-    // A new process: nothing tracked in memory, three rows on disk.
+    // A new process: nothing tracked in memory, four rows on disk.
     const second = new Obligations(store);
     const seen: string[] = [];
     second.registerHandler("terminal_files", (obligation, effects) => {
-      seen.push(`${obligation.kind}:${obligation.key}:${JSON.stringify(obligation.payload)}`);
+      seen.push(`${obligation.key}:${obligation.state}`);
       const dir = join(root, "redo", obligation.key);
       writeExternalFile(store, { dir, name: "run_facts.yaml", bytes: Buffer.from("redone") });
       effects.register(dir);
@@ -131,21 +185,24 @@ describe("effect obligations (SYNTHESIS_R5 §4.6)", () => {
     );
     const receipt = second.completeOpen();
     expect(receipt).toEqual({
-      completed: [{ kind: "terminal_files", key: "run-3" }],
+      completed: [
+        { kind: "terminal_files", key: "run-3" },
+        { kind: "terminal_files", key: "run-4" },
+      ],
       failed: [{ kind: "archive_fs", key: "proj-1", error: "disk says no" }],
       unhandled: [{ kind: "quarantine_fs", key: "part-1" }],
     });
-    expect(seen).toEqual(['terminal_files:run-3:{"facts":"f"}']);
-    expect(openCount(store)).toBe(3);
+    expect(seen.sort()).toEqual(["run-3:pending", "run-4:materialized"]);
+    expect(openCount(store)).toBe(4);
     await pass(store);
     await pass(store);
-    // Only the completed one cleared; the failed and unhandled rows stay as unfinished work.
+    // Only the completed ones cleared; the failed (still pending) and unhandled rows stay as unfinished work.
     expect(
       second
         .open()
-        .map((row) => row.key)
+        .map((row) => `${row.key}:${row.state}`)
         .sort(),
-    ).toEqual(["part-1", "proj-1"]);
+    ).toEqual(["part-1:pending", "proj-1:pending"]);
     expect(openCount(store)).toBe(2);
   });
 });

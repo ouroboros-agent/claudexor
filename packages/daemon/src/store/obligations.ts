@@ -11,12 +11,16 @@ export const OBLIGATION_KINDS = [
 ] as const;
 export type ObligationKind = (typeof OBLIGATION_KINDS)[number];
 
+export type ObligationState = "pending" | "materialized";
+
 export interface ObligationRow {
   kind: ObligationKind;
   key: string;
   pid: number;
   createdAt: string;
   payload: unknown;
+  state: ObligationState;
+  materializedGeneration: number | null;
 }
 
 /** What a completion handler may do: redo the effect and bind its directories. */
@@ -33,8 +37,8 @@ export interface ObligationCompletionReceipt {
 }
 
 interface Tracked {
-  generations: number[];
-  completed: boolean;
+  lastRegistration: number | null;
+  materializedGeneration: number | null;
 }
 
 function trackKey(kind: string, key: string): string {
@@ -42,11 +46,15 @@ function trackKey(kind: string, key: string): string {
 }
 
 /**
- * Obligations (SYNTHESIS_R5 §4.6): the row is created in the SAME transaction
- * as the decision it protects; the effect runs (files, links, renames) and
- * registers its directories; once `synced(g)` covers every registration the
- * row is deleted in a micro-transaction. Startup replays the open rows through
- * idempotent handlers — their count is unfinished work, never history.
+ * Obligations (SYNTHESIS_R5 §4.6 as amended by R5_AMENDMENTS A2): the row is
+ * created `pending` in the SAME transaction as the decision it protects; the
+ * effect runs (files, links, renames) and registers its directories; once
+ * EVERY effect succeeded the owner materializes the row in one
+ * micro-transaction, recording the generation of the last registration; only
+ * `synced(G >= materialized_g)` deletes it. A `pending` row is never touched
+ * by `synced`, however many registrations it has. Startup replays every open
+ * row through idempotent handlers — their count is unfinished work, never
+ * history.
  */
 export class Obligations {
   private readonly tracked = new Map<string, Tracked>();
@@ -64,31 +72,45 @@ export class Obligations {
     }
     this.store
       .prepare(
-        "INSERT INTO effect_obligation(kind, key, pid, created_at, payload) VALUES(?, ?, ?, ?, ?)",
+        "INSERT INTO effect_obligation(kind, key, pid, created_at, payload, state) VALUES(?, ?, ?, ?, ?, 'pending')",
       )
       .run(kind, key, pid, this.store.now().toISOString(), Buffer.from(JSON.stringify(payload)));
-    this.tracked.set(trackKey(kind, key), { generations: [], completed: false });
+    this.tracked.set(trackKey(kind, key), { lastRegistration: null, materializedGeneration: null });
   }
 
   /** Bind a directory the effect touched; returns the registration generation. */
   registerEffect(kind: ObligationKind, key: string, dir: string): number {
     const g = this.store.registerExternal(dir);
-    this.entry(kind, key).generations.push(g);
+    this.entry(kind, key).lastRegistration = g;
     return g;
   }
 
-  /** The effect is done; the row clears after every bound generation is synced. */
-  complete(kind: ObligationKind, key: string): void {
+  /**
+   * Every effect succeeded: `pending → materialized` with `materialized_g` =
+   * the last registration (or a fresh mark when the effect registered
+   * nothing). Runs inside the caller's transaction when one is open, else as
+   * its own micro-transaction. The row clears after that generation is synced.
+   */
+  materialize(kind: ObligationKind, key: string): number {
     const entry = this.entry(kind, key);
-    entry.generations.push(this.store.mark());
-    entry.completed = true;
+    const generation = entry.lastRegistration ?? this.store.mark();
+    const update = () =>
+      this.store
+        .prepare(
+          "UPDATE effect_obligation SET state = 'materialized', materialized_g = ? WHERE kind = ? AND key = ?",
+        )
+        .run(generation, kind, key);
+    if (this.store.inTransaction) update();
+    else this.store.transaction(update);
+    entry.materializedGeneration = generation;
+    return generation;
   }
 
   open(): ObligationRow[] {
     return (
       this.store
         .prepare(
-          "SELECT kind, key, pid, created_at, payload FROM effect_obligation ORDER BY created_at, kind, key",
+          "SELECT kind, key, pid, created_at, payload, state, materialized_g FROM effect_obligation ORDER BY created_at, kind, key",
         )
         .all() as Array<{
         kind: ObligationKind;
@@ -96,6 +118,8 @@ export class Obligations {
         pid: number | bigint;
         created_at: string;
         payload: Uint8Array;
+        state: ObligationState;
+        materialized_g: number | bigint | null;
       }>
     ).map((row) => ({
       kind: row.kind,
@@ -103,6 +127,8 @@ export class Obligations {
       pid: Number(row.pid),
       createdAt: row.created_at,
       payload: JSON.parse(Buffer.from(row.payload).toString("utf8")) as unknown,
+      state: row.state,
+      materializedGeneration: row.materialized_g === null ? null : Number(row.materialized_g),
     }));
   }
 
@@ -114,9 +140,11 @@ export class Obligations {
   }
 
   /**
-   * Startup hook: redo every open obligation through its handler. A handler
-   * failure leaves the row open (the fact `obligations_open` discloses it);
-   * a kind without a handler is reported, never silently dropped.
+   * Startup hook: redo every open row through its handler and materialize it
+   * with a fresh generation (a row left `materialized` by a crashed process
+   * names generations nobody can prove any more). A handler failure leaves
+   * the row `pending` (the fact `obligations_open` discloses it); a kind
+   * without a handler is reported, never silently dropped.
    */
   completeOpen(): ObligationCompletionReceipt {
     const receipt: ObligationCompletionReceipt = { completed: [], failed: [], unhandled: [] };
@@ -130,7 +158,7 @@ export class Obligations {
         handler(obligation, {
           register: (dir) => this.registerEffect(obligation.kind, obligation.key, dir),
         });
-        this.complete(obligation.kind, obligation.key);
+        this.materialize(obligation.kind, obligation.key);
         receipt.completed.push({ kind: obligation.kind, key: obligation.key });
       } catch (error) {
         receipt.failed.push({
@@ -152,7 +180,7 @@ export class Obligations {
     const id = trackKey(kind, key);
     let entry = this.tracked.get(id);
     if (!entry) {
-      entry = { generations: [], completed: false };
+      entry = { lastRegistration: null, materializedGeneration: null };
       this.tracked.set(id, entry);
     }
     return entry;
@@ -162,13 +190,15 @@ export class Obligations {
     if (this.store.isClosed) return;
     const clearable: Array<[string, string]> = [];
     for (const [id, entry] of this.tracked) {
-      if (!entry.completed) continue;
-      if (entry.generations.some((g) => g > generation)) continue;
+      if (entry.materializedGeneration === null || entry.materializedGeneration > generation)
+        continue;
       const [kind, key] = id.split("\0") as [string, string];
       clearable.push([kind, key]);
     }
     if (clearable.length === 0) return;
-    const remove = this.store.prepare("DELETE FROM effect_obligation WHERE kind = ? AND key = ?");
+    const remove = this.store.prepare(
+      "DELETE FROM effect_obligation WHERE kind = ? AND key = ? AND state = 'materialized'",
+    );
     this.store.transaction(() => {
       for (const [kind, key] of clearable) remove.run(kind, key);
     });

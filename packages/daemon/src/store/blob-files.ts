@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { StoreError } from "./errors.js";
-import { linkExternalFile, unlinkExternalFile, writeExternalFile } from "./external-files.js";
+import { linkExternalFile, writeExternalFile } from "./external-files.js";
 import type { EngineStore } from "./store.js";
 
 /** Bodies up to this size are stored inline in `blob.inline`; larger bodies are files. */
@@ -38,14 +38,20 @@ export function sha256Hex(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
+export type GcOutcome = "removed" | "owned" | "deferred";
+
 /**
  * Content-addressed bodies: `resource-store/blobs/<sha256>` for anything above
  * 64 KiB, written synchronously on the request thread in the same tick as the
  * owning transaction (temp `O_DSYNC` + rename, never rewriting an existing
  * file), then the `blob` row plus the owner's reference row commit together.
+ * One instance per store owns the unref generations the GC is bound to.
  */
 export class BlobFiles {
   readonly dir: string;
+  /** Generation of the LAST transaction that released a reference to a digest (R5_AMENDMENTS A3). */
+  private readonly unrefGen = new Map<string, number>();
+  private readonly inflight = new Map<string, Promise<GcOutcome>>();
 
   constructor(
     private readonly store: EngineStore,
@@ -54,7 +60,8 @@ export class BlobFiles {
     this.dir = dir;
   }
 
-  /** Before the owning transaction (same tick): hash, and write the file if the body is large. */
+  /** Before the owning transaction (same tick): hash, and write the file if the body is large.
+   * "Already present" is decided by the FILE, never by the `blob` row (C3). */
   prepareBody(bytes: Uint8Array): BodyRef {
     const sha256 = sha256Hex(bytes);
     if (bytes.byteLength <= INLINE_BODY_MAX_BYTES) {
@@ -114,7 +121,7 @@ export class BlobFiles {
     return join(this.dir, sha256);
   }
 
-  /** Finalize publication (SYNTHESIS_R5 §6.4): hard-link the part into the blob store. */
+  /** Finalize publication (SYNTHESIS_R5 §6.4): hard-link the part into the blob store (EEXIST = present). */
   publishLink(
     sourcePath: string,
     sha256: string,
@@ -134,28 +141,60 @@ export class BlobFiles {
   }
 
   /**
-   * GC (SYNTHESIS_R5 §6.5): wait for the flusher so every publication that
-   * committed before this call is at least power-loss-ordered, then in ONE
-   * synchronous section recheck the owners through the reverse indexes and,
-   * at zero, delete the row and unlink the file. A publication that races the
-   * wait writes its reference row synchronously, so the recheck sees it.
+   * Right after the COMMIT of a transaction that released a reference to the
+   * digest (prune, event delete, releaseModel, upload discard, publish_blob
+   * removal): the GC is bound to this generation (A3).
    */
-  async collect(digests: readonly string[]): Promise<{ removed: string[]; kept: string[] }> {
-    await this.store.flushed();
-    const removed: string[] = [];
-    const kept: string[] = [];
-    const remove = this.store.prepare("DELETE FROM blob WHERE sha256 = ?");
-    for (const sha256 of digests) {
+  noteUnref(sha256: string): number {
+    const g = this.store.mark();
+    this.unrefGen.set(sha256, g);
+    return g;
+  }
+
+  /**
+   * GC (A3/C3): wait for the barrier of the LATEST known unref, then in ONE
+   * synchronous section: a newer unref means wait again; an owner means keep;
+   * otherwise unlink the file (ENOENT = already gone) and delete the file-mode
+   * `blob` row. One handler per digest; concurrent callers join it.
+   */
+  gc(sha256: string): Promise<GcOutcome> {
+    const running = this.inflight.get(sha256);
+    if (running) return running;
+    const flight = this.collectOne(sha256).finally(() => {
+      if (this.inflight.get(sha256) === flight) this.inflight.delete(sha256);
+    });
+    this.inflight.set(sha256, flight);
+    return flight;
+  }
+
+  private async collectOne(sha256: string): Promise<GcOutcome> {
+    for (;;) {
+      const gWait = this.unrefGen.get(sha256) ?? this.store.mark();
+      await this.store.synced(gWait);
+      // Synchronous section: no await below this line.
+      if ((this.unrefGen.get(sha256) ?? gWait) > gWait) continue;
       if (this.owned(sha256)) {
-        kept.push(sha256);
-        continue;
+        this.unrefGen.delete(sha256);
+        return "owned";
       }
-      this.store.transaction(() => void remove.run(sha256));
       const path = this.filePath(sha256);
-      if (existsSync(path)) unlinkExternalFile(this.store, path);
-      removed.push(sha256);
+      try {
+        unlinkSync(path);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+      this.store.transaction(() => {
+        this.store.prepare("DELETE FROM blob WHERE sha256 = ? AND inline IS NULL").run(sha256);
+      });
+      this.store.registerExternal(this.dir);
+      this.unrefGen.delete(sha256);
+      return "removed";
     }
-    return { removed, kept };
+  }
+
+  /** Test seam: the unref generation currently bound to a digest. */
+  unrefGenerationOf(sha256: string): number | undefined {
+    return this.unrefGen.get(sha256);
   }
 
   private readFile(sha256: string): Buffer {

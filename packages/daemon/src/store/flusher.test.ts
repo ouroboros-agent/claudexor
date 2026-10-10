@@ -182,7 +182,7 @@ describe("flusher protocol", () => {
     expect(idle.counters.dirSyncs).toBe(1);
   });
 
-  it("T-BAR-4: a dead worker rejects older waiters typed, restarts, and replays registrations", async () => {
+  it("T-BAR-4: a dead worker rejects older waiters typed, restarts dirty, and replays registrations", async () => {
     const store = await openStore({ allowExit: true, manualTick: true });
     const seen = reports(store);
     const dir = join(root, "replayed");
@@ -190,29 +190,44 @@ describe("flusher protocol", () => {
     const gReg = store.registerExternal(dir);
     const waiter = store.flushed();
     store.flusherControl.requestExit(3);
-    const failure = await waiter.catch((error: unknown) => error);
-    expect(failure).toBeInstanceOf(StoreFlushUnavailableError);
-    expect(failure).toMatchObject({
-      code: "store_flush_unavailable",
-      status: 503,
-      retryable: true,
-      generation: gReg + 1,
-    });
-    // Restart lands on the next tick; registrations outlive the death.
-    await new Promise<void>((resolve) => {
-      const poll = () => (store.facts().flusher.state === "up" ? resolve() : setTimeout(poll, 5));
-      poll();
-    });
-    const facts = store.facts().flusher;
-    expect(facts.counters.deaths).toBe(1);
-    expect(facts.counters.restarts).toBe(1);
-    expect(facts.pending_registrations).toBe(1);
-    const later = store.flushed();
-    const report = await pass(store, seen);
-    await later;
-    expect(report.dirsSynced).toEqual([dir]);
-    expect(report.g).toBeGreaterThan(gReg + 1);
-    expect(store.facts().flusher.pending_registrations).toBe(0);
+    // Committed BEFORE the new worker exists, with a pinned reader so no new
+    // backfill can happen: the restarted worker's first pass must still prove
+    // an explicit barrier (R5_AMENDMENTS A5 — a new life starts dirty).
+    commitRows(store, 5);
+    const { DatabaseSync } = await import("node:sqlite");
+    const pinned = new DatabaseSync(store.paths.database, { readOnly: true });
+    pinned.exec("BEGIN");
+    pinned.prepare("SELECT count(*) FROM event").get();
+    try {
+      const failure = await waiter.catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(StoreFlushUnavailableError);
+      expect(failure).toMatchObject({
+        code: "store_flush_unavailable",
+        status: 503,
+        retryable: true,
+        generation: gReg + 1,
+      });
+      await new Promise<void>((resolve) => {
+        const poll = () => (store.facts().flusher.state === "up" ? resolve() : setTimeout(poll, 5));
+        poll();
+      });
+      const facts = store.facts().flusher;
+      expect(facts.counters.deaths).toBe(1);
+      expect(facts.counters.restarts).toBe(1);
+      expect(facts.pending_registrations).toBe(1);
+      const later = store.flushed();
+      const report = await pass(store, seen);
+      await later;
+      expect(report.dirty).toBe(true);
+      expect(report.barrier).toBe(true);
+      expect(report.counters.barriers).toBe(1);
+      expect(report.dirsSynced).toEqual([dir]);
+      expect(report.g).toBeGreaterThan(gReg + 1);
+      expect(store.facts().flusher.pending_registrations).toBe(0);
+    } finally {
+      pinned.exec("COMMIT");
+      pinned.close();
+    }
   });
 
   it("T-BAR-5: the typed refusal maps onto existing DTO values without new enum members", async () => {

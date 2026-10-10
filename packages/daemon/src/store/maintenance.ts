@@ -1,4 +1,6 @@
+import { unlinkSync } from "node:fs";
 import { Worker } from "node:worker_threads";
+import { BlobFiles, type GcOutcome } from "./blob-files.js";
 import { StoreError } from "./errors.js";
 import { STORE_WORKER_DATA_KEY, resolveStoreWorkerEntry } from "./flusher-protocol.js";
 import type { EngineStore } from "./store.js";
@@ -18,7 +20,7 @@ export type MaintenanceRequest =
   | { id: number; kind: "vacuum_into"; target: string }
   | {
       id: number;
-      kind: "sweep_orphans";
+      kind: "sweep_candidates";
       blobsDir: string;
       uploadsDir: string;
       /** Files whose mtime is at or after this epoch-ms instant are left alone. */
@@ -37,18 +39,31 @@ export interface ExportReport {
   durationMs: number;
 }
 
-export interface SweepReport {
+/** What the worker enumerates (R5_AMENDMENTS A4/C2); the decision is made on main. */
+export type SweepCandidate =
+  | { kind: "blob"; path: string; sha: string }
+  | { kind: "part"; path: string; uploadId: string }
+  | { kind: "tmp"; path: string };
+
+export interface SweepCandidates {
   scanned: number;
-  removedBlobs: string[];
-  removedTemps: string[];
-  removedParts: string[];
-  keptOwned: number;
   keptYoung: number;
+  keptOwned: number;
+  candidates: SweepCandidate[];
   durationMs: number;
 }
 
+export interface SweepReport extends Omit<SweepCandidates, "candidates"> {
+  removedBlobs: string[];
+  removedTemps: string[];
+  removedParts: string[];
+  keptBlobs: string[];
+  keptParts: string[];
+  decisionMs: number;
+}
+
 export type MaintenanceResponse =
-  | { id: number; ok: true; result: IntegrityReport | ExportReport | SweepReport }
+  | { id: number; ok: true; result: IntegrityReport | ExportReport | SweepCandidates }
   | { id: number; ok: false; error: string };
 
 export interface MaintenanceControllerOptions {
@@ -56,6 +71,8 @@ export interface MaintenanceControllerOptions {
   log?: (line: string) => void;
   /** Epoch ms of this process's start: the sweep's deterministic age bound. */
   processStartedAt?: number;
+  /** The store's blob owner (one per store: it holds the unref generations). */
+  blobs?: BlobFiles;
 }
 
 interface Pending {
@@ -65,16 +82,18 @@ interface Pending {
 }
 
 /**
- * Maintenance (SYNTHESIS_R5 §2, §6.5, §7 p.6): long operations that must not
- * touch the flusher's pass — `integrity_check` after admission and on request,
- * `VACUUM INTO` export, the orphan sweep for files older than the process
- * start. The worker owns a separate read-only connection, never shares a
- * thread or connection with the flusher, and never writes a row; the sweep's
- * only mutations are unlinks of files no row points at.
+ * Maintenance (SYNTHESIS_R5 §2, §6.5, §7 p.6; R5_AMENDMENTS A4, C2, C9):
+ * long operations that must not touch the flusher's pass — `integrity_check`
+ * after admission and on request, `VACUUM INTO` export, and the orphan sweep.
+ * The worker owns a separate read-only connection, never shares a thread or
+ * connection with the flusher, never writes a row, and only ENUMERATES sweep
+ * candidates older than the process start; every removal is decided on the
+ * main thread through the GC (blobs) or a barrier-covered recheck (parts).
  */
 export class MaintenanceController {
   private readonly entry: string;
   private readonly processStartedAt: number;
+  private readonly blobs: BlobFiles;
   private worker: Worker | null = null;
   private readonly queue: Pending[] = [];
   private inFlight: Pending | null = null;
@@ -89,6 +108,7 @@ export class MaintenanceController {
       options.workerEntry ?? resolveStoreWorkerEntry(import.meta.url, "maintenance-worker.js");
     this.processStartedAt =
       options.processStartedAt ?? Date.now() - Math.round(process.uptime() * 1000);
+    this.blobs = options.blobs ?? new BlobFiles(store);
   }
 
   /** `PRAGMA integrity_check` on the worker; the verdict becomes the `integrity` fact. */
@@ -103,19 +123,62 @@ export class MaintenanceController {
     return this.run<ExportReport>({ id: 0, kind: "vacuum_into", target });
   }
 
-  /** Unlink blob files, `.tmp` leftovers and finished `.part` files older than
-   * the process start that no row points at (SYNTHESIS_R5 §6.5). */
-  async sweepOrphans(): Promise<SweepReport> {
-    const report = await this.run<SweepReport>({
+  /** The worker's candidate list for files older than the process start (test seam). */
+  sweepCandidates(): Promise<SweepCandidates> {
+    return this.run<SweepCandidates>({
       id: 0,
-      kind: "sweep_orphans",
+      kind: "sweep_candidates",
       blobsDir: this.store.paths.blobs,
       uploadsDir: this.store.paths.uploads,
       olderThanMs: this.processStartedAt,
     });
-    if (report.removedBlobs.length + report.removedTemps.length > 0)
+  }
+
+  /**
+   * Enumerate on the worker, decide on main: a blob goes through `gc(sha)`
+   * (barrier + synchronous owner recheck); a `.part` stays while its upload
+   * is open/uploaded/finalizing or its publish obligation is open, goes when
+   * the upload is published and unobligated, and — with no `upload` row —
+   * goes only after a barrier covering the row's deletion still shows no row
+   * (C9); a `.tmp` older than the process start goes at once.
+   */
+  async sweepOrphans(): Promise<SweepReport> {
+    const listed = await this.sweepCandidates();
+    const started = performance.now();
+    const report: SweepReport = {
+      scanned: listed.scanned,
+      keptYoung: listed.keptYoung,
+      keptOwned: listed.keptOwned,
+      durationMs: listed.durationMs,
+      removedBlobs: [],
+      removedTemps: [],
+      removedParts: [],
+      keptBlobs: [],
+      keptParts: [],
+      decisionMs: 0,
+    };
+    for (const candidate of listed.candidates) {
+      if (candidate.kind === "tmp") {
+        unlinkTolerant(candidate.path);
+        report.removedTemps.push(candidate.path);
+        continue;
+      }
+      if (candidate.kind === "blob") {
+        const outcome = await this.blobs.gc(candidate.sha);
+        (outcome === "removed" ? report.removedBlobs : report.keptBlobs).push(candidate.sha);
+        continue;
+      }
+      const decision = await this.decidePart(candidate.uploadId);
+      if (decision === "remove") {
+        unlinkTolerant(candidate.path);
+        report.removedParts.push(candidate.path);
+      } else report.keptParts.push(candidate.path);
+    }
+    if (report.removedTemps.length > 0 || report.removedParts.length > 0) {
+      this.store.registerExternal(this.store.paths.uploads);
       this.store.registerExternal(this.store.paths.blobs);
-    if (report.removedParts.length > 0) this.store.registerExternal(this.store.paths.uploads);
+    }
+    report.decisionMs = performance.now() - started;
     return report;
   }
 
@@ -128,6 +191,26 @@ export class MaintenanceController {
     const worker = this.worker;
     this.worker = null;
     if (worker) await worker.terminate();
+  }
+
+  /** C2/C9 part decision on main, in one synchronous section per observation. */
+  private async decidePart(uploadId: string): Promise<"keep" | "remove"> {
+    const observe = (): "keep" | "remove" | "unknown" => {
+      const row = this.store.prepare("SELECT state FROM upload WHERE id = ?").get(uploadId) as
+        { state: string } | undefined;
+      if (!row) return "unknown";
+      if (row.state !== "published") return "keep";
+      const obligated = this.store
+        .prepare("SELECT 1 AS one FROM effect_obligation WHERE kind = 'publish_blob' AND key = ?")
+        .get(uploadId);
+      return obligated ? "keep" : "remove";
+    };
+    const first = observe();
+    if (first !== "unknown") return first;
+    // No row: the deletion that removed it may not be barrier-covered yet.
+    await this.store.synced(this.store.mark());
+    const second = observe();
+    return second === "unknown" ? "remove" : second;
   }
 
   private run<T>(request: MaintenanceRequest): Promise<T> {
@@ -191,3 +274,13 @@ export class MaintenanceController {
     return worker;
   }
 }
+
+function unlinkTolerant(path: string): void {
+  try {
+    unlinkSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+}
+
+export type { GcOutcome };

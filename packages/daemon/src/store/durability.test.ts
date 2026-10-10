@@ -35,7 +35,7 @@ const store = await EngineStore.open({
 });
 const blobs = new BlobFiles(store);
 store.onSynced((g, report) => { if (report.barrier) process.stdout.write("BARRIER " + g + "\\n"); });
-const insert = store.prepare("INSERT INTO command(id, pid, operation, state, created_at, summary, params_sha) VALUES(?, 1, 'run.create', 'succeeded', ?, x'00', ?)");
+const insert = store.prepare("INSERT INTO command(id, pid, operation, state, created_at, summary, params_sha, kind) VALUES(?, 1, 'run.create', 'succeeded', ?, x'00', ?, 'product')");
 let n = 0;
 const tick = () => {
   n += 1;
@@ -188,13 +188,19 @@ describe("durability class (SYNTHESIS_R5 §13.2)", () => {
     if (existsSync(join(daemonDir, "engine.sqlite-wal")))
       copyFileSync(join(daemonDir, "engine.sqlite-wal"), join(snapshot, "engine.sqlite-wal"));
     const ackedAtSnapshot = driven.acks.length;
-    for (const name of readdirSync(join(daemonDir, "resource-store", "blobs")))
-      copyFileSync(
-        join(daemonDir, "resource-store", "blobs", name),
-        join(snapshot, "resource-store", "blobs", name),
-      );
-    for (const name of readdirSync(join(daemonDir, "final")))
-      copyFileSync(join(daemonDir, "final", name), join(snapshot, "final", name));
+    // Published names only: a `.tmp` still being written may vanish under the copy.
+    const copyPublished = (dir: string): void => {
+      for (const name of readdirSync(join(daemonDir, dir))) {
+        if (name.endsWith(".tmp")) continue;
+        try {
+          copyFileSync(join(daemonDir, dir, name), join(snapshot, dir, name));
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+      }
+    };
+    copyPublished(join("resource-store", "blobs"));
+    copyPublished("final");
     driven.child.kill("SIGKILL");
     await driven.killed;
     // The copy opened on its own is a consistent prefix of the ACKed history:

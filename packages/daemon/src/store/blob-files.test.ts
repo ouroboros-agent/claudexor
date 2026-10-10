@@ -36,10 +36,14 @@ function body(size: number, fill = 7): Buffer {
 function commandWithParams(store: EngineStore, id: string, sha: string): void {
   store
     .prepare(
-      "INSERT INTO command(id, pid, operation, state, created_at, summary, params_sha) VALUES(?, 1, 'run.create', 'succeeded', 't', x'00', ?)",
+      "INSERT INTO command(id, pid, operation, state, created_at, summary, params_sha, kind) VALUES(?, 1, 'run.create', 'succeeded', 't', x'00', ?, 'product')",
     )
     .run(id, sha);
 }
+const blobRows = (store: EngineStore) =>
+  (store.prepare("SELECT sha256 FROM blob ORDER BY sha256").all() as Array<{ sha256: string }>).map(
+    (r) => r.sha256,
+  );
 
 describe("blob files (SYNTHESIS_R5 §6.5)", () => {
   it("stores bodies up to 64 KiB inline and larger bodies as content-addressed files", async () => {
@@ -65,7 +69,7 @@ describe("blob files (SYNTHESIS_R5 §6.5)", () => {
     expect(() => blobs.insertRow(small)).toThrow(/inside the owner's transaction/);
   });
 
-  it("never rewrites an existing blob file and tolerates a repeated row", async () => {
+  it("never rewrites an existing blob file (decided by the file, not the row) and tolerates a repeated row", async () => {
     const store = await openStore();
     const blobs = new BlobFiles(store);
     const bytes = body(100_000, 3);
@@ -79,9 +83,7 @@ describe("blob files (SYNTHESIS_R5 §6.5)", () => {
       blobs.insertRow(first);
       blobs.insertRow(second);
     });
-    expect(Number((store.prepare("SELECT count(*) AS n FROM blob").get() as { n: number }).n)).toBe(
-      1,
-    );
+    expect(blobRows(store)).toEqual([first.sha256]);
   });
 
   it("detects a tampered file through the digest", async () => {
@@ -118,7 +120,7 @@ describe("blob files (SYNTHESIS_R5 §6.5)", () => {
     expect(blobs.read(sha).equals(bytes)).toBe(true);
   });
 
-  it("T-GC-1: the GC rechecks owners after flushed() and keeps a digest published meanwhile", async () => {
+  it("T-GC-1: the GC rechecks owners after the barrier and keeps a digest published meanwhile", async () => {
     const store = await openStore(true);
     const blobs = new BlobFiles(store);
     const obligations = new Obligations(store);
@@ -134,23 +136,82 @@ describe("blob files (SYNTHESIS_R5 §6.5)", () => {
         resource_id: "res-9",
       });
     });
-    const collecting = blobs.collect([orphan.sha256, republished.sha256, obligated.sha256]);
-    // Races the GC's flushed() wait: a publication that references the digest
+    const collecting = Promise.all(
+      [orphan, republished, obligated].map((ref) => blobs.gc(ref.sha256)),
+    );
+    // Races the GC's barrier wait: a publication that references the digest
     // commits synchronously before the GC's recheck runs.
     store.transaction(() => commandWithParams(store, "c9", republished.sha256));
     store.flusherControl.tick();
-    const result = await collecting;
-    expect(result).toEqual({
-      removed: [orphan.sha256],
-      kept: [republished.sha256, obligated.sha256],
-    });
+    expect(await collecting).toEqual(["removed", "owned", "owned"]);
     expect(existsSync(orphan.file!)).toBe(false);
     expect(existsSync(republished.file!)).toBe(true);
     expect(existsSync(obligated.file!)).toBe(true);
-    expect(
-      (
-        store.prepare("SELECT sha256 FROM blob ORDER BY sha256").all() as Array<{ sha256: string }>
-      ).map((r) => r.sha256),
-    ).toEqual([republished.sha256, obligated.sha256].sort());
+    expect(blobRows(store)).toEqual([republished.sha256, obligated.sha256].sort());
+  });
+
+  it("T-GC-3: the GC is bound to the LATEST unref and waits for its barrier before unlinking", async () => {
+    const store = await openStore(true);
+    const blobs = new BlobFiles(store);
+    const bytes = body(80_000, 4);
+    const refA = blobs.prepareBody(bytes);
+    store.transaction(() => {
+      blobs.insertRow(refA);
+      commandWithParams(store, "A", refA.sha256);
+    });
+    // Delete A (unref g1) and start the GC; it waits for the barrier covering g1.
+    store.transaction(() => store.prepare("DELETE FROM command WHERE id = 'A'").run());
+    const g1 = blobs.noteUnref(refA.sha256);
+    const collecting = blobs.gc(refA.sha256);
+    expect(blobs.gc(refA.sha256)).toBe(collecting); // single-flight per digest
+    // The barrier for g1 completes; in the SAME synchronous section as its
+    // acknowledgement (before the GC resumes) B republishes and unrefs the digest.
+    let g2 = 0;
+    const raced = new Promise<void>((resolve) => {
+      const off = store.onSynced((g) => {
+        if (g < g1 || g2 !== 0) return;
+        const refB = blobs.prepareBody(bytes); // file exists: adopted
+        store.transaction(() => {
+          blobs.insertRow(refB);
+          commandWithParams(store, "B", refB.sha256);
+        });
+        store.transaction(() => store.prepare("DELETE FROM command WHERE id = 'B'").run());
+        g2 = blobs.noteUnref(refA.sha256);
+        off();
+        resolve();
+      });
+    });
+    store.flusherControl.tick();
+    await raced;
+    await new Promise((r) => setTimeout(r, 20));
+    // After g1 the GC saw a newer unref (g2) and waited instead of unlinking.
+    expect(g2).toBeGreaterThan(g1);
+    expect(store.facts().flusher.acknowledged_generation).toBeLessThan(g2);
+    expect(existsSync(refA.file!)).toBe(true);
+    expect(blobs.unrefGenerationOf(refA.sha256)).toBe(g2);
+    // Had B's deletion lost its barrier (power loss) the recovered prefix would
+    // own the blob; only once g2 is proven may the file go.
+    store.flusherControl.tick();
+    expect(await collecting).toBe("removed");
+    expect(existsSync(refA.file!)).toBe(false);
+    expect(blobRows(store)).toEqual([]);
+    expect(blobs.unrefGenerationOf(refA.sha256)).toBeUndefined();
+  });
+
+  it("gc tolerates a file already gone and leaves inline rows alone", async () => {
+    const store = await openStore(true);
+    const blobs = new BlobFiles(store);
+    const inline = blobs.prepareBody(body(10));
+    const file = blobs.prepareBody(body(70_000, 6));
+    store.transaction(() => {
+      blobs.insertRow(inline);
+      blobs.insertRow(file);
+    });
+    rmSync(file.file!);
+    const collecting = Promise.all([blobs.gc(inline.sha256), blobs.gc(file.sha256)]);
+    store.flusherControl.tick();
+    expect(await collecting).toEqual(["removed", "removed"]);
+    // The inline row is deleted with its last reference by the owner, never by the file GC.
+    expect(blobRows(store)).toEqual([inline.sha256]);
   });
 });

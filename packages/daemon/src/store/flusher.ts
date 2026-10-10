@@ -73,7 +73,7 @@ export class FlusherController {
   private generation = 0;
   private acknowledged = 0;
   private readonly outstanding: Outstanding[] = [];
-  private readonly waiters = new Map<number, Waiter>();
+  private readonly waiters = new Map<number, Waiter[]>();
   private lastReport: FlusherPassReport | null = null;
   private lastBarrierAt: number | null = null;
   private counters: FlusherCounters = {
@@ -124,9 +124,27 @@ export class FlusherController {
   flushed(): Promise<void> {
     const g = this.nextGeneration();
     return new Promise<void>((resolve, reject) => {
-      this.waiters.set(g, { resolve, reject, since: performance.now() });
+      this.addWaiter(g, { resolve, reject, since: performance.now() });
       this.send({ g, since: performance.now(), command: { type: "flush", g } });
     });
+  }
+
+  /** Resolves once an already issued generation (a mark or registration) is acknowledged. */
+  awaitGeneration(g: number): Promise<void> {
+    if (g <= this.acknowledged) return Promise.resolve();
+    return new Promise<void>((resolve, reject) => {
+      this.addWaiter(g, { resolve, reject, since: performance.now() });
+    });
+  }
+
+  private addWaiter(g: number, waiter: Waiter): void {
+    const list = this.waiters.get(g);
+    if (list) list.push(waiter);
+    else this.waiters.set(g, [waiter]);
+  }
+
+  private eachWaiter(fn: (g: number, waiter: Waiter) => void): void {
+    for (const [g, list] of this.waiters) for (const waiter of list) fn(g, waiter);
   }
 
   facts(): FlusherFacts {
@@ -134,8 +152,9 @@ export class FlusherController {
     let oldest: number | null = null;
     for (const entry of this.outstanding)
       oldest = oldest === null ? entry.since : Math.min(oldest, entry.since);
-    for (const waiter of this.waiters.values())
+    this.eachWaiter((_g, waiter) => {
       oldest = oldest === null ? waiter.since : Math.min(oldest, waiter.since);
+    });
     const last = this.lastReport;
     return {
       state: this.state,
@@ -143,7 +162,7 @@ export class FlusherController {
       generation: this.generation,
       acknowledged_generation: this.acknowledged,
       pending_registrations: this.outstanding.filter((e) => e.command.type === "register").length,
-      pending_waiters: this.waiters.size,
+      pending_waiters: [...this.waiters.values()].reduce((n, list) => n + list.length, 0),
       flush_lag_ms: oldest === null ? 0 : Math.round(now - oldest),
       last_barrier_at:
         this.lastBarrierAt === null ? null : new Date(this.lastBarrierAt).toISOString(),
@@ -181,9 +200,9 @@ export class FlusherController {
     }
     const worker = this.worker;
     this.worker = null;
-    for (const [g, waiter] of this.waiters) {
-      waiter.reject(new StoreFlushUnavailableError(g, "engine store is closing"));
-    }
+    this.eachWaiter((g, waiter) =>
+      waiter.reject(new StoreFlushUnavailableError(g, "engine store is closing")),
+    );
     this.waiters.clear();
     if (!worker) return;
     const exited = new Promise<void>((resolve) => worker.once("exit", () => resolve()));
@@ -249,10 +268,10 @@ export class FlusherController {
       if (entry.g > report.g) this.outstanding[kept++] = entry;
     }
     this.outstanding.length = kept;
-    for (const [g, waiter] of this.waiters) {
+    for (const [g, list] of this.waiters) {
       if (g <= report.g) {
         this.waiters.delete(g);
-        waiter.resolve();
+        for (const waiter of list) waiter.resolve();
       }
     }
     this.options.onSynced?.(report.g, report);
@@ -264,11 +283,11 @@ export class FlusherController {
     this.options.log?.(`store flusher worker exited with code ${code}; restarting`);
     // Waiters created before the death are rejected typed; their flush
     // commands are dropped, registrations stay outstanding for the replay.
-    for (const [g, waiter] of this.waiters) {
+    this.eachWaiter((g, waiter) =>
       waiter.reject(
         new StoreFlushUnavailableError(g, `the flusher worker exited with code ${code}`),
-      );
-    }
+      ),
+    );
     this.waiters.clear();
     let kept = 0;
     for (const entry of this.outstanding) {

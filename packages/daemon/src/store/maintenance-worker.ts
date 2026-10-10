@@ -1,4 +1,4 @@
-import { lstatSync, readdirSync, statSync, unlinkSync } from "node:fs";
+import { lstatSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { isMainThread, parentPort, workerData, type MessagePort } from "node:worker_threads";
@@ -11,19 +11,17 @@ import type {
   MaintenanceRequest,
   MaintenanceResponse,
   MaintenanceWorkerData,
-  SweepReport,
+  SweepCandidate,
+  SweepCandidates,
 } from "./maintenance.js";
 
 const BLOB_NAME = /^[0-9a-f]{64}$/;
 const PART_NAME = /^(.+)\.part$/;
-
-/** A blob file is owned when its row exists or any reverse index points at it. */
-const SWEEP_OWNER_SQL = `SELECT (EXISTS(SELECT 1 FROM blob WHERE sha256 = ?1) OR ${BLOB_OWNER_PREDICATE}) AS owned`;
-/** A finished upload's part may go; an open/uploaded/finalizing one is still in use. */
-const PART_LIVE_SQL = `SELECT EXISTS(SELECT 1 FROM upload WHERE id = ?1 AND state NOT IN ('published', 'discarded')) AS live`;
-
 const SQLITE_CORRUPT = 11;
 const SQLITE_NOTADB = 26;
+
+/** A blob file is owned when its row exists or any reverse index points at it (read-only snapshot pre-filter). */
+const SWEEP_OWNER_SQL = `SELECT (EXISTS(SELECT 1 FROM blob WHERE sha256 = ?1) OR ${BLOB_OWNER_PREDICATE}) AS owned`;
 
 function integrityCheck(db: DatabaseSync): IntegrityReport {
   const started = performance.now();
@@ -53,20 +51,18 @@ function vacuumInto(db: DatabaseSync, target: string): ExportReport {
   return { target, bytes: statSync(target).size, durationMs: performance.now() - started };
 }
 
-function sweepOrphans(
+/** Enumerate files older than the process start that no row in this snapshot owns. Decisions happen on main. */
+function sweepCandidates(
   db: DatabaseSync,
-  request: Extract<MaintenanceRequest, { kind: "sweep_orphans" }>,
-): SweepReport {
+  request: Extract<MaintenanceRequest, { kind: "sweep_candidates" }>,
+): SweepCandidates {
   const started = performance.now();
   const owned = db.prepare(SWEEP_OWNER_SQL);
-  const live = db.prepare(PART_LIVE_SQL);
-  const report: SweepReport = {
+  const result: SweepCandidates = {
     scanned: 0,
-    removedBlobs: [],
-    removedTemps: [],
-    removedParts: [],
-    keptOwned: 0,
     keptYoung: 0,
+    keptOwned: 0,
+    candidates: [],
     durationMs: 0,
   };
   const entries = (dir: string): string[] => {
@@ -81,50 +77,39 @@ function sweepOrphans(
     const stat = lstatSync(path, { throwIfNoEntry: false });
     if (!stat || !stat.isFile()) return false;
     if (stat.mtimeMs >= request.olderThanMs) {
-      report.keptYoung += 1;
+      result.keptYoung += 1;
       return false;
     }
     return true;
   };
+  const push = (candidate: SweepCandidate): void => void result.candidates.push(candidate);
   for (const name of entries(request.blobsDir)) {
-    report.scanned += 1;
+    result.scanned += 1;
     const path = join(request.blobsDir, name);
     if (name.endsWith(".tmp")) {
-      if (oldRegularFile(path)) {
-        unlinkSync(path);
-        report.removedTemps.push(name);
-      }
+      if (oldRegularFile(path)) push({ kind: "tmp", path });
       continue;
     }
     if (!BLOB_NAME.test(name) || !oldRegularFile(path)) continue;
     if (Number((owned.get(name) as { owned: number | bigint }).owned) === 1) {
-      report.keptOwned += 1;
+      result.keptOwned += 1;
       continue;
     }
-    unlinkSync(path);
-    report.removedBlobs.push(name);
+    push({ kind: "blob", path, sha: name });
   }
   for (const name of entries(request.uploadsDir)) {
-    report.scanned += 1;
+    result.scanned += 1;
     const path = join(request.uploadsDir, name);
     if (name.endsWith(".tmp")) {
-      if (oldRegularFile(path)) {
-        unlinkSync(path);
-        report.removedTemps.push(name);
-      }
+      if (oldRegularFile(path)) push({ kind: "tmp", path });
       continue;
     }
     const part = PART_NAME.exec(name);
     if (!part || !oldRegularFile(path)) continue;
-    if (Number((live.get(part[1]!) as { live: number | bigint }).live) === 1) {
-      report.keptOwned += 1;
-      continue;
-    }
-    unlinkSync(path);
-    report.removedParts.push(name);
+    push({ kind: "part", path, uploadId: part[1]! });
   }
-  report.durationMs = performance.now() - started;
-  return report;
+  result.durationMs = performance.now() - started;
+  return result;
 }
 
 export function runMaintenanceWorker(port: MessagePort, data: MaintenanceWorkerData): void {
@@ -139,8 +124,8 @@ export function runMaintenanceWorker(port: MessagePort, data: MaintenanceWorkerD
         case "vacuum_into":
           response = { id: request.id, ok: true, result: vacuumInto(db, request.target) };
           break;
-        case "sweep_orphans":
-          response = { id: request.id, ok: true, result: sweepOrphans(db, request) };
+        case "sweep_candidates":
+          response = { id: request.id, ok: true, result: sweepCandidates(db, request) };
           break;
       }
     } catch (error) {

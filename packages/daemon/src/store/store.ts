@@ -218,6 +218,17 @@ export class EngineStore {
     return this.flusher.flushed();
   }
 
+  /** Resolves once the pass covering an already issued generation proved its barrier. */
+  synced(generation: number): Promise<void> {
+    this.assertOpen();
+    return this.flusher.awaitGeneration(generation);
+  }
+
+  /** The last generation a pass acknowledged. */
+  get acknowledgedGeneration(): number {
+    return this.flusher.facts().acknowledged_generation;
+  }
+
   /** Observe `synced(G)` (obligations clear themselves through this). */
   onSynced(listener: SyncedListener): () => void {
     this.syncedListeners.add(listener);
