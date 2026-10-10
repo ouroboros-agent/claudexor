@@ -1,3 +1,4 @@
+import type { OwnerGenerations } from "./owner-generations.js";
 import type { EngineStore } from "./store.js";
 
 /** `effect_obligation.kind` values (SYNTHESIS_R5 §4.6). Data, not enum-in-logic:
@@ -61,7 +62,17 @@ export class Obligations {
   private readonly handlers = new Map<ObligationKind, ObligationHandler>();
   private readonly unsubscribe: () => void;
 
-  constructor(private readonly store: EngineStore) {
+  /**
+   * `owners` is the store's owner-generation map (A3/C10): an open
+   * `publish_blob` row is an owner of its digest, so clearing it is an owner
+   * change the blob GC must observe. `log` receives a failed clear (ENOSPC,
+   * SQLite error); the rows stay tracked and the clear retries on the next
+   * `synced` instead of becoming an uncaught exception on the request thread.
+   */
+  constructor(
+    private readonly store: EngineStore,
+    private readonly options: { owners?: OwnerGenerations; log?: (line: string) => void } = {},
+  ) {
     this.unsubscribe = store.onSynced((generation) => this.clearSynced(generation));
   }
 
@@ -188,20 +199,41 @@ export class Obligations {
 
   private clearSynced(generation: number): void {
     if (this.store.isClosed) return;
-    const clearable: Array<[string, string]> = [];
+    const clearable: Array<[ObligationKind, string]> = [];
     for (const [id, entry] of this.tracked) {
       if (entry.materializedGeneration === null || entry.materializedGeneration > generation)
         continue;
-      const [kind, key] = id.split("\0") as [string, string];
+      const [kind, key] = id.split("\0") as [ObligationKind, string];
       clearable.push([kind, key]);
     }
     if (clearable.length === 0) return;
-    const remove = this.store.prepare(
-      "DELETE FROM effect_obligation WHERE kind = ? AND key = ? AND state = 'materialized'",
-    );
-    this.store.transaction(() => {
-      for (const [kind, key] of clearable) remove.run(kind, key);
-    });
+    const releasedDigests: string[] = [];
+    try {
+      const sha = this.store.prepare(
+        "SELECT json_extract(CAST(payload AS TEXT), '$.sha') AS sha FROM effect_obligation WHERE kind = 'publish_blob' AND key = ?",
+      );
+      const remove = this.store.prepare(
+        "DELETE FROM effect_obligation WHERE kind = ? AND key = ? AND state = 'materialized'",
+      );
+      this.store.transaction(() => {
+        for (const [kind, key] of clearable) {
+          if (kind === "publish_blob") {
+            const row = sha.get(key) as { sha: string | null } | undefined;
+            if (typeof row?.sha === "string") releasedDigests.push(row.sha);
+          }
+          remove.run(kind, key);
+        }
+      });
+    } catch (error) {
+      // The rows stay tracked and materialized; the next synced retries.
+      this.options.log?.(
+        `obligation clear deferred: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return;
+    }
     for (const [kind, key] of clearable) this.tracked.delete(trackKey(kind, key));
+    // The deleted publish_blob rows were owners of their digests (A3): the GC
+    // waiting on this very barrier must see the owner change and wait again.
+    for (const digest of releasedDigests) this.options.owners?.noteChange(`blob:${digest}`);
   }
 }
