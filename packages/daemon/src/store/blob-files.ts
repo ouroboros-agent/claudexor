@@ -24,14 +24,15 @@ export interface BodyRef {
  * orphan sweep both ask this exact question so a file can only be removed
  * when no index of any table points at its digest. `?1` is the bare hex digest.
  */
-export const BLOB_OWNER_SQL = `SELECT EXISTS(SELECT 1 FROM command WHERE params_sha = ?1)
+export const BLOB_OWNER_PREDICATE = `EXISTS(SELECT 1 FROM command WHERE params_sha = ?1)
   OR EXISTS(SELECT 1 FROM command WHERE result_sha = ?1)
   OR EXISTS(SELECT 1 FROM turn WHERE prompt_sha = ?1)
   OR EXISTS(SELECT 1 FROM event WHERE payload_sha = ?1)
   OR EXISTS(SELECT 1 FROM resource WHERE sha256 = ?1)
   OR EXISTS(SELECT 1 FROM upload WHERE finalize_sha = ?1)
   OR EXISTS(SELECT 1 FROM effect_obligation WHERE kind = 'publish_blob'
-            AND json_extract(CAST(payload AS TEXT), '$.sha') = ?1) AS owned`;
+            AND json_extract(CAST(payload AS TEXT), '$.sha') = ?1)`;
+export const BLOB_OWNER_SQL = `SELECT (${BLOB_OWNER_PREDICATE}) AS owned`;
 
 export function sha256Hex(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
