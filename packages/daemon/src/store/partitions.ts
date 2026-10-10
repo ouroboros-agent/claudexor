@@ -55,11 +55,3 @@ export function currentGeneration(store: EngineStore, name: string): PartitionGe
     .get(name) as PartitionRow | undefined;
   return row ? generationOf(row) : null;
 }
-
-/** A generation by surrogate id, whatever its status. */
-export function generationById(store: EngineStore, pid: number): PartitionGeneration | null {
-  const row = store
-    .prepare("SELECT id, name, epoch, status, next_seq FROM partition WHERE id = ?")
-    .get(pid) as PartitionRow | undefined;
-  return row ? generationOf(row) : null;
-}
