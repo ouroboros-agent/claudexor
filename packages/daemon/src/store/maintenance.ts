@@ -1,6 +1,6 @@
 import { unlinkSync } from "node:fs";
 import { Worker } from "node:worker_threads";
-import { BlobFiles, type GcOutcome } from "./blob-files.js";
+import { BlobFiles } from "./blob-files.js";
 import { StoreError } from "./errors.js";
 import { STORE_WORKER_DATA_KEY, resolveStoreWorkerEntry } from "./flusher-protocol.js";
 import type { EngineStore } from "./store.js";
@@ -282,5 +282,3 @@ function unlinkTolerant(path: string): void {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
 }
-
-export type { GcOutcome };
