@@ -82,8 +82,11 @@ describe("engine runtime refusal (Node 20/22 without the WAL-reset fix)", () => 
 
 describe("the daemon package without node:sqlite (B1)", () => {
   const dist = resolve(import.meta.dirname, "../../dist");
+  const withoutSqlite = process.allowedNodeEnvironmentFlags.has("--no-experimental-sqlite")
+    ? ["--no-experimental-sqlite"]
+    : [];
   const run = (code: string) =>
-    spawnSync(process.execPath, ["--no-experimental-sqlite", "--input-type=module", "-e", code], {
+    spawnSync(process.execPath, [...withoutSqlite, "--input-type=module", "-e", code], {
       encoding: "utf8",
       timeout: 60_000,
     });

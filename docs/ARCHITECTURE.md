@@ -3224,6 +3224,8 @@ What the core is:
   generation of every committed change to a file's owner rows, the unlink
   waits for the barrier covering the latest one and, in a single synchronous
   section, retries if the owner moved, keeps if an owner exists, else unlinks.
+  `EngineStore` owns this generation map; blob helpers, obligation completion
+  and maintenance share it automatically, including when constructed separately.
 - Retention: each `event` row is written under the daemon's journal fold
   verdict as SQL (retire, slot, group, drop), so the retained set equals the
   folded journal's. Command rows carry a `kind` set once at accept

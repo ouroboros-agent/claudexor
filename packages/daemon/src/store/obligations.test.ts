@@ -163,36 +163,40 @@ describeStore("effect obligations (SYNTHESIS_R5 §4.6, R5_AMENDMENTS A2)", () =>
     expect(openCount(store)).toBe(0);
   });
 
-  it("OBL-CLEAR-NO-NOTE: clearing a materialized publish_blob is an owner change the waiting GC observes", async () => {
-    const store = await openStore();
-    const blobs = new BlobFiles(store);
-    const obligations = new Obligations(store, { owners: blobs.owners });
-    const ref = blobs.prepareBody(Buffer.alloc(80_000, 9));
-    store.transaction(() => {
-      blobs.insertRow(ref);
-      // The obligation is the ONLY owner of the digest.
-      obligations.create("publish_blob", "upl-sole", 0, { sha: ref.sha256, resource_id: "res" });
-    });
-    obligations.registerEffect("publish_blob", "upl-sole", store.paths.blobs);
-    const gMaterialized = obligations.materialize("publish_blob", "upl-sole");
-    // The GC waits on the pass that will also clear the obligation.
-    const collecting = blobs.gc(ref.sha256);
-    const key = `blob:${ref.sha256}` as const;
-    await new Promise((r) => setTimeout(r, 20));
-    const report = await pass(store);
-    expect(report.g).toBeGreaterThanOrEqual(gMaterialized);
-    await new Promise((r) => setTimeout(r, 20));
-    // The clear ran before the GC resumed: the row is gone, but the owner
-    // generation moved past the barrier the GC waited for, so the GC waits again.
-    expect(openCount(store)).toBe(0);
-    expect(blobs.owners.generationOf(key)).toBeGreaterThan(report.g);
-    expect(existsSync(ref.file!)).toBe(true);
-    expect(store.facts().flusher.pending_waiters).toBe(1);
-    // Only the next barrier, which covers the obligation's deletion, lets the unlink happen.
-    await pass(store);
-    expect(await collecting).toBe("removed");
-    expect(existsSync(ref.file!)).toBe(false);
-  });
+  it.each([false, true])(
+    "OBL-CLEAR-NO-NOTE: default composition shares owner changes with GC (separate helper: %s)",
+    async (separateHelper) => {
+      const store = await openStore();
+      const blobs = new BlobFiles(store);
+      const obligations = new Obligations(store);
+      const ref = blobs.prepareBody(Buffer.alloc(80_000, 9));
+      store.transaction(() => {
+        blobs.insertRow(ref);
+        // The obligation is the ONLY owner of the digest.
+        obligations.create("publish_blob", "upl-sole", 0, { sha: ref.sha256, resource_id: "res" });
+      });
+      obligations.registerEffect("publish_blob", "upl-sole", store.paths.blobs);
+      const gMaterialized = obligations.materialize("publish_blob", "upl-sole");
+      // The GC waits on the pass that will also clear the obligation.
+      const collector = separateHelper ? new BlobFiles(store) : blobs;
+      const collecting = collector.gc(ref.sha256);
+      const key = `blob:${ref.sha256}` as const;
+      await new Promise((r) => setTimeout(r, 20));
+      const report = await pass(store);
+      expect(report.g).toBeGreaterThanOrEqual(gMaterialized);
+      await new Promise((r) => setTimeout(r, 20));
+      // The clear ran before the GC resumed: the row is gone, but the owner
+      // generation moved past the barrier the GC waited for, so the GC waits again.
+      expect(openCount(store)).toBe(0);
+      expect(blobs.owners.generationOf(key)).toBeGreaterThan(report.g);
+      expect(existsSync(ref.file!)).toBe(true);
+      expect(store.facts().flusher.pending_waiters).toBe(1);
+      // Only the next barrier, which covers the obligation's deletion, lets the unlink happen.
+      await pass(store);
+      expect(await collecting).toBe("removed");
+      expect(existsSync(ref.file!)).toBe(false);
+    },
+  );
 
   it("S2: a failing clear transaction is logged and retried on the next synced, never thrown on the request thread", async () => {
     const store = await openStore();

@@ -1,4 +1,3 @@
-import type { OwnerGenerations } from "./owner-generations.js";
 import type { EngineStore } from "./store.js";
 
 /** `effect_obligation.kind` values (SYNTHESIS_R5 §4.6). Data, not enum-in-logic:
@@ -63,7 +62,7 @@ export class Obligations {
   private readonly unsubscribe: () => void;
 
   /**
-   * `owners` is the store's owner-generation map (A3/C10): an open
+   * Uses the store's owner-generation map (A3/C10): an open
    * `publish_blob` row is an owner of its digest, so clearing it is an owner
    * change the blob GC must observe. `log` receives a failed clear (ENOSPC,
    * SQLite error); the rows stay tracked and the clear retries on the next
@@ -71,7 +70,7 @@ export class Obligations {
    */
   constructor(
     private readonly store: EngineStore,
-    private readonly options: { owners?: OwnerGenerations; log?: (line: string) => void } = {},
+    private readonly options: { log?: (line: string) => void } = {},
   ) {
     this.unsubscribe = store.onSynced((generation) => this.clearSynced(generation));
   }
@@ -234,6 +233,6 @@ export class Obligations {
     for (const [kind, key] of clearable) this.tracked.delete(trackKey(kind, key));
     // The deleted publish_blob rows were owners of their digests (A3): the GC
     // waiting on this very barrier must see the owner change and wait again.
-    for (const digest of releasedDigests) this.options.owners?.noteChange(`blob:${digest}`);
+    for (const digest of releasedDigests) this.store.owners.noteChange(`blob:${digest}`);
   }
 }

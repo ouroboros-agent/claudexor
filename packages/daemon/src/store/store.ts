@@ -4,6 +4,7 @@ import type { DatabaseSync, StatementSync } from "node:sqlite";
 import { isBusyFailure, mapStoreError, StoreError } from "./errors.js";
 import { FlusherController, type FlusherFacts } from "./flusher.js";
 import type { FlusherHooks, FlusherPassReport } from "./flusher-protocol.js";
+import { OwnerGenerations } from "./owner-generations.js";
 import { applyPragmas, MAIN_CONNECTION_PRAGMAS } from "./pragmas.js";
 import { loadEngineRuntime, type EngineRuntime, type EngineRuntimeProbe } from "./runtime.js";
 import { assertSchemaServable, ensureSchema, readSchemaIdentity } from "./schema.js";
@@ -55,6 +56,8 @@ export type SyncedListener = (generation: number, report: FlusherPassReport) => 
 export class EngineStore {
   readonly paths: EngineStorePaths;
   readonly runtime: EngineRuntime;
+  /** One owner-change history for every file helper using this connection. */
+  readonly owners = new OwnerGenerations(this);
   private readonly connection: DatabaseSync;
   private readonly statements = new Map<string, StatementSync>();
   private readonly flusher: FlusherController;

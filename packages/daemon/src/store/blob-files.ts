@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { StoreError } from "./errors.js";
 import { linkExternalFile, writeExternalFile } from "./external-files.js";
-import { OwnerGenerations, type UnlinkOutcome } from "./owner-generations.js";
+import type { OwnerGenerations, UnlinkOutcome } from "./owner-generations.js";
 import type { EngineStore } from "./store.js";
 
 /** Bodies up to this size are stored inline in `blob.inline`; larger bodies are files. */
@@ -46,7 +46,7 @@ export type GcOutcome = UnlinkOutcome;
  * 64 KiB, written synchronously on the request thread in the same tick as the
  * owning transaction (temp `O_DSYNC` + rename, never rewriting an existing
  * file), then the `blob` row plus the owner's reference row commit together.
- * One instance per store owns the owner generations the GC is bound to.
+ * The store owns the shared owner generations the GC is bound to.
  */
 export class BlobFiles {
   readonly dir: string;
@@ -56,10 +56,9 @@ export class BlobFiles {
   constructor(
     private readonly store: EngineStore,
     dir = store.paths.blobs,
-    owners = new OwnerGenerations(store),
   ) {
     this.dir = dir;
-    this.owners = owners;
+    this.owners = store.owners;
   }
 
   /** Before the owning transaction (same tick): hash, and write the file if the body is large.
