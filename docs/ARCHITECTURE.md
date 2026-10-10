@@ -2181,6 +2181,8 @@ for 65 s (longer than clients' idle-reuse windows, such as httpx's 5 s, which
 would otherwise race the server's close), allows 66 s for request headers, and
 does not bound the receipt of a request body, so a large upload during a busy
 period is not cut; none of these limits applies to responses or SSE streams.
+Once stopping, it closes each kept-alive socket as soon as its response finishes,
+so the longer keep-alive window never delays shutdown.
 
 An admitted continuation whose predecessor record or run directory disappears
 before execution fails with `continuation_predecessor_unavailable` (404, not

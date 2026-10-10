@@ -19,6 +19,18 @@ export const CONTROL_HTTP_TIMEOUTS = {
   requestTimeout: 0,
 } as const;
 
+/**
+ * Apply the timeouts, and keep a long keep-alive from delaying shutdown:
+ * `close()` destroys only the sockets idle at that moment, so one still
+ * answering when it ran would hold `close()` for the whole keep-alive window
+ * once its response finished. After the server stops listening, each socket
+ * is closed as soon as its response finishes.
+ */
 export function withControlHttpTimeouts(server: Server): Server {
+  server.on("request", (_req, res) => {
+    res.once("finish", () => {
+      if (!server.listening) setImmediate(() => server.closeIdleConnections());
+    });
+  });
   return Object.assign(server, CONTROL_HTTP_TIMEOUTS);
 }
