@@ -239,7 +239,7 @@ at every wire boundary.
   see the lifecycle section below. Projection reads select exact record types
   before payload copying; every read sees the retained set, and sequence
   numbers and cursors are the original ones.
-- `packages/daemon`: durable local queue (Unix socket on POSIX, named pipe on win32) and journal projections for commands, projects, and threads.
+- `packages/daemon`: durable local queue (Unix socket on POSIX, named pipe on win32), the in-process facade client its own control API uses, and journal projections for commands, projects, and threads.
   Project projections select their own record types; run-event history is validated
   once per projection creation through its descriptor. Direct RunEventStore
   construction still validates by default. Preparation and post-open activation
@@ -2286,12 +2286,19 @@ The protocol handshake remains unchanged. No memory thresholds affect admission.
 
 Endpoint semantics beyond the inventory:
 
-Local daemon RPC timeouts retain the ten-second transport bound and answer
-`503 daemon_busy`; connection failures, closed sockets and invalid responses
-answer `503 daemon_unavailable`. Both are retryable and preserve an unknown
-mutation outcome. Daemon-authored refusals keep their status, code, safe context
-and required actions through RPC and HTTP, including continuation chain heads.
-Request validation remains a typed 400; transport does not retry automatically.
+The control API, model operations and harness maintenance run inside the
+daemon process and reach its RPC dispatcher in process (`DaemonLocalClient`):
+there is no socket round trip and no transport timer, so a busy event loop makes
+such a call slow rather than failed. Params, results and problems keep the
+socket's JSON value semantics, and both transports rebuild problems through one
+projection. Socket clients (the CLI, the stdio bridges, runtime replacement and
+the startup transport proof, which dials the socket itself) keep the ten-second
+transport bound: a timeout answers `503 daemon_busy`; connection failures, closed
+sockets and invalid responses answer `503 daemon_unavailable`. Both are retryable
+and preserve an unknown mutation outcome. Daemon-authored refusals keep their
+status, code, safe context and required actions through RPC and HTTP, including
+continuation chain heads. Request validation remains a typed 400; transport does
+not retry automatically.
 
 - `POST /v2/runs` with `continueFrom: <runId>` continues a terminal run of this
   daemon — stopped, limited, cancelled, interrupted or finished — as a new

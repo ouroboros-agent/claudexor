@@ -6,6 +6,7 @@ export * from "./root-authority.js";
 export * from "./serving-admission.js";
 export * from "./terminate.js";
 export * from "./client.js";
+export * from "./daemon-local-client.js";
 export * from "./daemon-shutdown-rpc.js";
 export * from "./events.js";
 export * from "./interactions.js";

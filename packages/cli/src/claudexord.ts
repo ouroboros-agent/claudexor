@@ -2,7 +2,7 @@
 import { accountResetServices } from "./account-reset-services.js";
 import { join } from "node:path";
 import {
-  DaemonClient,
+  DaemonLocalClient,
   commandActivityRecords,
   commandProjection,
   commandExecutionRoots,
@@ -177,7 +177,7 @@ export async function main(): Promise<void> {
     const resources = (): ResourceStore =>
       (resourceStore ??= new ResourceStore(join(daemonDir(), "resource-store")));
 
-    const selfClient = new DaemonClient(socketPath, token);
+    const selfClient = new DaemonLocalClient(() => server);
     const models = createModelServices({
       commands: threads,
       resources,
@@ -299,7 +299,7 @@ export async function main(): Promise<void> {
       ? null
       : new DaemonControlApiServer({
           token,
-          daemon: new DaemonClient(socketPath, token),
+          daemon: selfClient,
           port: Number(process.env.CLAUDEXOR_CONTROL_PORT ?? 0),
           servingMode: admission.snapshot,
           bus,
@@ -364,7 +364,7 @@ export async function main(): Promise<void> {
     });
     if (!shutdownRuntime.requested()) {
       await proveRecoveryTransport({
-        socket: selfClient,
+        socketPath,
         identity: servingIdentity,
         token,
         control: controlAddr,
