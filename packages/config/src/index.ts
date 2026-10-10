@@ -325,10 +325,13 @@ export function loadConfigCached(
     trustConfigPath(repoRoot),
   ];
   let key: string;
+  let present: string[];
   try {
+    const stats = paths.map((path) => statSync(path, { bigint: true, throwIfNoEntry: false }));
+    present = paths.filter((_, i) => (stats[i]?.size ?? 0n) > 0n);
     key = JSON.stringify([
-      paths.map((path) => {
-        const s = statSync(path, { bigint: true, throwIfNoEntry: false });
+      paths.map((path, i) => {
+        const s = stats[i];
         return [path, s ? `${s.dev}:${s.ino}:${s.size}:${s.mtimeNs}:${s.ctimeNs}` : null];
       }),
       Object.entries(process.env)
@@ -341,6 +344,9 @@ export function loadConfigCached(
   const cached = parsedConfigs.get(repoRoot);
   if (cached?.key === key) return structuredClone(cached.config);
   const config = load(repoRoot);
+  // A non-empty source that did not load was unreadable (the reader turns EMFILE/EACCES
+  // into "absent"): caching that answer would freeze defaults under an unchanged identity.
+  if (present.some((path) => !config.sources.includes(path))) return config;
   if (parsedConfigs.size >= 16) parsedConfigs.clear();
   parsedConfigs.set(repoRoot, { key, config: structuredClone(config) });
   return config;

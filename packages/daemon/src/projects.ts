@@ -266,7 +266,8 @@ function pathStrictlyInside(child: string, parent: string): boolean {
  * its own ancestors, so each root looks up just its ancestor chain in an index
  * of resolved roots (the same normalization `relative` applies, case-folded
  * where the platform's paths are) instead of testing every other project:
- * O(projects × path depth) plus the relations themselves, never projects².
+ * O(projects × path depth) predicate tests plus sorting each project's relations
+ * (Σ Kᵢ log Kᵢ); only a deep chain of nested roots makes the OUTPUT itself quadratic.
  * Each candidate pair is still decided by `pathStrictlyInside` (`inside`), and
  * ties keep the iteration order, so the answer equals per-project `nestingFor`.
  */

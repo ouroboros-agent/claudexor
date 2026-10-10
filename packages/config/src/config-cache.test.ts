@@ -80,6 +80,26 @@ describe("loadConfigCached", () => {
     expect(calls.n).toBe(5);
   });
 
+  it("never caches an answer that lost an existing source to a read error", () => {
+    writeFileSync(globalFile, "routing:\n  primary_harness: codex\n");
+    const calls = { n: 0 };
+    // The first load sees the file but cannot read it (EMFILE in production): loadConfig
+    // then answers defaults without the source. The identity does not change afterwards.
+    const load = (root: string) => {
+      calls.n += 1;
+      const config = loadConfig(root);
+      if (calls.n > 1) return config;
+      const routing = { ...config.global.routing, primary_harness: "claude" as const };
+      return { ...config, global: { ...config.global, routing }, sources: [] };
+    };
+    expect(loadConfigCached(repo, load).global.routing.primary_harness).toBe("claude");
+    expect(loadConfigCached(repo, load).global.routing.primary_harness).toBe("codex");
+    expect(calls.n).toBe(2);
+    // Once a load read every source, the answer is cached as before.
+    expect(loadConfigCached(repo, load).global.routing.primary_harness).toBe("codex");
+    expect(calls.n).toBe(2);
+  });
+
   it("never caches a failed parse", () => {
     writeFileSync(globalFile, "routing: [unterminated\n");
     const { calls, load } = counted();
