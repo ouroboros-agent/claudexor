@@ -17,6 +17,13 @@ import {
 } from "./retention.js";
 import { EngineStore } from "./store.js";
 
+/** The store runs only where `node:sqlite` exists; elsewhere these cases are skipped, not failed. */
+const sqliteAvailable = await import("node:sqlite").then(
+  () => true,
+  () => false,
+);
+const describeStore = sqliteAvailable ? describe : describe.skip;
+
 function builtWorkerEntry(name: string): string {
   const entry = resolve(import.meta.dirname, "../../dist/store", name);
   if (!existsSync(entry)) throw new Error(`built worker missing at ${entry}; run pnpm build first`);
@@ -91,7 +98,7 @@ function recordSequence(): Array<{ type: string; payload: unknown }> {
   ];
 }
 
-describe("event retention through the journal fold verdicts (SYNTHESIS_R5 §6.6)", () => {
+describeStore("event retention through the journal fold verdicts (SYNTHESIS_R5 §6.6)", () => {
   it("retains exactly the sequence numbers the folded journal retains", async () => {
     const options = {
       rootDir: join(root, "journal"),
@@ -133,6 +140,52 @@ describe("event retention through the journal fold verdicts (SYNTHESIS_R5 §6.6)
     ).toBe(recordSequence().length + 1);
   });
 
+  it("reports the payload digests its retire/slot deletes released (owner changes for the GC)", async () => {
+    const store = await openStore();
+    const generation = store.transaction(() => createPartition(store, "global"));
+    const digestA = "a".repeat(64);
+    const digestB = "b".repeat(64);
+    const first = store.transaction(() =>
+      appendEvent(store, generation.pid, {
+        type: "thread.head.updated",
+        payload: { thread_id: "t", revision: 1 },
+        payloadSha: digestA,
+      }),
+    );
+    expect(first.releasedDigests).toEqual([]);
+    const live = store.transaction(() =>
+      appendEvent(store, generation.pid, {
+        type: "run.event",
+        payload: { run_id: "r", task_id: "k", type: "harness.started", ts: "t" },
+        payloadSha: digestB,
+      }),
+    );
+    expect(live.releasedDigests).toEqual([]);
+    // The slot replacement releases digest A; the terminal retires the live group and releases B.
+    const replaced = store.transaction(() =>
+      appendEvent(store, generation.pid, {
+        type: "thread.head.updated",
+        payload: { thread_id: "t", revision: 2 },
+      }),
+    );
+    expect(replaced.releasedDigests).toEqual([digestA]);
+    const terminal = store.transaction(() =>
+      appendEvent(store, generation.pid, {
+        type: "run.event",
+        payload: { run_id: "r", task_id: "k", type: "run.completed", ts: "t", run_facts: {} },
+      }),
+    );
+    expect(terminal.releasedDigests).toEqual([digestB]);
+    // Rows without a digest release nothing.
+    const plain = store.transaction(() =>
+      appendEvent(store, generation.pid, {
+        type: "thread.head.updated",
+        payload: { thread_id: "t", revision: 3 },
+      }),
+    );
+    expect(plain.releasedDigests).toEqual([]);
+  });
+
   it("writes slot and group keys the way the policy names them", async () => {
     const store = await openStore();
     const generation = store.transaction(() => createPartition(store, "global"));
@@ -165,7 +218,7 @@ describe("event retention through the journal fold verdicts (SYNTHESIS_R5 §6.6)
   });
 });
 
-describe("command kind (R5_AMENDMENTS A1)", () => {
+describeStore("command kind (R5_AMENDMENTS A1)", () => {
   it("classifies at accept from id prefix and params", () => {
     expect(commandKind("account-reset-1", {})).toBe("account_reset");
     expect(commandKind("delivery-1", {})).toBe("delivery");
@@ -220,7 +273,7 @@ function seedCommands(store: EngineStore, seed: Seed): void {
 const NOW = new Date("2026-10-10T00:00:00.000Z");
 const MONTH = 30 * 86_400_000;
 
-describe("bounded command retention (R5_AMENDMENTS B1/C1, T-RET-1)", () => {
+describeStore("bounded command retention (R5_AMENDMENTS B1/C1, T-RET-1)", () => {
   it("counts today's terminal set over live generations, bounded by cap + batch", async () => {
     const store = await openStore();
     seedCommands(store, { prefix: "a", pid: 1, count: 300 });

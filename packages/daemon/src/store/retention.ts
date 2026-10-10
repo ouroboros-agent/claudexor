@@ -16,6 +16,9 @@ export interface AppendedEvent {
   verdict: FoldVerdict;
   /** False when the verdict dropped the record (the sequence number is still consumed). */
   stored: boolean;
+  /** `payload_sha` of every row this append deleted (retire/slot): owner changes the
+   * caller reports with `noteOwnerChange` after COMMIT (A3/C10). */
+  releasedDigests: string[];
 }
 
 /**
@@ -46,12 +49,22 @@ export function appendEvent(
       payload: input.payload,
       byteLength: bytes.byteLength,
     }) ?? {};
+  const releasedDigests: string[] = [];
+  const collect = (rows: unknown[]): void => {
+    for (const row of rows as Array<{ payload_sha: string | null }>) {
+      if (typeof row.payload_sha === "string") releasedDigests.push(row.payload_sha);
+    }
+  };
   const retire = store.prepare(
-    "DELETE FROM event WHERE pid = ? AND (slot_key = ? OR group_key = ?)",
+    "DELETE FROM event WHERE pid = ? AND (slot_key = ? OR group_key = ?) RETURNING payload_sha",
   );
-  for (const name of verdict.retire ?? []) retire.run(pid, name, name);
+  for (const name of verdict.retire ?? []) collect(retire.all(pid, name, name));
   if (verdict.slot !== undefined) {
-    store.prepare("DELETE FROM event WHERE pid = ? AND slot_key = ?").run(pid, verdict.slot);
+    collect(
+      store
+        .prepare("DELETE FROM event WHERE pid = ? AND slot_key = ? RETURNING payload_sha")
+        .all(pid, verdict.slot),
+    );
   }
   if (!verdict.drop) {
     store
@@ -70,7 +83,7 @@ export function appendEvent(
       );
   }
   store.prepare("UPDATE partition SET next_seq = ? WHERE id = ?").run(seq + 1, pid);
-  return { seq, verdict, stored: !verdict.drop };
+  return { seq, verdict, stored: !verdict.drop, releasedDigests };
 }
 
 /** `command.kind` (R5_AMENDMENTS A1): set once at accept, the single source of
