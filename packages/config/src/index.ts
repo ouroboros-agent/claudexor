@@ -306,6 +306,46 @@ export function loadConfig(repoRoot: string): ResolvedConfig {
   return ResolvedConfigSchema.parse({ project, trust, global, sources });
 }
 
+const parsedConfigs = new Map<string, { key: string; config: ResolvedConfig }>();
+
+/**
+ * `loadConfig` for per-request readers. It parses again only when a resolved
+ * source path, a source file's identity (device, inode, size, mtime, ctime,
+ * taken before parsing) or a CLAUDEXOR_* environment value changed; each call
+ * still returns a private copy. Unreadable sources and failed parses are never
+ * cached, so they behave exactly like `loadConfig`.
+ */
+export function loadConfigCached(
+  repoRoot: string,
+  load: (repoRoot: string) => ResolvedConfig = loadConfig,
+): ResolvedConfig {
+  const paths = [
+    globalConfigPath(),
+    join(repoRoot, ".claudexor", "config.yaml"),
+    trustConfigPath(repoRoot),
+  ];
+  let key: string;
+  try {
+    key = JSON.stringify([
+      paths.map((path) => {
+        const s = statSync(path, { bigint: true, throwIfNoEntry: false });
+        return [path, s ? `${s.dev}:${s.ino}:${s.size}:${s.mtimeNs}:${s.ctimeNs}` : null];
+      }),
+      Object.entries(process.env)
+        .filter(([name]) => name.startsWith("CLAUDEXOR_"))
+        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+    ]);
+  } catch {
+    return load(repoRoot);
+  }
+  const cached = parsedConfigs.get(repoRoot);
+  if (cached?.key === key) return structuredClone(cached.config);
+  const config = load(repoRoot);
+  if (parsedConfigs.size >= 16) parsedConfigs.clear();
+  parsedConfigs.set(repoRoot, { key, config: structuredClone(config) });
+  return config;
+}
+
 function positiveIntEnv(name: string): number | null {
   const raw = process.env[name];
   if (!raw) return null;
