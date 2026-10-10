@@ -220,6 +220,7 @@ import {
 
 import { resolveControlProtocol, type ControlServingMode } from "./control-protocol.js";
 import { readControlRequestBody } from "./request-body.js";
+import { withControlHttpTimeouts } from "./http-server-options.js";
 import {
   assertNoInlineSecretValues,
   errorCode,
@@ -559,7 +560,7 @@ export class DaemonControlApiServer {
     const host = this.opts.host ?? "127.0.0.1";
     const port = this.opts.port ?? 0;
     await new Promise<void>((resolve, reject) => {
-      this.server = createServer((req, res) => this.onRequest(req, res));
+      this.server = withControlHttpTimeouts(createServer((req, res) => this.onRequest(req, res)));
       this.server.once("error", reject);
       this.server.listen(port, host, () => resolve());
     });

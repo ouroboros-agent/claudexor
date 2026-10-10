@@ -2176,7 +2176,11 @@ percent-encoding in the path with a typed `400 malformed_request_path` (never a
 `500`), projects request-schema violations into structured `fieldErrors`
 (JSON Pointer → messages) with a single-line human summary rather than a raw
 validator dump, and validates the per-run SSE cursor as a nonnegative integer
-`seq` before opening the stream.
+`seq` before opening the stream. Its HTTP server keeps idle keep-alive sockets
+for 65 s (longer than clients' idle-reuse windows, such as httpx's 5 s, which
+would otherwise race the server's close), allows 66 s for request headers, and
+does not bound the receipt of a request body, so a large upload during a busy
+period is not cut; none of these limits applies to responses or SSE streams.
 
 An admitted continuation whose predecessor record or run directory disappears
 before execution fails with `continuation_predecessor_unavailable` (404, not
