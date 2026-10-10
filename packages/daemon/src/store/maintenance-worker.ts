@@ -20,8 +20,10 @@ const PART_NAME = /^(.+)\.part$/;
 const SQLITE_CORRUPT = 11;
 const SQLITE_NOTADB = 26;
 
-/** A blob file is owned when its row exists or any reverse index points at it (read-only snapshot pre-filter). */
-const SWEEP_OWNER_SQL = `SELECT (EXISTS(SELECT 1 FROM blob WHERE sha256 = ?1) OR ${BLOB_OWNER_PREDICATE}) AS owned`;
+/** Read-only snapshot pre-filter: a blob file is owned only when a reverse
+ * index or an open publish obligation points at it (A3/A4). A bare `blob`
+ * row is NOT an owner — the file and its row go together through the C10 loop. */
+const SWEEP_OWNER_SQL = `SELECT (${BLOB_OWNER_PREDICATE}) AS owned`;
 
 function integrityCheck(db: DatabaseSync): IntegrityReport {
   const started = performance.now();

@@ -13,12 +13,19 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { DatabaseSync } from "node:sqlite";
 import { BlobFiles, sha256Hex } from "./blob-files.js";
 import { MaintenanceController } from "./maintenance.js";
 import { Obligations } from "./obligations.js";
 import { EngineStore } from "./store.js";
+
+/** The store runs only where `node:sqlite` exists; elsewhere these cases are skipped, not failed. */
+const sqliteAvailable = await import("node:sqlite").then(
+  () => true,
+  () => false,
+);
+const describeStore = sqliteAvailable ? describe : describe.skip;
 
 function builtWorkerEntry(name: string): string {
   const entry = resolve(import.meta.dirname, "../../dist/store", name);
@@ -92,7 +99,7 @@ const rowTotals = (store: EngineStore) =>
     ).n,
   );
 
-describe("maintenance worker (SYNTHESIS_R5 §6.5, §7 p.6; R5_AMENDMENTS A4, C2, C10)", () => {
+describeStore("maintenance worker (SYNTHESIS_R5 §6.5, §7 p.6; R5_AMENDMENTS A4, C2, C10)", () => {
   it("runs integrity_check on its own connection and records the fact", async () => {
     const { store, maintenance } = await openStore();
     seedRows(store, 200);
@@ -123,6 +130,7 @@ describe("maintenance worker (SYNTHESIS_R5 §6.5, §7 p.6; R5_AMENDMENTS A4, C2,
     const report = await exporting;
     expect(report.target).toBe(target);
     expect(report.bytes).toBeGreaterThan(0);
+    const { DatabaseSync } = await import("node:sqlite");
     const exported = new DatabaseSync(target, { readOnly: true });
     try {
       expect(
@@ -138,7 +146,7 @@ describe("maintenance worker (SYNTHESIS_R5 §6.5, §7 p.6; R5_AMENDMENTS A4, C2,
     }
   });
 
-  it("T-GC-2: the worker enumerates, main decides — only unreferenced files older than the process start go, no rows are written", async () => {
+  it("T-GC-2: the worker enumerates, main decides — unreferenced files older than the process start go with their blob rows", async () => {
     const { store, maintenance, blobs } = await openStore();
     const obligations = new Obligations(store);
     mkdirSync(store.paths.uploads, { recursive: true });
@@ -193,7 +201,9 @@ describe("maintenance worker (SYNTHESIS_R5 §6.5, §7 p.6; R5_AMENDMENTS A4, C2,
       age(path);
     const rowsBefore = rowTotals(store);
     const listed = await maintenance.sweepCandidates();
+    // A bare `blob` row is not an owner (A3/A4): the catalogued-only file is a candidate too.
     expect(listed.candidates.map((c) => c.kind).sort()).toEqual([
+      "blob",
       "blob",
       "part",
       "part",
@@ -201,20 +211,26 @@ describe("maintenance worker (SYNTHESIS_R5 §6.5, §7 p.6; R5_AMENDMENTS A4, C2,
       "part",
       "tmp",
     ]);
-    expect(listed.keptOwned).toBe(2); // owned blob, referenced-only blob
+    expect(listed.keptOwned).toBe(1); // referenced-only blob (resource row)
     expect(listed.keptYoung).toBe(2); // young blob, young part
     const report = await maintenance.sweepOrphans();
-    expect(report.removedBlobs).toEqual([orphanOld.sha256]);
+    expect(report.removedBlobs.sort()).toEqual([owned.sha256, orphanOld.sha256].sort());
     expect(report.removedTemps).toEqual([staleTemp]);
     expect(report.removedParts.sort()).toEqual([parts.done, parts.rowless].sort());
     expect(report.keptParts.sort()).toEqual([parts.live, parts.obligated].sort());
     expect(readdirSync(store.paths.blobs).sort()).toEqual(
-      [owned.sha256, orphanYoung.sha256, referencedOnly.sha256].sort(),
+      [orphanYoung.sha256, referencedOnly.sha256].sort(),
     );
     expect(readdirSync(store.paths.uploads).sort()).toEqual(
       ["live-upl.part", "obligated-upl.part", "young.part"].sort(),
     );
-    expect(rowTotals(store)).toBe(rowsBefore);
+    // The row of the removed catalogued blob went with its file (C10 same section); nothing else was written.
+    expect(
+      (store.prepare("SELECT sha256 FROM blob").all() as Array<{ sha256: string }>).map(
+        (r) => r.sha256,
+      ),
+    ).toEqual([]);
+    expect(rowTotals(store)).toBe(rowsBefore - 1);
     const again = await maintenance.sweepOrphans();
     expect(again.removedBlobs).toEqual([]);
     expect(again.removedParts).toEqual([]);
