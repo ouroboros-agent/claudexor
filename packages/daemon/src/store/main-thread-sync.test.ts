@@ -4,6 +4,13 @@ import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EngineStore } from "./store.js";
 
+/** The store runs only where `node:sqlite` exists; elsewhere these cases are skipped, not failed. */
+const sqliteAvailable = await import("node:sqlite").then(
+  () => true,
+  () => false,
+);
+const describeStore = sqliteAvailable ? describe : describe.skip;
+
 /**
  * The request thread calls no Node storage-sync primitive (SYNTHESIS_R5 §2,
  * INV-143). The mock replaces the sync entry points of `node:fs` for every
@@ -52,7 +59,7 @@ afterEach(async () => {
   rmSync(root, { recursive: true, force: true });
 });
 
-describe("zero Node storage-sync calls on the request thread", () => {
+describeStore("zero Node storage-sync calls on the request thread", () => {
   it("commits, registers and awaits flushed() without fsyncSync/fdatasyncSync on main", async () => {
     const store = await EngineStore.open({
       daemonDir: join(root, "daemon"),

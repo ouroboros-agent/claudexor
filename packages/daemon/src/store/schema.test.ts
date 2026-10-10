@@ -1,8 +1,8 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { DatabaseSync } from "node:sqlite";
 import { StoreSchemaUnsupportedError } from "./errors.js";
 import { applyPragmas, MAIN_CONNECTION_PRAGMAS } from "./pragmas.js";
 import {
@@ -13,6 +13,13 @@ import {
   ensureSchema,
   readSchemaIdentity,
 } from "./schema.js";
+
+/** The store runs only where `node:sqlite` exists; elsewhere these cases are skipped, not failed. */
+const sqliteAvailable = await import("node:sqlite").then(
+  () => true,
+  () => false,
+);
+const describeStore = sqliteAvailable ? describe : describe.skip;
 
 let root: string;
 const open: DatabaseSync[] = [];
@@ -29,7 +36,8 @@ afterEach(() => {
   }
   rmSync(root, { recursive: true, force: true });
 });
-function connect(name = "engine.sqlite"): DatabaseSync {
+async function connect(name = "engine.sqlite"): Promise<DatabaseSync> {
+  const { DatabaseSync } = await import("node:sqlite");
   const db = new DatabaseSync(join(root, name));
   open.push(db);
   return db;
@@ -42,9 +50,9 @@ function masterRows(
     .all() as never;
 }
 
-describe("engine schema (SYNTHESIS_R5 §5)", () => {
-  it("creates the R5 DDL on a fresh file: STRICT tables, WITHOUT ROWID keys, partial indexes, identity", () => {
-    const db = connect();
+describeStore("engine schema (SYNTHESIS_R5 §5)", () => {
+  it("creates the R5 DDL on a fresh file: STRICT tables, WITHOUT ROWID keys, partial indexes, identity", async () => {
+    const db = await connect();
     applyPragmas(db, MAIN_CONNECTION_PRAGMAS);
     ensureSchema(db);
     const rows = masterRows(db);
@@ -99,8 +107,8 @@ describe("engine schema (SYNTHESIS_R5 §5)", () => {
     expect(meta["store_id"]).toMatch(/^[0-9a-f-]{36}$/);
   });
 
-  it("treats a header-only WAL file (journal mode set, no objects) as fresh", () => {
-    const db = connect();
+  it("treats a header-only WAL file (journal mode set, no objects) as fresh", async () => {
+    const db = await connect();
     applyPragmas(db, MAIN_CONNECTION_PRAGMAS);
     const identity = readSchemaIdentity(db);
     expect(identity.pageCount).toBeGreaterThan(0);
@@ -109,11 +117,11 @@ describe("engine schema (SYNTHESIS_R5 §5)", () => {
     expect(assertSchemaServable(readSchemaIdentity(db))).toBe("current");
   });
 
-  it("reopening a current schema writes nothing", () => {
-    const writer = connect();
+  it("reopening a current schema writes nothing", async () => {
+    const writer = await connect();
     applyPragmas(writer, MAIN_CONNECTION_PRAGMAS);
     ensureSchema(writer);
-    const observer = connect();
+    const observer = await connect();
     const version = () =>
       Number(
         (observer.prepare("PRAGMA data_version").get() as { data_version: number }).data_version,
@@ -123,12 +131,12 @@ describe("engine schema (SYNTHESIS_R5 §5)", () => {
     expect(version()).toBe(before);
   });
 
-  it("refuses a foreign database before any write", () => {
-    const foreign = connect();
+  it("refuses a foreign database before any write", async () => {
+    const foreign = await connect();
     foreign.exec(
       "CREATE TABLE theirs(x INTEGER) STRICT; PRAGMA application_id=7; PRAGMA user_version=3",
     );
-    const observer = connect();
+    const observer = await connect();
     const version = () =>
       Number(
         (observer.prepare("PRAGMA data_version").get() as { data_version: number }).data_version,
@@ -150,8 +158,8 @@ describe("engine schema (SYNTHESIS_R5 §5)", () => {
     expect(masterRows(foreign).map((row) => row.name)).toEqual(["theirs"]);
   });
 
-  it("refuses an unknown schema version in both directions and keeps the file untouched", () => {
-    const db = connect();
+  it("refuses an unknown schema version in both directions and keeps the file untouched", async () => {
+    const db = await connect();
     applyPragmas(db, MAIN_CONNECTION_PRAGMAS);
     ensureSchema(db);
     db.exec(`PRAGMA user_version=${ENGINE_SCHEMA_VERSION + 1}`);

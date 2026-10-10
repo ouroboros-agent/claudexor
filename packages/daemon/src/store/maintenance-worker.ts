@@ -1,10 +1,11 @@
 import { lstatSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import type { DatabaseSync } from "node:sqlite";
 import { isMainThread, parentPort, workerData, type MessagePort } from "node:worker_threads";
 import { BLOB_OWNER_PREDICATE } from "./blob-files.js";
 import { sqlitePrimaryCode } from "./errors.js";
 import { STORE_WORKER_DATA_KEY } from "./flusher-protocol.js";
+import { loadEngineRuntime } from "./runtime.js";
 import type {
   ExportReport,
   IntegrityReport,
@@ -114,8 +115,13 @@ function sweepCandidates(
   return result;
 }
 
-export function runMaintenanceWorker(port: MessagePort, data: MaintenanceWorkerData): void {
-  const db = new DatabaseSync(data.dbPath, { readOnly: true, timeout: 0 });
+/** `node:sqlite` is imported lazily: the daemon package must load on a Node without it. */
+export async function runMaintenanceWorker(
+  port: MessagePort,
+  data: MaintenanceWorkerData,
+): Promise<void> {
+  const { sqlite } = await loadEngineRuntime();
+  const db: DatabaseSync = new sqlite.DatabaseSync(data.dbPath, { readOnly: true, timeout: 0 });
   port.on("message", (request: MaintenanceRequest) => {
     let response: MaintenanceResponse;
     try {
@@ -143,5 +149,9 @@ export function runMaintenanceWorker(port: MessagePort, data: MaintenanceWorkerD
 
 const spawnData = workerData as Partial<MaintenanceWorkerData> | null | undefined;
 if (!isMainThread && parentPort && spawnData?.[STORE_WORKER_DATA_KEY] === "maintenance") {
-  runMaintenanceWorker(parentPort, spawnData as MaintenanceWorkerData);
+  void runMaintenanceWorker(parentPort, spawnData as MaintenanceWorkerData).catch(
+    (error: unknown) => {
+      throw error;
+    },
+  );
 }

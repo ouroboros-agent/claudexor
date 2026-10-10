@@ -3162,9 +3162,12 @@ and the new store-durability invariant land with that switch.
 What the core is:
 
 - One database `engine.sqlite` per daemon data root, opened through the
-  `EngineStore` adapter: a lazy `node:sqlite` import proves the bundled
-  SQLite is at least 3.51.3 (the WAL-reset corruption fix) and refuses typed
-  (`engine_runtime_unsupported`) before any root is touched; the file's
+  `EngineStore` adapter: `node:sqlite` is imported lazily — on the request
+  thread when a store opens and inside each worker when it starts — so the
+  daemon package itself loads on a Node without that module, and the open
+  proves the bundled SQLite is at least 3.51.3 (the WAL-reset corruption fix)
+  or refuses typed (`engine_runtime_unsupported`) before any root is touched;
+  the file's
   application id and schema version are checked before any write
   (`store_schema_unsupported`); the connection pragmas are applied and read
   back. The request thread is the single row writer: a mutation is a
@@ -3181,8 +3184,11 @@ What the core is:
   F_FULLFSYNC on macOS, also a device-wide barrier for `O_DSYNC` file data
   handed to the drive before it). The barrier is never derived from a
   checkpoint result, and a freshly started or restarted worker treats its
-  first pass as dirty. Every connection sets `checkpoint_fullfsync`, so the
-  checkpoint that completes a backfill syncs WAL → database → reuse in order;
+  first pass as dirty. Every connection that can checkpoint — the writer and
+  the flusher; the maintenance connection is read-only and never checkpoints
+  — sets `checkpoint_fullfsync`, so the checkpoint that completes a backfill
+  syncs WAL → database → reuse in order and database pages become durable
+  there, not through the WAL fsync;
   the writer's `wal_autocheckpoint` of 4000 pages (about 16 MiB) is the
   trigger threshold of that checkpoint, not a physical bound: under a pinned
   reader (a maintenance integrity check or export, a long statement) or a

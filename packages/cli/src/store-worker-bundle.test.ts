@@ -7,6 +7,11 @@ import { build } from "esbuild";
 import { afterEach, describe, expect, it } from "vitest";
 
 const repoRoot = resolve(import.meta.dirname, "../../..");
+/** The store (and this smoke) runs only where `node:sqlite` exists. */
+const sqliteAvailable = await import("node:sqlite").then(
+  () => true,
+  () => false,
+);
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -21,7 +26,7 @@ afterEach(() => {
  * built store with that bundle as the worker entry.
  */
 describe("store workers inside the single-file daemon bundle", () => {
-  it.skipIf(process.platform === "win32")(
+  it.skipIf(process.platform === "win32" || !sqliteAvailable)(
     "flusher and maintenance workers run from the bundle without starting a daemon",
     async () => {
       const daemonEntry = join(repoRoot, "packages", "cli", "dist", "claudexord.js");

@@ -12,8 +12,15 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { DatabaseSync } from "node:sqlite";
+
+/** The store runs only where `node:sqlite` exists; elsewhere these cases are skipped, not failed. */
+const sqliteAvailable = await import("node:sqlite").then(
+  () => true,
+  () => false,
+);
+const describeStore = sqliteAvailable ? describe : describe.skip;
 
 /**
  * Durability class (SYNTHESIS_R5 §13.2): a child process drives the BUILT
@@ -27,6 +34,7 @@ const childSource = `
 import { EngineStore } from ${JSON.stringify(pathToFileURL(join(distStore, "store.js")).href)};
 import { BlobFiles } from ${JSON.stringify(pathToFileURL(join(distStore, "blob-files.js")).href)};
 import { writeExternalFile } from ${JSON.stringify(pathToFileURL(join(distStore, "external-files.js")).href)};
+
 const [daemonDir, mode] = process.argv.slice(2);
 const store = await EngineStore.open({
   daemonDir,
@@ -118,7 +126,11 @@ async function until(predicate: () => boolean, label: string, timeoutMs = 15_000
   }
 }
 
-function verify(daemonDir: string, acked: number): { rows: number; integrity: string } {
+async function verify(
+  daemonDir: string,
+  acked: number,
+): Promise<{ rows: number; integrity: string }> {
+  const { DatabaseSync } = await import("node:sqlite");
   const db = new DatabaseSync(join(daemonDir, "engine.sqlite"));
   try {
     const integrity = (db.prepare("PRAGMA integrity_check").get() as { integrity_check: string })
@@ -145,7 +157,7 @@ function verify(daemonDir: string, acked: number): { rows: number; integrity: st
   }
 }
 
-describe("durability class (SYNTHESIS_R5 §13.2)", () => {
+describeStore("durability class (SYNTHESIS_R5 §13.2)", () => {
   it("kill -9 after ACK: every acknowledged commit survives, the database is intact", async () => {
     const daemonDir = join(root, "after-ack");
     const driven = drive(daemonDir, "normal");
@@ -154,7 +166,7 @@ describe("durability class (SYNTHESIS_R5 §13.2)", () => {
     await driven.killed;
     const acked = driven.acks.length;
     expect(acked).toBeGreaterThanOrEqual(40);
-    const result = verify(daemonDir, acked);
+    const result = await verify(daemonDir, acked);
     expect(result.integrity).toBe("ok");
     expect(result.rows).toBeGreaterThanOrEqual(acked);
   });
@@ -171,7 +183,7 @@ describe("durability class (SYNTHESIS_R5 §13.2)", () => {
     driven.child.kill("SIGKILL");
     await driven.killed;
     const acked = driven.acks.length;
-    const result = verify(daemonDir, acked);
+    const result = await verify(daemonDir, acked);
     expect(result.integrity).toBe("ok");
     expect(result.rows).toBeGreaterThanOrEqual(acked);
   });
@@ -205,6 +217,7 @@ describe("durability class (SYNTHESIS_R5 §13.2)", () => {
     // The copy opened on its own is a consistent prefix of the history: every
     // commit acknowledged before the freeze, at most one commit whose ACK had
     // not reached the pipe yet, never a torn row.
+    const { DatabaseSync } = await import("node:sqlite");
     const db = new DatabaseSync(join(snapshot, "engine.sqlite"));
     let rows: Array<{ id: string; params_sha: string }>;
     try {

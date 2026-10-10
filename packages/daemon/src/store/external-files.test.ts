@@ -10,6 +10,13 @@ import {
   type ExternalRegistry,
 } from "./external-files.js";
 
+/** The store runs only where `node:sqlite` exists; elsewhere these cases are skipped, not failed. */
+const sqliteAvailable = await import("node:sqlite").then(
+  () => true,
+  () => false,
+);
+const describeStore = sqliteAvailable ? describe : describe.skip;
+
 const openSpy = vi.hoisted(() => vi.fn());
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
@@ -35,7 +42,7 @@ beforeEach(() => {
 });
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 
-describe("external files (SYNTHESIS_R5 §4.4)", () => {
+describeStore("external files (SYNTHESIS_R5 §4.4)", () => {
   it("writes through an O_DSYNC temp, renames, registers the directory, leaves no temp", async () => {
     const { constants } = await import("node:fs");
     const dir = join(root, "final");

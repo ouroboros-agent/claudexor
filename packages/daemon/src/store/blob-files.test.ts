@@ -6,6 +6,13 @@ import { BlobFiles, INLINE_BODY_MAX_BYTES, sha256Hex } from "./blob-files.js";
 import { Obligations } from "./obligations.js";
 import { EngineStore } from "./store.js";
 
+/** The store runs only where `node:sqlite` exists; elsewhere these cases are skipped, not failed. */
+const sqliteAvailable = await import("node:sqlite").then(
+  () => true,
+  () => false,
+);
+const describeStore = sqliteAvailable ? describe : describe.skip;
+
 function builtWorkerEntry(name: string): string {
   const entry = resolve(import.meta.dirname, "../../dist/store", name);
   if (!existsSync(entry)) throw new Error(`built worker missing at ${entry}; run pnpm build first`);
@@ -45,7 +52,7 @@ const blobRows = (store: EngineStore) =>
     (r) => r.sha256,
   );
 
-describe("blob files (SYNTHESIS_R5 §6.5)", () => {
+describeStore("blob files (SYNTHESIS_R5 §6.5)", () => {
   it("stores bodies up to 64 KiB inline and larger bodies as content-addressed files", async () => {
     const store = await openStore();
     const blobs = new BlobFiles(store);

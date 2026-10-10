@@ -12,6 +12,13 @@ import {
 } from "./errors.js";
 import { EngineStore } from "./store.js";
 
+/** The store runs only where `node:sqlite` exists; elsewhere these cases are skipped, not failed. */
+const sqliteAvailable = await import("node:sqlite").then(
+  () => true,
+  () => false,
+);
+const describeStore = sqliteAvailable ? describe : describe.skip;
+
 function builtWorkerEntry(name: string): string {
   const entry = resolve(import.meta.dirname, "../../dist/store", name);
   if (!existsSync(entry)) throw new Error(`built worker missing at ${entry}; run pnpm build first`);
@@ -22,7 +29,7 @@ function sqliteError(errcode: number, message = "sqlite failure"): Error {
   return Object.assign(new Error(message), { code: "ERR_SQLITE_ERROR", errcode, errstr: message });
 }
 
-describe("typed store errors", () => {
+describeStore("typed store errors", () => {
   it("maps SQLite result codes and ENOSPC onto the store classes, leaves the rest alone", () => {
     expect(mapStoreError(sqliteError(13, "database or disk is full"), "commit")).toBeInstanceOf(
       StoreFullError,
@@ -92,7 +99,7 @@ function ramDisk(): { mount: string; detach: () => void } | null {
   }
 }
 
-describe("ENOSPC → store_full on a full volume", () => {
+describeStore("ENOSPC → store_full on a full volume", () => {
   let root: string;
   let disk: ReturnType<typeof ramDisk> = null;
   const stores: EngineStore[] = [];

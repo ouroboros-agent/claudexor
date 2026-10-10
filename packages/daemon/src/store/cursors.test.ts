@@ -14,6 +14,13 @@ import { createPartition } from "./partitions.js";
 import { appendEvent } from "./retention.js";
 import { EngineStore } from "./store.js";
 
+/** The store runs only where `node:sqlite` exists; elsewhere these cases are skipped, not failed. */
+const sqliteAvailable = await import("node:sqlite").then(
+  () => true,
+  () => false,
+);
+const describeStore = sqliteAvailable ? describe : describe.skip;
+
 function builtWorkerEntry(name: string): string {
   const entry = resolve(import.meta.dirname, "../../dist/store", name);
   if (!existsSync(entry)) throw new Error(`built worker missing at ${entry}; run pnpm build first`);
@@ -49,7 +56,7 @@ const failure = (fn: () => unknown): unknown => {
   }
 };
 
-describe("journal cursors over partition generations (SYNTHESIS_R5 §5 rules)", () => {
+describeStore("journal cursors over partition generations (SYNTHESIS_R5 §5 rules)", () => {
   it("encodes and validates byte-for-byte like the journal package", () => {
     const journal = new DurableJournal({ rootDir: join(root, "journal"), partition: "project:p" });
     journals.push(journal);

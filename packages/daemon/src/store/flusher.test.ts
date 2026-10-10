@@ -17,6 +17,13 @@ import { StoreFlushUnavailableError } from "./errors.js";
 import type { FlusherPassReport } from "./flusher-protocol.js";
 import { EngineStore } from "./store.js";
 
+/** The store runs only where `node:sqlite` exists; elsewhere these cases are skipped, not failed. */
+const sqliteAvailable = await import("node:sqlite").then(
+  () => true,
+  () => false,
+);
+const describeStore = sqliteAvailable ? describe : describe.skip;
+
 /** The worker runs from the built package: Node loads it with its own loader. */
 function builtWorkerEntry(name: string): string {
   const entry = resolve(import.meta.dirname, "../../dist/store", name);
@@ -86,7 +93,7 @@ function materialize(dir: string, name: string): void {
   renameSync(tmp, join(dir, name));
 }
 
-describe("flusher protocol", () => {
+describeStore("flusher protocol", () => {
   it("T-BAR-1: the barrier follows data_version, never the checkpoint result", async () => {
     const store = await openStore({ manualTick: true });
     const seen = reports(store);

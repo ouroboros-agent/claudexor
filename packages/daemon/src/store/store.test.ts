@@ -6,6 +6,13 @@ import { EngineRuntimeUnsupportedError, StoreError } from "./errors.js";
 import { MAIN_CONNECTION_PRAGMAS, readPragmas } from "./pragmas.js";
 import { EngineStore } from "./store.js";
 
+/** The store runs only where `node:sqlite` exists; elsewhere these cases are skipped, not failed. */
+const sqliteAvailable = await import("node:sqlite").then(
+  () => true,
+  () => false,
+);
+const describeStore = sqliteAvailable ? describe : describe.skip;
+
 /** The worker runs from the built package: Node loads it with its own loader. */
 function builtWorkerEntry(name: string): string {
   const entry = resolve(import.meta.dirname, "../../dist/store", name);
@@ -31,7 +38,7 @@ async function openStore(daemonDir = join(root, "daemon")): Promise<EngineStore>
   return store;
 }
 
-describe("EngineStore adapter", () => {
+describeStore("EngineStore adapter", () => {
   it("applies and reads back the main-connection pragmas", async () => {
     const store = await openStore();
     expect(readPragmas(store.db, MAIN_CONNECTION_PRAGMAS)).toEqual({

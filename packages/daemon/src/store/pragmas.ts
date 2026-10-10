@@ -3,8 +3,10 @@ import type { DatabaseSync } from "node:sqlite";
 /**
  * Connection pragmas of the engine store (SYNTHESIS_R5 §2, topology A2).
  *
- * Main connection: WAL + NORMAL (a commit performs no sync), autocheckpoint at
- * 4000 pages (16 MiB — the physical WAL bound, independent of the flusher)
+ * Main connection: WAL + NORMAL (a commit performs no sync), autocheckpoint
+ * TRIGGERED at 4000 pages (about 16 MiB of frames — a threshold, not a WAL
+ * size bound: a pinned reader or a large transaction grows the WAL beyond it
+ * until the reader releases, R5_AMENDMENTS A6)
  * with `checkpoint_fullfsync=1` so the one checkpoint that may complete a
  * backfill on this thread syncs WAL -> DB -> reuse with F_FULLFSYNC; plain
  * `fullfsync` stays off so nothing else on the request thread syncs. The busy

@@ -1,8 +1,8 @@
 import { closeSync, fstatSync, fsyncSync, openSync, statSync } from "node:fs";
-import { DatabaseSync } from "node:sqlite";
 import { isMainThread, parentPort, workerData, type MessagePort } from "node:worker_threads";
 import { fsyncDirectory } from "@claudexor/util";
 import { applyPragmas, FLUSHER_CONNECTION_PRAGMAS } from "./pragmas.js";
+import { loadEngineRuntime } from "./runtime.js";
 import {
   FLUSH_INTERVAL_MS,
   STORE_WORKER_DATA_KEY,
@@ -21,16 +21,22 @@ import {
  *      PROVEN barrier (the first pass of a worker life is always dirty);
  *   4. `PRAGMA wal_checkpoint(PASSIVE)` — space reclamation only; its result
  *      is reported as a fact and NEVER decides whether to sync;
- *   5. if dirty: the explicit `fsyncSync(walFd)` — the barrier (device-wide
- *      on macOS: it also fixes O_DSYNC file data and DB pages handed to the
- *      drive before it);
+ *   5. if dirty: the explicit `fsyncSync(walFd)` — the barrier: it fixes the
+ *      WAL frames and, as a device-wide barrier on macOS, the O_DSYNC file
+ *      data already handed to the drive. Database pages become durable
+ *      through the ff-checkpoint (`checkpoint_fullfsync=1` on every
+ *      checkpointing connection) before the WAL is reused, not through this
+ *      fsync (R5_AMENDMENTS B5);
  *   6. `synced(g_target)` with the pass facts.
- * The worker never writes a row and never waits for a lock.
+ * The worker never writes a row and never waits for a lock. `node:sqlite` is
+ * imported lazily so the daemon package loads on a Node without it and the
+ * typed `engine_runtime_unsupported` stays reachable.
  */
-export function runFlusherWorker(port: MessagePort, data: FlusherWorkerData): void {
+export async function runFlusherWorker(port: MessagePort, data: FlusherWorkerData): Promise<void> {
   const hooks = data.hooks ?? {};
   const walPath = `${data.dbPath}-wal`;
-  const db = new DatabaseSync(data.dbPath, { timeout: 0 });
+  const { sqlite } = await loadEngineRuntime();
+  const db = new sqlite.DatabaseSync(data.dbPath, { timeout: 0 });
   applyPragmas(db, FLUSHER_CONNECTION_PRAGMAS);
   const dataVersion = db.prepare("PRAGMA data_version");
   const passive = db.prepare("PRAGMA wal_checkpoint(PASSIVE)");
@@ -179,5 +185,7 @@ export function runFlusherWorker(port: MessagePort, data: FlusherWorkerData): vo
 
 const spawnData = workerData as Partial<FlusherWorkerData> | null | undefined;
 if (!isMainThread && parentPort && spawnData?.[STORE_WORKER_DATA_KEY] === "flusher") {
-  runFlusherWorker(parentPort, spawnData as FlusherWorkerData);
+  void runFlusherWorker(parentPort, spawnData as FlusherWorkerData).catch((error: unknown) => {
+    throw error;
+  });
 }
