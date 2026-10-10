@@ -1,0 +1,19 @@
+{
+  "$ref": "#/definitions/ControlQuotaReadRequest",
+  "definitions": {
+    "ControlQuotaReadRequest": {
+      "type": "object",
+      "properties": {
+        "view": {
+          "type": "string",
+          "enum": [
+            "resources",
+            "constraint_freshness"
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

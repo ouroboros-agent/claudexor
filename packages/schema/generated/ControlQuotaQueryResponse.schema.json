@@ -931,6 +931,115 @@
           ],
           "additionalProperties": false,
           "description": "Current quota snapshots without a fabricated aggregate."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "snapshots": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "subject": {
+                    "$ref": "#/definitions/ControlQuotaQueryResponse/anyOf/0/properties/snapshots/items/properties/subject"
+                  },
+                  "constraints": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "$ref": "#/definitions/ControlQuotaQueryResponse/anyOf/0/properties/snapshots/items/properties/subject/properties/harness"
+                        },
+                        "label": {
+                          "$ref": "#/definitions/ControlQuotaQueryResponse/anyOf/0/properties/snapshots/items/properties/constraints/items/properties/label"
+                        },
+                        "applies_to_models": {
+                          "$ref": "#/definitions/ControlQuotaQueryResponse/anyOf/0/properties/snapshots/items/properties/constraints/items/properties/applies_to_models"
+                        },
+                        "applies_to_model_prefixes": {
+                          "$ref": "#/definitions/ControlQuotaQueryResponse/anyOf/0/properties/snapshots/items/properties/constraints/items/properties/applies_to_model_prefixes"
+                        },
+                        "applies_to_unspecified_model": {
+                          "$ref": "#/definitions/ControlQuotaQueryResponse/anyOf/0/properties/snapshots/items/properties/constraints/items/properties/applies_to_unspecified_model"
+                        },
+                        "used_ratio": {
+                          "$ref": "#/definitions/ControlQuotaQueryResponse/anyOf/0/properties/snapshots/items/properties/constraints/items/properties/used_ratio"
+                        },
+                        "window_seconds": {
+                          "$ref": "#/definitions/ControlQuotaQueryResponse/anyOf/0/properties/snapshots/items/properties/constraints/items/properties/window_seconds"
+                        },
+                        "resets_at": {
+                          "$ref": "#/definitions/ControlQuotaQueryResponse/anyOf/0/properties/snapshots/items/properties/constraints/items/properties/resets_at"
+                        },
+                        "cooldown_until": {
+                          "$ref": "#/definitions/ControlQuotaQueryResponse/anyOf/0/properties/snapshots/items/properties/constraints/items/properties/cooldown_until"
+                        },
+                        "freshness": {
+                          "type": "string",
+                          "enum": [
+                            "fresh",
+                            "stale",
+                            "unknown"
+                          ],
+                          "description": "Read-time freshness from raw snapshot freshness, observation age (stale after 300000ms), and this constraint's own reset (stale at equality); a reset cutoff stales earlier evidence. Never inferred from aggregate freshness or a sibling reset; no refill is inferred. The compatibility reset_credits row reports its resets facet's freshness instead."
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "label",
+                        "used_ratio",
+                        "window_seconds",
+                        "resets_at",
+                        "freshness"
+                      ],
+                      "additionalProperties": false,
+                      "description": "One independent vendor quota window; without model ids or declared prefixes it applies to every model, and null usage stays unknown."
+                    }
+                  },
+                  "source": {
+                    "$ref": "#/definitions/ControlQuotaQueryResponse/anyOf/0/properties/snapshots/items/properties/source"
+                  },
+                  "observed_at": {
+                    "$ref": "#/definitions/ControlQuotaQueryResponse/anyOf/0/properties/snapshots/items/properties/observed_at"
+                  },
+                  "freshness": {
+                    "$ref": "#/definitions/ControlQuotaQueryResponse/anyOf/0/properties/snapshots/items/properties/freshness"
+                  },
+                  "snapshot_id": {
+                    "$ref": "#/definitions/ControlQuotaQueryResponse/anyOf/0/properties/snapshots/items/properties/snapshot_id"
+                  },
+                  "availability": {
+                    "$ref": "#/definitions/ControlQuotaQueryResponse/anyOf/0/properties/snapshots/items/properties/availability"
+                  }
+                },
+                "required": [
+                  "subject",
+                  "constraints",
+                  "source",
+                  "observed_at",
+                  "freshness"
+                ],
+                "additionalProperties": false,
+                "description": "One vendor-owned quota snapshot plus its derived availability projection."
+              }
+            },
+            "absences": {
+              "$ref": "#/definitions/ControlQuotaQueryResponse/anyOf/0/properties/absences"
+            },
+            "refreshed_at": {
+              "$ref": "#/definitions/ControlQuotaQueryResponse/anyOf/0/properties/refreshed_at"
+            },
+            "refresh_skipped": {
+              "$ref": "#/definitions/ControlQuotaQueryResponse/anyOf/0/properties/refresh_skipped"
+            }
+          },
+          "required": [
+            "snapshots",
+            "refreshed_at"
+          ],
+          "additionalProperties": false,
+          "description": "Opt-in GET /v2/quota?view=constraint_freshness response. Adds constraint freshness while preserving aggregate snapshot freshness and all observed values. No refresh or durable write."
         }
       ]
     }

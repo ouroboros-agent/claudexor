@@ -302,6 +302,19 @@ The CLI equivalent is `claudexor quota --resources --refresh --profile claude/wo
 Amounts preserve decimal strings, units and nullable provider scale/currency; failed
 reads retain stale values rather than inventing zero. Render reset descriptions and
 contextual diagnostic details instead of raw native scope/reason identifiers.
+Per-window freshness is a separate GET-only opt-in: `GET /v2/quota` with query
+`view=constraint_freshness` returns `ControlQuotaFreshnessResponse`, the legacy shape
+with a required `freshness` (`fresh`, `stale` or `unknown`) on every constraint, so an
+elapsed five-hour reset no longer stales a weekly window that is still current. Snapshot
+`freshness`, observation times, usage, availability and routing are unchanged, and the
+read never refreshes quota. The legacy Codex `reset_credits` row carries the freshness
+of its resets facet. Discovery is optional (the GET quota `view` enum lists
+`constraint_freshness`); validate the whole response as either that shape or strict
+legacy, and reject partial or mixed metadata. A 3.24 engine ignores the selector and
+returns legacy data, whose snapshot freshness then applies to every window. 3.25.0 and
+3.25.1 answer HTTP 400; one plain GET is then the compatible fallback. Never fall back
+after other statuses, transport errors or malformed payloads, and never use POST for
+this read.
 
 `POST /v2/account-resets` accepts `{target, offer_id, grant_id?}` and requires an
 Idempotency-Key. The receipt separates provider outcome from readback freshness;

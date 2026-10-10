@@ -23,6 +23,9 @@ describe("resource wire negotiation and direct reset route", () => {
   it("advertises the opt-in query and key-required reset operation", () => {
     const catalog = OPERATION_CATALOG;
     expect(catalog.operations.find((o) => o.id === "get:quota")?.parameters).toContainEqual(
+      expect.objectContaining({ name: "view", enum: ["resources", "constraint_freshness"] }),
+    );
+    expect(catalog.operations.find((o) => o.id === "post:quota")?.parameters).toContainEqual(
       expect.objectContaining({ name: "view", enum: ["resources"] }),
     );
     expect(catalog.operations.find((o) => o.id === "post:account-resets")).toMatchObject({

@@ -142,6 +142,15 @@ limits remain applicable. The retirement survives replay. Usage-statistics failu
 never imply that every subscription is spent; unrelated account polling continues.
 Observing Accounts reuses the first acquisition until an explicit or credential-driven
 refresh, without a client view continuously spawning vendor checks.
+Passive quota consumers may directly request per-window freshness without
+requiring operation discovery: a reset in one
+window need not stale a sibling whose own observation is still current.
+Fully valid legacy responses retain conservative snapshot freshness; missing
+metadata never implies a fresh window, and partial explicit metadata is rejected.
+This display projection preserves the conservative snapshot used by routing,
+the original observation time and usage, and unknown values; it never invents
+refill or triggers provider work. An account reset still makes earlier evidence
+historical for every window.
 
 Account resources extend that same observation owner with independently aged
 balances, spending facts and reset offers. An explicit reset is a durable direct

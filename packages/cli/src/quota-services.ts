@@ -1,6 +1,8 @@
 /** /v2/quota control services over the daemon's QuotaRegistry. */
 import type { QuotaRegistry } from "@claudexor/daemon";
 import {
+  ControlQuotaFreshnessResponse,
+  ControlQuotaReadRequest,
   ControlQuotaRefreshRequest,
   withQuotaAvailability,
   type ControlQuotaResponse,
@@ -17,6 +19,44 @@ export function accountResourcesResponse(
   return { ...withQuotaAvailability(response), resources };
 }
 
+type DecoratedSnapshot = ControlQuotaResponse["snapshots"][number];
+
+/** The historical Codex reset-credit label and the resets facet it came from. */
+function resetCreditLabel(
+  resources: readonly AccountResourceSnapshot[],
+  snapshot: DecoratedSnapshot,
+) {
+  const row = resources.find(
+    (row) =>
+      row.target.harness === snapshot.subject.harness &&
+      row.target.profile_id === snapshot.subject.subject_id,
+  );
+  const count = row?.resets.value?.find((offer) => offer.id === "codex_granted")?.available_count;
+  return row && typeof count === "number" && count > 0 && snapshot.source === "codex_app_server"
+    ? {
+        facet: row.resets,
+        constraint: {
+          id: "reset_credits",
+          label: `${count} reset credit${count === 1 ? "" : "s"} available`,
+          used_ratio: null,
+          window_seconds: null,
+          resets_at: null,
+          cooldown_until: null,
+        },
+      }
+    : null;
+}
+
+function withResetCreditLabel<T extends object>(snapshot: DecoratedSnapshot, label: T) {
+  return {
+    ...snapshot,
+    constraints: [
+      ...snapshot.constraints.filter((constraint) => constraint.id !== "reset_credits"),
+      label,
+    ],
+  };
+}
+
 /** Compatibility text belongs at the old wire boundary, never in canonical
  * quota evidence or admission. Rich clients get typed reset inventory only. */
 export function legacyQuotaResponse(
@@ -28,32 +68,32 @@ export function legacyQuotaResponse(
   return {
     ...decorated,
     snapshots: decorated.snapshots.map((snapshot) => {
-      const row = resources.find(
-        (row) =>
-          row.target.harness === snapshot.subject.harness &&
-          row.target.profile_id === snapshot.subject.subject_id,
-      );
-      const count = row?.resets.value?.find(
-        (offer) => offer.id === "codex_granted",
-      )?.available_count;
-      return typeof count === "number" && count > 0 && snapshot.source === "codex_app_server"
-        ? {
-            ...snapshot,
-            constraints: [
-              ...snapshot.constraints.filter((constraint) => constraint.id !== "reset_credits"),
-              {
-                id: "reset_credits",
-                label: `${count} reset credit${count === 1 ? "" : "s"} available`,
-                used_ratio: null,
-                window_seconds: null,
-                resets_at: null,
-                cooldown_until: null,
-              },
-            ],
-          }
-        : snapshot;
+      const credits = resetCreditLabel(resources, snapshot);
+      return credits ? withResetCreditLabel(snapshot, credits.constraint) : snapshot;
     }),
   };
+}
+
+/** Opt-in display read: the legacy shape plus each window's own freshness.
+ * The compatibility label is not a quota window: it carries the freshness of
+ * the resets facet its count came from, never fresher than an unknown snapshot. */
+export function constraintFreshnessQuotaResponse(
+  registry: QuotaRegistry,
+): ControlQuotaFreshnessResponse {
+  const resources = registry.readResources?.() ?? [];
+  const decorated = withQuotaAvailability(registry.readConstraintFreshness());
+  return ControlQuotaFreshnessResponse.parse({
+    ...decorated,
+    snapshots: decorated.snapshots.map((snapshot) => {
+      const credits = resetCreditLabel(resources, snapshot);
+      return credits
+        ? withResetCreditLabel(snapshot, {
+            ...credits.constraint,
+            freshness: snapshot.freshness === "unknown" ? "unknown" : credits.facet.freshness,
+          })
+        : snapshot;
+    }),
+  });
 }
 
 /** Bind GET/POST /v2/quota to the registry. Both routes decorate each snapshot
@@ -63,10 +103,12 @@ export function legacyQuotaResponse(
  * own boundary. POST accepts an optional model to compute state against. */
 export function quotaControlServices(quotaRegistry: () => QuotaRegistry) {
   return {
-    quota: async (input?: { view?: "resources" }) =>
-      input?.view === "resources"
-        ? accountResourcesResponse(quotaRegistry())
-        : legacyQuotaResponse(quotaRegistry(), quotaRegistry().read()),
+    quota: async (input?: ControlQuotaReadRequest) => {
+      const { view } = ControlQuotaReadRequest.parse(input ?? {});
+      if (view === "resources") return accountResourcesResponse(quotaRegistry());
+      if (view === "constraint_freshness") return constraintFreshnessQuotaResponse(quotaRegistry());
+      return legacyQuotaResponse(quotaRegistry(), quotaRegistry().read());
+    },
     refreshQuota: async (input?: ControlQuotaRefreshRequest & { view?: "resources" }) => {
       const { view, ...body } = input ?? {};
       const request = ControlQuotaRefreshRequest.parse(body);

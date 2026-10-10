@@ -16,6 +16,7 @@ import {
   type CredentialRoute,
   type HarnessEvent,
   type QuotaConstraint,
+  type ControlQuotaFreshnessSnapshot,
   type QuotaSnapshot,
   type QuotaSource,
 } from "@claudexor/schema";
@@ -88,6 +89,28 @@ export function activeQuotaSnapshots(
   snapshots: readonly QuotaSnapshot[],
   now: number,
 ): QuotaSnapshot[] {
+  return activeRawQuotaSnapshots(snapshots, now).map((snapshot) => staleAt(snapshot, now));
+}
+
+/** Passive display projection. Apply the SAME aging rule to each singleton
+ * window using raw freshness, before aggregate aging can erase that evidence. */
+export function activeQuotaSnapshotsWithConstraintFreshness(
+  snapshots: readonly QuotaSnapshot[],
+  now: number,
+): ControlQuotaFreshnessSnapshot[] {
+  return activeRawQuotaSnapshots(snapshots, now).map((snapshot) => ({
+    ...staleAt(snapshot, now),
+    constraints: snapshot.constraints.map((constraint) => ({
+      ...constraint,
+      freshness: staleAt({ ...snapshot, constraints: [constraint] }, now).freshness,
+    })),
+  }));
+}
+
+function activeRawQuotaSnapshots(
+  snapshots: readonly QuotaSnapshot[],
+  now: number,
+): QuotaSnapshot[] {
   return snapshots
     .map((snapshot) => withoutExpiredScopedCooldowns(snapshot, now))
     .filter((snapshot): snapshot is QuotaSnapshot => snapshot !== null)
@@ -101,8 +124,7 @@ export function activeQuotaSnapshots(
           return Number.isFinite(at) && at > now;
         }),
       );
-    })
-    .map((snapshot) => staleAt(snapshot, now));
+    });
 }
 
 export const QUOTA_FRESHNESS_TTL_MS = 5 * 60_000;
