@@ -2187,7 +2187,15 @@ current memory facts (heap used/limit, RSS, external bytes, effective heap args)
 plus the first normal-admission snapshot. It is also available in recovery-only
 mode, where admission memory is null until normal admission has opened. Sampling
 does not force GC or traverse retained commands; job counts use store sizes.
-The protocol handshake remains unchanged. No memory thresholds affect admission.
+`loop` carries the last completed ten-second window of event-loop facts: delay
+p50/p99/max from `monitorEventLoopDelay` (sampled at 10 ms, so an idle loop's
+p50 sits near 10 ms, and reset every window), the `eventLoopUtilization` busy
+share, and the GC pauses a `PerformanceObserver` saw (count, total, longest).
+It is null until the first window completes; a stalled loop rolls its window
+late, so `windowMs` grows with the stall. `claudexor daemon status` prints the
+same window as one line. The status route reaches the daemon in process, so it
+answers while the loop is merely slow. The protocol handshake remains unchanged.
+No memory or loop thresholds affect admission.
 
 <!-- BEGIN GENERATED ENDPOINTS (node scripts/gen-endpoints-doc.mjs; do not edit by hand) -->
 - `GET /healthz`

@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { loopFacts } from "@claudexor/daemon";
 import { armDaemonLifecycle, runStartupCrashGc } from "./daemon-lifecycle.js";
 import { rmSync as __rmSyncReap } from "node:fs";
 import { afterAll as __afterAllReap } from "vitest";
@@ -58,7 +59,11 @@ describe("armDaemonLifecycle", () => {
       // survive every snapshot interval AND the shutdown finalizer.
       vi.advanceTimersByTime(10_000);
       expect(readFileSync(pidsPath, "utf8")).toBe(previousLife);
+      // The armed lifecycle measures loop windows from the start, and its
+      // finalizer stops them.
+      expect(loopFacts()).not.toBeNull();
       lifecycle.finalize();
+      expect(loopFacts()).toBeNull();
       expect(readFileSync(pidsPath, "utf8")).toBe(previousLife);
       // The later NORMAL start's crash-GC consumes the reap list.
       await runStartupCrashGc({

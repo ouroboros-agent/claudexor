@@ -8,6 +8,7 @@
  */
 import { appendFileSync } from "node:fs";
 import { join } from "node:path";
+import { startLoopFacts } from "@claudexor/daemon";
 import { safeProblemMessage } from "@claudexor/util";
 import { reapRecordedOrphans, writePidsSnapshot } from "./orphan-reaper.js";
 import { sweepOrphanWorkspaces } from "./orphan-sweeper.js";
@@ -83,8 +84,9 @@ export async function runStartupCrashGc(
 
 /**
  * Post-start: periodic live-children snapshots (the reap list a crash leaves
- * behind) and SIGTERM/SIGINT -> the shutdown state machine (abort children,
- * persist, close, bounded escalation). Returns the finalizer for main()'s tail.
+ * behind), windowed event-loop facts for daemon status, and SIGTERM/SIGINT ->
+ * the shutdown state machine (abort children, persist, close, bounded
+ * escalation). Returns the finalizer for main()'s tail.
  *
  * The snapshot timer is NOT armed here: with zero live children a snapshot
  * DELETES pids.json, and until stage-4 crash-GC has consumed the previous
@@ -132,6 +134,7 @@ export function armDaemonLifecycle(deps: LifecycleDeps): {
   const onSigint = () => onShutdownSignal("SIGINT");
   signals.on("SIGTERM", onSigterm);
   signals.on("SIGINT", onSigint);
+  const stopLoopFacts = startLoopFacts();
 
   return {
     beginPidSnapshots: () => {
@@ -147,6 +150,7 @@ export function armDaemonLifecycle(deps: LifecycleDeps): {
       pidsTimer = null;
       signals.off("SIGTERM", onSigterm);
       signals.off("SIGINT", onSigint);
+      stopLoopFacts();
       // Graceful stop aborted all children; one final snapshot records any
       // that survived the grace window (SIGKILL escalation may be in flight).
       // Without armed snapshots there were no children to record, and the
