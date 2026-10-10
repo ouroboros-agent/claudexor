@@ -1,3 +1,4 @@
+import { cachedLoad } from "./config-cache.js";
 import { ConfigParseError } from "./config-error.js";
 import { concurrencyEnv, omitImplicitConcurrency } from "./concurrency.js";
 import { readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
@@ -306,14 +307,9 @@ export function loadConfig(repoRoot: string): ResolvedConfig {
   return ResolvedConfigSchema.parse({ project, trust, global, sources });
 }
 
-const parsedConfigs = new Map<string, { key: string; config: ResolvedConfig }>();
-
 /**
- * `loadConfig` for per-request readers. It parses again only when a resolved
- * source path, a source file's identity (device, inode, size, mtime, ctime,
- * taken before parsing) or a CLAUDEXOR_* environment value changed; each call
- * still returns a private copy. Unreadable sources and failed parses are never
- * cached, so they behave exactly like `loadConfig`.
+ * `loadConfig` for per-request readers: parses again only when a source's
+ * identity or a CLAUDEXOR_* value changed (see `cachedLoad`).
  */
 export function loadConfigCached(
   repoRoot: string,
@@ -324,32 +320,7 @@ export function loadConfigCached(
     join(repoRoot, ".claudexor", "config.yaml"),
     trustConfigPath(repoRoot),
   ];
-  let key: string;
-  let present: string[];
-  try {
-    const stats = paths.map((path) => statSync(path, { bigint: true, throwIfNoEntry: false }));
-    present = paths.filter((_, i) => (stats[i]?.size ?? 0n) > 0n);
-    key = JSON.stringify([
-      paths.map((path, i) => {
-        const s = stats[i];
-        return [path, s ? `${s.dev}:${s.ino}:${s.size}:${s.mtimeNs}:${s.ctimeNs}` : null];
-      }),
-      Object.entries(process.env)
-        .filter(([name]) => name.startsWith("CLAUDEXOR_"))
-        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
-    ]);
-  } catch {
-    return load(repoRoot);
-  }
-  const cached = parsedConfigs.get(repoRoot);
-  if (cached?.key === key) return structuredClone(cached.config);
-  const config = load(repoRoot);
-  // A non-empty source that did not load was unreadable (the reader turns EMFILE/EACCES
-  // into "absent"): caching that answer would freeze defaults under an unchanged identity.
-  if (present.some((path) => !config.sources.includes(path))) return config;
-  if (parsedConfigs.size >= 16) parsedConfigs.clear();
-  parsedConfigs.set(repoRoot, { key, config: structuredClone(config) });
-  return config;
+  return cachedLoad(repoRoot, paths, () => load(repoRoot));
 }
 
 function positiveIntEnv(name: string): number | null {

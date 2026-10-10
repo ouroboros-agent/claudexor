@@ -100,6 +100,16 @@ describe("loadConfigCached", () => {
     expect(calls.n).toBe(2);
   });
 
+  it("keeps caching a source that reads as no YAML value", () => {
+    for (const body of ["\n", "   \n", "# only a comment\n", "null\n"]) {
+      writeFileSync(globalFile, body);
+      const { calls, load } = counted();
+      loadConfigCached(repo, load);
+      loadConfigCached(repo, load);
+      expect(calls.n).toBe(1);
+    }
+  });
+
   it("never caches a failed parse", () => {
     writeFileSync(globalFile, "routing: [unterminated\n");
     const { calls, load } = counted();
