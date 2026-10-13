@@ -14,7 +14,8 @@ if (git('rev-parse', 'HEAD') !== expected) throw new Error('Unexpected diagnosti
 if (git('status', '--porcelain')) throw new Error('Subject is not clean before instrumentation');
 const file = join(root, 'packages/harness-agy/src/win32-print-acceptance.test.ts');
 const source = readFileSync(file, 'utf8');
-let text = source;
+const newline = source.includes('\r\n') ? '\r\n' : '\n';
+let text = source.replaceAll('\r\n', '\n');
 const replacements = [
   ['import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";',
    'import { existsSync, mkdtempSync, readFileSync, rmSync, mkdirSync, writeFileSync } from "node:fs";'],
@@ -55,12 +56,15 @@ for (const [before, after] of replacements) {
   text = text.replace(before, after);
 }
 mkdirSync(report, { recursive: true });
+if (newline === '\r\n') text = text.replaceAll('\n', '\r\n');
 writeFileSync(file, text);
 const hash = (data) => createHash('sha256').update(data).digest('hex');
 writeFileSync(join(report, 'subject.json'), JSON.stringify({
   head: expected,
   tree: git('rev-parse', 'HEAD^{tree}'),
   source_sha256: hash(source),
+  source_lf_sha256: hash(source.replaceAll('\r\n', '\n')),
+  preserved_line_endings: newline === '\r\n' ? 'CRLF' : 'LF',
   instrumented_sha256: hash(text),
   node: process.version,
   platform: process.platform,
