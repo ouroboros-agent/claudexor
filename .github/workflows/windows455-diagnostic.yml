@@ -1,0 +1,85 @@
+name: Windows455 narrow native diagnosis
+on:
+  push:
+    branches: [diagnostic/windows455-c6]
+permissions:
+  contents: read
+jobs:
+  native-pair:
+    name: Windows2022 Node24.15 ${{ matrix.label }}
+    runs-on: windows-2022
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: base
+            sha: 211a8f52acbde19803e9104960639c903c54f752
+          - label: merge455
+            sha: e658c9a4f69ccb620944d4ec9a09e640e00ca97b
+    defaults:
+      run:
+        working-directory: subject
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: tooling
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: razzant/claudexor
+          ref: ${{ matrix.sha }}
+          path: subject
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
+        with:
+          version: 10.34.5
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24.15.0
+      - name: Initialize the same x64 MSVC environment as CI
+        run: |
+          $ErrorActionPreference = "Stop"
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $installation = (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | Select-Object -First 1).Trim()
+          if (-not $installation) { throw "x64 MSVC build tools unavailable" }
+          $devCmd = Join-Path $installation "Common7\Tools\VsDevCmd.bat"
+          if (-not (Test-Path -LiteralPath $devCmd -PathType Leaf)) { throw "VsDevCmd.bat unavailable" }
+          $setup = Join-Path $env:RUNNER_TEMP "claudexor-msvc-env.cmd"
+          "@call `"$devCmd`" -no_logo -arch=x64 -host_arch=x64`r`n@set`r`n" | Set-Content -LiteralPath $setup -Encoding ascii
+          $developer = @{}
+          & $env:ComSpec /d /s /c "`"$setup`"" | ForEach-Object {
+            $separator = $_.IndexOf("=")
+            if ($separator -gt 0) { $developer[$_.Substring(0, $separator)] = $_.Substring($separator + 1) }
+          }
+          foreach ($name in @("Path", "INCLUDE", "LIB", "LIBPATH", "VCToolsInstallDir", "WindowsSdkDir", "WindowsSDKVersion", "UCRTVersion")) {
+            if ($developer.ContainsKey($name)) { Add-Content -LiteralPath $env:GITHUB_ENV -Value "$name=$($developer[$name])" -Encoding utf8 }
+          }
+      - name: Preserve exact subject and instrument before cleanup
+        env:
+          SUBJECT_SHA: ${{ matrix.sha }}
+        run: |
+          node ../tooling/scripts/windows455-diagnostic.mjs . "$env:RUNNER_TEMP/windows455-report" $env:SUBJECT_SHA
+          if ($LASTEXITCODE -ne 0) { throw "Diagnostic preparation failed" }
+          "ImageOS=$env:ImageOS ImageVersion=$env:ImageVersion" | Out-File "$env:RUNNER_TEMP/windows455-report/runner.txt"
+      - name: Install frozen dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build the actual subject
+        run: pnpm build
+      - name: Build native ConPTY fixture
+        run: pnpm --filter @claudexor/core build:win32-fixtures
+      - name: Run only the original native scenario
+        env:
+          CX_WINDOWS455_SUBJECT: ${{ matrix.sha }}
+          CX_WINDOWS455_REPORT_DIR: ${{ runner.temp }}/windows455-report
+        run: |
+          pnpm vitest run packages/harness-agy/src/win32-print-acceptance.test.ts --maxWorkers=1 --reporter=default --reporter=junit --outputFile="$env:RUNNER_TEMP/windows455-report/junit.xml"
+          if ($LASTEXITCODE -ne 0) { throw "Native scenario failed; retained diagnostic and JUnit remain authoritative" }
+      - name: Retain bounded diagnostic evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: windows455-${{ matrix.label }}
+          path: ${{ runner.temp }}/windows455-report
+          if-no-files-found: error
