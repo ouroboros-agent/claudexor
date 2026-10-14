@@ -1,0 +1,246 @@
+{
+  "kind": "technical_review_export",
+  "candidate_commit": "15903a112a2c0b572d0dd869b0828e29e7beb381",
+  "candidate_tree": "85d7052979728a91b3ad64538898088171796575",
+  "reports": [
+    {
+      "file": "01-original-astra.md",
+      "model": "GPT-6-Astra",
+      "subject": "211a8f52acbde19803e9104960639c903c54f752..7cc1eea3b3611cb8f82b81b570f1a87a4684b72b",
+      "attribution": "independent reviewer",
+      "source_sha256": "3553296fe7090366dea820d62717ceaea033c74f0cc7c674cfde1e80430ac3db",
+      "source_text_sha256": "87188b21eac4c1e37c08f0eaba4e1a44566fd2f30a0b326acc77060b97de861a",
+      "export_sha256": "449ebe01a531530afab257fa78e87b2e2d3c486ee505c32911de78ab3d7e0c31",
+      "redactions": [
+        {
+          "kind": "local_path_prefix",
+          "replacement": "workspace/",
+          "occurrences": 6
+        }
+      ],
+      "technical_response_complete": true
+    },
+    {
+      "file": "02-original-fable.md",
+      "model": "Claude Fable5.1",
+      "subject": "211a8f52acbde19803e9104960639c903c54f752..7cc1eea3b3611cb8f82b81b570f1a87a4684b72b",
+      "attribution": "independent reviewer",
+      "source_sha256": "58198f99e0b43078184cfcd0e49a4e0a5052d4879fef6fa4f2d2453add334b54",
+      "source_text_sha256": "310890f7feb1216d80e8aa6dd287826037a772366527d711e8a2a68fc103e836",
+      "export_sha256": "fe3c3c0a7c56ef1c03cb1c2c884dd55b032e6497a32ec83e417225202df5724a",
+      "redactions": [
+        {
+          "kind": "local_path_prefix",
+          "replacement": "workspace/",
+          "occurrences": 1
+        }
+      ],
+      "technical_response_complete": true
+    },
+    {
+      "file": "03-original-grok.md",
+      "model": "Grok4.7",
+      "subject": "211a8f52acbde19803e9104960639c903c54f752..7cc1eea3b3611cb8f82b81b570f1a87a4684b72b",
+      "attribution": "independent reviewer",
+      "source_sha256": "0350f6ee2a3fe061ccad1aa8c6be8f90e0e1a8fafab9bcad32a960e5568557df",
+      "source_text_sha256": "8610e7a2ed00f5c7f8191ba95b4ab6f395c6c8745d4ac8378195a05431ada064",
+      "export_sha256": "84e4ccb8cd3b0843d3c74170c3507ac89f0d9b4c616897765f2890b5b7495102",
+      "redactions": [
+        {
+          "kind": "local_path_prefix",
+          "replacement": "workspace/",
+          "occurrences": 1
+        }
+      ],
+      "technical_response_complete": true
+    },
+    {
+      "file": "04-original-fable-coverage-correction.md",
+      "model": "Ouroboros supervising Fable",
+      "subject": "211a8f52acbde19803e9104960639c903c54f752..7cc1eea3b3611cb8f82b81b570f1a87a4684b72b",
+      "attribution": "supervisor verification, not another reviewer",
+      "source_sha256": "0350f6ee2a3fe061ccad1aa8c6be8f90e0e1a8fafab9bcad32a960e5568557df",
+      "source_text_sha256": "9b9ac37a52f51ee9e084ba18f07948b954c83765be17cdad8164982d01ef5bf9",
+      "export_sha256": "14f579b53960a55bf68b7f63c4b6758c18976d8ed31ca0e0c8e0d2105967b2db",
+      "redactions": [
+        {
+          "kind": "local_path_prefix",
+          "replacement": "retained-evidence/",
+          "occurrences": 1
+        },
+        {
+          "kind": "local_path_prefix",
+          "replacement": "workspace/",
+          "occurrences": 1
+        }
+      ],
+      "technical_response_complete": true
+    },
+    {
+      "file": "05-repair-astra.md",
+      "model": "GPT-6-Astra",
+      "subject": "7cc1eea3b3611cb8f82b81b570f1a87a4684b72b..fad717ad8a5c6890084a96640666366b5897bda6",
+      "attribution": "independent reviewer",
+      "source_sha256": "3570b7caebafbb3113fffb30a04c0b2427d66ee688029c26ab3f262c5bbcb52f",
+      "source_text_sha256": "6eb7cb6a4eb63ac12526f6abfe85c53221aa7277c96f8b632bb50d4a153acf3a",
+      "export_sha256": "5bc4ed902069654130bc2ef2f176d9b76e0bb24e743f4c4d97da60668ce21b82",
+      "redactions": [
+        {
+          "kind": "local_path_prefix",
+          "replacement": "retained-evidence/",
+          "occurrences": 2
+        },
+        {
+          "kind": "local_path_prefix",
+          "replacement": "workspace/",
+          "occurrences": 8
+        }
+      ],
+      "technical_response_complete": true
+    },
+    {
+      "file": "06-repair-fable.md",
+      "model": "Claude Fable5.1",
+      "subject": "7cc1eea3b3611cb8f82b81b570f1a87a4684b72b..fad717ad8a5c6890084a96640666366b5897bda6",
+      "attribution": "independent reviewer",
+      "source_sha256": "99ad28210d6d80587245268d81296979eb4f1ce294cfd4f4fd84f0e35326ee84",
+      "source_text_sha256": "80a4c878593abd0f37159b8ba4a6aaf9d8b89c950b31d87e648bd6bf4e599e00",
+      "export_sha256": "1983735f376995f64df6dce679e51b0617c7dc88352e9f5cbbad242fdb09930b",
+      "redactions": [],
+      "technical_response_complete": true
+    },
+    {
+      "file": "07-repair-grok.md",
+      "model": "Grok4.7",
+      "subject": "7cc1eea3b3611cb8f82b81b570f1a87a4684b72b..fad717ad8a5c6890084a96640666366b5897bda6",
+      "attribution": "independent reviewer",
+      "source_sha256": "92377620488482c7e6da53b5c13f3d6de5ea873f36128f1e376432ed5db552cf",
+      "source_text_sha256": "c6382362e7ca14800c08faf84b24effcd37d2810eccfdd02875723a9af4b8c10",
+      "export_sha256": "2cf28a56b8c6147069686569d25aa411bf508edfd8272bdd6a2daab954217062",
+      "redactions": [],
+      "technical_response_complete": true
+    },
+    {
+      "file": "08-deadline-grok.md",
+      "model": "Grok4.7",
+      "subject": "d35e6ed8a7cf937f33f3f2fcc052e3a18314fed8..cb4a9386d3bf53373ec5e0f2f52a274026fb8f06",
+      "attribution": "independent reviewer",
+      "source_sha256": "4f6271e7ccfb1818d66ba4a5296208ce7d19b42e7bfd60e6c411416fc5424b9f",
+      "source_text_sha256": "4f6271e7ccfb1818d66ba4a5296208ce7d19b42e7bfd60e6c411416fc5424b9f",
+      "export_sha256": "0a99583eb687ef659b1c81799808a3204b6625aebc1031bf0cff13535b553e02",
+      "redactions": [],
+      "technical_response_complete": true
+    },
+    {
+      "file": "09-deadline-opus.md",
+      "model": "Claude Opus5.5",
+      "subject": "d35e6ed8a7cf937f33f3f2fcc052e3a18314fed8..cb4a9386d3bf53373ec5e0f2f52a274026fb8f06",
+      "attribution": "independent reviewer",
+      "source_sha256": "786dc3dbd07583652fd378216e77f94cb3d28426c88c8db9ea3013a11b8d3085",
+      "source_text_sha256": "786dc3dbd07583652fd378216e77f94cb3d28426c88c8db9ea3013a11b8d3085",
+      "export_sha256": "0c37a037e98991bfab92d147e5d8e31cbcf6611b7c57c246751d8cc7e1ae59b5",
+      "redactions": [],
+      "technical_response_complete": true
+    },
+    {
+      "file": "10-deadline-astra.md",
+      "model": "GPT-6-Astra",
+      "subject": "d35e6ed8a7cf937f33f3f2fcc052e3a18314fed8..cb4a9386d3bf53373ec5e0f2f52a274026fb8f06",
+      "attribution": "independent reviewer",
+      "source_sha256": "f7e3a270e43683a0bbc9093dc964cf3e3bad403c30e456ce8c361dde6c94598a",
+      "source_text_sha256": "f7e3a270e43683a0bbc9093dc964cf3e3bad403c30e456ce8c361dde6c94598a",
+      "export_sha256": "61ed3898d91f555b506ca11d8265e11ebd7b69fc60d10285ccfb77033b683817",
+      "redactions": [],
+      "technical_response_complete": true
+    },
+    {
+      "file": "11-composition-astra.md",
+      "model": "GPT-6-Astra",
+      "subject": "cb4a9386d3bf53373ec5e0f2f52a274026fb8f06..9f4bf208463f16b5ac694dfeff1e244e9b83c9d7",
+      "attribution": "independent reviewer",
+      "source_sha256": "c4ad0bfe895e4dc9cd35d8948cea6607eb200ae83fa20eba5fc9b281502ed43f",
+      "source_text_sha256": "c4ad0bfe895e4dc9cd35d8948cea6607eb200ae83fa20eba5fc9b281502ed43f",
+      "export_sha256": "19f1b1f070046ce035b39b122fa4386a408553bce0f5ba03c5786283416c837d",
+      "redactions": [],
+      "technical_response_complete": true
+    },
+    {
+      "file": "12-composition-grok.md",
+      "model": "Grok4.7",
+      "subject": "cb4a9386d3bf53373ec5e0f2f52a274026fb8f06..9f4bf208463f16b5ac694dfeff1e244e9b83c9d7",
+      "attribution": "independent reviewer",
+      "source_sha256": "f1fd5fe9df6fa4916256ad9d73ee1cc30bd072e9988a2e9cc6db2a8b5c150873",
+      "source_text_sha256": "f1fd5fe9df6fa4916256ad9d73ee1cc30bd072e9988a2e9cc6db2a8b5c150873",
+      "export_sha256": "4689de56c8efcc06fef546665d33460d75186ccf4dde673226175e0861f624b8",
+      "redactions": [],
+      "technical_response_complete": true
+    },
+    {
+      "file": "13-composition-opus.md",
+      "model": "Claude Opus5.5",
+      "subject": "cb4a9386d3bf53373ec5e0f2f52a274026fb8f06..9f4bf208463f16b5ac694dfeff1e244e9b83c9d7",
+      "attribution": "independent reviewer",
+      "source_sha256": "e8890b07ef0c34e348200362fd6ce86066b9e0c42e81ef8acf81e075ba4302d7",
+      "source_text_sha256": "e8890b07ef0c34e348200362fd6ce86066b9e0c42e81ef8acf81e075ba4302d7",
+      "export_sha256": "a36e3c1fa71e9f4250e99deba5293d8622c124acb48f31be2d8bac4291b355e3",
+      "redactions": [],
+      "technical_response_complete": true
+    },
+    {
+      "file": "14-small-opus.md",
+      "model": "Claude Opus5.5",
+      "subject": "CX9f4bf208..d47e8921 plus OBdd5ae5db..16c205dc; separate subjects and limits stated in each response",
+      "attribution": "independent reviewer",
+      "source_sha256": "0182a2f0f2a0007a440a4e55fada52a77a1c8505c7bd652d11252a8e5bcb7b78",
+      "source_text_sha256": "67758979220cf0a875ee93d9081dc25a90273b8e9f471147b1d883cb07332941",
+      "export_sha256": "a155af97dd94f38c25dd82c6edface4924baf50136a56fe9db3ab37ff7da7531",
+      "redactions": [],
+      "technical_response_complete": true
+    },
+    {
+      "file": "15-small-astra.md",
+      "model": "GPT-6-Astra",
+      "subject": "CX9f4bf208..d47e8921 plus OBdd5ae5db..16c205dc; separate subjects and limits stated in each response",
+      "attribution": "independent reviewer",
+      "source_sha256": "9f99f5eebe73d459a2f65a4f66631ba5d14ea446a2caec262daf4838a56e251d",
+      "source_text_sha256": "5385eb28ac0ee1246f57d314ea8e3bd028f4fad0e41a9644e0abb4a7da1c28a7",
+      "export_sha256": "640ca54a51e6141b6bea52a48faf355cc1e93bc072bb2bff777d13eed4ad1c7b",
+      "redactions": [
+        {
+          "kind": "local_path_prefix",
+          "replacement": "retained-evidence/",
+          "occurrences": 1
+        },
+        {
+          "kind": "local_path_prefix",
+          "replacement": "workspace/",
+          "occurrences": 4
+        }
+      ],
+      "technical_response_complete": true
+    },
+    {
+      "file": "16-final-prose-opus.md",
+      "model": "Claude Opus5.5",
+      "subject": "Final CX release-note and OB header correction; accepted wording applied without runtime change",
+      "attribution": "independent reviewer",
+      "source_sha256": "0b76b4bab650550cba81d3c86810932f006dbc3408bdd83f3f95537f10dd21e0",
+      "source_text_sha256": "4291779110768d4d67767d3bc8535088248cf89661c86369524939808a62833b",
+      "export_sha256": "bd773b2ec79a84ee6cb0f2a38a462fcbf4efe6a0652c6aeb696cfdb0813b62c6",
+      "redactions": [],
+      "technical_response_complete": true
+    },
+    {
+      "file": "17-small-grok.md",
+      "model": "Grok4.7",
+      "subject": "CX9f4bf208..d47e8921 plus OBdd5ae5db..16c205dc",
+      "attribution": "independent reviewer",
+      "source_sha256": "9325f756d5ee940e4ad59b17cc9e8c181a492451917c7c25ef1a5c14cf9ce8e6",
+      "source_text_sha256": "9325f756d5ee940e4ad59b17cc9e8c181a492451917c7c25ef1a5c14cf9ce8e6",
+      "export_sha256": "af174fd13410c4da893f19322ec189ea4828462b8e2ed98b405463cee0b94d44",
+      "redactions": [],
+      "technical_response_complete": true
+    }
+  ],
+  "limits": "No prompts, owner dialogue, account-profile envelopes, private QA directory dumps or credentials are exported. Model responses keep their historical verdict and coverage limits. A separate author report owns dispositions and current qualification."
+}

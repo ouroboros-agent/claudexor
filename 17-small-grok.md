@@ -1,0 +1,44 @@
+# 17-small-grok
+
+Author: Grok4.7 (independent native API reviewer).
+
+Subject: CX9f4→d47 and the separately named OB docstring. Full original technical response; historical non-green QA is retained.
+
+The two named deltas are documentation and a test-hook bound. Neither changes runtime behavior, and neither is a release or whole-contribution verdict.
+
+## summary
+
+**Claudexor, `9f4bf208` to worktree versus that base: CODE PASS, COUPLING PASS.** Both are bounded to these two files. `vcs_diff` against `9f4bf208463f16b5ac694dfeff1e244e9b83c9d7` and against forensic `7d64a6c` shows only `CHANGELOG.md` and `packages/cli/src/pre-progress-refusal.integration.test.ts`. The branch ref is `cb4a9386d3bf53373ec5e0f2f52a274026fb8f06`. I did not recompute tree `d47e8921` or the patch SHA256. The changelog sentences match the producers already in that tree. The hook change only raises one `afterAll` from the 10-second default to `30_000`. A completed `d47` `release:verify` already shows that same hook still timing out at 30 seconds. That is not a logic defect, and it is not a green test.
+
+**Ouroboros docstring: CODE PASS, COUPLING PASS with one same-file prose residual.** The working-file sentence matches `end_scope` if "requested" means "only when marker or group discovery was asked for." No behavior or test change is in the bytes I read. The module header and `settle_task_scope` still say unconditional "census readable." HEAD ref `lifecycle/c6-final558` is `558b812fe2259f04b0035e86f51662d40c136f1e`. I could not recompute tree `16c205dc` or prove the Ouroboros worktree has no other dirty file: Git inspection tools do not cover that root, and shell is off.
+
+This is not a fresh review of the prior 156/79-file composition, not a release verdict, and not a QA pass.
+
+## findings
+
+1. **Claudexor CODE — no product defect in the two-file delta.** The test edit is the comment plus `afterAll(..., 30_000)` at `packages/cli/src/pre-progress-refusal.integration.test.ts:32-35`. The `rmSync` loop is unchanged. The four `it` cases pass no per-test timeout. `vitest.config.ts:17` sets `testTimeout: 30_000` and does not set `hookTimeout`, so Vitest's 10-second hook default is what the three-file logs hit. The canary config does not include this file. The other `afterAll` at line 238 only clears a credential window and is outside this delta. No production clock or exception was added.
+
+2. **Claudexor effectiveness, not a code fail.** `cx-release-final-gate/status.json` binds `subject_tree` `d47e8921f8edaea94bbc9252b0ca07ef0cfe8564`, `gate_exit` 1, `complete: true`, post-gate diff exit 0. `release-verify.log:4290-4299` is this exact hook: the new comment is on line 32 and `30_000` is on line 35, and it still reports `Hook timed out in 30000ms`. The same log still has 10-second hook timeouts in other files, including `run-codex-drain-detail.integration.test.ts:67`. Raising this one bound does not close the full-gate failure class. The three-file pair on `9f4` remains a separate fact: candidate assertions passed and only this file's `afterAll` hit 10 seconds (`candidate-tests.log:42-49`).
+
+3. **Claudexor COUPLING — the two new changelog clauses match current producers.** "Windows Codex preserves an explicitly completed answer when cleanup uncertainty is proof-only, but not after cancellation, a late root error or observed survivors (#454)" matches `codexCleanupIsProofLimitation` (`app-server-threads.ts:23-30`): zero survivors and every unresolved reason `WINDOWS_TREE_DEATH_PROOF_UNAVAILABLE`. That reason is emitted by the win32 reap (`process-tree.ts:371-385`), including when the root is already gone. A still-alive root is returned as a survivor with empty unresolved, so it is not preserved. `app-server-run.ts:212-213` throws unless `completedAnswer` is set, cancellation was not requested, and that proof-limitation holds. `completedAnswer` requires status `completed`, a settled thread, no active goal, no owned background, and a non-empty final text (`app-server-threads.ts:34-47`). After `stopProcess`, a late root `turn/started` or non-completed `turn/completed` throws `Codex completion was invalidated during process teardown` (`app-server-run.ts:534-538`). The same v4.1.1 paragraph still says Windows was not run before release. That disclaimer is still true. The sentence does not claim a live Windows run.
+
+4. **#455 is observational in the current tree.** `EngineStore.transaction` times only `connection.exec("COMMIT")` and `recordCommit` increments attempts, failures, last, and max (`store.ts:210-217`, `370-374`). Status text is `COMMIT since store open: N call(s), M failed` plus last/max (`daemon-status-report.ts:48-57`). The schema describes store-open lifetime, native COMMIT only, not BEGIN, body, or ROLLBACK, and says a long call is not proof of a disk cause (`store-status.ts:51-70`). I found no admission decision in that counter. `pragmas.ts` still sets WAL and NORMAL. This delta does not touch those files. I did not re-diff the historical #455 commit. "Lifetime" means since this store object opened, not across restarts.
+
+5. **Ouroboros CODE — the new sentence matches the branch, with a strict-reading residual.** `end_scope` calls `census(names)` only when `names or groups` is non-empty. Otherwise `rows` is `{}` and captured identities use `read_identities` (`process_scope.py:319-320`). `census_failed` is set only when that call returns `None` (`321-322`). `settled` is `not census_failed and not survivors and every unverified reason == signal_denied` (`362-363`). `SIGNAL_DENIED` is EPERM only (`platform_layer.py:656`). Windows returns before that formula with `settled` false (`312-313`). `complete_pending_panic_sweep(installation=False)` calls `end_scope(captured=known)` with no marker and no groups (`1021`), so a readable captured-only pass can settle without a census. "Requires readable requested discovery" is accurate only as "if discovery was requested, that read must have succeeded." Read as "a discovery request must have happened and succeeded," it is false for that path. The old "readable census" wording was the overclaim. This replacement is closer, not a behavior change.
+
+6. **Ouroboros COUPLING — same-file prose was not updated.** The module header still says a pending obligation retires when settled means "census readable" (`process_scope.py:21-24`). `settle_task_scope` repeats that (`681-682`). Those sentences disagree with the new function sentence and with the known-only caller. No caller I found parses the docstring to decide policy. `panic` installation census still forces `settled` false unless the engine index status is `absent` or `read` (`917-919`). That extra gate is outside this sentence and was not changed. I did not find another "readable census" string.
+
+## evidence
+
+- Claudexor identity: `vcs_diff` name-only against `9f4bf208` and `7d64a6c` returned exactly the two paths. The test hunk matches `cx-last-two-files.patch`. HEAD ref read as `cb4a9386`. Status against HEAD is a large staged composition. That does not contradict the two-file claim against `9f4`.
+- Hook evidence: `cx-three-file-pair/status.json` candidate tree `9f4`, one failure, hook 10000ms. `cx-release-final-gate/status.json` tree `d47e8921`, `gate_exit` 1, log lines 4290-4299.
+- Changelog anchors: `app-server-run.ts:207-213` and `529-538`; `app-server-threads.ts:23-47` and `51-67`; `process-tree.ts:362-397`; `store.ts:184-217`; `store-status.ts:51-70`; `daemon-status-report.ts:48-57`.
+- Ouroboros anchors: `process_scope.py:302-303`, `319-330`, `362-363`, `1020-1023`; `process_census.py:287-315` (`None` means unread, and an empty parse is also `None` via `rows or None` — pre-existing, not introduced here); HEAD ref `558b812`.
+
+## blockers
+
+No access blocker for the Claudexor two-file identity. Ouroboros tree-hash and "only this file differs" were not independently proved. Patch SHA256 values were not recomputed. I ran no tests, builds, or product code. The prior panel supplied no verdict. I did not treat its absence as a pass, and I did not rerun it. Full QA stays non-green: the `d47` gate exit is 1. No account-backed vendor run, installed Panic, all-platform, or signed-artifact claim is supported here.
+
+## recommended_parent_action
+
+Keep both deltas as reviewed source opinions only. Do not describe the 30-second hook as fixing `release:verify`. The retained `d47` log already falsifies that. Do not publish or pin on this review. If the Ouroboros sentence should be unambiguous, one smaller comment fix is enough: say that marker or group discovery must have been readable when it was requested, and that captured-only cleanup does not request a census. Align the two "census readable" sentences in the same file, or leave them and disclose the lag. No production change is required for either delta.
