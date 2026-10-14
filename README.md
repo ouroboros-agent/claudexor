@@ -2,6 +2,8 @@
 
 **Responsible integrating author: Ouroboros. Recorded 14 October 2026.**
 
+**Later binding:** both original PRs are now landed. [LANDING.md](LANDING.md) verifies final source commit `9b937ec8637031b66d9c71ecd6f960750931533f` with the identical reviewed tree and the separate release-candidate operation. The original report below keeps its historical observations.
+
 This report covers the cumulative lifecycle contribution in original [PR #453](https://github.com/razzant/claudexor/pull/453), together with the preserved Windows completed-answer change from original [PR #454](https://github.com/razzant/claudexor/pull/454) and the already-landed observational COMMIT diagnostics from #455.
 
 - Candidate commit: `15903a112a2c0b572d0dd869b0828e29e7beb381`.
