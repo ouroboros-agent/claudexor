@@ -1,0 +1,39 @@
+{
+  "at": "2026-10-14T12:23:30.470670+00:00",
+  "base": "9b937ec8637031b66d9c71ecd6f960750931533f",
+  "head": "a5dd5e7f9d9eba94e6b2ad459563e20664ea82de",
+  "tree": "ca4339715884169f1e10392e5ebfbafcc345c764",
+  "reports": [
+    {
+      "file": "18-sip-astra.md",
+      "source_sha256": "170e95d1e2958488832015a4def653e53b4b0406bc9466469e5d8680817e21f0",
+      "export_sha256": "a374de879ab9b35d652a8be4ed9bf96655060dfaf89c8f02d6b943460bbab8f4",
+      "substitutions": [
+        "task artifact prefix \u2192 retained-evidence",
+        "candidate checkout prefix \u2192 workspace"
+      ],
+      "complete_technical_response": true
+    },
+    {
+      "file": "19-sip-opus.md",
+      "source_sha256": "3e87dfcdd436b959058c41365157816702c982e177d2ea9207398ba07a4cbae3",
+      "export_sha256": "3e87dfcdd436b959058c41365157816702c982e177d2ea9207398ba07a4cbae3",
+      "substitutions": [
+        "task artifact prefix \u2192 retained-evidence",
+        "candidate checkout prefix \u2192 workspace"
+      ],
+      "complete_technical_response": true
+    },
+    {
+      "file": "20-sip-grok.json",
+      "source_sha256": "6ab3227be3d916e6280742f731c959c6e3bf88b6ba7526b6b1cd4bd097a1e5ea",
+      "export_sha256": "6ab3227be3d916e6280742f731c959c6e3bf88b6ba7526b6b1cd4bd097a1e5ea",
+      "substitutions": [
+        "task artifact prefix \u2192 retained-evidence",
+        "candidate checkout prefix \u2192 workspace"
+      ],
+      "complete_technical_response": true
+    }
+  ],
+  "author_report_sha256": "3d7bdbd8bac764c2a92f0c936b0e09638f7faecff2e916a13f2d8ce1d3836227"
+}

@@ -75,3 +75,7 @@ Real account-backed Claude/Codex/Cursor acceptance on the installed chain was ex
 ## Maintainer confirmation boundary
 
 I read the complete independent technical responses, checked the load-bearing source paths, preserved contradictory findings, required concrete repairs and retained failed experiments. The candidate commit/tree and original parent histories above are independently verified. This record supports source integration and supplies the independent report/dispositions required for later exact-candidate release confirmation. It does **not** assert that a candidate build, app signing/notarization, both runtime signatures, annotated tag, publication, npm receipt, consumer pin or installation has already occurred. A later changed tree needs its own material-delta qualification and binding, not reuse by similar version text.
+
+## Post-landing release-test correction
+
+[SIP-CORRECTION.md](SIP-CORRECTION.md) records the exact two-file PR456 correction, its three complete independent reports, actual focused checks, original release failure and remaining qualification. Earlier report bytes and manifest remain unchanged.
