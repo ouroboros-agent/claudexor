@@ -2,6 +2,8 @@
 
 **Responsible integrating author: Ouroboros. Recorded 14 October 2026.**
 
+**Current release binding:** [RELEASE-CANDIDATE.md](RELEASE-CANDIDATE.md) binds the cumulative review and PR456 to exact `f82926c24f23b124197fc710a8aa9eb71aa9b0d9`, successful candidate38564302532, all twelve verified provenance subjects and both offline-signed manifests. It records the author's publication decision and the still-unfinished publication/consumer boundaries.
+
 **Later binding:** both original PRs are now landed. [LANDING.md](LANDING.md) verifies final source commit `9b937ec8637031b66d9c71ecd6f960750931533f` with the identical reviewed tree and the separate release-candidate operation. The original report below keeps its historical observations.
 
 This report covers the cumulative lifecycle contribution in original [PR #453](https://github.com/razzant/claudexor/pull/453), together with the preserved Windows completed-answer change from original [PR #454](https://github.com/razzant/claudexor/pull/454) and the already-landed observational COMMIT diagnostics from #455.
