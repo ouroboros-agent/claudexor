@@ -69,7 +69,7 @@ const processes = lines("observer-processes.jsonl");
 const hookInstalled = windows.some((w) => w.source === "observer" && w.hookInstalled === true);
 const processCapture = processes.find((p) => p.kind === "observer" && p.processCapture)?.processCapture ?? "missing";
 const starts = processes.filter((p) => p.kind === "start");
-const stops = new Map(processes.filter((p) => p.kind === "stop").map((p) => [p.pid, p]));
+const stops = processes.filter((p) => p.kind === "stop").sort((a, b) => a.at - b.at);
 
 function descendants(rootPid, from, to) {
   // PIDs can be reused: only process starts inside [from, to] join the tree.
@@ -111,12 +111,15 @@ for (const label of labels) {
   const harnessProcess = starts.find((p) => p.pid === harness.pid);
   const ownConsoleHost = starts.filter((p) => p.ppid === harness.pid && CONSOLE_HOSTS.test(p.name));
   const scenarios = {};
-  for (const startMark of marks.filter((m) => m.event === "scenario_start")) {
+  const scenarioStarts = marks.filter((m) => m.event === "scenario_start");
+  for (const [index, startMark] of scenarioStarts.entries()) {
     const endMark = marks.find((m) => m.event === "scenario_end" && m.scenario === startMark.scenario);
-    const from = startMark.at - 50;
-    const to = (endMark ?? end).at + 250;
-    const created = starts.filter((p) => p.at >= from && p.at <= to && tree.has(p.pid));
-    const inInterval = windows.filter((w) => w.source !== "observer" && w.at >= from && w.at <= to);
+    const from = startMark.at;
+    // The harness already drains before scenario_end. Never let the optional
+    // trailing allowance cross the next scenario's start; intervals are half-open.
+    const to = Math.min((endMark ?? end).at + 250, scenarioStarts[index + 1]?.at ?? Infinity);
+    const created = starts.filter((p) => p.pid !== harness.pid && p.at >= from && p.at < to && tree.has(p.pid));
+    const inInterval = windows.filter((w) => w.source !== "observer" && w.at >= from && w.at < to);
     const attributed = inInterval.filter((w) => tree.has(w.pid));
     const visible = attributed.filter((w) => w.visible);
     const unattributedVisible = inInterval.filter((w) => w.visible && !tree.has(w.pid));
@@ -124,7 +127,7 @@ for (const label of labels) {
     const survivors = created
       .filter((p) => !CONSOLE_HOSTS.test(p.name))
       .filter((p) => {
-        const stop = stops.get(p.pid);
+        const stop = stops.find((s) => s.pid === p.pid && s.at >= p.at);
         return !stop || stop.at > to;
       });
     // The fixture reports its own pid; the process capture must independently have seen

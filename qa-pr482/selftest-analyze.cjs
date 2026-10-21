@@ -37,7 +37,7 @@ function run(build, { processCapture = "registered" } = {}) {
 // captureNative=false -> no start event for the native child; harnessStart=false -> no start event for H;
 // parentConsole -> a console host started for H; only -> run just these scenarios.
 function checkout({ w, p, marks }, label, base, H, windowFor, options = {}) {
-  const { failed = () => false, reportNative = true, captureNative = true, harnessStart = true, parentConsole = false, only = SCENARIOS } = options;
+  const { failed = () => false, reportNative = true, captureNative = true, harnessStart = true, parentConsole = false, only = SCENARIOS, stride = 2000 } = options;
   const list = (marks[label] = []);
   list.push({ event: "harness_start", at: base, pid: H });
   if (harnessStart) p.push({ kind: "start", at: base - 10, pid: H, ppid: 1, name: "node.exe" });
@@ -62,7 +62,7 @@ function checkout({ w, p, marks }, label, base, H, windowFor, options = {}) {
       result: failed(scenario) ? { status: "fail", error: "assertion failed: synthetic" } : { status: "pass" },
       nativePids: reportNative ? [child] : [], nativeCalls: [],
     });
-    at += 2000;
+    at += stride;
   }
   list.push({ event: "harness_end", at });
 }
@@ -171,5 +171,32 @@ ok(() => {
   assert.equal(verdictOf(r, "cand", "consumer_stream"), "INCONCLUSIVE");
   assert.ok(r.report.labels.cand.blindReasons.some((x) => /negative control saw a window/.test(x)));
 });
+
+// Actual harness scenarios are contiguous: next start can equal previous end.
+// A future visible child must not contaminate the preceding hidden control.
+r = run((ctx) => {
+  checkout(ctx, "base", ctx.t0, 100, reproduces, { stride: 1000 });
+  checkout(ctx, "cand", ctx.t0 + 40000, 200, quiet, { stride: 1000 });
+});
+ok(() => {
+  assert.equal(verdictOf(r, "base", "control_hidden_pipe"), "NONE");
+  assert.equal(verdictOf(r, "base", "consumer_stream"), "VISIBLE");
+  assert.deepEqual(r.report.labels.cand.scenarios.consumer_quota.notStoppedByScenarioEnd, []);
+  assert.equal(r.status, 0);
+});
+// A later reuse of a pid cannot replace the first process's observed stop.
+r = run((ctx) => {
+  calibrated(ctx, {});
+  ctx.p.push({ kind: "stop", at: ctx.t0 + 100000, pid: 101 });
+});
+ok(() => assert.deepEqual(r.report.labels.base.scenarios.control_visible_pipe.notStoppedByScenarioEnd, []));
+
+// WMI can deliver the harness start during the first scenario. It is not its own child.
+r = run((ctx) => {
+  calibrated(ctx, {});
+  const harness = ctx.p.find((p) => p.kind === "start" && p.pid === 600);
+  harness.at = ctx.t0 + 40120;
+});
+ok(() => assert.deepEqual(r.report.labels.cand.scenarios.control_visible_pipe.notStoppedByScenarioEnd, []));
 
 console.log(`analyze.cjs synthetic self-test: ${count}/${count} passed`);

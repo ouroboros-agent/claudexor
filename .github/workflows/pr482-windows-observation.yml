@@ -229,6 +229,19 @@ jobs:
             throw "incomplete or failed observation: harness=$($status.harness | ConvertTo-Json -Compress) observer=$($status.observer) analyze=$($status.analyze)"
           }
 
+      - name: Test Windows launch contracts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $out = Join-Path $env:RUNNER_TEMP "pr482-observation"
+          Push-Location cand
+          pnpm vitest run packages/core/src/proc-windows-hide.test.ts packages/core/src/windows-quiet-children.test.ts *> (Join-Path $out "windows-unit.log")
+          $code = $LASTEXITCODE
+          Pop-Location
+          @{ code = $code } | ConvertTo-Json | Out-File (Join-Path $out "windows-unit-exit.json") -Encoding utf8
+          Get-Content (Join-Path $out "windows-unit.log") | Write-Host
+          if ($code -ne 0) { throw "Windows launch-contract tests failed" }
+
       - name: Upload observation
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
