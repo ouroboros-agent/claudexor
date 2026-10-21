@@ -1,0 +1,207 @@
+# QA ONLY (PR482). Secretless Windows window/process observation of baseline vs
+# candidate. Put this file in .github/workflows/ of a QA-only branch together with
+# the qa-pr482/ directory; never add it to the product PR. See README.md.
+#
+# Two ways to run it, both on a repository where you may run Actions:
+#   * push to the exact QA branch below: the pushed commit IS the candidate (and the QA
+#     scripts), baseline defaults to main before PR482, original is skipped;
+#   * workflow_dispatch with explicit refs.
+# Every run records the requested and resolved commits (run-inputs.json), each step's exit
+# status (observe-exit.json) and the raw observer files, and uploads them even on failure.
+# The job fails when any harness exits abnormally or analyze.cjs reports an incomplete
+# observation (exit 3): a green job means the evidence is complete, not that no window
+# appeared — read summary.md.
+name: pr482-windows-observation
+
+on:
+  push:
+    branches: [qa/pr482-windows]
+  workflow_dispatch:
+    inputs:
+      candidate_ref:
+        description: Exact candidate commit (the PR482 head under test); empty = the ref this run is dispatched on
+        required: false
+        default: ""
+        type: string
+      base_ref:
+        description: Baseline commit (main before PR482)
+        required: false
+        default: 2b2dfc15e23e5c9ee625aec8d4bd10fde56aa7b8
+        type: string
+      original_ref:
+        description: Optional original PR482 merge (data-URL --import) for comparison; empty skips
+        required: false
+        default: ""
+        type: string
+      qa_dir:
+        description: Directory in the dispatched ref that holds the QA scripts
+        required: false
+        default: qa-pr482
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  CAND_REF: ${{ inputs.candidate_ref || github.sha }}
+  BASE_REF: ${{ inputs.base_ref || '2b2dfc15e23e5c9ee625aec8d4bd10fde56aa7b8' }}
+  ORIG_REF: ${{ inputs.original_ref }}
+  QA_DIR: ${{ inputs.qa_dir || 'qa-pr482' }}
+
+jobs:
+  observe:
+    name: observe (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The same pairing ci.yml's windows-test uses.
+          - runner: windows-2022
+            node-version: 24.15.0
+          - runner: windows-latest
+            node-version: 24.16.0
+    steps:
+      - name: QA scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: qa
+          persist-credentials: false
+      - name: Candidate checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.CAND_REF }}
+          path: cand
+          persist-credentials: false
+      - name: Baseline checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.BASE_REF }}
+          path: base
+          persist-credentials: false
+      - name: Original PR482 checkout
+        if: env.ORIG_REF != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.ORIG_REF }}
+          path: orig
+          persist-credentials: false
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: cand/package.json
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Record exact inputs and check the QA scripts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $out = Join-Path $env:RUNNER_TEMP "pr482-observation"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          $refs = [ordered]@{}
+          foreach ($entry in @(@("qa", $env:GITHUB_SHA), @("cand", $env:CAND_REF), @("base", $env:BASE_REF), @("orig", $env:ORIG_REF))) {
+            $label = $entry[0]
+            if (-not (Test-Path $label)) { if ($entry[1]) { throw "$label checkout for '$($entry[1])' is missing" }; continue }
+            $refs[$label] = [ordered]@{ requested = $entry[1]; resolved = (git -C $label rev-parse HEAD).Trim() }
+          }
+          [ordered]@{
+            event       = $env:GITHUB_EVENT_NAME
+            workflowRef = $env:GITHUB_WORKFLOW_REF
+            runId       = $env:GITHUB_RUN_ID
+            runAttempt  = $env:GITHUB_RUN_ATTEMPT
+            qaDir       = $env:QA_DIR
+            refs        = $refs
+            runner      = [ordered]@{ label = "${{ matrix.runner }}"; image = $env:ImageOS; imageVersion = $env:ImageVersion; node = (node -v).Trim(); pnpm = (pnpm -v).Trim() }
+          } | ConvertTo-Json -Depth 6 | Out-File -FilePath (Join-Path $out "run-inputs.json") -Encoding utf8
+          Get-Content (Join-Path $out "run-inputs.json") | Add-Content $env:GITHUB_STEP_SUMMARY
+          $qa = Join-Path $env:GITHUB_WORKSPACE (Join-Path "qa" $env:QA_DIR)
+          foreach ($file in "harness.cjs", "mimic-launch.cjs", "analyze.cjs", "selftest-analyze.cjs") {
+            node --check (Join-Path $qa $file)
+            if ($LASTEXITCODE -ne 0) { throw "$file failed the syntax check" }
+          }
+          node (Join-Path $qa "selftest-analyze.cjs")
+          if ($LASTEXITCODE -ne 0) { throw "analyzer self-test failed" }
+
+      - name: Build checkouts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $out = Join-Path $env:RUNNER_TEMP "pr482-observation"
+          $built = [ordered]@{}
+          try {
+            foreach ($label in "base", "orig", "cand") {
+              if (-not (Test-Path $label)) { continue }
+              Push-Location $label
+              $log = Join-Path $out "build-$label.log"
+              pnpm install --frozen-lockfile *> $log
+              $install = $LASTEXITCODE
+              $build = if ($install -eq 0) { pnpm build *>> $log; $LASTEXITCODE } else { "skipped" }
+              Pop-Location
+              $built[$label] = [ordered]@{ install = $install; build = $build }
+              if ($install -ne 0 -or $build -ne 0) {
+                Get-Content $log -Tail 60 | Write-Host
+                throw "$label install/build failed"
+              }
+            }
+          } finally {
+            $built | ConvertTo-Json -Depth 4 | Out-File -FilePath (Join-Path $out "build-exit.json") -Encoding utf8
+          }
+
+      - name: Observe baseline, original and candidate
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $qa = Join-Path $env:GITHUB_WORKSPACE (Join-Path "qa" $env:QA_DIR)
+          $out = Join-Path $env:RUNNER_TEMP "pr482-observation"
+          $status = [ordered]@{ harness = [ordered]@{}; observer = $null; analyze = $null }
+          $observer = $null
+          try {
+            # Windows PowerShell 5.1: observer.ps1 compiles C# 5 with Add-Type.
+            $observer = Start-Process -FilePath powershell.exe -PassThru -WindowStyle Hidden -ArgumentList @(
+              "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $qa "observer.ps1"), "-OutDir", $out)
+            $deadline = (Get-Date).AddSeconds(90)
+            while (-not (Test-Path (Join-Path $out "observer.ready"))) {
+              if ($observer.HasExited -or (Get-Date) -gt $deadline) { throw "observer did not become ready" }
+              Start-Sleep -Milliseconds 200
+            }
+            foreach ($label in "base", "orig", "cand") {
+              $checkout = Join-Path $env:GITHUB_WORKSPACE $label
+              if (-not (Test-Path $checkout)) { continue }
+              # Daemon-shaped, console-less parent with a scratch-only environment; see mimic-launch.cjs.
+              node (Join-Path $qa "mimic-launch.cjs") --checkout $checkout --label $label --out $out
+              $status.harness[$label] = $LASTEXITCODE
+              Start-Sleep -Seconds 2
+            }
+          } finally {
+            New-Item -ItemType File -Force -Path (Join-Path $out "observer.stop") | Out-Null
+            if ($observer) {
+              # The observer drains for about 7 s after the stop file; this wait is bounded.
+              if ($observer.WaitForExit(45000)) { $status.observer = $observer.ExitCode }
+              else { $status.observer = "did not exit in 45 s; stopped"; Stop-Process -Id $observer.Id -Force }
+            }
+          }
+          node (Join-Path $qa "analyze.cjs") $out
+          $status.analyze = $LASTEXITCODE
+          $status | ConvertTo-Json -Depth 4 | Out-File -FilePath (Join-Path $out "observe-exit.json") -Encoding utf8
+          Get-Content (Join-Path $out "summary.md") | Add-Content $env:GITHUB_STEP_SUMMARY
+          '' | Add-Content $env:GITHUB_STEP_SUMMARY
+          '## Exit status' | Add-Content $env:GITHUB_STEP_SUMMARY
+          (Get-Content (Join-Path $out "observe-exit.json") -Raw) | Add-Content $env:GITHUB_STEP_SUMMARY
+          $bad = @($status.harness.GetEnumerator() | Where-Object { $_.Value -ne 0 -and $_.Value -ne 3 })
+          if ($bad.Count -gt 0 -or $status.analyze -ne 0 -or $status.observer -ne 0) {
+            throw "incomplete or failed observation: harness=$($status.harness | ConvertTo-Json -Compress) observer=$($status.observer) analyze=$($status.analyze)"
+          }
+
+      - name: Upload observation
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pr482-observation-${{ matrix.runner }}
+          path: ${{ runner.temp }}/pr482-observation
+          if-no-files-found: warn
+          retention-days: 14
