@@ -22,6 +22,10 @@ export const ControlGcRequest = z
       .boolean()
       .default(false)
       .describe("Report what WOULD be deleted without touching disk."),
+    retention_report: z
+      .boolean()
+      .optional()
+      .describe("Include typed holds, root/home counts and truncation; lockstep clients only."),
     model_payload_report: z
       .boolean()
       .optional()
@@ -77,6 +81,75 @@ export const GcKeepCounts = z
   .describe("Survivor counts per keep reason.");
 export type GcKeepCounts = z.infer<typeof GcKeepCounts>;
 
+export const GcHoldClass = z.enum([
+  "missing_partition",
+  "unbound_active_registration",
+  "recovery_pending",
+  "namespace_unreadable",
+  "anchor_references_unreadable",
+  "references_changed",
+  "native_home_veto",
+  "native_home_unsupported",
+  "cleanup_suppressed",
+]);
+export type GcHoldClass = z.infer<typeof GcHoldClass>;
+
+export const GcHold = z
+  .object({
+    class: GcHoldClass,
+    count: z.number().int().positive(),
+    example: z.string(),
+  })
+  .strict();
+export type GcHold = z.infer<typeof GcHold>;
+
+export const GcHeldCounts = z
+  .object({
+    roots: z.number().int().nonnegative().default(0),
+    native_homes: z.number().int().nonnegative().default(0),
+  })
+  .strict()
+  .describe("Held project roots and vetoed native homes, separate from run counts.");
+export type GcHeldCounts = z.infer<typeof GcHeldCounts>;
+
+export const GcLastPass = z
+  .object({
+    outcome: z.enum(["completed", "held", "truncated", "failed"]),
+    started_at: z.string(),
+    finished_at: z.string(),
+    freed_bytes: z.number().int().nonnegative(),
+    kept: GcKeepCounts,
+    held: GcHeldCounts,
+    holds: z
+      .array(
+        GcHold.extend({
+          example: z.string().max(160),
+          since: z.string(),
+        }),
+      )
+      .max(9),
+    errors: z
+      .object({
+        count: z.number().int().nonnegative(),
+        first: z.string().max(512).nullable(),
+      })
+      .strict(),
+  })
+  .strict()
+  .describe(
+    "One durable non-preview pass summary (at most 16 KiB), including outer cleanup failures.",
+  );
+export type GcLastPass = z.infer<typeof GcLastPass>;
+
+export const ControlGcLastResponse = z
+  .object({
+    last: GcLastPass.nullable().describe(
+      "Null until a non-preview pass has been recorded; reading never starts GC.",
+    ),
+  })
+  .strict();
+export type ControlGcLastResponse = z.infer<typeof ControlGcLastResponse>;
+
 /** Adapter-owned native store retirement, including explicit unsupported formats. */
 export const GcNativeHomeReport = z
   .object({
@@ -116,6 +189,9 @@ export const ControlGcReceipt = z
       .default([])
       .describe("Run trees deleted (or would-be under dry_run), tombstones left behind."),
     kept: GcKeepCounts.describe("Why every surviving candidate survived."),
+    held: GcHeldCounts.default({}),
+    holds: z.array(GcHold).default([]),
+    truncated: z.boolean().default(false),
     deleted_reviews: z
       .array(
         z

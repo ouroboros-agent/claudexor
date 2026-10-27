@@ -3,6 +3,7 @@ import { CLAUDEXOR_VERSION } from "@claudexor/util";
 
 const mocks = vi.hoisted(() => ({
   ensureDaemon: vi.fn(),
+  connectDaemonIfRunning: vi.fn(),
   controlApiFetch: vi.fn(),
 }));
 
@@ -11,6 +12,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("./daemon-run.js", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   ensureDaemon: mocks.ensureDaemon,
+  connectDaemonIfRunning: mocks.connectDaemonIfRunning,
 }));
 vi.mock("./live.js", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -74,6 +76,7 @@ describe("gcCommand data_root_report capability negotiation", () => {
       data_root_report: true,
       trash_purge_report: true,
       native_home_report: true,
+      retention_report: true,
     });
   });
 
@@ -129,5 +132,63 @@ describe("gcCommand data_root_report capability negotiation", () => {
     });
     expect(await gcCommand(parseArgs(["gc"]), true)).toBe(0);
     expect(sentBody()).toEqual({ dry_run: false });
+  });
+  it("reads --last with GET and prints every durable summary field", async () => {
+    mocks.connectDaemonIfRunning.mockResolvedValue({
+      addr: { baseUrl: "http://127.0.0.1:1234", token: "t" },
+      engine: engine(CLAUDEXOR_VERSION),
+    });
+    const last = {
+      outcome: "held",
+      started_at: RECEIPT.started_at,
+      finished_at: RECEIPT.finished_at,
+      freed_bytes: 42,
+      kept: { referenced: 3 },
+      held: { roots: 2, native_homes: 1 },
+      holds: [
+        {
+          class: "missing_partition",
+          count: 2,
+          example: "/fixture/root",
+          since: "2026-08-01T00:00:00Z",
+        },
+      ],
+      errors: { count: 1, first: "missing owner" },
+    };
+    mocks.controlApiFetch.mockResolvedValue(new Response(JSON.stringify({ last })));
+    expect(await gcCommand(parseArgs(["gc", "--last"]), false)).toBe(0);
+    expect(mocks.controlApiFetch).toHaveBeenCalledWith(expect.anything(), "/maintenance/gc");
+    expect(mocks.ensureDaemon).not.toHaveBeenCalled();
+    const out = stdoutSpy.mock.calls.map((call: unknown[]) => String(call[0])).join("");
+    for (const text of [
+      "held:",
+      last.started_at,
+      last.finished_at,
+      "42 bytes",
+      "referenced=3",
+      "roots=2",
+      "native_homes=1",
+      "missing_partition: 2",
+      last.holds[0]!.since,
+      "/fixture/root",
+      "errors=1",
+      "missing owner",
+    ])
+      expect(out).toContain(text);
+  });
+  it("does not start a daemon for --last when none is running", async () => {
+    mocks.connectDaemonIfRunning.mockResolvedValue(null);
+    await expect(gcCommand(parseArgs(["gc", "--last"]), false)).rejects.toThrow(
+      "Daemon is not running",
+    );
+    expect(mocks.ensureDaemon).not.toHaveBeenCalled();
+    expect(mocks.controlApiFetch).not.toHaveBeenCalled();
+  });
+  it("refuses --last --dry-run before contacting the daemon", async () => {
+    await expect(gcCommand(parseArgs(["gc", "--last", "--dry-run"]), false)).rejects.toThrow(
+      "cannot be combined",
+    );
+    expect(mocks.ensureDaemon).not.toHaveBeenCalled();
+    expect(mocks.connectDaemonIfRunning).not.toHaveBeenCalled();
   });
 });

@@ -149,9 +149,9 @@ export const OPS_COMMAND_SPECS_AFTER_REMOTE = [
   {
     id: "gc",
     positionalPatterns: [{ min: 0, max: 0 }],
-    usageArgs: "[--dry-run]",
+    usageArgs: "[--dry-run | --last]",
     summary: "Reclaim expired run/review artifact trees (daemon retention pass)",
-    flags: ["dry-run", "json"],
+    flags: ["dry-run", "last", "json"],
     mutability: "ops",
     stability: "stable",
   },

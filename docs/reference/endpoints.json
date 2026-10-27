@@ -354,6 +354,18 @@
       "error_schema": "ControlProblem"
     },
     {
+      "method": "GET",
+      "path": "/v2/maintenance/gc",
+      "mutating": false,
+      "applicability": "global",
+      "summary": "Read the durable last retention pass; never starts cleanup.",
+      "auth": "loopback_bearer",
+      "request_schema": null,
+      "parameters": [],
+      "response_schema": "ControlGcLastResponse",
+      "error_schema": "ControlProblem"
+    },
+    {
       "method": "POST",
       "path": "/v2/maintenance/gc",
       "mutating": true,

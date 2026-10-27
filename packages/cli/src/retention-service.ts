@@ -149,16 +149,21 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
       try {
         const healthyRoots = new Set(references.blocked ? [] : deps.threads.healthyProjectRoots());
         const inventoryErrors = [...(references.errors ?? [])];
+        const inventoryHolds = [...(references.holds ?? [])];
+        const laneHold = (example: string) =>
+          inventoryHolds.push({ class: "cleanup_suppressed", count: 1, example });
+        const heldRoots = new Set(references.protectedProjectRoots);
         const gcProjects = await retentionProjects(
           references,
           noProjectRoot,
           healthyRoots,
           inventoryErrors,
           signal,
+          heldRoots,
         );
         // Lane sweeping still uses only served healthy roots; archived lanes can
         // belong to retained threads invisible to the public listing.
-        const roots = [...healthyRoots, noProjectRoot];
+        const roots = [...healthyRoots, noProjectRoot].filter((root) => !heldRoots.has(root));
         // INV-034 lifecycle owner (c): remove durable per-lane read-only homes whose
         // thread no longer exists. Bounded to HEALTHY roots only (same fail-closed
         // set as the run GC): a recovery-pending partition cannot
@@ -167,8 +172,10 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
           const laneProofCurrent = references.recheck ?? references.isCurrent;
           const deferred =
             "lane sweep deferred: ownership changed; a fresh retention pass must resume";
-          if (!laneProofCurrent()) inventoryErrors.push(deferred);
-          else
+          if (!laneProofCurrent()) {
+            inventoryErrors.push(deferred);
+            laneHold(deferred);
+          } else
             for (const root of roots) {
               await yieldToAdmission();
               if (signal.aborted) break;
@@ -190,9 +197,12 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
               } catch (error) {
                 if (!laneProofCurrent()) {
                   inventoryErrors.push(deferred);
+                  laneHold(deferred);
                   break;
                 }
-                inventoryErrors.push(`lane sweep skipped for ${root}: ${String(error)}`);
+                const detail = `lane sweep skipped for ${root}: ${String(error)}`;
+                inventoryErrors.push(detail);
+                laneHold(detail);
               }
             }
         }
@@ -205,6 +215,7 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
           request,
           {
             signal,
+            anchorsHeld: !!references.blocked || heldRoots.size > 0,
             projects: () => gcProjects,
             records: () => references.records,
             referencedRunIds: () => references.referencedRunIds,
@@ -227,6 +238,17 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
             dataRootMode: claudexorOwnedRoot() === userConfigDir() ? "override" : "default",
           },
         );
+        receipt.held.roots = heldRoots.size;
+        receipt.holds.push(...inventoryHolds);
+        const unclassified = [...heldRoots].filter(
+          (root) => !references.protectedProjectRoots.has(root),
+        );
+        if (unclassified.length && !references.blocked)
+          receipt.holds.push({
+            class: "namespace_unreadable",
+            count: unclassified.length,
+            example: unclassified[0]!,
+          });
         const native = await deps.nativeHomes?.({
           signal,
           references,
@@ -241,6 +263,8 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
           receipt.freed_bytes += native.freedBytes;
           receipt.errors.push(...native.errors);
           morePending ||= native.truncated;
+          receipt.holds.push(...(native.holds ?? []));
+          receipt.held.native_homes = native.heldHomes ?? 0;
           if (request.native_home_report) receipt.native_homes = native.reports;
         }
         receipt.errors.unshift(...leftovers.errors, ...trash.errors, ...inventoryErrors);
@@ -248,6 +272,7 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
           receipt.purged_threads = trash.purged;
           receipt.purge_leftovers = leftovers.finished;
         }
+        receipt.truncated ||= morePending;
         receipt.finished_at = new Date().toISOString();
         if (morePending) truncatedReceipts.add(receipt);
         lastReceipt = receipt;

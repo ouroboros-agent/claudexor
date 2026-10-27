@@ -1,4 +1,4 @@
-import { Thread } from "@claudexor/schema";
+import { Thread, type GcHold } from "@claudexor/schema";
 import { setImmediate as yieldToAdmission } from "node:timers/promises";
 import { access } from "node:fs/promises";
 import type { EngineStore } from "./store.js";
@@ -30,6 +30,7 @@ export interface DiskRetentionReferences {
   /** Recovery holds are receipt facts; completed quarantine is not a hold. */
   blocked?: string;
   errors?: string[];
+  holds?: GcHold[];
   projectRoots: string[];
   /** Retained active/archived registrations; thread root names alone are not ownership. */
   registeredProjectRoots: Set<string>;
@@ -200,6 +201,7 @@ export async function diskRetentionReferences(
       close: changesObserved.close,
       blocked,
       errors,
+      holds: generations.holds,
       projectRoots: [...roots],
       registeredProjectRoots,
       archivedProjectRoots,

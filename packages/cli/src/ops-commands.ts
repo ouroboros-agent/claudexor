@@ -15,9 +15,7 @@ import {
   rotateToken,
 } from "@claudexor/daemon";
 import { atRiskNodeAdvisory, harnessRuntimeEnv } from "@claudexor/core";
-import { CLAUDEXOR_VERSION, claudexorOwnedRoot } from "@claudexor/util";
 import {
-  ControlGcReceipt,
   ControlHarnessListResponse,
   ControlHarnessModelsResponse,
   ControlHarnessSetupHarness,
@@ -29,8 +27,9 @@ import {
   ControlSetupJob,
   GitCapability,
 } from "@claudexor/schema";
-import { type ParsedArgs, flagBool, flagStr } from "./args.js";
-import { GC_LOCKSTEP_REPORTS, gcReceiptNotes } from "./gc-receipt-notes.js";
+import { type ParsedArgs, flagStr } from "./args.js";
+import { gcCommand } from "./gc-command.js";
+export { gcCommand } from "./gc-command.js";
 import { harnessListPath, requestedHarnesses, unknownHarnesses } from "./ops-harness-selection.js";
 import { CliError, controlProblemError, renderCliFailure, usageError } from "./cli-error.js";
 import { accountsCommand, profilesCommand, secretsCommand } from "./credential-commands.js";
@@ -506,41 +505,6 @@ export async function authCommand(
     return accepted ? 0 : 1;
   }
   return printUsageError(json, "usage: claudexor auth status|login");
-}
-
-/** Thin client of the daemon-owned retention service (W3.6). */
-export async function gcCommand(args: ParsedArgs, json: boolean): Promise<number> {
-  const dryRun = flagBool(args, "dry-run") === true;
-  const { addr, engine } = await ensureDaemon();
-  // Capability negotiation over the handshake's validated engine identity:
-  // request the opt-in receipt reports (data-root scan, thread purges)
-  // ONLY from a lockstep daemon (same engine version as this CLI). Any skew —
-  // older daemon, newer daemon, or a malformed identity — omits the flags, so
-  // both sides exchange the exact pre-feature request/receipt shapes and a
-  // strict old schema never rejects the receipt of a mutating verb the daemon
-  // already executed.
-  const lockstep = engine.engineVersion === CLAUDEXOR_VERSION;
-  const response = await controlApiFetch(addr, "/maintenance/gc", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${addr.token}`, "content-type": "application/json" },
-    body: JSON.stringify({ dry_run: dryRun, ...(lockstep ? GC_LOCKSTEP_REPORTS : {}) }),
-  });
-  if (!response.ok) throw new Error(`gc failed (${response.status}): ${await response.text()}`);
-  const receipt = ControlGcReceipt.parse(await response.json());
-  if (json) {
-    printJson(receipt);
-    return 0;
-  }
-  const verb = receipt.dry_run ? "would free" : "freed";
-  const mb = (receipt.freed_bytes / (1024 * 1024)).toFixed(1);
-  print(
-    `${verb} ${mb} MiB: ${receipt.deleted_runs.length} run tree(s), ${receipt.deleted_reviews.length} review tree(s) ` +
-      `(examined ${receipt.examined_runs}; kept active=${receipt.kept.active} recent=${receipt.kept.recent} young=${receipt.kept.young} ` +
-      `referenced=${receipt.kept.referenced} actionable=${receipt.kept.actionable} unknown=${receipt.kept.unknown_state})`,
-  );
-  for (const note of gcReceiptNotes(receipt, claudexorOwnedRoot())) print(note);
-  for (const error of receipt.errors) print(`warning: ${error}`);
-  return 0;
 }
 
 export async function recoveryCommand(args: ParsedArgs, json: boolean): Promise<number> {

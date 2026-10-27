@@ -528,7 +528,7 @@ export const RunDeliveryState = z
       .string()
       .nullable()
       .default(null)
-      .describe("GC-independent revert anchor recorded at apply time; null when none."),
+      .describe("Run-owned revert anchor recorded at apply time; null when none."),
     postTurnSha: z
       .string()
       .nullable()
@@ -585,7 +585,7 @@ export const ControlRunResult = z
       .describe(
         "Tree SHA right after this turn's mutation; revert refuses if the working tree has diverged from this since.",
       ),
-    revertAnchorId: z.string().nullable().default(null).describe("GC-independent revert anchor."),
+    revertAnchorId: z.string().nullable().default(null).describe("Run-owned revert anchor."),
     /** Revert metadata is available (the turn mutated the live tree in place and
      * an external patch anchor was recorded), so a Revert affordance may be offered.
      * This is NOT a live-safe guarantee: the server re-checks tree divergence at

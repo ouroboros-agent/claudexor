@@ -22,6 +22,7 @@ import { createModelServices } from "./model-services.js";
 import { createDeferredStartPreparation } from "./deferred-start-preparation.js";
 
 import { afterRetention, type RetentionRunner } from "./retention-lifetime.js";
+import { readLastRetention, recordLastRetention } from "./retention-last-pass.js";
 
 type SqlServices = ReturnType<typeof createSqlDaemonServices>;
 type ModelOptions = Pick<
@@ -151,9 +152,16 @@ export function createSqlDaemonExecutors(
     // Keep the bounded-pass signal through model cleanup and upload pruning.
     retention: (runner: RetentionRunner): RetentionRunner => {
       const wrapped = models.withRetention(runner);
-      return afterRetention(wrapped, (request) => {
-        if (!request.dry_run) graph.resources.pruneUploadBindings();
-      });
+      return recordLastRetention(
+        afterRetention(wrapped, (request) => {
+          if (!request.dry_run) graph.resources.pruneUploadBindings();
+        }),
+        graph.store,
+      );
+    },
+    controlRoutes: {
+      ...models.routes,
+      lastRetention: async () => ({ last: readLastRetention(graph.store) }),
     },
     harnessMaintenance,
     onCommandTerminal: (record: JobRecord) => models.operations.onCommandTerminal(record),

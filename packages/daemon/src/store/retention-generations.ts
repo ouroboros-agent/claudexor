@@ -1,4 +1,5 @@
 import type { EngineStore } from "./store.js";
+import type { GcHold } from "@claudexor/schema";
 
 /** Quarantine completes recovery: those rows are evidence, never live owners.
  * Archived generations remain restorable owners. Unknown/pending states cannot
@@ -50,6 +51,7 @@ export function retentionGenerations(store: EngineStore) {
   );
   const protectedProjectRoots = new Set<string>();
   const errors: string[] = [];
+  const holds: GcHold[] = [];
   let blocked: string | undefined;
   for (const row of rows) {
     if (retained(row.id) || retired(row)) continue;
@@ -57,21 +59,27 @@ export function retentionGenerations(store: EngineStore) {
     // Scope roots do not bound dependencies: a continuation may name any namespace.
     blocked ??= reason;
     errors.push(`all namespaces kept: ${reason}`);
+    holds.push({ class: "recovery_pending", count: 1, example: reason });
   }
+  const bindingHolds = new Set<string>();
   for (const row of store
     .prepare(
       `SELECT p.root,p.current_pid FROM project p
     JOIN partition g ON g.id=p.pid LEFT JOIN partition q ON q.id=p.current_pid
-    WHERE g.status IN ('ready','archived') AND q.id IS NULL`,
+    WHERE g.status IN ('ready','archived') AND
+      ((p.current_pid IS NOT NULL AND q.id IS NULL) OR
+       (p.status='active' AND p.current_pid IS NULL))`,
     )
     .all() as Array<{
     root: string;
-    current_pid: number;
+    current_pid: number | null;
   }>) {
+    const reason = row.current_pid === null ? "unbound_active_registration" : "missing_partition";
+    const holdKey = `${reason}\0${row.root}`;
+    if (!bindingHolds.has(holdKey)) holds.push({ class: reason, count: 1, example: row.root });
+    bindingHolds.add(holdKey);
     protectedProjectRoots.add(row.root);
-    errors.push(
-      `namespace ${row.root} kept: missing partition ${row.current_pid} awaits journal recovery`,
-    );
+    errors.push(`namespace ${row.root} kept: ${reason} (${row.current_pid ?? "NULL"})`);
   }
   return {
     retained,
@@ -79,6 +87,7 @@ export function retentionGenerations(store: EngineStore) {
     archivedProjectRoots,
     protectedProjectRoots,
     errors,
+    holds,
     blocked,
   };
 }

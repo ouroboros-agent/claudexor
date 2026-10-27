@@ -42,7 +42,11 @@ export function afterRetention(
   const pending = new Set<Promise<ControlGcReceipt>>();
   const wrapped: RetentionRunner = (request) => {
     const flight = run(request).then(async (receipt) => {
-      await after(request, receipt);
+      try {
+        await after(request, receipt);
+      } catch (error) {
+        throw new RetentionStepError(error, receipt);
+      }
       return receipt;
     });
     pending.add(flight);
@@ -52,6 +56,63 @@ export function afterRetention(
   wrapped.cancel = async () => {
     await run.cancel?.();
     await Promise.allSettled([...pending]);
+  };
+  return wrapped;
+}
+
+class RetentionStepError extends Error {
+  constructor(
+    cause: unknown,
+    readonly receipt: ControlGcReceipt,
+  ) {
+    super(String(cause), { cause });
+  }
+}
+
+/** Serialize the entire composition, including failure receipts and persistence.
+ * Cancelling first reaches the inner pass, then drains every admitted finalizer. */
+export function finalizeRetention(
+  run: RetentionRunner,
+  finish: (
+    request: ControlGcRequest,
+    result: {
+      startedAt: string;
+      receipt?: ControlGcReceipt;
+      failed: boolean;
+      cancelled: boolean;
+      error?: unknown;
+    },
+  ) => Promise<void>,
+): RetentionRunner {
+  const wrapped = serializeRetention(async (request, signal) => {
+    const startedAt = new Date().toISOString();
+    let receipt: ControlGcReceipt | undefined;
+    let failed = false;
+    let error: unknown;
+    try {
+      signal.throwIfAborted();
+      receipt = await run(request);
+    } catch (caught) {
+      failed = true;
+      error = caught;
+      if (caught instanceof RetentionStepError) receipt = caught.receipt;
+    }
+    await finish(request, {
+      startedAt,
+      receipt,
+      failed,
+      cancelled: signal.aborted && !receipt,
+      error,
+    });
+    if (failed) throw error;
+    return receipt!;
+  });
+  wrapped.hasMore = run.hasMore;
+  const drain = wrapped.cancel!;
+  wrapped.cancel = async () => {
+    const draining = drain();
+    await run.cancel?.();
+    await draining;
   };
   return wrapped;
 }

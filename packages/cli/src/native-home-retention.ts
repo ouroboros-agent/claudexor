@@ -1,7 +1,7 @@
 import { CONTINUITY_PROFILE_LOCATOR_ENV, type AdapterRegistry } from "@claudexor/core";
 import { loadConfig } from "@claudexor/config";
 import type { DiskRetentionReferences, ProjectThreadPort } from "@claudexor/daemon";
-import { type CredentialProfile, type GcNativeHomeReport } from "@claudexor/schema";
+import { type CredentialProfile, type GcHold, type GcNativeHomeReport } from "@claudexor/schema";
 import { noProjectRepoRoot } from "@claudexor/util";
 import { buildRegistry } from "./registry.js";
 import { collectNativeRunSessions, retainedNativeSessions } from "@claudexor/control-api";
@@ -20,6 +20,8 @@ export interface NativeRetentionResult {
   errors: string[];
   freedBytes: number;
   truncated: boolean;
+  heldHomes?: number;
+  holds?: GcHold[];
 }
 export function createNativeHomeRetention(deps: {
   threads: ProjectThreadPort;
@@ -35,6 +37,13 @@ export function createNativeHomeRetention(deps: {
       errors: [],
       freedBytes: 0,
       truncated: false,
+    };
+    const holds: GcHold[] = [];
+    result.holds = holds;
+    result.heldHomes = 0;
+    const hold = (kind: GcHold["class"], example: string) => {
+      holds.push({ class: kind, count: 1, example });
+      result.heldHomes! += 1;
     };
     let closeReferences = () => {};
     try {
@@ -124,6 +133,7 @@ export function createNativeHomeRetention(deps: {
           result.reports.push(report);
           if (lifetime.status === "not_pruned") {
             report.reason = lifetime.reason;
+            hold("native_home_unsupported", `${harness}: ${lifetime.reason}`);
             continue;
           }
           try {
@@ -143,12 +153,14 @@ export function createNativeHomeRetention(deps: {
             }
             if (blocked) {
               report.reason = blocked;
+              hold("native_home_veto", `${report.home}: ${blocked}`);
               continue;
             }
             // Preserve this Set identity: SQL and producer rechecks add to it
             // while the adapter walks its home.
             const ids = references.get(harness) ?? new Set<string>();
             references.set(harness, ids);
+            let vetoed = false;
             const pruned = await lifetime.prune({
               signal: request.signal,
               home: report.home,
@@ -156,15 +168,32 @@ export function createNativeHomeRetention(deps: {
               olderThan: request.olderThan,
               dryRun: request.dryRun,
               maxDeletions: remaining,
-              canPrune,
+              canPrune: () => {
+                try {
+                  const current = canPrune();
+                  vetoed ||= !current;
+                  return current;
+                } catch (error) {
+                  vetoed = true;
+                  throw error;
+                }
+              },
             });
             Object.assign(report, pruned, { status: "checked", reason: lifetime.preserves });
+            if (vetoed)
+              hold("native_home_veto", `${report.home}: ownership or setup changed during pruning`);
+            else if (pruned.kept_unknown > 0)
+              hold(
+                "native_home_unsupported",
+                `${report.home}: ${pruned.kept_unknown} unrecognized native files kept`,
+              );
             remaining -= pruned.deleted_files.length;
             result.freedBytes += pruned.freed_bytes;
             result.errors.push(...pruned.errors);
             result.truncated ||= pruned.truncated;
           } catch (error) {
             report.reason = error instanceof Error ? error.message : String(error);
+            hold("native_home_veto", `${harness}: ${report.reason}`);
             result.errors.push(
               `native home ${harness}/${profile?.profile_id ?? "default"}: ${report.reason}`,
             );
