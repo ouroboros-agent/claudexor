@@ -272,11 +272,20 @@ export function timelineEvents(
   events?: Record<string, unknown>[],
   integrity?: RunEventsIntegrity,
 ): ControlTimelineEvent[] {
+  // Select the displayed window BEFORE projecting: redaction and row
+  // validation cost per row, so omitted rows are only counted, never projected.
+  // Buffered harness frames are retained evidence, never rows. The caller's
+  // snapshot is left whole for the budget and plan projections.
+  const displayable = (events ?? readRunEvents(rec)).filter(
+    (ev) =>
+      String(ev["type"] ?? "event") !== "harness.event" ||
+      eventPayload(eventPayload(ev))["buffered"] !== true,
+  );
+  const omitted = Math.max(0, displayable.length - TIMELINE_EVENTS_MAX);
   const out: ControlTimelineEvent[] = [];
-  for (const ev of events ?? readRunEvents(rec)) {
+  for (const ev of displayable.slice(omitted)) {
     const payload = eventPayload(ev);
     const type = String(ev["type"] ?? "event");
-    if (type === "harness.event" && eventPayload(payload)["buffered"] === true) continue;
     const textKind =
       type === "harness.event" &&
       (payload["type"] === "thinking" || payload["type"] === "message") &&
@@ -364,11 +373,8 @@ export function timelineEvents(
     );
   }
   // Bounded projection with an EXPLICIT truncation marker — no silent truncation.
-  let rows = out;
-  if (out.length > TIMELINE_EVENTS_MAX) {
-    const omitted = out.length - TIMELINE_EVENTS_MAX;
-    rows = out.slice(-TIMELINE_EVENTS_MAX);
-    rows.unshift(
+  if (omitted > 0) {
+    out.unshift(
       ControlTimelineEvent.parse({
         type: "timeline.truncated",
         title: `${omitted} earlier event(s) omitted from this projection`,
@@ -383,8 +389,8 @@ export function timelineEvents(
   // itself so a partial timeline can never read as clean (QA-074). Prepended
   // last so it sits at the very top, most prominent.
   const marker = incompletenessMarker(integrity);
-  if (marker) rows.unshift(marker);
-  return rows;
+  if (marker) out.unshift(marker);
+  return out;
 }
 
 /**

@@ -573,7 +573,7 @@ private struct InstallRun {
         defer { try? FileManager.default.removeItem(at: root) }
         let installer = suppliedInstaller ?? RuntimeInstaller(root: root)
         try installer.writeCurrentAtomic(previous)
-        let (bytes, sha) = try fixtureClosure()
+        let (bytes, sha) = try await fixtureClosure()
 
         let timeline = EngineTimeline(processes)
         AdmissionURLProtocol.timeline = timeline
@@ -603,7 +603,10 @@ private struct InstallRun {
             status: model.runtimeInstallStatus ?? "", current: installer.readCurrent())
     }
 
-    private func fixtureClosure() throws -> (Data, String) {
+    /// `install` is main-actor isolated, and `waitUntilExit()` there blocks every
+    /// concurrently running @MainActor test for the child's whole lifetime, which
+    /// can exceed other tests' deadlines when the child is slow. Await the exit instead.
+    private func fixtureClosure() async throws -> (Data, String) {
         let stage = runtimeTestTemporaryDirectory
             .appendingPathComponent("cx-admission-stage-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: stage, withIntermediateDirectories: true)
@@ -613,8 +616,10 @@ private struct InstallRun {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
         process.arguments = ["-czf", tar.path, "-C", stage.path, "claudexord.bundle.cjs"]
-        try process.run()
-        process.waitUntilExit()
+        try await withCheckedThrowingContinuation { (exited: CheckedContinuation<Void, Error>) in
+            process.terminationHandler = { _ in exited.resume() }
+            do { try process.run() } catch { exited.resume(throwing: error) }
+        }
         let bytes = try Data(contentsOf: tar)
         return (bytes, RuntimeInstaller(root: stage).sha256Hex(bytes))
     }
