@@ -49,6 +49,7 @@
 - Updated dependencies [6c31c44]
 - Updated dependencies [7dfbc42]
 - Updated dependencies
+- Updated dependencies [4a028bb]
   - @claudexor/orchestrator@4.8.0
   - @claudexor/schema@4.8.0
   - @claudexor/daemon@4.8.0
