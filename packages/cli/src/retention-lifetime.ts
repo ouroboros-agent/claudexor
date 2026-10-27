@@ -1,5 +1,12 @@
 import type { ControlGcReceipt, ControlGcRequest } from "@claudexor/schema";
 
+const unobservedReceipts = new WeakSet<ControlGcReceipt>();
+/** Internal evidence, not a wire field: cancellation returned no inventory. */
+export function withoutRetentionInventory(receipt: ControlGcReceipt): ControlGcReceipt {
+  unobservedReceipts.add(receipt);
+  return receipt;
+}
+
 export type RetentionRunner = ((request: ControlGcRequest) => Promise<ControlGcReceipt>) & {
   hasMore?: (receipt?: ControlGcReceipt) => boolean;
   /** Cancel every already admitted pass and drain it before its store closes. */
@@ -77,6 +84,7 @@ export function finalizeRetention(
     request: ControlGcRequest,
     result: {
       startedAt: string;
+      inventoryObserved: boolean;
       receipt?: ControlGcReceipt;
       failed: boolean;
       cancelled: boolean;
@@ -88,22 +96,26 @@ export function finalizeRetention(
     const startedAt = new Date().toISOString();
     let receipt: ControlGcReceipt | undefined;
     let failed = false;
+    let started = false;
     let error: unknown;
     try {
       signal.throwIfAborted();
+      started = true;
       receipt = await run(request);
     } catch (caught) {
       failed = true;
       error = caught;
       if (caught instanceof RetentionStepError) receipt = caught.receipt;
     }
-    await finish(request, {
-      startedAt,
-      receipt,
-      failed,
-      cancelled: signal.aborted && !receipt,
-      error,
-    });
+    if (started)
+      await finish(request, {
+        startedAt,
+        inventoryObserved: receipt !== undefined && !unobservedReceipts.has(receipt),
+        receipt,
+        failed,
+        cancelled: signal.aborted && !receipt,
+        error,
+      });
     if (failed) throw error;
     return receipt!;
   });

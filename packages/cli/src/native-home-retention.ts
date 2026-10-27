@@ -43,7 +43,7 @@ export function createNativeHomeRetention(deps: {
     result.heldHomes = 0;
     const hold = (kind: GcHold["class"], example: string) => {
       holds.push({ class: kind, count: 1, example });
-      result.heldHomes! += 1;
+      if (kind === "native_home_veto") result.heldHomes! += 1;
     };
     let closeReferences = () => {};
     try {
@@ -133,7 +133,6 @@ export function createNativeHomeRetention(deps: {
           result.reports.push(report);
           if (lifetime.status === "not_pruned") {
             report.reason = lifetime.reason;
-            hold("native_home_unsupported", `${harness}: ${lifetime.reason}`);
             continue;
           }
           try {

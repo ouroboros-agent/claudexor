@@ -161,7 +161,13 @@ export function createSqlDaemonExecutors(
     },
     controlRoutes: {
       ...models.routes,
-      lastRetention: async () => ({ last: readLastRetention(graph.store) }),
+      lastRetention: async () => {
+        let diagnostic: string | undefined;
+        const last = readLastRetention(graph.store, (message) => {
+          diagnostic = message;
+        });
+        return { last, ...(diagnostic ? { diagnostic } : {}) };
+      },
     },
     harnessMaintenance,
     onCommandTerminal: (record: JobRecord) => models.operations.onCommandTerminal(record),

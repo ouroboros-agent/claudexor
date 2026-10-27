@@ -22,7 +22,7 @@ const close: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
   for (const fn of close.splice(0).reverse()) await fn();
 });
-it.each(["archived-null", "active-null", "dangling", "both"])(
+it.each(["archived-null", "active-null", "dangling", "both", "healthy-and-dangling"])(
   "owns runs/native retirement for %s truthfully",
   async (kind) => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "retention-binding-")));
@@ -53,7 +53,7 @@ it.each(["archived-null", "active-null", "dangling", "both"])(
         .prepare("UPDATE project SET current_pid=? WHERE id=?")
         .run(kind === "dangling" ? 999999 : null, p.id),
     );
-    if (kind === "both") {
+    if (kind === "both" || kind === "healthy-and-dangling") {
       sql.graph.projects.unregister(p.id);
       const other = sql.graph.projects.register({
         root: repo,
@@ -62,8 +62,11 @@ it.each(["archived-null", "active-null", "dangling", "both"])(
       }).project;
       sql.store.transaction(() => {
         sql.store.prepare("UPDATE project SET current_pid=999999 WHERE id=?").run(p.id);
-        sql.store.prepare("UPDATE project SET current_pid=NULL WHERE id=?").run(other.id);
+        if (kind === "both")
+          sql.store.prepare("UPDATE project SET current_pid=NULL WHERE id=?").run(other.id);
       });
+      if (kind === "healthy-and-dangling")
+        expect(sql.graph.threads.healthyProjectRoots()).toContain(repo);
     }
     const run = new ArtifactStore(repo).createRun("old");
     writeFileSync(join(run.finalDir, "failure.yaml"), "terminal");
@@ -130,7 +133,10 @@ it.each(["archived-null", "active-null", "dangling", "both"])(
       expect(existsSync(anchor)).toBe(false);
       expect(last.outcome).toBe("completed");
     } else {
-      const reason = kind === "dangling" ? "missing_partition" : "unbound_active_registration";
+      const reason =
+        kind === "dangling" || kind === "healthy-and-dangling"
+          ? "missing_partition"
+          : "unbound_active_registration";
       expect(receipt.held).toEqual({ roots: 1, native_homes: 1 });
       expect(receipt.kept.unknown_state).toBe(0);
       expect(receipt.deleted_runs).toEqual([]);

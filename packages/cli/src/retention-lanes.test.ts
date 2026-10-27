@@ -39,7 +39,6 @@ it("sweeps an orphan in the first pass while unrelated thread writes continue", 
   const busy = sql.graph.threads.createThread({ title: "busy", workspace: "in_place" });
   const held = join(projectRuntimeDir(noProjectRepoRoot()), "lanes", busy.id, "default", "home");
   mkdirSync(held, { recursive: true });
-  writeFileSync(join(held, "session.jsonl"), "live lane state");
   let writes = 0;
   // An unrelated metadata write every millisecond, like a busy daemon's routine traffic.
   const timer = setInterval(() => {
@@ -71,7 +70,6 @@ it("names the root when live lane ownership cannot be read", async () => {
   const repoRoot = noProjectRepoRoot();
   const lane = join(projectRuntimeDir(repoRoot), "lanes", "th-000000000001", "default", "home");
   mkdirSync(lane, { recursive: true });
-  writeFileSync(join(lane, "session.jsonl"), "unproven lane state");
   const other = join(root, "healthy");
   mkdirSync(other);
   sql.graph.projects.register({ root: other, idempotencyKey: "healthy", clientId: "fixture" });
@@ -124,7 +122,6 @@ it.each(["before-loop", "during-loop"])(
       "home",
     );
     mkdirSync(held, { recursive: true });
-    writeFileSync(join(held, "session.jsonl"), "live lane state");
     const changeTopology = () => {
       const late = join(root, "late");
       mkdirSync(late);

@@ -184,6 +184,21 @@ describe("gcCommand data_root_report capability negotiation", () => {
     expect(mocks.ensureDaemon).not.toHaveBeenCalled();
     expect(mocks.controlApiFetch).not.toHaveBeenCalled();
   });
+  it("prints an unreadable last-pass diagnostic without starting GC", async () => {
+    mocks.connectDaemonIfRunning.mockResolvedValue({
+      addr: { baseUrl: "http://127.0.0.1:1234", token: "t" },
+      engine: engine(CLAUDEXOR_VERSION),
+    });
+    const diagnostic = "Stored retention summary is unreadable; a new pass will replace it.";
+    mocks.controlApiFetch.mockResolvedValue(
+      new Response(JSON.stringify({ last: null, diagnostic })),
+    );
+    expect(await gcCommand(parseArgs(["gc", "--last"]), false)).toBe(0);
+    expect(stdoutSpy.mock.calls.map((call: unknown[]) => String(call[0])).join("")).toContain(
+      diagnostic,
+    );
+    expect(mocks.ensureDaemon).not.toHaveBeenCalled();
+  });
   it("refuses --last --dry-run before contacting the daemon", async () => {
     await expect(gcCommand(parseArgs(["gc", "--last", "--dry-run"]), false)).rejects.toThrow(
       "cannot be combined",

@@ -76,7 +76,8 @@
                     "native_homes": {
                       "type": "integer",
                       "minimum": 0,
-                      "default": 0
+                      "default": 0,
+                      "description": "Vetoed native homes only; permanently unsupported adapters are informational."
                     }
                   },
                   "additionalProperties": false,
@@ -166,7 +167,12 @@
               "type": "null"
             }
           ],
-          "description": "Null until a non-preview pass has been recorded; reading never starts GC."
+          "description": "Null when no readable non-preview pass has been recorded; reading never starts GC."
+        },
+        "diagnostic": {
+          "type": "string",
+          "maxLength": 512,
+          "description": "Why the stored summary could not be read; absent when no record exists or it is valid."
         }
       },
       "required": [

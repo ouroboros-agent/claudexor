@@ -422,10 +422,18 @@ export async function runRetentionPass(
         deps.signal,
       );
       if (!dryRun && proofCurrent())
-        pruneEmptyRuntimeDirectories(dirname(project.runsDir), Date.parse(startedAt));
+        pruneEmptyRuntimeDirectories(
+          dirname(project.runsDir),
+          Date.parse(startedAt),
+          (path, error) =>
+            errors.push(
+              `runtime cleanup ${path}: ${error instanceof Error ? error.message : String(error)}`,
+            ),
+        );
     } catch (error) {
       errors.push(`runtime cleanup: ${error instanceof Error ? error.message : String(error)}`);
     }
+    await yieldToAdmission();
   }
 
   if (truncated) {

@@ -5,10 +5,23 @@ import { finalizeRetention, type RetentionRunner } from "./retention-lifetime.js
 
 const KEY = "retention_last_pass";
 
-export function readLastRetention(store: EngineStore): GcLastPass | null {
+export function readLastRetention(
+  store: EngineStore,
+  onUnreadable?: (diagnostic: string) => void,
+): GcLastPass | null {
   const row = store.prepare("SELECT value FROM meta WHERE key=?").get(KEY) as
     { value: string } | undefined;
-  return row ? GcLastPass.parse(JSON.parse(row.value)) : null;
+  if (!row) return null;
+  let value: unknown;
+  try {
+    value = JSON.parse(row.value);
+  } catch {
+    // Invalid JSON and invalid schema both represent unavailable evidence.
+  }
+  const parsed = GcLastPass.safeParse(value);
+  if (parsed.success) return parsed.data;
+  onUnreadable?.("Stored retention summary is unreadable; a new pass will replace it.");
+  return null;
 }
 
 function summarize(
@@ -17,15 +30,20 @@ function summarize(
   failure: unknown,
   failed: boolean,
   cancelled: boolean,
+  inventoryObserved: boolean,
   previous: GcLastPass | null,
 ): GcLastPass {
   const holds = new Map<GcHold["class"], GcHold>();
-  for (const hold of receipt?.holds ?? []) {
+  for (const hold of (inventoryObserved ? receipt?.holds : previous?.holds) ?? []) {
     const existing = holds.get(hold.class);
     if (existing) existing.count += hold.count;
     else holds.set(hold.class, { ...hold });
   }
   const errors = [...(receipt?.errors ?? []), ...(failed ? [String(failure)] : [])];
+  const held = (inventoryObserved ? receipt?.held : previous?.held) ?? {
+    roots: 0,
+    native_homes: 0,
+  };
   return GcLastPass.parse({
     outcome: cancelled
       ? "truncated"
@@ -33,7 +51,7 @@ function summarize(
         ? "failed"
         : receipt?.truncated
           ? "truncated"
-          : holds.size || (receipt?.held.roots ?? 0) || (receipt?.held.native_homes ?? 0)
+          : holds.size || held.roots || held.native_homes
             ? "held"
             : errors.length
               ? "failed"
@@ -42,7 +60,7 @@ function summarize(
     finished_at: new Date().toISOString(),
     freed_bytes: receipt?.freed_bytes ?? 0,
     kept: receipt?.kept ?? GcKeepCounts.parse({}),
-    held: receipt?.held ?? { roots: 0, native_homes: 0 },
+    held,
     holds: [...holds.values()].map((hold) => ({
       ...hold,
       example: redactSecrets(hold.example).slice(0, 160),
@@ -78,6 +96,7 @@ export function recordLastRetention(run: RetentionRunner, store: EngineStore): R
       result.error,
       result.failed,
       result.cancelled,
+      result.inventoryObserved,
       readLastRetention(store),
     );
     writeLastRetention(store, record);

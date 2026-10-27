@@ -7,6 +7,9 @@ import { sqlFixture } from "../../daemon/src/store/test-support/sql-fixture.js";
 import { afterRetention, serializeRetention } from "./retention-lifetime.js";
 import { readLastRetention, recordLastRetention } from "./retention-last-pass.js";
 import { createSqlDaemonRuntime } from "./sql-daemon-runtime.js";
+import { createRetentionRunner } from "./retention-service.js";
+import { handleMaintenanceRoute } from "../../control-api/src/maintenance-routes.js";
+import type { IncomingMessage, ServerResponse } from "node:http";
 
 const cleanup: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
@@ -163,13 +166,14 @@ it("bounds accumulated diagnostics to 16 KiB and never reports truncation or err
   expect(readLastRetention(sql.store)?.outcome).toBe("failed");
 });
 
-it("cancels queued outer passes without starting them and records resumable truncation", async () => {
+it("a cancelled queued pass never starts or overwrites the pass that ran", async () => {
   const { sql } = await fixture();
   let enter!: () => void;
   const entered = new Promise<void>((resolve) => {
     enter = resolve;
   });
   let calls = 0;
+  const flush = vi.spyOn(sql.store, "flushed");
   const core = serializeRetention(async (_request, signal) => {
     calls += 1;
     enter();
@@ -178,6 +182,8 @@ it("cancels queued outer passes without starting them and records resumable trun
     );
     const value = receipt();
     value.truncated = true;
+    value.held.roots = 2;
+    value.holds = [{ class: "missing_partition", count: 2, example: "/held" }];
     return value;
   });
   const run = recordLastRetention(core, sql.store);
@@ -186,10 +192,124 @@ it("cancels queued outer passes without starting them and records resumable trun
   await entered;
   await run.cancel!();
   await first;
-  await queued;
+  expect(await queued).toMatchObject({ name: "AbortError" });
   expect(calls).toBe(1);
-  expect(readLastRetention(sql.store)?.outcome).toBe("truncated");
+  expect(flush).toHaveBeenCalledTimes(1);
+  expect(readLastRetention(sql.store)).toMatchObject({
+    outcome: "truncated",
+    freed_bytes: 17,
+    held: { roots: 2, native_homes: 0 },
+    holds: [{ class: "missing_partition", count: 2, example: "/held", since: expect.any(String) }],
+    errors: { count: 0, first: null },
+  });
 });
+it.each(["cancel-inventory", "throw-before-inventory"])(
+  "carries previous holds and since when %s yields no inventory",
+  async (kind) => {
+    const { sql } = await fixture();
+    const held = receipt();
+    held.held = { roots: 2, native_homes: 1 };
+    held.holds = [
+      { class: "missing_partition", count: 2, example: "/held" },
+      { class: "native_home_veto", count: 1, example: "/native" },
+    ];
+    await recordLastRetention(async () => held, sql.store)({ dry_run: false });
+    const previous = readLastRetention(sql.store)!;
+    let enter!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      enter = resolve;
+    });
+    const inventory = vi
+      .spyOn(sql.graph.threads, "retentionReferences")
+      .mockImplementation(async (_ignored, signal) => {
+        enter();
+        if (kind === "throw-before-inventory") throw new Error("inventory unavailable");
+        await new Promise<void>((resolve) =>
+          signal!.addEventListener("abort", () => resolve(), { once: true }),
+        );
+        signal!.throwIfAborted();
+        throw new Error("expected cancellation");
+      });
+    const core = createRetentionRunner({
+      projects: () => sql.graph.projects,
+      threads: sql.graph.threads,
+      daemonJobs: () => [],
+      purgeThread: async () => {},
+      hasPurgeLeftovers: () => false,
+    });
+    const run = recordLastRetention(core, sql.store);
+    const pending = run({ dry_run: false }).catch((error: unknown) => error);
+    await entered;
+    if (kind === "cancel-inventory") await run.cancel!();
+    const result = await pending;
+    if (kind === "throw-before-inventory")
+      expect(result).toMatchObject({ message: "inventory unavailable" });
+    expect(readLastRetention(sql.store)).toMatchObject({
+      outcome: kind === "cancel-inventory" ? "truncated" : "failed",
+      held: previous.held,
+      holds: previous.holds,
+    });
+    inventory.mockRestore();
+    await recordLastRetention(async () => held, sql.store)({ dry_run: false });
+    expect(readLastRetention(sql.store)?.holds).toEqual(previous.holds);
+    await recordLastRetention(async () => receipt(), sql.store)({ dry_run: false });
+    expect(readLastRetention(sql.store)).toMatchObject({
+      outcome: "completed",
+      holds: [],
+      held: { roots: 0, native_homes: 0 },
+    });
+  },
+);
+it.each([
+  "not JSON",
+  JSON.stringify({ outcome: "future_outcome", holds: [{ class: "future_class" }] }),
+])("replaces an unreadable stored record without wedging retention: %s", async (value) => {
+  const { sql } = await fixture();
+  sql.store.transaction(() =>
+    sql.store.prepare("INSERT INTO meta(key,value) VALUES('retention_last_pass',?)").run(value),
+  );
+  const run = vi.fn(async () => receipt());
+  await recordLastRetention(run, sql.store)({ dry_run: false });
+  expect(run).toHaveBeenCalledTimes(1);
+  expect(readLastRetention(sql.store)).toMatchObject({
+    outcome: "completed",
+    freed_bytes: 17,
+    holds: [],
+  });
+});
+it.each(["not JSON", JSON.stringify({ outcome: "future_outcome" })])(
+  "GET returns null with a diagnostic for an unreadable record without running GC: %s",
+  async (value) => {
+    const { root, sql } = await fixture();
+    sql.store.transaction(() =>
+      sql.store.prepare("INSERT INTO meta(key,value) VALUES('retention_last_pass',?)").run(value),
+    );
+    const runtime = createSqlDaemonRuntime(sql.graph, {
+      server: { socketPath: join(root, "unused.sock"), token: "fixture" },
+      authReadiness: () => ({ invalidate() {} }),
+      agent: () => async () => ({ lifecycle: "succeeded" }),
+    });
+    cleanup.push(() => runtime.stop());
+    const runRetention = vi.fn();
+    const ctx = {
+      services: { lastRetention: runtime.controlRoutes.lastRetention, runRetention },
+      readBody: vi.fn(),
+      json: vi.fn(),
+      requestError: vi.fn(),
+    };
+    const res = {} as ServerResponse;
+    await handleMaintenanceRoute(ctx, "GET", "/maintenance/gc", {} as IncomingMessage, res);
+    expect(ctx.json).toHaveBeenCalledWith(res, 200, {
+      last: null,
+      diagnostic: expect.stringContaining("unreadable"),
+    });
+    expect(ctx.requestError).not.toHaveBeenCalled();
+    expect(runRetention).not.toHaveBeenCalled();
+    expect(
+      sql.store.prepare("SELECT value FROM meta WHERE key='retention_last_pass'").get(),
+    ).toEqual({ value });
+  },
+);
 it("propagates a write failure without replacing the preceding durable record", async () => {
   const { sql } = await fixture();
   const run = recordLastRetention(async () => receipt(), sql.store);

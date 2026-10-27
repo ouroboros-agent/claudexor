@@ -18,7 +18,11 @@ import { sweepOrphanLanes } from "@claudexor/workspace";
 import type { NativeRetentionRequest, NativeRetentionResult } from "./native-home-retention.js";
 import { retentionProjects } from "./retention-projects.js";
 import { setImmediate as yieldToAdmission } from "node:timers/promises";
-import { serializeRetention, type RetentionRunner } from "./retention-lifetime.js";
+import {
+  serializeRetention,
+  withoutRetentionInventory,
+  type RetentionRunner,
+} from "./retention-lifetime.js";
 export type { RetentionRunner } from "./retention-lifetime.js";
 export { scheduleStartupRetention } from "./retention-schedule.js";
 
@@ -300,7 +304,7 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
       }
       truncatedReceipts.add(receipt);
       lastReceipt = receipt;
-      return receipt;
+      return withoutRetentionInventory(receipt);
     }
   };
   const run = serializeRetention(runOnce);

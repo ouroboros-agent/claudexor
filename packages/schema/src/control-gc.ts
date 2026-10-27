@@ -106,7 +106,12 @@ export type GcHold = z.infer<typeof GcHold>;
 export const GcHeldCounts = z
   .object({
     roots: z.number().int().nonnegative().default(0),
-    native_homes: z.number().int().nonnegative().default(0),
+    native_homes: z
+      .number()
+      .int()
+      .nonnegative()
+      .default(0)
+      .describe("Vetoed native homes only; permanently unsupported adapters are informational."),
   })
   .strict()
   .describe("Held project roots and vetoed native homes, separate from run counts.");
@@ -144,8 +149,15 @@ export type GcLastPass = z.infer<typeof GcLastPass>;
 export const ControlGcLastResponse = z
   .object({
     last: GcLastPass.nullable().describe(
-      "Null until a non-preview pass has been recorded; reading never starts GC.",
+      "Null when no readable non-preview pass has been recorded; reading never starts GC.",
     ),
+    diagnostic: z
+      .string()
+      .max(512)
+      .optional()
+      .describe(
+        "Why the stored summary could not be read; absent when no record exists or it is valid.",
+      ),
   })
   .strict();
 export type ControlGcLastResponse = z.infer<typeof ControlGcLastResponse>;

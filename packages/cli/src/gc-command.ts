@@ -24,7 +24,7 @@ export async function gcCommand(args: ParsedArgs, json: boolean): Promise<number
       );
     const result = ControlGcLastResponse.parse(await response.json());
     if (json) printJson(result);
-    else if (!result.last) print("No retention pass has been recorded.");
+    else if (!result.last) print(result.diagnostic ?? "No retention pass has been recorded.");
     else {
       const last = result.last;
       print(

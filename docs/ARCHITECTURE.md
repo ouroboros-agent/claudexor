@@ -3533,11 +3533,17 @@ non-preview pass without starting cleanup. The engine stores one summary (at mos
 failures of those outer steps. Its flusher barrier completes before the pass returns,
 and shutdown drains that barrier; persistence failures propagate to the caller.
 The summary carries `outcome` (`completed`, `held`, `truncated`, `failed`), start/end
-timestamps, freed bytes, run keep counts, separate held-root/native-home counts,
+timestamps, freed bytes, run keep counts, separate counts of held roots and vetoed native homes,
 per-class hold counts with one example and the first continuously held `since`,
-and error count/first error. A clean pass clears holds; previews never replace it.
-Only a pass with no hold, suppression or error reports `completed`. Absence is
-`last: null`; engines predating this read surface have no GET operation. New POST
+and error count/first error. A clean observed pass clears holds; previews never replace it.
+A queued pass cancelled before it enters the runner writes nothing. A pass that
+starts but obtains no inventory preserves the preceding holds, held counts and
+`since` while reporting its own failure or truncation. Only a pass with no hold,
+suppression or error reports `completed`. Permanently `not_pruned` native adapters
+are informational entries in the native-home receipt, not holds; `held.native_homes`
+counts vetoed homes only. Absence is `last: null`. An unreadable stored summary
+also returns `last: null` with a diagnostic shown by `gc --last`; it cannot prevent
+the next pass from replacing the record. Engines predating this read surface have no GET operation. New POST
 hold/truncation fields require `retention_report`, requested by a lockstep CLI;
 older receipts parse with zero/empty defaults. It deletes ONLY terminal, unreferenced, non-actionable trees past
 the configured age (`retention.*` in the global config: runs 30d, reviews
@@ -3581,10 +3587,16 @@ unnamed anchor is unlinked only beyond `runs_max_age_days`, using a fresh mtime
 check immediately before synchronous unlink. Every anchor publication, create or
 reuse, touches its mtime; unlinking a sibling does not renew its age. Patch-cache
 names are then pruned at their last link; bytes count only when the inode loses
-its last link. Empty directories throughout each namespace are removed bottom-up
-with `rmdir`, never through links, only when they predate the pass start. Cleanup
-preserves a surviving directory's age after removing its empty children, so run
-age fallback is not renewed. Nonempty trees and tombstones remain. The frozen
+its last link. Empty engine containers are removed bottom-up with `rmdir`: the
+namespace, `runs/`, `patches/`, `anchors/objects/`, `anchors/`, `workspaces/` and
+its task containers, `lanes/` and its thread containers, `threads/` and `.retiring/`.
+This shallow container map never descends into run content, workspace envelopes,
+thread worktrees, lane/harness homes, unknown trees, Git repositories or links.
+Tombstones remain. A container must predate the pass start by more than two seconds
+(to allow filesystem timestamp granularity); its age and identity are checked
+from the snapshot and `rmdir` supplies the final emptiness proof. Removing empty
+children does not renew a surviving container's age. Per-directory failures are
+counted while siblings continue, and cleanup yields between namespaces. The frozen
 `journal-legacy`, `journal-archived` and `resource-store/idempotency` stores remain
 untouched (INV-143).
 

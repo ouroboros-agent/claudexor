@@ -43,7 +43,6 @@ function run(repoRoot: string, id: string, terminal = true) {
   const path = join(new ArtifactStore(repoRoot).runsDir(), id);
   mkdirSync(join(path, "final"), { recursive: true });
   if (terminal) writeFileSync(join(path, "final", "failure.yaml"), "terminal failure");
-  else writeFileSync(join(path, "attempt.log"), "unfinished evidence");
   utimesSync(path, old, old);
   return path;
 }
