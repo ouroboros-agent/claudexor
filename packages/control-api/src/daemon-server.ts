@@ -226,7 +226,7 @@ import {
   WorkProduct,
 } from "@claudexor/schema";
 import { resolveControlProtocol, type ControlServingMode } from "./control-protocol.js";
-import { discardUnreadBody, readControlRequestBody } from "./request-body.js";
+import { RefusedBodies, readControlRequestBody } from "./request-body.js";
 import { withControlHttpTimeouts } from "./http-server-options.js";
 import {
   assertNoInlineSecretValues,
@@ -549,6 +549,7 @@ export class DaemonControlApiServer {
   /** Fires first in stop(): long reads end instead of holding the drain. */
   private readonly stopSignal = new AbortController();
   private readonly sseClients = new Set<ServerResponse>();
+  private readonly refusedBodies = new RefusedBodies();
   /** Exact request-handler promises. Client disconnect never removes a handler. */
   private readonly activeHandlers = new Set<Promise<void>>();
   /** Per-thread turn submission chains (serialize head_run_id lineage updates). */
@@ -598,8 +599,7 @@ export class DaemonControlApiServer {
     const listenerClosed = this.closeListener();
     this.closeSseClients();
     await this.drainActiveHandlers();
-    // A client still sending a rejected body would hold the listener open.
-    this.server?.closeAllConnections();
+    this.refusedBodies.close();
     await listenerClosed;
     this.closeSseClients();
   }
@@ -676,7 +676,7 @@ export class DaemonControlApiServer {
     contentType = "application/json",
   ): void {
     if (res.destroyed) return;
-    discardUnreadBody(res);
+    this.refusedBodies.discard(res);
     if (status >= 400 && contentType === "application/json") {
       const error = controlProblemError(status, body);
       return this.problem(res, status, error, error.code, false, error.message);

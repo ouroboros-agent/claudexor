@@ -12,6 +12,7 @@ import { runsWaitTool } from "../../mcp-server/src/runs-wait-tool.js";
 import type { McpToolOutput, RunnerFn as McpRunner } from "../../mcp-server/src/index.js";
 import { DaemonControlApiServer } from "./daemon-server.js";
 import { readTaskGroupRuns } from "./task-group-routes.js";
+import type { RunObservationListener } from "./run-wait-many.js";
 
 const GROUP = "11111111-1111-4111-8111-111111111111";
 const cleanup: Array<() => void | Promise<void>> = [];
@@ -97,7 +98,7 @@ itUnix(
     const saved = await producer();
     expect(runners).toHaveBeenCalledOnce();
     rmSync(repo, { recursive: true }); // Discovery must not need the original root.
-    const listeners = new Set<(event: { run_id: string }) => void>();
+    const listeners = new Set<RunObservationListener>();
     const snapshot = (ids: readonly string[], signal?: AbortSignal) =>
       readRunObservations(
         f.graph.commands.queries,
@@ -125,13 +126,14 @@ itUnix(
           },
           signal,
         ),
-      bus: {
-        subscribe: (listener) => {
-          listeners.add(listener);
-          return () => {
-            listeners.delete(listener);
-          };
-        },
+      // The store's own post-commit feed; `listeners` only counts observers.
+      runObservationChanges: (listener) => {
+        listeners.add(listener);
+        const unsubscribe = f.store.observations.subscribe(listener);
+        return () => {
+          listeners.delete(listener);
+          unsubscribe();
+        };
       },
     });
     const handler = Reflect.get(api, "onRequest") as (
@@ -315,7 +317,7 @@ itUnix(
     );
     await vi.waitFor(() => expect(listeners.size).toBe(4));
     for (let i = 0; i < 20; i++)
-      for (const listener of listeners) listener({ run_id: "unrelated" });
+      for (const listener of listeners) listener(new Set(["unrelated"]));
     expect(settled).toBe(0);
     mkdirSync(repo); // The fixture producer explicitly releases A; recovery did not.
     expect(
@@ -324,8 +326,8 @@ itUnix(
         answers: [],
       }).status,
     ).toBe("delivered");
+    // Binding B and registering its question commit notices that wake the waits.
     await vi.waitFor(() => expect(runners).toHaveBeenCalledTimes(2));
-    for (const listener of listeners) listener({ run_id: "run-b" });
     for (const result of await Promise.all(waits)) {
       expect(result.attention).toEqual([0]);
       expect(result.summaries[0]).toMatchObject({

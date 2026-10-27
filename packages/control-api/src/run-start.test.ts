@@ -125,15 +125,13 @@ describe("tagged launch HTTP receipts", () => {
       const response = await f.post({ ...f.request, taskGroupId: GROUP }, "tagged-no-provider");
       expect(response.status).toBe(503);
       const problem = ControlProblem.parse(await response.json());
-      expect(problem).toMatchObject({
-        code: "store_identity_unavailable",
-        retryable: true,
-        context: { jobId: "job-2", state: "queued" },
-      });
-      expect(problem.context).not.toHaveProperty("storeId");
+      expect(problem).toMatchObject({ code: "store_identity_unavailable", retryable: true });
+      expect(problem.context ?? {}).not.toHaveProperty("jobId");
+      expect(problem.context ?? {}).not.toHaveProperty("storeId");
     }
-    expect(f.commands.get("job-2")?.params).toHaveProperty("taskGroupId", GROUP);
-    expect(f.dispatches()).toBe(2); // One legacy acceptance and one tagged acceptance, never a replay.
+    // The tagged launch is refused before acceptance, so no job owns it.
+    expect(f.commands.get("job-2")).toBeUndefined();
+    expect(f.dispatches()).toBe(1);
   });
 
   it.each(["queued", "bound", "failed"] as const)(

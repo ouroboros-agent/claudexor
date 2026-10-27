@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,7 +11,6 @@ import { SqlCommandQueries } from "./command-queries.js";
 import { setGlobalGenerationInTx } from "./generations.js";
 import { createPartition, currentGeneration } from "./partitions.js";
 import { resourceFixture } from "./test-support/resource-fixture.js";
-import { ensureSchema } from "./schema.js";
 
 const GROUP = "11111111-1111-4111-8111-111111111111";
 const OTHER = "33333333-3333-4333-8333-333333333333";
@@ -94,30 +94,39 @@ async function fixture() {
 }
 
 describe("SQL taskGroupPage retained selection", () => {
-  it("reads an earlier unpublished v3 store without rebuilding its broader indexes", async () => {
+  it("matches membership in any letter case, answers the canonical id and restarts 4.8.0 cursors", async () => {
     const f = await fixture();
-    f.seed("tagged");
-    f.seed("untagged", { params: { mode: "ask", prompt: "ungrouped" } });
-    // Exact original PR498 predicates at 5b9d6d75; same version, broader membership.
-    f.store.db.exec(`DROP INDEX command_task_group; DROP INDEX command_task_group_state;
-      CREATE INDEX command_task_group ON command(json_extract(CAST(summary AS TEXT),'$.params.taskGroupId'),created_at DESC,id DESC)
-        WHERE live=1 AND kind='product' AND json_valid(CAST(summary AS TEXT));
-      CREATE INDEX command_task_group_state ON command(json_extract(CAST(summary AS TEXT),'$.params.taskGroupId'),state,created_at DESC,id DESC)
-        WHERE live=1 AND kind='product' AND json_valid(CAST(summary AS TEXT));`);
-    const exec = vi.spyOn(f.store.db, "exec");
-    ensureSchema(f.store.db);
-    expect(exec).not.toHaveBeenCalled();
-    for (const state of [null, "running"] as const)
-      expect(f.page({ state }).records.map((row) => row.jobId)).toEqual(["tagged"]);
-    expect(
-      f.store.db
-        .prepare("SELECT sum(ncell) AS n FROM dbstat WHERE name='command_task_group'")
-        .get(),
-    ).toEqual({ n: 2 }); // Existing v3 keeps its original storage cost.
+    f.seed("job-lower");
+    f.seed("job-upper", {
+      params: { mode: "ask", prompt: "upper", taskGroupId: GROUP.toUpperCase() },
+    });
+    f.seed("job-untagged", { params: { mode: "ask", prompt: "ungrouped" } });
+    for (const spelling of [GROUP, GROUP.toUpperCase()]) {
+      const result = f.page({ taskGroupId: spelling, limit: 5 });
+      expect(result.records.map((row) => [row.jobId, row.taskGroupId])).toEqual([
+        ["job-upper", GROUP],
+        ["job-lower", GROUP],
+      ]);
+    }
+    const first = f.page({ limit: 1 });
+    // The cursor may carry another spelling of the same group.
+    const next = f.page({
+      taskGroupId: GROUP.toUpperCase(),
+      limit: 1,
+      cursor: { ...f.cursor(first), taskGroupId: GROUP.toUpperCase() },
+    });
+    expect(next.records.map((row) => row.jobId)).toEqual(["job-lower"]);
+    // A 4.8.0 cursor hashed the same view under the case-sensitive domain.
+    const caseSensitive = createHash("sha256")
+      .update(JSON.stringify(["claudexor.task-group-view", 1, [["global", "a".repeat(32)]]]))
+      .digest("base64url");
+    expect(() => f.page({ cursor: { ...f.cursor(first), viewToken: caseSensitive } })).toThrow(
+      expect.objectContaining({ code: "stale_cursor" }),
+    );
   });
 
   it.each([1, 10])(
-    "uses actual ordered expression indexes at %ix unrelated history with raw summaries and no body hydration",
+    "uses actual ordered column indexes at %ix unrelated history with raw summaries and no body hydration",
     async (scale) => {
       const f = await fixture();
       for (let i = 0; i < scale * 100; i++)
@@ -190,7 +199,8 @@ describe("SQL taskGroupPage retained selection", () => {
         const read = reads[0]!;
         expect(read.rows).toBeLessThanOrEqual(3);
         expect(read.sql).toMatch(/\bLIMIT\b/i);
-        expect(read.sql).toContain("AND json_valid(CAST(c.summary AS TEXT))");
+        expect(read.sql).toContain("c.task_group_id=?");
+        expect(read.sql).not.toMatch(/json_|INDEXED\s+BY/i);
         expect(read.sql).toMatch(/created_at\s+DESC\s*,\s*(?:\w+\.)?id\s+DESC/i);
         const projection = read.sql.split(/\bFROM\s+command\b/i)[0]!;
         expect(projection).not.toMatch(

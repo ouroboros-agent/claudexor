@@ -1,6 +1,6 @@
 import { getEventListeners } from "node:events";
 import { request, type ClientRequest, type IncomingHttpHeaders } from "node:http";
-import { setImmediate as nextTurn } from "node:timers/promises";
+import { setImmediate as nextTurn, setTimeout as sleep } from "node:timers/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ControlOperationCatalog,
@@ -14,6 +14,7 @@ import { digestPendingIdentities } from "../../daemon/src/interactions.js";
 import { readRunObservations } from "../../daemon/src/run-observation.js";
 import { StoreBusyError } from "../../daemon/src/store/errors.js";
 import { DaemonControlApiServer, type DaemonControlApiOptions } from "./daemon-server.js";
+import type { RunObservationListener } from "./run-wait-many.js";
 
 const fixtureCleanups: Array<() => Promise<void>> = [];
 const clients = new Set<ClientRequest>();
@@ -60,7 +61,7 @@ afterEach(async () => {
 async function fixture(observationAvailable = true, pollMs = 1000) {
   const records = new Map<string, RunObservationRecord>();
   const questions = new Map<string, string[] | Error>();
-  const listeners = new Set<(event: { run_id: string }) => void>();
+  const listeners = new Set<RunObservationListener>();
   const firstRead = deferred<void>();
   const signals: AbortSignal[] = [];
   const forbidden = {
@@ -127,7 +128,7 @@ async function fixture(observationAvailable = true, pollMs = 1000) {
     firstRead.resolve();
     return rows;
   });
-  const subscribe = vi.fn((listener: (event: { run_id: string }) => void) => {
+  const subscribe = vi.fn((listener: RunObservationListener) => {
     listeners.add(listener);
     return () => {
       listeners.delete(listener);
@@ -138,8 +139,8 @@ async function fixture(observationAvailable = true, pollMs = 1000) {
     pollMs,
     daemon: { list, status, ...forbidden },
     services: forbidden,
-    bus: { subscribe },
     runObservations: observationAvailable ? snapshot : undefined,
+    runObservationChanges: subscribe,
   };
   const server = new DaemonControlApiServer(options);
   const { host, port } = await server.start();
@@ -158,8 +159,9 @@ async function fixture(observationAvailable = true, pollMs = 1000) {
       createdAt: "2026-10-22T00:00:00.000Z",
     });
   }
-  function wake(runId: string) {
-    for (const listener of listeners) listener({ run_id: runId });
+  /** The store's post-commit notice for a job names the job and its run. */
+  function wake(jobId: string) {
+    for (const listener of listeners) listener(new Set([jobId, `run-${jobId}`]));
   }
   function raw(
     body?: string | Buffer,
@@ -255,7 +257,7 @@ describe("POST /v2/runs/wait-many over real HTTP", () => {
     expect(f.signals[0]!.aborted).toBe(false);
     expect(f.listeners.size).toBe(1);
     f.questions.set("run-a", ["question-a"]);
-    f.wake("run-a");
+    f.wake("a");
     const response = await bounded(pending.done);
     expect(response.status).toBe(200);
     expect(RunWaitManyResult.parse(JSON.parse(response.body))).toEqual({
@@ -371,43 +373,61 @@ describe("POST /v2/runs/wait-many over real HTTP", () => {
     expect(readSignal?.aborted).toBe(true);
     expect(getEventListeners(readSignal!, "abort")).toHaveLength(0);
     const calls = f.snapshot.mock.calls.length;
-    f.wake("run-a");
+    f.wake("a");
     await nextTurn();
     expect(f.snapshot).toHaveBeenCalledTimes(calls);
     await bounded(f.server.stop()); // A detached read/handler would keep stop pending.
   });
 
-  it("bounds an in-flight snapshot by the observer deadline and settles its read before replying", async () => {
+  it("lets the observer deadline wait for a started read and answers that read's facts", async () => {
     const f = await fixture();
-    let active = 0;
+    f.seed("a");
+    const entered = deferred<void>();
+    const release = deferred<void>();
     let readSignal: AbortSignal | undefined;
-    f.snapshot.mockImplementationOnce(async (_ids, signal) => {
+    f.snapshot.mockImplementationOnce(async (ids, signal) => {
       readSignal = signal;
-      active++;
-      try {
-        await new Promise<void>((resolve) => {
-          if (signal?.aborted) return resolve();
-          signal?.addEventListener("abort", () => resolve(), { once: true });
-        });
-        return [{ status: null, pending: null, token: null, problem: "not_observed" as const }];
-      } finally {
-        active--;
-      }
+      entered.resolve();
+      await release.promise;
+      return f.read(ids, signal);
     });
-    const response = await bounded(
-      f.raw(JSON.stringify({ targets: [{ runId: "a" }], waitMs: 30 })).done,
-    );
+    const pending = f.raw(JSON.stringify({ targets: [{ runId: "a" }], waitMs: 30 }));
+    let answered = false;
+    void pending.done.then(() => {
+      answered = true;
+    });
+    await bounded(entered.promise);
+    await sleep(80);
+    expect(answered).toBe(false);
+    release.resolve();
+    const response = await bounded(pending.done);
     expect(response.status).toBe(200);
     expect(RunWaitManyResult.parse(JSON.parse(response.body))).toEqual({
       wakeReason: "timeout",
       attention: [],
-      summaries: [{ status: null, pending: null, token: null, problem: "not_observed" }],
+      summaries: await f.read(["a"]),
     });
-    expect(active).toBe(0);
-    expect(readSignal?.aborted).toBe(true);
+    expect(f.snapshot).toHaveBeenCalledOnce();
+    expect(readSignal?.aborted).toBe(false);
     expect(f.listeners.size).toBe(0);
     expect(getEventListeners(readSignal!, "abort")).toHaveLength(0);
-    await bounded(f.server.stop());
+  });
+
+  it("answers a wait that a stopping daemon interrupts with a retryable 503", async () => {
+    const f = await fixture();
+    f.seed("a");
+    const pending = f.raw(JSON.stringify({ targets: [{ runId: "a" }], waitMs: 1000 }));
+    await bounded(f.firstRead.promise);
+    await nextTurn();
+    const stopped = f.server.stop();
+    const response = await bounded(pending.done);
+    expect(response.status).toBe(503);
+    expect(ControlProblem.parse(JSON.parse(response.body))).toMatchObject({
+      code: "daemon_stopping",
+      retryable: true,
+    });
+    await bounded(stopped);
+    expect(f.listeners.size).toBe(0);
   });
 
   it.each([
@@ -469,7 +489,10 @@ describe("POST /v2/runs/wait-many over real HTTP", () => {
     expect(result.summaries).toHaveLength(1000);
     expect(result.summaries[999]).toMatchObject({ status: "succeeded", problem: null });
     expect(f.snapshot).toHaveBeenCalledOnce();
-    expect(f.snapshot.mock.calls[0]![0]).toEqual(targets.map((target) => target.runId));
+    // Repeated handles share one read.
+    expect(f.snapshot.mock.calls[0]![0]).toEqual([
+      ...new Set(targets.map((target) => target.runId)),
+    ]);
     expect(f.subscribe).toHaveBeenCalledOnce();
     expect(f.listeners.size).toBe(0);
 

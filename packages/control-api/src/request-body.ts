@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import type { Socket } from "node:net";
 
 const MAX_CONTROL_BODY_BYTES = 10 * 1024 * 1024;
 
@@ -46,8 +47,29 @@ export async function readControlRequestBody(
   }
 }
 
-/** An early answer to a request whose body is still arriving discards the rest
- * and keeps the connection, so the client can read the answer. */
-export function discardUnreadBody(res: ServerResponse): void {
-  if (res.req && !res.req.complete) res.req.resume();
+/** Connections still receiving a body that their answer refused. */
+export class RefusedBodies {
+  private readonly sockets = new Set<Socket>();
+  private closing = false;
+
+  /** An early answer discards the rest of the body and keeps the connection,
+   * so the client can read the answer. */
+  discard(res: ServerResponse): void {
+    const req = res.req;
+    if (!req || req.complete) return;
+    req.resume();
+    const socket = req.socket;
+    if (this.sockets.has(socket)) return;
+    this.sockets.add(socket);
+    const settle = () => this.sockets.delete(socket);
+    req.once("end", settle);
+    socket.once("close", settle);
+    if (this.closing) res.once("finish", () => socket.destroy());
+  }
+
+  /** At stop: a client that keeps sending would hold the listener open. */
+  close(): void {
+    this.closing = true;
+    for (const socket of this.sockets) socket.destroy();
+  }
 }

@@ -11,7 +11,6 @@ import {
   ENGINE_APPLICATION_ID,
   ENGINE_SCHEMA_VERSION,
   ENGINE_TABLES,
-  TASK_GROUP_PRESENT_SQL,
   assertSchemaServable,
   ensureSchema,
   readSchemaIdentity,
@@ -288,25 +287,25 @@ function version2Owner(): { ENGINE_SCHEMA_SQL: string; ensureSchema(db: Database
   )(randomUUID, StoreSchemaUnsupportedError);
 }
 
-const GROUP_EXPRESSION = "json_extract(CAST(summary AS TEXT),'$.params.taskGroupId')";
+const GROUP = "11111111-1111-4111-8111-111111111111";
+/** Group indexes of either generation: version 3 expressions or the version 5 column. */
 function groupIndexes(db: DatabaseSync) {
   return masterRows(db).filter(
-    (row) => row.type === "index" && row.sql?.includes("$.params.taskGroupId"),
+    (row) =>
+      row.type === "index" &&
+      (row.sql?.includes("$.params.taskGroupId") || row.sql?.includes("task_group_id")),
   );
 }
+/** Membership is the canonical column, read through two ordered partial indexes. */
 function assertGroupIndexes(db: DatabaseSync) {
   const indexes = groupIndexes(db);
   expect(indexes).toHaveLength(2);
   const keys: string[][] = [];
   for (const index of indexes) {
     const sql = index.sql!.replace(/\s+/g, "");
-    expect(sql).toContain(GROUP_EXPRESSION.replace(/\s+/g, ""));
-    expect(sql).toContain("WHERE");
-    expect(sql).toContain("live=1");
-    expect(sql).toContain("kind='product'");
-    expect(sql).toContain("ANDjson_valid(CAST(summaryASTEXT))");
+    expect(sql).not.toContain("$.params.taskGroupId");
+    expect(sql).toContain("WHERElive=1ANDkind='product'ANDtask_group_idISNOTNULL");
     const info = db.prepare(`PRAGMA index_xinfo('${index.name}')`).all() as Array<{
-      cid: number;
       name: string | null;
       desc: number;
       key: number;
@@ -316,11 +315,14 @@ function assertGroupIndexes(db: DatabaseSync) {
       ["created_at", 1],
       ["id", 1],
     ]);
-    expect(columns[0]?.cid).toBe(-2); // Actual SQLite expression key.
     keys.push(columns.map((row) => row.name ?? "expression"));
   }
-  expect(keys).toContainEqual(["expression", "created_at", "id"]);
-  expect(keys).toContainEqual(["expression", "state", "created_at", "id"]);
+  expect(keys).toContainEqual(["task_group_id", "created_at", "id"]);
+  expect(keys).toContainEqual(["task_group_id", "state", "created_at", "id"]);
+}
+/** Each command's derived membership; `tableSnapshot` leaves this column out. */
+function membership(db: DatabaseSync) {
+  return db.prepare("SELECT id, task_group_id AS taskGroupId FROM command ORDER BY id").all();
 }
 function tableSnapshot(db: DatabaseSync) {
   return Object.fromEntries(
@@ -331,7 +333,7 @@ function tableSnapshot(db: DatabaseSync) {
         db
           .prepare(`SELECT * FROM ${name}`)
           .all()
-          .map((row) =>
+          .map(({ task_group_id: _derived, ...row }) =>
             JSON.stringify(row, (_key, value) =>
               value instanceof Uint8Array ? [...value] : value,
             ),
@@ -385,7 +387,7 @@ async function populatedOldStore(version: 1 | 2) {
 
 describeStore("task group storage upgrade", () => {
   // Exact shipped v3 additive statements from 2202b8f6 schema.ts, applied to
-  // the independent frozen v2 owner above; not derived from current v4 DDL.
+  // the independent frozen v2 owner above; not derived from the current DDL.
   async function populatedV3() {
     const db = await populatedOldStore(2);
     db.exec(`
@@ -400,17 +402,23 @@ PRAGMA user_version=3;`);
     return db;
   }
 
-  it("migrates the populated v3 owner to v4 atomically without changing existing rows", async () => {
+  it("migrates the populated v3 owner to the current version atomically without changing existing rows", async () => {
     const db = await populatedV3();
     const before = tableSnapshot(db);
     ensureSchema(db);
-    expect(readSchemaIdentity(db).userVersion).toBe(4);
+    expect(readSchemaIdentity(db).userVersion).toBe(ENGINE_SCHEMA_VERSION);
     expect({ ...tableSnapshot(db), meta: [] }).toEqual({
       ...before,
       meta: [],
       deferred_message: [],
     });
-    const fresh = await connect("fresh-v4.sqlite");
+    expect(membership(db)).toEqual([
+      { id: "archived", taskGroupId: null },
+      { id: "model", taskGroupId: null },
+      { id: "tagged", taskGroupId: GROUP },
+      { id: "untagged", taskGroupId: null },
+    ]);
+    const fresh = await connect("fresh.sqlite");
     ensureSchema(fresh);
     expect(masterRows(db)).toEqual(masterRows(fresh));
     for (const [query, index] of [
@@ -464,14 +472,115 @@ PRAGMA user_version=3;`);
     expect(masterRows(db)).toEqual(beforeSchema);
     expect(readSchemaIdentity(db)).toEqual(beforeIdentity);
     ensureSchema(db);
-    expect(readSchemaIdentity(db).userVersion).toBe(4);
+    expect(readSchemaIdentity(db).userVersion).toBe(ENGINE_SCHEMA_VERSION);
   });
 
-  it("fresh DDL preserves exactly the two live product expression indexes at the current version", async () => {
+  it("rolls back the membership column, its backfill and its indexes together on a late index fault", async () => {
+    const db = await populatedV3();
+    const beforeRows = tableSnapshot(db),
+      beforeSchema = masterRows(db),
+      beforeIdentity = readSchemaIdentity(db);
+    const exec = db.exec.bind(db);
+    const fault = vi.spyOn(db, "exec").mockImplementation((sql) => {
+      if (!sql.includes("ADD COLUMN task_group_id")) return exec(sql);
+      for (const statement of sql.split(";").filter((part) => part.trim())) {
+        if (statement.includes("CREATE INDEX command_task_group_state ON command(task_group_id")) {
+          // The column, its backfill and the first new index exist inside the transaction.
+          expect(db.prepare("SELECT task_group_id FROM command WHERE id='tagged'").get()).toEqual({
+            task_group_id: GROUP,
+          });
+          expect(groupIndexes(db).map((row) => row.name)).toEqual(["command_task_group"]);
+          throw new Error("injected last membership index failure");
+        }
+        exec(statement);
+      }
+    });
+    expect(() => ensureSchema(db)).toThrow("injected last membership index failure");
+    fault.mockRestore();
+    expect(readSchemaIdentity(db)).toEqual(beforeIdentity);
+    expect(masterRows(db)).toEqual(beforeSchema);
+    expect(tableSnapshot(db)).toEqual(beforeRows);
+    expect(
+      (db.prepare("PRAGMA table_info(command)").all() as Array<{ name: string }>).map(
+        (row) => row.name,
+      ),
+    ).not.toContain("task_group_id");
+    ensureSchema(db); // The untouched v3 file remains upgradeable.
+    assertGroupIndexes(db);
+    expect(membership(db)).toContainEqual({ id: "tagged", taskGroupId: GROUP });
+  });
+
+  it("backfills canonical lower-case membership for live and archived tagged rows without touching their summaries", async () => {
+    const db = await populatedV3();
+    const insert = db.prepare(
+      "INSERT INTO command(id,pid,operation,state,created_at,summary,params_sha,kind,live) VALUES(?,1,'run.create','succeeded','2026-10-02',?,'params',?,?)",
+    );
+    const mixed = `${GROUP.slice(0, 8).toUpperCase()}${GROUP.slice(8)}`;
+    for (const [id, kind, live, group] of [
+      ["upper-live", "product", 1, GROUP.toUpperCase()],
+      ["upper-archived", "product", 0, GROUP.toUpperCase()],
+      ["mixed-live", "product", 1, mixed],
+      ["tagged-model", "model", 1, GROUP],
+    ] as const)
+      insert.run(id, Buffer.from(JSON.stringify({ params: { taskGroupId: group } })), kind, live);
+    insert.run("raw-bytes", Buffer.from([0xff, 0x00]), "product", 1);
+    const before = tableSnapshot(db);
+    ensureSchema(db);
+    expect({ ...tableSnapshot(db), meta: [], deferred_message: [] }).toEqual({
+      ...before,
+      meta: [],
+      deferred_message: [],
+    });
+    expect(membership(db)).toEqual([
+      { id: "archived", taskGroupId: null },
+      { id: "mixed-live", taskGroupId: GROUP },
+      { id: "model", taskGroupId: null },
+      { id: "raw-bytes", taskGroupId: null },
+      { id: "tagged", taskGroupId: GROUP },
+      { id: "tagged-model", taskGroupId: null },
+      { id: "untagged", taskGroupId: null },
+      { id: "upper-archived", taskGroupId: GROUP },
+      { id: "upper-live", taskGroupId: GROUP },
+    ]);
+    // Archived members return when their generation is restored; live ones are listed now.
+    expect(
+      db
+        .prepare(
+          "SELECT id FROM command WHERE live=1 AND kind='product' AND task_group_id=? ORDER BY created_at DESC,id DESC",
+        )
+        .all(GROUP),
+    ).toEqual([{ id: "upper-live" }, { id: "mixed-live" }, { id: "tagged" }]);
+    expect(db.prepare("PRAGMA integrity_check").get()).toEqual({ integrity_check: "ok" });
+  });
+
+  it("replaces an earlier unpublished v3 store's broader group indexes with the canonical ones", async () => {
+    const db = await populatedOldStore(2);
+    // Exact original PR498 predicates at 5b9d6d75; same version, broader membership.
+    db.exec(`
+CREATE INDEX command_task_group ON command(json_extract(CAST(summary AS TEXT),'$.params.taskGroupId'),created_at DESC,id DESC)
+  WHERE live=1 AND kind='product' AND json_valid(CAST(summary AS TEXT));
+CREATE INDEX command_task_group_state ON command(json_extract(CAST(summary AS TEXT),'$.params.taskGroupId'),state,created_at DESC,id DESC)
+  WHERE live=1 AND kind='product' AND json_valid(CAST(summary AS TEXT));
+UPDATE meta SET value='3' WHERE key='schema_version';
+PRAGMA user_version=3;`);
+    ensureSchema(db);
+    assertGroupIndexes(db);
+    expect(membership(db)).toEqual([
+      { id: "archived", taskGroupId: null },
+      { id: "model", taskGroupId: null },
+      { id: "tagged", taskGroupId: GROUP },
+      { id: "untagged", taskGroupId: null },
+    ]);
+    const fresh = await connect("fresh.sqlite");
+    ensureSchema(fresh);
+    expect(masterRows(db)).toEqual(masterRows(fresh));
+  });
+
+  it("fresh DDL indexes membership by the canonical column at the current version", async () => {
     const db = await connect();
     ensureSchema(db);
-    expect(ENGINE_SCHEMA_VERSION).toBe(4);
-    expect(readSchemaIdentity(db).userVersion).toBe(4);
+    expect(ENGINE_SCHEMA_VERSION).toBe(5);
+    expect(readSchemaIdentity(db).userVersion).toBe(5);
     assertGroupIndexes(db);
   });
 
@@ -498,15 +607,16 @@ PRAGMA user_version=3;`);
         expect(insert.run(id, bytes).changes).toBe(1);
       insert.run(
         "compat-tagged",
-        Buffer.from(
-          JSON.stringify({ params: { taskGroupId: "11111111-1111-4111-8111-111111111111" } }),
-        ),
+        Buffer.from(JSON.stringify({ params: { taskGroupId: GROUP } })),
       );
+      // A fresh store's command writer fills the column; the v2 file gets it by backfill.
+      if (source === "fresh")
+        db.prepare("UPDATE command SET task_group_id=? WHERE id='compat-tagged'").run(GROUP);
       const before = tableSnapshot(db);
-      // The v2 fixture contains the raw bytes BEFORE either new index is built.
+      // The v2 fixture contains the raw bytes BEFORE the migration reads summaries.
       // The fresh fixture proves writes AFTER both indexes already exist.
       ensureSchema(db);
-      expect(readSchemaIdentity(db).userVersion).toBe(4);
+      expect(readSchemaIdentity(db).userVersion).toBe(ENGINE_SCHEMA_VERSION);
       expect({ ...tableSnapshot(db), meta: [] }).toEqual({
         ...before,
         deferred_message: [],
@@ -532,25 +642,28 @@ PRAGMA user_version=3;`);
           .get(),
       ).toEqual({ n: 3 });
       expect(
+        db.prepare("SELECT count(*) AS n FROM command WHERE task_group_id IS NOT NULL").get(),
+      ).toEqual({ n: expectedMembers });
+      expect(
         db
           .prepare(
-            `SELECT id FROM command INDEXED BY command_task_group_state WHERE live=1 AND kind='product' AND json_valid(CAST(summary AS TEXT)) AND ${TASK_GROUP_PRESENT_SQL} AND json_extract(CAST(summary AS TEXT),'$.params.taskGroupId')=? AND state='running' ORDER BY created_at DESC,id DESC`,
+            "SELECT id FROM command INDEXED BY command_task_group_state WHERE live=1 AND kind='product' AND task_group_id=? AND state='running' ORDER BY created_at DESC,id DESC",
           )
-          .all("11111111-1111-4111-8111-111111111111"),
+          .all(GROUP),
       ).toEqual([{ id: "compat-tagged" }]);
       expect(db.prepare("PRAGMA integrity_check").get()).toEqual({ integrity_check: "ok" });
     },
   );
 
   it.each([1, 2] as const)(
-    "upgrades populated v%s to v4 without rewriting params, results or membership",
+    "upgrades populated v%s to the current version without rewriting params, results or membership",
     async (version) => {
       const db = await populatedOldStore(version);
       const before = tableSnapshot(db);
       ensureSchema(db);
-      expect(readSchemaIdentity(db).userVersion).toBe(4);
+      expect(readSchemaIdentity(db).userVersion).toBe(ENGINE_SCHEMA_VERSION);
       expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({
-        value: "4",
+        value: String(ENGINE_SCHEMA_VERSION),
       });
       const after = tableSnapshot(db);
       expect({ ...after, meta: [], account_last_service: [] }).toEqual({
@@ -567,6 +680,7 @@ PRAGMA user_version=3;`);
       ]);
       if (version === 2) expect(after.account_last_service).toEqual(before.account_last_service);
       assertGroupIndexes(db);
+      expect(membership(db)).toContainEqual({ id: "tagged", taskGroupId: GROUP });
       const fresh = await connect("fresh.sqlite");
       ensureSchema(fresh);
       expect(masterRows(db)).toEqual(masterRows(fresh));
@@ -610,10 +724,10 @@ PRAGMA user_version=3;`);
     },
   );
 
-  it("current-version reopen and a real frozen v2 reader leave a populated v4 file untouched", async () => {
+  it("current-version reopen and a real frozen v2 reader leave a populated current file untouched", async () => {
     const writer = await populatedOldStore(2);
     ensureSchema(writer);
-    expect(readSchemaIdentity(writer).userVersion).toBe(4);
+    expect(readSchemaIdentity(writer).userVersion).toBe(ENGINE_SCHEMA_VERSION);
     const observer = await connect();
     const beforeRows = tableSnapshot(writer),
       beforeSchema = masterRows(writer);
@@ -628,7 +742,7 @@ PRAGMA user_version=3;`);
         code: "store_schema_unsupported",
         status: 503,
         retryable: false,
-        userVersion: 4,
+        userVersion: ENGINE_SCHEMA_VERSION,
       }),
     );
     expect(exec).not.toHaveBeenCalled();
@@ -664,12 +778,7 @@ describeStore("engine schema (SYNTHESIS_R5 §5)", () => {
         "unclassified",
       ].sort(),
     );
-    const partial = rows.filter(
-      (row) =>
-        row.type === "index" &&
-        /\bWHERE\b/.test(row.sql ?? "") &&
-        !row.sql?.includes("$.params.taskGroupId"),
-    );
+    const partial = rows.filter((row) => row.type === "index" && /\bWHERE\b/.test(row.sql ?? ""));
     expect(partial.map((row) => row.name).sort()).toEqual(
       [
         "command_active",
@@ -681,6 +790,8 @@ describeStore("engine schema (SYNTHESIS_R5 §5)", () => {
         "command_result",
         "command_request_resource",
         "command_response_resource",
+        "command_task_group",
+        "command_task_group_state",
         "command_terminal",
         "deferred_message_body",
         "deferred_message_slot",

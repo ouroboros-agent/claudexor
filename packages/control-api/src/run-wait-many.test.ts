@@ -10,7 +10,7 @@ import {
 import { digestPendingIdentities } from "../../daemon/src/interactions.js";
 import { readRunObservations } from "../../daemon/src/run-observation.js";
 import { StoreBusyError } from "../../daemon/src/store/errors.js";
-import { waitForRunAttention } from "./run-wait-many.js";
+import { waitForRunAttention, type RunObservationListener } from "./run-wait-many.js";
 
 const controllers: AbortController[] = [];
 const releases: Array<() => void> = [];
@@ -51,12 +51,13 @@ const unknown = (
   problem,
 });
 
-/** Only storage facts and timing are controlled. Tokens/aliases/attention use production owners. */
-function fixture(pollMs = 100) {
+/** Only storage facts and timing are controlled. Tokens/aliases/attention use production owners.
+ * A host with commit notices is never polled; pass `pollMs` for a host without them. */
+function fixture(pollMs?: number) {
   const records = new Map<string, RunObservationRecord>();
   const questions = new Map<string, string[] | Error>();
-  const listeners = new Set<(event: { run_id: string }) => void>();
-  const subscribe = vi.fn((listener: (event: { run_id: string }) => void) => {
+  const listeners = new Set<RunObservationListener>();
+  const subscribe = vi.fn((listener: RunObservationListener) => {
     listeners.add(listener);
     return () => {
       listeners.delete(listener);
@@ -86,7 +87,7 @@ function fixture(pollMs = 100) {
       signal,
     );
   const snapshot = vi.fn(read);
-  const host = { snapshot, subscribe, pollMs };
+  const host = pollMs === undefined ? { snapshot, subscribe } : { snapshot, pollMs };
   function seed(
     jobId: string,
     status: ControlRunState = "running",
@@ -101,11 +102,17 @@ function fixture(pollMs = 100) {
       createdAt: "2026-10-22T00:00:00.000Z",
     });
   }
-  function wake(runId = "run-a") {
-    for (const listener of listeners) listener({ run_id: runId });
+  /** A committed write of these jobs: production notices name the job and its run. */
+  function notice(...jobIds: string[]) {
+    const keys = new Set(jobIds.flatMap((id) => [id, `run-${id}`]));
+    for (const listener of listeners) listener(keys);
+  }
+  /** The served view moved: anything may have changed. */
+  function noticeAll() {
+    for (const listener of listeners) listener();
   }
   function begin(
-    targets: Array<{ runId: string; seen?: string }>,
+    targets: Array<{ runId: string; seen?: string | null }>,
     waitMs?: number,
     signal = controller().signal,
   ) {
@@ -118,7 +125,19 @@ function fixture(pollMs = 100) {
     void work.catch(() => {});
     return work;
   }
-  return { records, questions, listeners, snapshot, subscribe, host, seed, wake, read, begin };
+  return {
+    records,
+    questions,
+    listeners,
+    snapshot,
+    subscribe,
+    host,
+    seed,
+    notice,
+    noticeAll,
+    read,
+    begin,
+  };
 }
 
 function clean(f: ReturnType<typeof fixture>, signal?: AbortSignal) {
@@ -186,7 +205,7 @@ describe("waitForRunAttention", () => {
       await vi.advanceTimersByTimeAsync(0);
       expect(settled).toBe(false);
       f.questions.set("run-b", ["question-b"]);
-      f.wake("run-b");
+      f.notice("b");
       await vi.advanceTimersByTimeAsync(0);
       expect(await work).toEqual({
         wakeReason: "attention",
@@ -271,7 +290,7 @@ describe("waitForRunAttention", () => {
   });
 
   it("uses the default 25000ms absolute deadline, without extending it for progress", async () => {
-    const f = fixture(60_000);
+    const f = fixture();
     f.seed("a", "queued", null);
     const work = f.begin([{ runId: "a" }]);
     let settled = false;
@@ -280,7 +299,7 @@ describe("waitForRunAttention", () => {
     });
     await vi.advanceTimersByTimeAsync(24_999);
     f.seed("a"); // Binding changes the real token, but is not attention.
-    f.wake("run-a");
+    f.notice("a");
     await vi.advanceTimersByTimeAsync(0);
     expect(settled).toBe(false);
     await vi.advanceTimersByTimeAsync(1);
@@ -292,7 +311,7 @@ describe("waitForRunAttention", () => {
     clean(f);
   });
 
-  it("polls queued handles across binding without a bus event, then wakes for real attention", async () => {
+  it("polls a host without commit notices across binding, then wakes for real attention", async () => {
     const f = fixture(37);
     f.seed("a", "queued", null);
     const work = f.begin([{ runId: "a" }], 500);
@@ -314,7 +333,7 @@ describe("waitForRunAttention", () => {
   });
 
   it("subscribes before reading and latches a notification during the snapshot before sleeping", async () => {
-    const f = fixture(10_000);
+    const f = fixture();
     f.seed("a");
     const release = deferred();
     f.snapshot.mockImplementationOnce(async (ids, signal) => {
@@ -326,7 +345,7 @@ describe("waitForRunAttention", () => {
     const work = f.begin([{ runId: "a" }], 1000);
     await vi.advanceTimersByTimeAsync(0);
     f.seed("a", "succeeded");
-    f.wake("run-a");
+    f.notice("a");
     release.resolve();
     await vi.advanceTimersByTimeAsync(0);
     expect(await work).toEqual({
@@ -339,8 +358,8 @@ describe("waitForRunAttention", () => {
     clean(f);
   });
 
-  it("coalesces repeated wakes and polls while a read is pending; unrelated progress never returns attention", async () => {
-    const f = fixture(10);
+  it("coalesces repeated notices while a read is pending; unrelated notices never read", async () => {
+    const f = fixture();
     f.seed("a");
     const release = deferred();
     let active = 0;
@@ -356,7 +375,7 @@ describe("waitForRunAttention", () => {
     const abort = controller();
     const work = f.begin([{ runId: "a" }], 1000, abort.signal);
     await vi.advanceTimersByTimeAsync(0);
-    for (let i = 0; i < 100; i++) f.wake(i % 2 ? "unrelated" : "run-a");
+    for (let i = 0; i < 100; i++) f.notice(i % 2 ? "unrelated" : "a");
     await vi.advanceTimersByTimeAsync(100);
     expect(f.snapshot).toHaveBeenCalledOnce();
     expect(vi.getTimerCount()).toBeLessThanOrEqual(2);
@@ -370,11 +389,15 @@ describe("waitForRunAttention", () => {
     });
     await vi.advanceTimersByTimeAsync(0);
     expect(settled).toBe(false);
+    const reads = f.snapshot.mock.calls.length;
+    for (let i = 0; i < 100; i++) f.notice("unrelated");
+    await vi.advanceTimersByTimeAsync(100);
+    expect(f.snapshot).toHaveBeenCalledTimes(reads);
     abort.abort();
     expect((await work).wakeReason).toBe("aborted");
     clean(f, abort.signal);
     const calls = f.snapshot.mock.calls.length;
-    f.wake();
+    f.noticeAll();
     await vi.advanceTimersByTimeAsync(5000);
     expect(f.snapshot).toHaveBeenCalledTimes(calls);
     clean(f);
@@ -399,7 +422,7 @@ describe("waitForRunAttention", () => {
       expect(f.listeners.size).toBe(1);
       expect(vi.getTimerCount()).toBeLessThanOrEqual(2);
       f.seed("a", "succeeded");
-      for (let wake = 0; wake < 50; wake++) f.wake("run-a");
+      for (let wake = 0; wake < 50; wake++) f.notice("a");
       await vi.advanceTimersByTimeAsync(0);
       expect(await work).toMatchObject({ wakeReason: "attention", attention: [0] });
       clean(f, abort.signal);
@@ -408,7 +431,7 @@ describe("waitForRunAttention", () => {
   });
 
   it("reports completed snapshot facts without replaying historical transient attention", async () => {
-    const f = fixture(10_000);
+    const f = fixture();
     f.seed("a");
     f.seed("b");
     const release = deferred();
@@ -420,10 +443,10 @@ describe("waitForRunAttention", () => {
     const work = f.begin([{ runId: "a" }, { runId: "b" }], 1000);
     await vi.advanceTimersByTimeAsync(0);
     f.questions.set("run-a", ["transient-question"]);
-    f.wake("run-a");
+    f.notice("a");
     f.questions.delete("run-a");
     f.seed("b", "succeeded");
-    f.wake("run-b");
+    f.notice("b");
     release.resolve();
     await vi.advanceTimersByTimeAsync(0);
     // The pass is positional current evidence, without a global atomicity or event-history promise.
@@ -435,42 +458,151 @@ describe("waitForRunAttention", () => {
     clean(f);
   });
 
-  it.each(["abort", "deadline"] as const)(
-    "%s cancels an in-flight cooperative read and leaves no read/listener/timer",
-    async (exit) => {
-      const f = fixture();
-      const abort = controller();
-      let active = 0;
-      const signals: AbortSignal[] = [];
-      f.snapshot.mockImplementationOnce(async (_ids, signal) => {
-        expect(signal).toBeDefined();
-        signals.push(signal!);
-        active++;
-        try {
-          await new Promise<void>((resolve) => {
-            if (signal!.aborted) return resolve();
-            signal!.addEventListener("abort", () => resolve(), { once: true });
-          });
-          return [unknown("not_observed"), unknown("not_observed")];
-        } finally {
-          active--;
-        }
-      });
-      const work = f.begin([{ runId: "a" }, { runId: "b" }], 50, abort.signal);
-      await vi.advanceTimersByTimeAsync(0);
-      expect(active).toBe(1);
-      if (exit === "abort") abort.abort();
-      else await vi.advanceTimersByTimeAsync(50);
-      expect(await work).toEqual({
-        wakeReason: exit === "abort" ? "aborted" : "timeout",
-        attention: [],
-        summaries: [unknown("not_observed"), unknown("not_observed")],
-      });
-      expect(signals[0]!.aborted).toBe(true);
-      expect(active).toBe(0);
-      clean(f, abort.signal);
-    },
-  );
+  it("abort cancels an in-flight cooperative read and leaves no read/listener/timer", async () => {
+    const f = fixture();
+    const abort = controller();
+    let active = 0;
+    const signals: AbortSignal[] = [];
+    f.snapshot.mockImplementationOnce(async (_ids, signal) => {
+      expect(signal).toBeDefined();
+      signals.push(signal!);
+      active++;
+      try {
+        await new Promise<void>((resolve) => {
+          if (signal!.aborted) return resolve();
+          signal!.addEventListener("abort", () => resolve(), { once: true });
+        });
+        return [unknown("not_observed"), unknown("not_observed")];
+      } finally {
+        active--;
+      }
+    });
+    const work = f.begin([{ runId: "a" }, { runId: "b" }], 50, abort.signal);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(active).toBe(1);
+    abort.abort();
+    expect(await work).toEqual({
+      wakeReason: "aborted",
+      attention: [],
+      summaries: [unknown("not_observed"), unknown("not_observed")],
+    });
+    expect(signals[0]!.aborted).toBe(true);
+    expect(active).toBe(0);
+    clean(f, abort.signal);
+  });
+
+  it("lets the deadline wait for a started pass and answers its facts and attention", async () => {
+    const f = fixture();
+    f.seed("a", "succeeded");
+    f.seed("b");
+    const release = deferred();
+    const signals: AbortSignal[] = [];
+    f.snapshot.mockImplementationOnce(async (ids, signal) => {
+      signals.push(signal!);
+      await release.promise;
+      return f.read(ids);
+    });
+    const work = f.begin([{ runId: "a" }, { runId: "b" }], 5);
+    let settled = false;
+    void work.then(() => {
+      settled = true;
+    });
+    await vi.advanceTimersByTimeAsync(50);
+    expect(settled).toBe(false);
+    expect(signals[0]!.aborted).toBe(false);
+    release.resolve();
+    expect(await work).toEqual({
+      wakeReason: "attention",
+      attention: [0],
+      summaries: await f.read(["a", "b"]),
+    });
+    expect(f.snapshot).toHaveBeenCalledOnce();
+    clean(f);
+  });
+
+  it("answers a positive wait shorter than one pass with that complete pass", async () => {
+    const f = fixture();
+    f.seed("a");
+    f.seed("b", "queued", null);
+    const release = deferred();
+    f.snapshot.mockImplementationOnce(async (ids) => {
+      await release.promise;
+      return f.read(ids);
+    });
+    const work = f.begin([{ runId: "a" }, { runId: "b" }], 1);
+    await vi.advanceTimersByTimeAsync(10);
+    release.resolve();
+    expect(await work).toEqual({
+      wakeReason: "timeout",
+      attention: [],
+      summaries: await f.read(["a", "b"]),
+    });
+    expect((await work).summaries.every((row) => row.problem === null)).toBe(true);
+    clean(f);
+  });
+
+  it("acknowledges a problem row by its echoed null token and waits for the healthy members", async () => {
+    const f = fixture();
+    f.seed("a");
+    const first = await f.begin([{ runId: "a" }, { runId: "gone" }], 1000);
+    expect(first).toMatchObject({ wakeReason: "problems", attention: [] });
+    const echoed = [
+      { runId: "a", seen: first.summaries[0]!.token },
+      { runId: "gone", seen: first.summaries[1]!.token },
+    ];
+    expect(echoed[1]!.seen).toBeNull();
+    const work = f.begin(echoed, 1000);
+    let settled = false;
+    void work.then(() => {
+      settled = true;
+    });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(settled).toBe(false);
+    f.seed("a", "succeeded");
+    f.notice("a");
+    expect(await work).toEqual({
+      wakeReason: "attention",
+      attention: [0],
+      summaries: await f.read(["a", "gone"]),
+    });
+    // A string seen on a problem row is not an acknowledgement of it.
+    expect(
+      await f.begin(
+        [
+          { runId: "a", seen: (await f.read(["a"]))[0]!.token },
+          { runId: "gone", seen: "x".repeat(43) },
+        ],
+        1000,
+      ),
+    ).toMatchObject({ wakeReason: "problems" });
+    clean(f);
+  });
+
+  it("re-reads only the handles a notice names, and every handle before a timeout", async () => {
+    const f = fixture();
+    f.seed("a");
+    f.seed("b");
+    const work = f.begin([{ runId: "a" }, { runId: "b" }, { runId: "a" }], 100);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.snapshot.mock.calls.map(([ids]) => ids)).toEqual([["a", "b"]]);
+    f.notice("b");
+    await vi.advanceTimersByTimeAsync(0);
+    f.notice("unrelated");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.snapshot.mock.calls.map(([ids]) => ids)).toEqual([["a", "b"], ["b"]]);
+    f.noticeAll();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.snapshot.mock.calls.at(-1)![0]).toEqual(["a", "b"]);
+    f.notice("a");
+    await vi.advanceTimersByTimeAsync(0);
+    const beforeDeadline = f.snapshot.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(100);
+    expect(await work).toMatchObject({ wakeReason: "timeout", attention: [] });
+    // The answer after the deadline rests on a full pass.
+    expect(f.snapshot.mock.calls.length).toBe(beforeDeadline + 1);
+    expect(f.snapshot.mock.calls.at(-1)![0]).toEqual(["a", "b"]);
+    clean(f);
+  });
 
   it("gives abort precedence over attention while retaining completed rows and unread unknowns", async () => {
     const f = fixture();
