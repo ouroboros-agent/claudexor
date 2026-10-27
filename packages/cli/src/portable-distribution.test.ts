@@ -85,7 +85,7 @@ describe("portable Agent Skill, Copilot plugin, and MCP distribution", () => {
         "`current_served_generations`",
         "`retained_only`",
         "Missing membership grants no resubmission authority.",
-        "Exact Retry keeps",
+        "Exact Retry and a decision",
         "Thread turns, Delegate tools and ACP session settings",
         "With only group/store saved, recover retained",
         "`problems` response keeps healthy summaries",
