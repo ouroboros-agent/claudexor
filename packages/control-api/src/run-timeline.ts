@@ -4,8 +4,9 @@
  * bounded output with an EXPLICIT truncation marker, and the shared
  * event-reading helpers the budget snapshot reuses.
  */
-import { closeSync, lstatSync, openSync, readFileSync, readSync } from "node:fs";
+import { closeSync, fstatSync, lstatSync, openSync, readSync } from "node:fs";
 import { join } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import {
   ControlTimelineEvent,
   type ControlEvidenceIntegrity,
@@ -16,17 +17,13 @@ import {
 } from "@claudexor/schema";
 import { redactSecrets } from "@claudexor/util";
 import { safeArtifactPath, safeArtifactRoot } from "./artifact-paths.js";
+import { projectionRead } from "./projection-context.js";
 
 const TIMELINE_EVENTS_MAX = 500;
 
-/**
- * Anti-OOM read cap for a run's events.jsonl (D15 "bounded tails for large
- * logs"): files at or under the cap are read whole (every projection stays
- * exact); a pathologically large log is read from its TAIL only — the last
- * partial line is dropped so JSON.parse never sees a torn record. 24 MiB holds
- * far more than any realistic run, so normal correctness is never affected.
- */
-const EVENTS_READ_TAIL_BYTES = 24 * 1024 * 1024;
+/** Read buffers are bounded; canonical history is not. Budget, valuation and
+ * plan folds need the prefix even when the display keeps only recent rows. */
+const EVENTS_READ_CHUNK_BYTES = 64 * 1024;
 
 /**
  * Observability counter: how many times a run's events.jsonl was actually read
@@ -65,7 +62,7 @@ export interface RunEventsIntegrity {
   malformedLines: number;
   /** JSON values that parsed but were not plain objects (arrays/scalars/null) and were dropped. */
   nonObjectLines: number;
-  /** The bounded-tail read intentionally dropped a torn first line (D15). Intentional bounding — NOT a corruption signal. */
+  /** Compatibility with earlier bounded-tail snapshots; complete reads leave this false. */
   tailTruncated: boolean;
 }
 
@@ -103,8 +100,14 @@ export function evidenceLevel(i: RunEventsIntegrity): ControlEvidenceIntegrity {
  */
 export function readRunEventsWithIntegrity(
   rec: RunDirCarrier,
-  maxBytes = EVENTS_READ_TAIL_BYTES,
+  maxBytes?: number,
 ): RunEventsRead {
+  return projectionRead(rec.runDir ?? "", `events:${maxBytes ?? "all"}`, () =>
+    readEventsSnapshot(rec, maxBytes),
+  );
+}
+
+function readEventsSnapshot(rec: RunDirCarrier, maxBytes?: number): RunEventsRead {
   const integrity: RunEventsIntegrity = { ...COMPLETE_INTEGRITY };
   if (!rec.runDir) return { events: [], integrity };
   const path = safeArtifactPath(rec.runDir, "events.jsonl");
@@ -127,57 +130,69 @@ export function readRunEventsWithIntegrity(
     }
     return { events: [], integrity: { ...integrity, unreadable: true } };
   }
-  let raw: string;
-  let tailed = false;
-  try {
-    const st = lstatSync(path);
-    if (st.isSymbolicLink() || st.isDirectory())
-      return { events: [], integrity: { ...integrity, unreadable: true } };
-    if (st.size > maxBytes) {
-      // Bounded tail: read only the final window; drop the first (partial) line.
-      const fd = openSync(path, "r");
-      try {
-        const buf = Buffer.allocUnsafe(maxBytes);
-        const read = readSync(fd, buf, 0, maxBytes, st.size - maxBytes);
-        raw = buf.toString("utf8", 0, read);
-      } finally {
-        closeSync(fd);
-      }
-      tailed = true;
-    } else {
-      raw = readFileSync(path, "utf8");
-    }
-  } catch (err) {
-    // ENOENT is the legitimate queued/never-written case: an empty event set is
-    // the honest truth, NOT corruption. Every other read failure (EACCES, EIO…)
-    // is a real integrity problem the projections must disclose as unavailable.
-    if ((err as NodeJS.ErrnoException | null)?.code === "ENOENT")
-      return { events: [], integrity: { ...integrity, absent: true } };
-    return { events: [], integrity: { ...integrity, unreadable: true } };
-  }
-  eventsParseCount++;
-  integrity.tailTruncated = tailed;
   const out: Record<string, unknown>[] = [];
-  const lines = raw.split(/\r?\n/);
-  // A tailed read almost certainly starts mid-record; drop that torn first line.
-  for (let i = tailed ? 1 : 0; i < lines.length; i++) {
-    const line = lines[i] as string;
-    if (!line.trim()) continue;
+  const parseLine = (line: string): void => {
+    if (!line.trim()) return;
     let parsed: unknown;
     try {
       parsed = JSON.parse(line);
     } catch {
-      // Malformed line stays in events.jsonl on disk; COUNT the omission so the
-      // projections can disclose that canonical evidence is incomplete.
       integrity.malformedLines++;
-      continue;
+      return;
     }
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
       out.push(parsed as Record<string, unknown>);
     } else {
       integrity.nonObjectLines++;
     }
+  };
+  try {
+    const st = lstatSync(path);
+    if (st.isSymbolicLink() || st.isDirectory())
+      return { events: [], integrity: { ...integrity, unreadable: true } };
+    const fd = openSync(path, "r");
+    try {
+      // Freeze the end on the opened descriptor: concurrent appends belong to
+      // another snapshot and cannot turn a projection into an endless read.
+      const end = fstatSync(fd).size;
+      const buf = Buffer.allocUnsafe(EVENTS_READ_CHUNK_BYTES);
+      const decoder = new StringDecoder("utf8");
+      let carry = "";
+      const startOffset = maxBytes === undefined ? 0 : Math.max(0, end - maxBytes);
+      integrity.tailTruncated = startOffset > 0;
+      let skipPartialLine = integrity.tailTruncated;
+      for (let offset = startOffset; offset < end;) {
+        const read = readSync(fd, buf, 0, Math.min(buf.length, end - offset), offset);
+        if (read === 0) throw new Error("Run events changed while reading");
+        offset += read;
+        const text = carry + decoder.write(buf.subarray(0, read));
+        let start = 0;
+        for (
+          let newline = text.indexOf("\n");
+          newline !== -1;
+          newline = text.indexOf("\n", start)
+        ) {
+          if (skipPartialLine) skipPartialLine = false;
+          else parseLine(text.slice(start, newline));
+          start = newline + 1;
+        }
+        carry = text.slice(start);
+      }
+      // Historical detail reads also accept a complete final JSON record with
+      // no newline; a torn record is counted as malformed, never hidden.
+      if (!skipPartialLine) parseLine(carry + decoder.end());
+    } finally {
+      closeSync(fd);
+    }
+  } catch (err) {
+    // ENOENT is the legitimate queued/never-written case: an empty event set is
+    // the honest truth, NOT corruption. Every other read failure (EACCES, EIO…)
+    // is a real integrity problem the projections must disclose as unavailable.
+    if ((err as NodeJS.ErrnoException | null)?.code === "ENOENT")
+      return { events: [], integrity: { ...COMPLETE_INTEGRITY, absent: true } };
+    return { events: [], integrity: { ...COMPLETE_INTEGRITY, unreadable: true } };
   }
+  eventsParseCount++;
   return { events: out, integrity };
 }
 
@@ -274,18 +289,25 @@ export function timelineEvents(
   events?: Record<string, unknown>[],
   integrity?: RunEventsIntegrity,
 ): ControlTimelineEvent[] {
-  // Select the displayed window BEFORE projecting: redaction and row
-  // validation cost per row, so omitted rows are only counted, never projected.
-  // Buffered harness frames are retained evidence, never rows. The caller's
-  // snapshot is left whole for the budget and plan projections.
-  const displayable = (events ?? readRunEvents(rec)).filter(
-    (ev) =>
-      String(ev["type"] ?? "event") !== "harness.event" ||
-      eventPayload(eventPayload(ev))["buffered"] !== true,
-  );
-  const omitted = Math.max(0, displayable.length - TIMELINE_EVENTS_MAX);
+  const snapshot = events ?? readRunEvents(rec);
+  const tail: Record<string, unknown>[] = [];
+  let eligible = 0;
+  // Select rows before doing any redaction, projection or schema work. Raw
+  // slice(-500) is not equivalent: buffered harness rows never occupy a slot.
+  // Visit every type, preserving corrupted-log rejection even outside the tail;
+  // only selected rows have their payloads projected. Leave the snapshot whole.
+  for (let i = snapshot.length - 1; i >= 0; i--) {
+    const ev = snapshot[i]!;
+    if (
+      String(ev["type"] ?? "event") === "harness.event" &&
+      eventPayload(eventPayload(ev))["buffered"] === true
+    )
+      continue;
+    eligible++;
+    if (tail.length < TIMELINE_EVENTS_MAX) tail.push(ev);
+  }
   const out: ControlTimelineEvent[] = [];
-  for (const ev of displayable.slice(omitted)) {
+  for (const ev of tail.reverse()) {
     const payload = eventPayload(ev);
     const type = String(ev["type"] ?? "event");
     const textKind =
@@ -369,6 +391,7 @@ export function timelineEvents(
     );
   }
   // Bounded projection with an EXPLICIT truncation marker — no silent truncation.
+  const omitted = Math.max(0, eligible - TIMELINE_EVENTS_MAX);
   if (omitted > 0) {
     out.unshift(
       ControlTimelineEvent.parse({
