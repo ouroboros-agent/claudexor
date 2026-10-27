@@ -72,3 +72,23 @@ describe("bounded process timing", () => {
     );
   });
 });
+
+it("keeps queue residence separate from worker projection and route outcomes", () => {
+  const timing = new ProcessTiming();
+  timing.recordRequest("GET", "/v2/runs/:id", 2, "not_found");
+  timing.recordRequest("GET", "/v2/runs/:id", 100, "served");
+  timing.recordBulk("detail", 75, 25);
+  expect(timing.facts().routes).toMatchObject([
+    {
+      lifetime: { count: 2 },
+      outcomes: [
+        { outcome: "not_found", lifetime: { count: 1, maxMs: 2 } },
+        { outcome: "served", lifetime: { count: 1, maxMs: 100 } },
+      ],
+    },
+  ]);
+  expect(timing.facts().bulk).toMatchObject([
+    { kind: "detail", queue: { count: 1, maxMs: 75 }, projection: { count: 1, maxMs: 25 } },
+  ]);
+  expect(timing.facts().worstSync).toEqual([]);
+});

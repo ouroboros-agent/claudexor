@@ -65,6 +65,22 @@ export const DaemonTimingFacts = z.object({
       z.object({
         method: z.string(),
         route: z.string(),
+        outcomes: z
+          .array(
+            z.object({
+              outcome: z.enum([
+                "served",
+                "not_found",
+                "disconnected_at_entry",
+                "disconnected",
+                "failed",
+              ]),
+              lifetime: LatencyFacts,
+              window: LatencyFacts.nullable(),
+            }),
+          )
+          .max(5)
+          .optional(),
         lifetime: LatencyFacts,
         window: LatencyFacts.nullable(),
       }),
@@ -91,6 +107,18 @@ export const DaemonTimingFacts = z.object({
     .max(32)
     .describe(
       "The 32 longest instrumented synchronous sections since process start, descending by duration, retaining later samples on ties. Labels contain no SQL, paths, IDs or payloads. Scope persistence measures synchronous serialization only; its file writes are asynchronous. Sections can overlap; these facts do not attribute a stall to disk or another cause.",
+    ),
+  bulk: z
+    .array(
+      z.object({
+        kind: z.enum(["cursor", "detail", "summary", "attention", "event-replay", "artifact"]),
+        queue: LatencyFacts,
+        projection: LatencyFacts,
+      }),
+    )
+    .optional()
+    .describe(
+      "Finite bulk reads: lifetime queue residence and worker execution wall times, including scheduling and asynchronous retained-output publication. These are not main-thread synchronous sections.",
     ),
 });
 export type DaemonTimingFacts = z.infer<typeof DaemonTimingFacts>;

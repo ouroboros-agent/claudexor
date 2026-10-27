@@ -1129,6 +1129,8 @@ and there is no app UI handoff contract. See the
 [storage compatibility caveat](ARCHITECTURE.md#sqlite-engine-store) before opening
 an existing store with a new engine.
 
+For routine observation, use attention waits plus the events stream; fetch full detail for inspection, resnapshot or terminal output collection (see [the observation contract](ARCHITECTURE.md#observation-and-bulk-retained-reads)).
+
 **Waiting for several jobs.** `claudexor_runs_wait` observes attention from
 1..1000 existing job/run handles with one `POST /v2/runs/wait-many`. Pass
 `targets: [{runId, seen?}, ...]` and optional `waitMs` (integer 0..50000,

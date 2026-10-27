@@ -1,20 +1,18 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   DaemonControlApiServer,
   inlineContentDisposition,
   normalizeRunStartRequest,
-  runListFingerprintProbeCountForTests,
-  resetRunListFingerprintProbeCountForTests,
   type DaemonControlApiOptions,
   type DaemonFacadeClient,
   type DaemonRunRecord,
   type ControlOperatorDecisionRecord,
 } from "./daemon-server.js";
+import { BulkExecutor } from "./bulk-executor.js";
 import { lruGet, lruSet } from "./run-list.js";
 import { producedRepoRoot, resolveProducedRoot } from "./artifact-serve-routes.js";
 import { unboundRunStartResponse } from "./run-start.js";
 import { OPERATION_CATALOG } from "./operation-catalog.js";
-import { eventsParseCountForTests, resetEventsParseCountForTests } from "./run-timeline.js";
 import {
   existsSync,
   appendFileSync,
@@ -1373,30 +1371,38 @@ describe("DaemonControlApiServer", () => {
     });
   });
 
-  it("GET /runs fingerprint work is bounded by page size and terminal short-circuits (QA-052)", async () => {
+  it("GET /runs sends only the selected page to the bulk summary worker (QA-052)", async () => {
     const runDir = reapMk(join(tmpdir(), "claudexor-runs-fp-"));
     const terminal = Array.from({ length: 6 }, (_, i) => pagedRunRecord(i, "succeeded", runDir));
-    await withDaemonServer(pagedDaemon(terminal), async (base) => {
-      // Warm the cache, then measure a fresh page.
-      await fetchRunList(base, { limit: "2" });
-      resetRunListFingerprintProbeCountForTests();
-      const { body } = await fetchRunList(base, { limit: "2" });
-      expect(body.runs).toHaveLength(2);
-      // Only the 2 paged terminal records are fingerprinted, and each terminal
-      // fingerprint short-circuits to delivery_state + the retention tombstone
-      // + continuation sources and the kept-envelope pointer: 8 total, not
-      // 6 records x 13 paths.
-      expect(runListFingerprintProbeCountForTests()).toBe(8);
-    });
+    // Keep the real worker execution; observe the selected records at its boundary.
+    // Exact filesystem-probe costs are asserted directly in run-list-fingerprint.test.ts.
+    const execute = vi.spyOn(BulkExecutor.prototype, "execute");
+    try {
+      await withDaemonServer(pagedDaemon(terminal), async (base) => {
+        await fetchRunList(base, { limit: "2" });
+        execute.mockClear();
+        const { body } = await fetchRunList(base, { limit: "2" });
+        expect(body.runs.map((run) => run.runId)).toEqual(["run-0005", "run-0004"]);
+        expect(execute.mock.calls.map(([job]) => job.kind)).toEqual(["summary", "summary"]);
+        expect(
+          execute.mock.calls.map(([job]) =>
+            job.kind === "summary" ? job.input.record.runId : null,
+          ),
+        ).toEqual(["run-0005", "run-0004"]);
+      });
 
-    const running = [pagedRunRecord(0, "running", runDir)];
-    await withDaemonServer(pagedDaemon(running), async (base) => {
-      resetRunListFingerprintProbeCountForTests();
-      await fetchRunList(base);
-      // An active run keeps all 18 paths (events + final/* land
-      // while live), so it must NOT be short-circuited.
-      expect(runListFingerprintProbeCountForTests()).toBe(18);
-    });
+      const running = [pagedRunRecord(0, "running", runDir)];
+      await withDaemonServer(pagedDaemon(running), async (base) => {
+        execute.mockClear();
+        const { body } = await fetchRunList(base);
+        expect(body.runs.map((run) => [run.runId, run.state])).toEqual([["run-0000", "running"]]);
+        expect(execute.mock.calls.map(([job]) => job.kind)).toEqual(["summary"]);
+        const job = execute.mock.calls[0]![0];
+        expect(job.kind === "summary" && job.input.record.runId).toBe("run-0000");
+      });
+    } finally {
+      execute.mockRestore();
+    }
   });
 
   it("summary cache evicts LRU-bounded, never wholesale-clears (QA-052)", () => {
@@ -9213,7 +9219,7 @@ describe("DaemonControlApiServer", () => {
     });
   });
 
-  it("parses a large events.jsonl EXACTLY ONCE per detail request (D15 perf)", async () => {
+  it("serves the complete detail DTO with a bounded timeline over large retained history", async () => {
     const { daemon, record } = fakeDaemon();
     // 10k synthetic events: before the single-snapshot fix, timeline + the
     // budget fallback + plan progress each re-read and re-parsed the whole log.
@@ -9232,15 +9238,24 @@ describe("DaemonControlApiServer", () => {
     lines.push("");
     appendFileSync(join(record.runDir as string, "events.jsonl"), lines.join("\n"));
     await withDaemonServer(daemon, async (base) => {
-      resetEventsParseCountForTests();
       const detail = await apiFetch(`${base}/runs/run-d1`, {
         headers: { authorization: `Bearer ${token}` },
       });
       expect(detail.status).toBe(200);
-      // One detail GET, one full parse of events.jsonl — no matter how many
-      // fields consume events. lastSeqInFile does a cheap byte-tail read, not a
-      // full parse, so it never counts.
-      expect(eventsParseCountForTests()).toBe(1);
+      // Projection now lives in the worker; a main-thread module counter cannot
+      // observe it. run-projection-context.test.ts pins the single parse directly.
+      const body = (await detail.json()) as {
+        summary: { runId: string };
+        timeline: { type: string; title: string }[];
+        lastSeq: number;
+      };
+      expect(body.summary.runId).toBe("run-d1");
+      expect(body.lastSeq).toBeGreaterThanOrEqual(10_000);
+      expect(body.timeline).toHaveLength(501);
+      expect(body.timeline[0]!.type).toBe("timeline.truncated");
+      expect(body.timeline.slice(1).map((row) => row.title)).toEqual(
+        Array.from({ length: 500 }, (_, i) => `event ${9500 + i}`),
+      );
     });
   });
 

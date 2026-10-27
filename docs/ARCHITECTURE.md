@@ -2637,7 +2637,9 @@ by HTTP method and operation-catalog template, both `lifetime` (since process
 start) and `window` (the last completed loop window). SSE latency includes the
 stream's whole lifetime. Unknown URLs/methods share `OTHER <unmatched>`; raw
 URLs, query values and identifiers are never retained. At most 256 route keys
-have two fixed-capacity microsecond histograms, with two significant digits;
+retain aggregate lifetime/window histograms and the same breakdown for each
+observed outcome (served, not_found, disconnected_at_entry, disconnected or failed).
+The fixed-capacity microsecond histograms have two significant digits;
 maxima are measured directly and rounded to a microsecond. Before the first
 window, window metadata and per-route windows are null; an empty completed
 window has count zero and null latencies. The status request itself is counted
@@ -2645,8 +2647,9 @@ when its response finishes, so it appears in a subsequent read.
 The `worstSync` array in `timing` retains only the 32 longest instrumented synchronous sections
 since start (descending, later samples win ties), with operation, duration and
 timestamp. Labels cover `store.begin_immediate`, `store.commit`, `store.external_write`,
-`control.run_detail`, `control.run_summary`, and `scope.persist`; scope persistence
-measures synchronous serialization, not its asynchronous file writes. These
+`scope.persist` and the historical control-projection labels. Detail and summary
+now report worker queue/projection wall time in `bulk`, not a main-thread sync
+span. Scope persistence measures synchronous serialization, not its asynchronous file writes. These
 samples may overlap and do not identify the cause of a delay. `store.commit`
 also exposes lifetime `p50_ms`/`p99_ms` using the same histogram precision.
 Older engines omit the new optional fields. The catalog still points to the
@@ -3076,8 +3079,8 @@ not retry automatically.
   inserts/prunes with no duplicates or omissions. Ordering, `state` filtering,
   and page slicing all happen on raw records BEFORE any summary is materialized,
   so per-run artifact fingerprint/projection work is bounded by page size rather
-  than total retained records. Each summary yields with `setImmediate` before
-  the next. The LRU remembers file identities for delivery, tombstone, continuation
+  than total retained records. Each cold summary and its artifact fingerprint run in the bulk executor;
+  the page awaits one summary before submitting the next. The LRU remembers file identities for delivery, tombstone, continuation
   sources, every local/ancestor retained-envelope pointer and its addressed custody
   file, plus ancestor roots/tombstones (GC can reclaim an ancestor without a
   pointer). Unchanged polls only stat that set; any dependency change rebuilds it.
@@ -3459,6 +3462,45 @@ implementation. Questions about future implementation may remain in a complete
 plan; `required_inputs` records information genuinely needed to produce the
 current assigned result. The engine never clears that list to force completion.
 
+### Observation and bulk retained reads
+
+Routine observers use `POST /v2/runs/wait-many` for lifecycle and attention,
+plus the per-run event stream for progress. Fetch pending interaction rows before
+acknowledging their observation token. A terminal lifecycle still carries the
+obligation to collect complete output. Full run detail is an addressed read for
+inspection, resnapshot or terminal collection; it is not a polling heartbeat.
+
+Each `DaemonControlApiServer` owns one lazily created bulk worker. Health,
+handshake and status alone create no thread. Detail projection, child and cold
+summary hydration, exact-patch digests, artifact walks/read-redact operations,
+and finite SSE seek/replay batches execute there. Only plain request records and
+results cross the port; daemon services, the registry and database remain with
+their owners. One projection context shares event parsing, structured reads,
+budget and primary-output work across parent/children/operator validation. The
+context ends with the job. Timeline projection selects the last eligible rows
+before redaction and schema validation, with exact omitted/integrity markers;
+cash, valuation, plan and other folds still inspect the complete captured log.
+The final detail schema validation stays in the worker.
+
+The executor processes one finite job at a time. Live SSE waits and HTTP
+backpressure stay outside it; Node's HTTP response ordering preserves pipelined
+keep-alive order. Detail, artifact and SSE disconnects remove queued work and
+discard an active job's result; list projection stops between summaries.
+Stop rejects queued and active reads immediately and requests worker
+termination without waiting for projection. A worker crash is a typed retryable
+`503 bulk_worker_failed`; the next requested read lazily creates its replacement.
+Interrupted-output recovery has one main-thread publication owner: the worker
+prepares bytes, and the owner atomically publishes them before detail projection
+continues. The worker writes no files. Cancellation cannot expose a partial
+retained-output artifact.
+
+Route timing retains aggregate latency plus served/not-found/disconnect/failure
+breakdowns. Bulk timing separates queue residence from worker execution wall
+time, including scheduling and any retained-output publication; it does not
+label those intervals main-thread synchronous work. CPU starvation can still
+delay every thread. No worker throughput or operating-system scheduling deadline
+is promised.
+
 ### Event streaming contract (snapshot-then-subscribe)
 
 The run-detail timeline preserves typed harness text as `textKind`
@@ -3484,16 +3526,22 @@ its global/project partition generation before live bus publication. Per-token
 LIFECYCLE after restart, never token-level progress. Failure to commit a retained
 lifecycle event fails its producer/run instead of being swallowed as a live-only
 gap; progress outside that set does not enter the SQL sink.
-`GET /v2/runs/:id` returns the snapshot together with `lastSeq` — the highest seq
-already reflected in that snapshot, read from the live writer's in-memory counter
-or, for a finished run, from the log's last line (a full scan only when that line
-cannot decide) — so a client subscribes to
-`GET /v2/runs/:id/events` with `Last-Event-ID: <lastSeq>` and applies deltas with
-no gaps and no duplicates. The per-run stream replays from the run's
-`events.jsonl` — the one complete per-run event record; the SQL event ledger
-holds only the lifecycle subset above, so it can restore a run's terminal tail
-but never rebuild the full stream — (old pre-seq fixture lines fall back to
-line-number ids) and is
+`GET /v2/runs/:id` returns `lastSeq`, a conservative event fence captured
+BEFORE pending interactions and projection reads. It does not claim an atomic
+snapshot of files and live state: later events may already be reflected in the
+response. Subscribe to `GET /v2/runs/:id/events` with `Last-Event-ID: <lastSeq>`;
+there is no gap across the fence, but replay is allowed. Consumers deduplicate
+by event identity and replace/acknowledge questions by their interaction identity.
+The live writer supplies its counter without I/O. When no live writer is
+registered, cursor lookup runs in the bulk executor, including the legacy or
+oversized last-line fallback. Never stamp a later cursor onto earlier projection bytes.
+The per-run stream replays from `events.jsonl`, the complete per-run event record;
+the SQL ledger holds only the lifecycle subset above and cannot rebuild full
+progress. Resume seeks backward to the cursor in finite byte batches, without
+parsing the retained prefix for normal monotonic seq logs. Pre-seq lines retain
+line-number ids; ambiguous legacy/mixed logs conservatively count/scan in finite
+worker jobs. UTF-8 and incomplete-line carry remain across batches. Redaction
+runs on whole events, never on arbitrary text fragments. The stream is
 push-driven by the daemon's in-process run-event bus, with a file-tail poll as
 fallback; `output.ready` is guaranteed to precede the terminal
 `run.completed|run.failed|run.blocked` event in every mode, so a client that

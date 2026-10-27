@@ -414,6 +414,15 @@ export function appendRunEvent(
 }
 
 /**
+ * A registered live writer's authoritative in-memory cursor, or null when no
+ * live writer owns this path. This never reads files or initiates recovery;
+ * a poisoned writer keeps its conservative counter until recovery releases it.
+ */
+export function liveRunEventSeq(path: string): number | null {
+  return activeEventLogs.get(path)?.lastSeq() ?? null;
+}
+
+/**
  * The run's highest event `seq` for snapshot fencing. A live writer answers from
  * its in-memory counter (the one seq owner; its file holds exactly the events up
  * to that seq); any other log answers from its file through `lastSeqInFile`.

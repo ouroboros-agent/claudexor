@@ -4,23 +4,46 @@ import { WorkProduct, WorkspaceFilesManifest } from "@claudexor/schema";
 import { sha256, readFileUtf8BoundedSync } from "@claudexor/util";
 import { safeArtifactPath } from "./artifact-paths.js";
 import type { DaemonRunRecord } from "./run-record.js";
+import { projectionRead } from "./projection-context.js";
 
 /** Exact immutable result, shared by apply, display, and artifact streaming. */
-export function readFilesWorkProduct(record: DaemonRunRecord, maxBytes?: number) {
+export function readFilesWorkProduct(record: Pick<DaemonRunRecord, "runDir">, maxBytes?: number) {
+  return projectionRead(record.runDir ?? "", `files-work-product:${maxBytes ?? "all"}`, () =>
+    readFilesWorkProductRaw(record, maxBytes),
+  );
+}
+
+function readFilesWorkProductRaw(record: Pick<DaemonRunRecord, "runDir">, maxBytes?: number) {
   const read = (path: string) =>
     maxBytes === undefined ? readFileSync(path, "utf8") : readFileUtf8BoundedSync(path, maxBytes);
   if (!record.runDir) return null;
-  const wpPath = safeArtifactPath(record.runDir, "final/work_product.yaml");
-  if (!wpPath) return null;
-  const workProduct = WorkProduct.parse(parseYaml(read(wpPath)));
+  const runDir = record.runDir;
+  const workProductText = projectionRead<string | null>(
+    runDir,
+    `files-work-product:raw:${maxBytes ?? "all"}:final/work_product.yaml`,
+    () => {
+      const wpPath = safeArtifactPath(runDir, "final/work_product.yaml");
+      return wpPath ? read(wpPath) : null;
+    },
+  );
+  if (workProductText === null) return null;
+  // Authority parsing keeps this reader's path policy and unredacted bytes:
+  // presentation redaction must not change the immutable manifest binding.
+  const workProduct = WorkProduct.parse(parseYaml(workProductText));
   if (workProduct.kind !== "files") return null;
   const manifestPath = workProduct.files.manifest;
   const manifestSha256 = workProduct.meta.manifest_sha256;
   if (typeof manifestPath !== "string" || typeof manifestSha256 !== "string")
     throw new Error("Files work product has no immutable manifest reference");
-  const path = safeArtifactPath(record.runDir, manifestPath);
-  if (!path) throw new Error("Files work product manifest is unavailable");
-  const text = read(path);
+  const text = projectionRead<string | null>(
+    runDir,
+    `files-work-product:raw:${maxBytes ?? "all"}:${manifestPath}`,
+    () => {
+      const path = safeArtifactPath(runDir, manifestPath);
+      return path ? read(path) : null;
+    },
+  );
+  if (text === null) throw new Error("Files work product manifest is unavailable");
   if (sha256(text) !== manifestSha256) throw new Error("Files manifest digest mismatch");
   return {
     workProduct,

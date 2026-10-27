@@ -663,56 +663,94 @@
                   "route": {
                     "type": "string"
                   },
-                  "lifetime": {
-                    "type": "object",
-                    "properties": {
-                      "count": {
-                        "type": "integer",
-                        "minimum": 0
-                      },
-                      "p50Ms": {
-                        "anyOf": [
-                          {
-                            "$ref": "#/definitions/ControlDaemonStatus/properties/timing/properties/windowMs/anyOf/0"
+                  "outcomes": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "outcome": {
+                          "type": "string",
+                          "enum": [
+                            "served",
+                            "not_found",
+                            "disconnected_at_entry",
+                            "disconnected",
+                            "failed"
+                          ]
+                        },
+                        "lifetime": {
+                          "type": "object",
+                          "properties": {
+                            "count": {
+                              "type": "integer",
+                              "minimum": 0
+                            },
+                            "p50Ms": {
+                              "anyOf": [
+                                {
+                                  "$ref": "#/definitions/ControlDaemonStatus/properties/timing/properties/windowMs/anyOf/0"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "p99Ms": {
+                              "anyOf": [
+                                {
+                                  "$ref": "#/definitions/ControlDaemonStatus/properties/timing/properties/windowMs/anyOf/0"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "maxMs": {
+                              "anyOf": [
+                                {
+                                  "$ref": "#/definitions/ControlDaemonStatus/properties/timing/properties/windowMs/anyOf/0"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
                           },
-                          {
-                            "type": "null"
-                          }
-                        ]
+                          "required": [
+                            "count",
+                            "p50Ms",
+                            "p99Ms",
+                            "maxMs"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "window": {
+                          "anyOf": [
+                            {
+                              "$ref": "#/definitions/ControlDaemonStatus/properties/timing/properties/routes/items/properties/outcomes/items/properties/lifetime"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
                       },
-                      "p99Ms": {
-                        "anyOf": [
-                          {
-                            "$ref": "#/definitions/ControlDaemonStatus/properties/timing/properties/windowMs/anyOf/0"
-                          },
-                          {
-                            "type": "null"
-                          }
-                        ]
-                      },
-                      "maxMs": {
-                        "anyOf": [
-                          {
-                            "$ref": "#/definitions/ControlDaemonStatus/properties/timing/properties/windowMs/anyOf/0"
-                          },
-                          {
-                            "type": "null"
-                          }
-                        ]
-                      }
+                      "required": [
+                        "outcome",
+                        "lifetime",
+                        "window"
+                      ],
+                      "additionalProperties": false
                     },
-                    "required": [
-                      "count",
-                      "p50Ms",
-                      "p99Ms",
-                      "maxMs"
-                    ],
-                    "additionalProperties": false
+                    "maxItems": 5
+                  },
+                  "lifetime": {
+                    "$ref": "#/definitions/ControlDaemonStatus/properties/timing/properties/routes/items/properties/outcomes/items/properties/lifetime"
                   },
                   "window": {
                     "anyOf": [
                       {
-                        "$ref": "#/definitions/ControlDaemonStatus/properties/timing/properties/routes/items/properties/lifetime"
+                        "$ref": "#/definitions/ControlDaemonStatus/properties/timing/properties/routes/items/properties/outcomes/items/properties/lifetime"
                       },
                       {
                         "type": "null"
@@ -763,6 +801,38 @@
               },
               "maxItems": 32,
               "description": "The 32 longest instrumented synchronous sections since process start, descending by duration, retaining later samples on ties. Labels contain no SQL, paths, IDs or payloads. Scope persistence measures synchronous serialization only; its file writes are asynchronous. Sections can overlap; these facts do not attribute a stall to disk or another cause."
+            },
+            "bulk": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "cursor",
+                      "detail",
+                      "summary",
+                      "attention",
+                      "event-replay",
+                      "artifact"
+                    ]
+                  },
+                  "queue": {
+                    "$ref": "#/definitions/ControlDaemonStatus/properties/timing/properties/routes/items/properties/outcomes/items/properties/lifetime"
+                  },
+                  "projection": {
+                    "$ref": "#/definitions/ControlDaemonStatus/properties/timing/properties/routes/items/properties/outcomes/items/properties/lifetime"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "queue",
+                  "projection"
+                ],
+                "additionalProperties": false
+              },
+              "description": "Finite bulk reads: lifetime queue residence and worker execution wall times, including scheduling and asynchronous retained-output publication. These are not main-thread synchronous sections."
             }
           },
           "required": [

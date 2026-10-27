@@ -260,6 +260,10 @@ frozen plan document with required sections replaced it); a separate
 
 ## Evidence Beats Summaries
 
+Inspecting retained history must leave admission, attention reads and Stop available.
+The history remains complete; clients observe current attention and progress
+without repeatedly rebuilding its presentation.
+
 Model prose is context, never proof. Work product is proven by Git diffs or
 complete file manifests captured in the execution tree, deterministic checks,
 reviewer artifacts, typed events, and recorded side effects. Diffs round-trip

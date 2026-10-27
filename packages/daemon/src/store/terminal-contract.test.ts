@@ -1,3 +1,4 @@
+import { readEventReplayBatch } from "../../../control-api/src/event-replay-batch.js";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
@@ -510,6 +511,7 @@ describe("T-TRM-2 real SSE pending obligation", () => {
       let wake: ((event: { run_id?: string }) => void) | undefined;
       const record = { id: "job", runId: "run", runDir: f.runDir, state: "failed" } as const;
       const ctx: StreamEventsCtx = {
+        readBatch: async (input) => readEventReplayBatch(input),
         findRun: async () => record as never,
         json() {},
         opts: {
@@ -529,7 +531,7 @@ describe("T-TRM-2 real SSE pending obligation", () => {
         sseClients: new Set(),
       };
       cleanup.push(() => {
-        req.emit("close");
+        res.emit("close");
       });
       await streamRunEvents(ctx, "job", lastEventId, req as never, res as never);
       expect(res.ended).toBe(false);

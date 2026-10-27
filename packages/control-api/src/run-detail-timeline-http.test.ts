@@ -1,11 +1,13 @@
 import { appendFileSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ControlTimelineEvent, type ControlRunDetail } from "@claudexor/schema";
-import { afterAll, describe, expect, it, vi } from "vitest";
+import { Worker } from "node:worker_threads";
+import type { ControlRunDetail } from "@claudexor/schema";
+import { afterAll, describe, expect, it } from "vitest";
+import { BulkExecutor } from "./bulk-executor.js";
+import { BULK_WORKER_ROLE } from "./bulk-protocol.js";
 import { DaemonControlApiServer } from "./daemon-server.js";
 import type { DaemonFacadeClient, DaemonRunRecord } from "./run-record.js";
-import { eventsParseCountForTests } from "./run-timeline.js";
 
 const token = "timeline-window-http";
 const SECRET = `sk-ant-${"b".repeat(40)}`;
@@ -79,23 +81,22 @@ function readOnlyDaemon(record: DaemonRunRecord): DaemonFacadeClient {
   };
 }
 
-/** One detail GET with the timeline row validations and file parses it caused. */
-async function detail(base: string) {
-  const validate = vi.spyOn(ControlTimelineEvent, "parse");
-  const parsesBefore = eventsParseCountForTests();
-  try {
-    const res = await globalThis.fetch(`${base}/v2/runs/run-w`, {
-      headers: { authorization: `Bearer ${token}`, "X-Claudexor-Protocol-Major": "3" },
-    });
-    expect(res.status).toBe(200);
-    return {
-      body: (await res.json()) as ControlRunDetail,
-      validations: validate.mock.calls.length,
-      fileParses: eventsParseCountForTests() - parsesBefore,
-    };
-  } finally {
-    validate.mockRestore();
-  }
+interface DetailWork {
+  validations: number;
+  fileParses: number;
+}
+
+/** One real HTTP/worker detail read. The worker sends its counts before the
+ * result on the same port, so these measure the projection's actual owner. */
+async function detail(base: string, work: DetailWork[]) {
+  const before = work.length;
+  const res = await globalThis.fetch(`${base}/v2/runs/run-w`, {
+    headers: { authorization: `Bearer ${token}`, "X-Claudexor-Protocol-Major": "3" },
+  });
+  expect(res.status).toBe(200);
+  const body = (await res.json()) as ControlRunDetail;
+  expect(work).toHaveLength(before + 1);
+  return { body, ...work[before]! };
 }
 
 describe("GET /v2/runs/:id bounded timeline over a long event log", () => {
@@ -123,10 +124,25 @@ describe("GET /v2/runs/:id bounded timeline over a long event log", () => {
     );
 
     const server = new DaemonControlApiServer({ token, daemon: readOnlyDaemon(record), pollMs: 5 });
+    const work: DetailWork[] = [];
+    const bulk = new BulkExecutor(() => {
+      const worker = new Worker(
+        new URL("./test-support/timeline-work-counter.mjs", import.meta.url),
+        {
+          workerData: { role: BULK_WORKER_ROLE },
+        },
+      );
+      worker.on("message", (message: { type?: string; work: DetailWork }) => {
+        if (message.type === "test:detail-work") work.push(message.work);
+      });
+      return worker;
+    });
+    // Test-only worker instrumentation; production construction is unchanged.
+    (server as unknown as { bulk: BulkExecutor }).bulk = bulk;
     const { host, port } = await server.start();
     const base = `http://${host}:${port}`;
     try {
-      const first = await detail(base);
+      const first = await detail(base, work);
       // 3 early facts + 1,500 rows + 1 warning are displayable; buffered rows never count.
       expect(first.fileParses).toBe(1);
       expect(first.body.lastSeq).toBe(log.lastSeq());
@@ -157,7 +173,7 @@ describe("GET /v2/runs/:id bounded timeline over a long event log", () => {
       expect(first.validations).toBe(502);
 
       log.append(log.rows(1_500, 2_500));
-      const longer = await detail(base);
+      const longer = await detail(base, work);
       expect(longer.body.lastSeq).toBe(log.lastSeq());
       expect(longer.body.timeline[1]?.title).toBe(
         "2004 earlier event(s) omitted from this projection",
@@ -169,7 +185,7 @@ describe("GET /v2/runs/:id bounded timeline over a long event log", () => {
 
       // A buffered row advances the cursor without becoming or displacing a row.
       log.append(log.buffered(9_999));
-      const fenced = await detail(base);
+      const fenced = await detail(base, work);
       expect(fenced.body.lastSeq).toBe(longer.body.lastSeq + 1);
       expect(fenced.body.timeline).toEqual(longer.body.timeline);
     } finally {
