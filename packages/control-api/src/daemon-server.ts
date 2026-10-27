@@ -598,10 +598,11 @@ export class DaemonControlApiServer {
   private async stopOnce(): Promise<void> {
     const listenerClosed = this.closeListener();
     this.closeSseClients();
-    await this.drainActiveHandlers();
     this.refusedBodies.close();
-    await listenerClosed;
+    await this.drainActiveHandlers();
+    // A stream whose lookup finished while draining registered after the first close.
     this.closeSseClients();
+    await listenerClosed;
   }
 
   private closeSseClients(): void {

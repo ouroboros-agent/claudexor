@@ -359,6 +359,11 @@ gate's explicit exemptions):
 - `--json-stream`: NDJSON — early `run.started` frame with the runId, one line
   per run event, terminal summary object last. `--json` keeps its
   exactly-one-object contract.
+- `--task-group-id <uuid>`: tags a one-shot launch with a caller-saved group,
+  so `claudexor task-group-runs` (MCP `claudexor_task_group_runs`) can recover
+  its job handles later; `claudexor runs-wait` (MCP `claudexor_runs_wait`)
+  watches many handles at once. See
+  [Observing and directing an existing run](#observing-and-directing-an-existing-run).
 
 Run summaries (`GET /v2/runs/:id`, CLI `--json`) carry the matching receipts:
 `inputTokens`/`outputTokens`/`cachedInputTokens` (null when a harness reported
@@ -1060,7 +1065,8 @@ HTTP clients use `GET /v2/task-groups/:id/runs` with optional query parameters
 matches in any letter case, and the answer echoes the spelling of the request.
 Logical result JSON
 is capped at 131072 UTF-8 bytes, so a page can contain fewer than the requested
-number of members. The cursor binds group, filter, store and served view;
+number of members. The cursor binds group, filter, store and served view
+(`viewToken` names that view; clients pass cursors back and need not read it);
 `store_mismatch` and `stale_cursor` refuse incompatible recovery. A cursor
 issued while group matching was case-sensitive is stale after the upgrade; read
 the first page again. A changed
@@ -1089,8 +1095,8 @@ idempotency binding is retained, replay KA or KB with its **identical** saved
 body; changing or removing its group conflicts. Lost keys cannot be reconstructed
 from a group page and never justify a replacement launch. Exact Retry and a
 decision rerun (`rerun_with_feedback`) retain the accepted group; the rerun's
-answer carries `newJobId` and the group receipt. A tagged launch or rerun on a
-backend without a durable store identity is refused before acceptance
+answer carries `newJobId` and the group receipt. A tagged launch, Exact Retry or
+rerun on a backend without a durable store identity is refused before acceptance
 (`store_identity_unavailable`, retryable). A deliberately new continuation may explicitly supply `taskGroupId`, but
 omission does not inherit it. Thread turns, Delegate tools and ACP session
 settings do not take group input. Groups confer no rights or budget inheritance,
@@ -1124,8 +1130,10 @@ bodies with `claudexor_run_interactions` and output with `claudexor_run_result`.
 read under way at the deadline finishes and its complete facts are the answer,
 so a positive `waitMs` shorter than one read returns that read. An answer after
 the deadline rests on a fresh read of every target. Ordinary progress does not
-wake a call. A daemon that stops during a wait answers `503 daemon_stopping`
-(retryable); reconnect and repeat the wait. Healthy attention takes precedence
+wake a call, and neither do pruning, project archive or generation changes: a
+target they hide shows `not_found` in the read at the deadline. A daemon that
+stops during a wait answers `503 daemon_stopping` (retryable); reconnect and
+repeat the wait. Healthy attention takes precedence
 over per-target problems, which remain visible. Results are capped at 128 KiB
 of logical JSON and requests at 1 MiB; MCP text mirrors the structured result.
 CLI `--json-stream` emits one compact line, including on error. Observation flags
@@ -1141,14 +1149,15 @@ is `null`: echo that `null` as the target's `seen` to acknowledge the problem,
 and the next call waits for the other targets instead of returning at once. The
 acknowledged target wakes a call again once it is observed with a pending
 question or a terminal lifecycle. Clients that predate this contract refuse
-`seen: null` locally; with them, an unchanged problematic target makes every
-call return immediately.
+`seen: null` locally, and an older daemon refuses a request that carries it;
+there, omit `seen` for problem rows, and an unchanged problematic target makes
+every call return immediately.
 
 | Per-target problem | Controller action |
 | --- | --- |
 | `not_found` | Check the serving store identity, saved receipts and retained group view. Remove a target from the active watch only when reconciled as obsolete; retain unresolved receipt history. Absence does not authorize resubmission. |
 | `snapshot_unavailable` | Keep the target and retry the read with bounded backoff. A temporary read failure supplies no lifecycle fact. |
-| `not_observed` | Keep the target: this pass did not reach it, for example after cancellation. Read again when observation is wanted. |
+| `not_observed` | Keep the target: no completed read covered it yet. Read again when observation is wanted. |
 
 For example, if `[A, B, old]` returns healthy A/B summaries and `not_found` for
 `old`, continue watching A/B with their own `seen` tokens while reconciling `old`.

@@ -2681,7 +2681,9 @@ instead of interrupting a read. Between the first and the last pass it re-reads
 only the handles named by the engine store's post-commit notices
 (`ObservationNotices`): command and interaction commits name their job
 and run ids after COMMIT, never for a rollback. A host without that feed is
-polled. A stopping daemon aborts the read and answers `503 daemon_stopping`.
+polled. Pruning, archive and generation changes publish no notice; the
+deadline's full pass reports a target they hide. A stopping daemon aborts the
+read and answers `503 daemon_stopping`.
 Observation tokens are SHA-256 digests of the observed facts; a digest the
 shared secret scan would flag is re-derived from the same facts with an attempt
 counter, so echoed tokens pass MCP input checks and other tokens keep their
@@ -3829,21 +3831,18 @@ kept only for cold import and an independent frozen copy kept for tests.
   an older build of the same release version, which the semantic floor cannot
   tell apart — refuses the upgraded file with `store_schema_unsupported` before
   any write.
-- Schema version 3 adds two expression indexes over accepted command-summary
+- Schema version 3 added two expression indexes over accepted command-summary
   `params.taskGroupId`, ordered for group pages and group/state pages with the
-  live product, valid-JSON and guarded non-null group predicates. Untagged rows,
-  JSON null groups and non-JSON BLOB summaries remain writable and occupy neither
-  index. Building the indexes still scans existing rows, and writes still evaluate
-  their predicates. Membership is committed in the original
-  acceptance transaction, before ACK/dispatch; there is no group table, backfill
-  or retention pin. Fresh DDL and the atomic 2→3 migration have the same indexes;
-  version 1 follows 1→2→3, and reopening the current version is write-free.
-  A version-2 reader refuses the upgraded file before writing. Downgrading an
+  live product, valid-JSON and guarded non-null group predicates; untagged rows,
+  JSON null groups and non-JSON BLOB summaries stayed writable and occupied
+  neither index. The atomic 2→3 step still builds them on the way to the current
+  version, and version 5 replaces them with the membership column. Membership is
+  committed in the original acceptance transaction, before ACK/dispatch; there is
+  no group table or retention pin. Reopening the current version is write-free.
+  An older reader refuses an upgraded file before writing. Downgrading an
   upgraded store requires restoring a compatible complete backup made with all
   writers stopped; swapping only the executable is insufficient. Source and
   isolated-fixture qualification do not migrate an installed store.
-  Version 5 replaces both indexes, including the broader ones of earlier
-  unpublished schema-3 builds.
 - Schema version 4 adds the command-adjacent `deferred_message` table and its
   active-slot, predecessor, successor and blob-reference indexes through an
   atomic 3→4 migration. Older readers refuse the upgraded file. A waiting or

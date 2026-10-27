@@ -160,10 +160,8 @@ export function prepareCommandRow(
       response_expires_at: text(response.expiresAt),
       request_resource_id: kind === "model" ? text(object(params.request).resourceId) : null,
       response_resource_id: text(object(response.ref).resourceId),
-      // Canonical membership is fixed at acceptance, like the params digest.
-      task_group_id:
-        input.previous?.task_group_id ??
-        (kind === "product" ? (text(params.taskGroupId)?.toLowerCase() ?? null) : null),
+      // Canonical membership; updates never write it, like the params digest.
+      task_group_id: kind === "product" ? (text(params.taskGroupId)?.toLowerCase() ?? null) : null,
     },
   };
 }

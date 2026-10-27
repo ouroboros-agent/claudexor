@@ -1,5 +1,5 @@
-/** Committed addresses (job and run ids) of rows a run observation reads;
- * no argument means anything may have changed (the served view moved). */
+/** Committed addresses (job and run ids) of rows a run observation reads. The
+ * engine always names them; pruning and generation changes publish nothing. */
 export type ObservationListener = (changed?: ReadonlySet<string>) => void;
 
 /**

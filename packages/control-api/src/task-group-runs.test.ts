@@ -316,17 +316,21 @@ describe("readTaskGroupRuns page building", () => {
   }
 
   it("serves the store's canonical rows for any spelling of the group and echoes the caller's", async () => {
-    const h = host([record("job-a"), record("job-b")], true);
-    const upper = GROUP.toUpperCase();
+    const lettered = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+    const upper = lettered.toUpperCase();
+    const h = host(
+      [record("job-a"), record("job-b")].map((row) => ({ ...row, taskGroupId: lettered })),
+      true,
+    );
     const first = await readTaskGroupRuns({ taskGroupId: upper, limit: 1 }, h);
     expect(first).toMatchObject({ taskGroupId: upper, hasMore: true });
     expect(first.members.map((member) => member.jobId)).toEqual(["job-a"]);
     // A cursor from one spelling continues the page of another.
     const next = await readTaskGroupRuns(
-      { taskGroupId: GROUP, limit: 1, cursor: first.nextCursor! },
+      { taskGroupId: lettered, limit: 1, cursor: first.nextCursor! },
       h,
     );
-    expect(next.taskGroupId).toBe(GROUP);
+    expect(next.taskGroupId).toBe(lettered);
     expect(h.page.mock.calls[1]![0].cursor).toMatchObject({ taskGroupId: upper });
   });
 
@@ -336,6 +340,20 @@ describe("readTaskGroupRuns page building", () => {
       false,
     );
     await expect(readTaskGroupRuns({ taskGroupId: GROUP, limit: 5 }, h)).rejects.toMatchObject({
+      code: "invalid_service_response",
+      status: 500,
+    });
+  });
+
+  it("answers a typed 500 when a first member cannot fit the page or a cursor cannot be encoded", async () => {
+    const huge = host([record("x".repeat(TASK_GROUP_RUNS_RESULT_BYTES))], false);
+    await expect(readTaskGroupRuns({ taskGroupId: GROUP, limit: 5 }, huge)).rejects.toMatchObject({
+      code: "task_group_member_too_large",
+      status: 500,
+    });
+    // The page fits, but the cursor naming its last member would exceed 2048 characters.
+    const long = host([record("y".repeat(TASK_GROUP_CURSOR_CHARS)), record("job-next")], true);
+    await expect(readTaskGroupRuns({ taskGroupId: GROUP, limit: 1 }, long)).rejects.toMatchObject({
       code: "invalid_service_response",
       status: 500,
     });

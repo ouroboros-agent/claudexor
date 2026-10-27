@@ -225,6 +225,28 @@ describe("tagged launch HTTP receipts", () => {
     expect(f.commands.get("job-5")?.params).toHaveProperty("taskGroupId", OTHER_GROUP);
   });
 
+  it("refuses an Exact Retry of a tagged run before acceptance while the store identity is unavailable", async () => {
+    const f = await groupedLaunchFixture("bound");
+    expect((await f.post({ ...f.request, taskGroupId: GROUP }, "source")).status).toBe(200);
+    f.commands.update("job-1", { state: "succeeded" });
+    const store = f.sql.store as { storeId: string | undefined };
+    const identity = store.storeId;
+    store.storeId = undefined;
+    const refused = await f.post({}, "retry-during-outage", "/run-job-1/retry");
+    expect(refused.status).toBe(503);
+    expect(await refused.json()).toMatchObject({
+      code: "store_identity_unavailable",
+      retryable: true,
+    });
+    expect(f.commands.get("job-2")).toBeUndefined();
+    expect(f.dispatches()).toBe(1);
+    // Nothing was accepted, so the same key retries once the identity returns.
+    store.storeId = identity;
+    const retried = await f.post({}, "retry-during-outage", "/run-job-1/retry");
+    expect(retried.status).toBe(200);
+    expect(await retried.json()).toMatchObject({ taskGroupId: GROUP, storeId: identity });
+  });
+
   it.each(["queued", "bound", "failed"] as const)(
     "keeps legacy untagged %s receipt metadata absent",
     async (disposition) => {

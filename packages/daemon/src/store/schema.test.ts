@@ -515,12 +515,13 @@ PRAGMA user_version=3;`);
     const insert = db.prepare(
       "INSERT INTO command(id,pid,operation,state,created_at,summary,params_sha,kind,live) VALUES(?,1,'run.create','succeeded','2026-10-02',?,'params',?,?)",
     );
-    const mixed = `${GROUP.slice(0, 8).toUpperCase()}${GROUP.slice(8)}`;
+    // Letters make the spellings differ; the fixture's GROUP is all digits.
+    const lettered = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
     for (const [id, kind, live, group] of [
-      ["upper-live", "product", 1, GROUP.toUpperCase()],
-      ["upper-archived", "product", 0, GROUP.toUpperCase()],
-      ["mixed-live", "product", 1, mixed],
-      ["tagged-model", "model", 1, GROUP],
+      ["upper-live", "product", 1, lettered.toUpperCase()],
+      ["upper-archived", "product", 0, lettered.toUpperCase()],
+      ["mixed-live", "product", 1, "AaAaAaAa-BbBb-4CcC-8dDd-EeEeEeEeEeEe"],
+      ["tagged-model", "model", 1, lettered],
     ] as const)
       insert.run(id, Buffer.from(JSON.stringify({ params: { taskGroupId: group } })), kind, live);
     insert.run("raw-bytes", Buffer.from([0xff, 0x00]), "product", 1);
@@ -533,14 +534,14 @@ PRAGMA user_version=3;`);
     });
     expect(membership(db)).toEqual([
       { id: "archived", taskGroupId: null },
-      { id: "mixed-live", taskGroupId: GROUP },
+      { id: "mixed-live", taskGroupId: lettered },
       { id: "model", taskGroupId: null },
       { id: "raw-bytes", taskGroupId: null },
       { id: "tagged", taskGroupId: GROUP },
       { id: "tagged-model", taskGroupId: null },
       { id: "untagged", taskGroupId: null },
-      { id: "upper-archived", taskGroupId: GROUP },
-      { id: "upper-live", taskGroupId: GROUP },
+      { id: "upper-archived", taskGroupId: lettered },
+      { id: "upper-live", taskGroupId: lettered },
     ]);
     // Archived members return when their generation is restored; live ones are listed now.
     expect(
@@ -548,14 +549,14 @@ PRAGMA user_version=3;`);
         .prepare(
           "SELECT id FROM command WHERE live=1 AND kind='product' AND task_group_id=? ORDER BY created_at DESC,id DESC",
         )
-        .all(GROUP),
-    ).toEqual([{ id: "upper-live" }, { id: "mixed-live" }, { id: "tagged" }]);
+        .all(lettered),
+    ).toEqual([{ id: "upper-live" }, { id: "mixed-live" }]);
     expect(db.prepare("PRAGMA integrity_check").get()).toEqual({ integrity_check: "ok" });
   });
 
-  it("replaces an earlier unpublished v3 store's broader group indexes with the canonical ones", async () => {
+  it("migrates a version-3 store whose group indexes have broader predicates", async () => {
     const db = await populatedOldStore(2);
-    // Exact original PR498 predicates at 5b9d6d75; same version, broader membership.
+    // The predicates of PR498 at 5b9d6d75: same version, broader membership.
     db.exec(`
 CREATE INDEX command_task_group ON command(json_extract(CAST(summary AS TEXT),'$.params.taskGroupId'),created_at DESC,id DESC)
   WHERE live=1 AND kind='product' AND json_valid(CAST(summary AS TEXT));

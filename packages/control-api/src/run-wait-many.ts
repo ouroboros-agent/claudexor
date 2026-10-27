@@ -1,12 +1,12 @@
 import {
-  RunWaitManyInput,
   RunWaitManyResult,
   isTerminalLifecycle,
+  type RunWaitManyInput,
   type RunWaitManySummary,
 } from "@claudexor/schema";
 
-/** Committed changes of observation inputs (job and run ids); no argument means
- * anything may have changed. */
+/** Committed changes of observation inputs (job and run ids). A host that
+ * cannot name them calls the listener without an argument: re-read everything. */
 export type RunObservationListener = (changed?: ReadonlySet<string>) => void;
 
 export interface RunWaitManyHost {
@@ -16,17 +16,9 @@ export interface RunWaitManyHost {
   pollMs?: number;
 }
 
-/** One observation, never a worker operation. */
-export async function waitForRunAttention(
-  input: unknown,
-  host: RunWaitManyHost,
-  signal?: AbortSignal,
-): Promise<RunWaitManyResult> {
-  return observeRunAttention(RunWaitManyInput.parse(input), host, signal);
-}
-
 /**
- * Every call publishes at least one completed pass with its attention indexes.
+ * One observation, never a worker operation. Every call publishes at least one
+ * completed pass with its attention indexes.
  * `waitMs` bounds the wait between passes, never a pass: the deadline wakes a
  * last full pass instead of interrupting one. Only `signal` aborts a read.
  * Between the first and the last pass, a notice re-reads only the handles it
@@ -90,19 +82,24 @@ export async function observeRunAttention(
       const handles = full ? [...positions.keys()] : [...dirty];
       full = false;
       dirty.clear();
-      const rows = await host.snapshot(handles, signal);
+      let rows: RunWaitManySummary[];
+      try {
+        rows = await host.snapshot(handles, signal);
+      } catch (error) {
+        // A read that rejects because the caller aborted is the abort itself.
+        if (signal?.aborted) return result("aborted");
+        throw error;
+      }
+      // An aborted pass is incomplete, so it publishes nothing.
+      if (signal?.aborted) return result("aborted");
       if (rows.length !== handles.length)
         throw Object.assign(new Error("run observation returned an incomplete summary batch"), {
           code: "invalid_service_response",
           status: 500,
         });
-      const aborted = signal?.aborted === true;
       rows.forEach((row, index) => {
-        // An aborted read marks what it did not reach; keep the last fact there.
-        if (aborted && row.problem === "not_observed") return;
         for (const position of positions.get(handles[index]!)!) summaries[position] = row;
       });
-      if (aborted) return result("aborted");
       // A completed pass and its attention are published together.
       const attention: number[] = [];
       let problems = false;

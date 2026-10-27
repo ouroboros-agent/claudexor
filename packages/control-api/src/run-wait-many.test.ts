@@ -10,7 +10,7 @@ import {
 import { digestPendingIdentities } from "../../daemon/src/interactions.js";
 import { readRunObservations } from "../../daemon/src/run-observation.js";
 import { StoreBusyError } from "../../daemon/src/store/errors.js";
-import { waitForRunAttention, type RunObservationListener } from "./run-wait-many.js";
+import { observeRunAttention, type RunObservationListener } from "./run-wait-many.js";
 
 const controllers: AbortController[] = [];
 const releases: Array<() => void> = [];
@@ -116,7 +116,7 @@ function fixture(pollMs?: number) {
     waitMs?: number,
     signal = controller().signal,
   ) {
-    const work = waitForRunAttention(
+    const work = observeRunAttention(
       RunWaitManyInput.parse({ targets, ...(waitMs === undefined ? {} : { waitMs }) }),
       host,
       signal,
@@ -146,7 +146,7 @@ function clean(f: ReturnType<typeof fixture>, signal?: AbortSignal) {
   if (signal) expect(getEventListeners(signal, "abort")).toHaveLength(0);
 }
 
-describe("waitForRunAttention", () => {
+describe("observeRunAttention", () => {
   it.each(["succeeded", "failed", "cancelled", "interrupted"] as const)(
     "wakes for unseen %s, while echoing its token acknowledges only that summary",
     async (state) => {
@@ -604,7 +604,30 @@ describe("waitForRunAttention", () => {
     clean(f);
   });
 
-  it("gives abort precedence over attention while retaining completed rows and unread unknowns", async () => {
+  it("answers after the deadline only from a full pass, even when the deadline fires during a dirty pass", async () => {
+    const f = fixture();
+    f.seed("a");
+    f.seed("b");
+    const reads = () => f.snapshot.mock.calls.map(([ids]) => ids);
+    const work = f.begin([{ runId: "a" }, { runId: "b" }], 100);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(reads()).toEqual([["a", "b"]]);
+    const release = deferred();
+    f.snapshot.mockImplementationOnce(async (ids, signal) => {
+      await release.promise;
+      return f.read(ids, signal);
+    });
+    f.notice("a");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(reads()).toEqual([["a", "b"], ["a"]]);
+    await vi.advanceTimersByTimeAsync(200); // The deadline passes while the dirty pass reads.
+    release.resolve();
+    expect(await work).toMatchObject({ wakeReason: "timeout", attention: [] });
+    expect(reads()).toEqual([["a", "b"], ["a"], ["a", "b"]]);
+    clean(f);
+  });
+
+  it("gives abort precedence over attention and publishes nothing from the aborted pass", async () => {
     const f = fixture();
     f.seed("a", "succeeded");
     const [done] = await f.read(["a"]);
@@ -613,11 +636,32 @@ describe("waitForRunAttention", () => {
       abort.abort();
       return [done!, unknown("not_observed")];
     });
-    expect(await f.begin([{ runId: "a" }, { runId: "b" }], 1000, abort.signal)).toMatchObject({
+    expect(await f.begin([{ runId: "a" }, { runId: "b" }], 1000, abort.signal)).toEqual({
       wakeReason: "aborted",
-      summaries: [done, unknown("not_observed")],
+      attention: [],
+      summaries: [unknown("not_observed"), unknown("not_observed")],
     });
     clean(f, abort.signal);
+  });
+
+  it("treats a read that rejects because the caller aborted as the abort, and keeps other read failures", async () => {
+    const f = fixture();
+    const abort = controller();
+    f.snapshot.mockImplementationOnce(
+      (_ids, signal) =>
+        new Promise<never>((_resolve, reject) =>
+          signal!.addEventListener("abort", () => reject(signal!.reason), { once: true }),
+        ),
+    );
+    const work = f.begin([{ runId: "a" }], 1000, abort.signal);
+    await vi.advanceTimersByTimeAsync(0);
+    abort.abort();
+    expect(await work).toMatchObject({ wakeReason: "aborted", attention: [] });
+    clean(f, abort.signal);
+    const failure = new Error("fixture read failed");
+    f.snapshot.mockRejectedValueOnce(failure);
+    await expect(f.begin([{ runId: "a" }], 1000)).rejects.toBe(failure);
+    clean(f);
   });
 
   it("an already aborted wait does no discovery or subscription", async () => {

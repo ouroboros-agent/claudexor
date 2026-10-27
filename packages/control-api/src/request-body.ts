@@ -61,15 +61,22 @@ export class RefusedBodies {
     const socket = req.socket;
     if (this.sockets.has(socket)) return;
     this.sockets.add(socket);
-    const settle = () => this.sockets.delete(socket);
+    const settle = () => {
+      this.sockets.delete(socket);
+      req.off("end", settle);
+      socket.off("close", settle);
+    };
     req.once("end", settle);
     socket.once("close", settle);
-    if (this.closing) res.once("finish", () => socket.destroy());
+    if (this.closing) res.once("finish", () => socket.end());
   }
 
-  /** At stop: a client that keeps sending would hold the listener open. */
+  /** Called first at stop: a client that keeps sending would hold the listener
+   * open, so each connection is half-closed after its answer, now and for every
+   * later refusal; the rest of the body is still read and discarded until the
+   * client closes its side. */
   close(): void {
     this.closing = true;
-    for (const socket of this.sockets) socket.destroy();
+    for (const socket of this.sockets) socket.end();
   }
 }

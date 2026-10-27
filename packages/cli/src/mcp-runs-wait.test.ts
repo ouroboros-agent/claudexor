@@ -295,6 +295,8 @@ describe("runsWaitQuery: one bounded read of existing durable handles", () => {
       runsWaitQuery({ targets: [{ runId: "r" }, { runId: "r" }] }),
     ).rejects.toMatchObject({
       code: "invalid_service_response",
+      // A malformed answer stays malformed on retry.
+      retryable: false,
     });
     expect(fetch).toHaveBeenCalledOnce();
     expect(daemon.connectDaemonIfRunning).toHaveBeenCalledOnce();

@@ -169,8 +169,8 @@ export const ENGINE_TABLES: readonly string[] = Object.freeze(
 /**
  * Migrations from an older `user_version` to the current one, keyed by the
  * version they start from; a stored version with no entry here (older without
- * a path, or newer than this engine) is refused. Each step only adds: an
- * older engine refuses the upgraded file as newer, so the upgrade is one-way.
+ * a path, or newer than this engine) is refused. An older engine refuses the
+ * upgraded file as newer, so every step is one-way.
  */
 const SCHEMA_MIGRATIONS: ReadonlyMap<number, (db: DatabaseSync) => void> = new Map([
   [1, (db: DatabaseSync) => db.exec(ACCOUNT_LAST_SERVICE_SQL)],

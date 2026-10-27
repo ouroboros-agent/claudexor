@@ -161,8 +161,9 @@ A `problems` response keeps healthy summaries: retain their handles/tokens.
 Reconcile `not_found` against store/receipts/group and remove only obsolete watch
 targets. Retry `snapshot_unavailable` with bounded backoff; keep `not_observed` for
 a later read. Echo a problem row's null token as its `seen` to acknowledge that
-problem and keep waiting for the healthy targets. Never busy-loop unchanged
-problems or infer permission to relaunch.
+problem and keep waiting for the healthy targets; an older daemon refuses that
+null, so omit `seen` there. Never busy-loop unchanged problems or infer
+permission to relaunch.
 Use `claudexor_run_wait` to follow events and resume with `nextSeq` as
 `afterSeq`. It returns events already written first, even while a question is
 pending, then waits for a batch or, with `wake: "event"`, the first new event.

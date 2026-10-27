@@ -96,33 +96,36 @@ async function fixture() {
 describe("SQL taskGroupPage retained selection", () => {
   it("matches membership in any letter case, answers the canonical id and restarts 4.8.0 cursors", async () => {
     const f = await fixture();
-    f.seed("job-lower");
-    f.seed("job-upper", {
-      params: { mode: "ask", prompt: "upper", taskGroupId: GROUP.toUpperCase() },
-    });
+    const lettered = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+    const upper = lettered.toUpperCase();
+    f.seed("job-lower", { params: { mode: "ask", prompt: "lower", taskGroupId: lettered } });
+    f.seed("job-upper", { params: { mode: "ask", prompt: "upper", taskGroupId: upper } });
     f.seed("job-untagged", { params: { mode: "ask", prompt: "ungrouped" } });
-    for (const spelling of [GROUP, GROUP.toUpperCase()]) {
+    for (const spelling of [lettered, upper, "AaAaAaAa-BbBb-4CcC-8dDd-EeEeEeEeEeEe"]) {
       const result = f.page({ taskGroupId: spelling, limit: 5 });
       expect(result.records.map((row) => [row.jobId, row.taskGroupId])).toEqual([
-        ["job-upper", GROUP],
-        ["job-lower", GROUP],
+        ["job-upper", lettered],
+        ["job-lower", lettered],
       ]);
     }
-    const first = f.page({ limit: 1 });
+    const first = f.page({ taskGroupId: lettered, limit: 1 });
     // The cursor may carry another spelling of the same group.
     const next = f.page({
-      taskGroupId: GROUP.toUpperCase(),
+      taskGroupId: upper,
       limit: 1,
-      cursor: { ...f.cursor(first), taskGroupId: GROUP.toUpperCase() },
+      cursor: { ...f.cursor(first), taskGroupId: upper },
     });
     expect(next.records.map((row) => row.jobId)).toEqual(["job-lower"]);
     // A 4.8.0 cursor hashed the same view under the case-sensitive domain.
     const caseSensitive = createHash("sha256")
       .update(JSON.stringify(["claudexor.task-group-view", 1, [["global", "a".repeat(32)]]]))
       .digest("base64url");
-    expect(() => f.page({ cursor: { ...f.cursor(first), viewToken: caseSensitive } })).toThrow(
-      expect.objectContaining({ code: "stale_cursor" }),
-    );
+    expect(() =>
+      f.page({
+        taskGroupId: lettered,
+        cursor: { ...f.cursor(first), taskGroupId: lettered, viewToken: caseSensitive },
+      }),
+    ).toThrow(expect.objectContaining({ code: "stale_cursor" }));
   });
 
   it.each([1, 10])(

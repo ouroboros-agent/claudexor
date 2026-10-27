@@ -14,6 +14,7 @@ import { readRunObservations } from "../../daemon/src/run-observation.js";
 import { applyCommandInTx, prepareCommandRow } from "../../daemon/src/store/command-rows.js";
 import { SqlCommandQueries } from "../../daemon/src/store/command-queries.js";
 import { setGlobalGenerationInTx } from "../../daemon/src/store/generations.js";
+import { runMutation } from "../../daemon/src/store/mutation.js";
 import { createPartition } from "../../daemon/src/store/partitions.js";
 import { resourceFixture } from "../../daemon/src/store/test-support/resource-fixture.js";
 import { parseArgs } from "./args.js";
@@ -356,6 +357,7 @@ async function sqlFixture() {
       ),
   );
   const graph = {
+    store: f.store,
     commands: { queries },
     interactions: { snapshotPendingIdentities },
     terminalFiles: {
@@ -387,6 +389,7 @@ async function sqlFixture() {
     TaskGroupRunsInput.parse({ taskGroupId: GROUP, ...extra });
   return {
     ...f,
+    generation,
     queries,
     source,
     seed,
@@ -401,6 +404,28 @@ async function sqlFixture() {
 }
 
 describe("daemon-owned group projection over real SQLite and shared observations", () => {
+  it("feeds the daemon's waits from the engine store's committed notices", async () => {
+    const f = await sqlFixture();
+    const notices: string[][] = [];
+    const unsubscribe = f.source.runObservationChanges((changed) =>
+      notices.push([...(changed ?? [])].sort()),
+    );
+    const row = prepareCommandRow(
+      {
+        id: "job-fed",
+        state: "running",
+        runId: "run-fed",
+        createdAt: TIME,
+        params: { mode: "ask" },
+      },
+      { pid: f.generation.pid, live: true, operation: "ask", clientId: "fixture" },
+      (bytes) => f.blobs.prepareBody(bytes),
+    );
+    runMutation(f.store, (tx) => applyCommandInTx(tx, row, "accept"));
+    expect(notices).toEqual([["job-fed", "run-fed"]]);
+    unsubscribe();
+  });
+
   it("selects one bounded page and projects canonical job/run handles with the shared snapshot tokens", async () => {
     const f = await sqlFixture();
     f.seed("job-a", "run-question");

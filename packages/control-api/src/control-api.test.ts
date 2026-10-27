@@ -1068,6 +1068,80 @@ describe("DaemonControlApiServer", () => {
     });
   });
 
+  it("delivers the typed 503 to a preconnected client still uploading a large body after stop is marked", async () => {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const { daemon } = fakeDaemon();
+      const server = new DaemonControlApiServer({ ...readyIdentity, token, daemon });
+      const { host, port } = await server.start();
+      const socket = connect({ host, port });
+      await new Promise<void>((resolve, reject) => {
+        socket.once("connect", resolve);
+        socket.once("error", reject);
+      });
+      let text = "";
+      socket.setEncoding("utf8");
+      socket.on("data", (chunk: string) => {
+        text += chunk;
+      });
+      const answered = new Promise<string>((resolve, reject) => {
+        socket.once("end", () => resolve(text));
+        socket.once("error", reject);
+      });
+      socket.on("error", () => {});
+      await new Promise<void>((resolve, reject) =>
+        socket.write(`POST /v2/runs HTTP/1.1\r\nHost: ${host}:${port}\r\n`, (error) =>
+          error ? reject(error) : resolve(),
+        ),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const stopping = server.stop();
+      const size = 32 * 1024 * 1024;
+      socket.write(
+        `Authorization: Bearer ${token}\r\nX-Claudexor-Protocol-Major: 3\r\nContent-Type: application/json\r\nContent-Length: ${size}\r\n\r\n`,
+      );
+      socket.write(Buffer.alloc(size, 0x20));
+      const raw = await answered;
+      expect(raw).toMatch(/^HTTP\/1\.1 503 /);
+      expect(JSON.parse(raw.slice(raw.indexOf("\r\n\r\n") + 4))).toMatchObject({
+        code: "daemon_stopping",
+        retryable: true,
+      });
+      await stopping;
+      socket.destroy();
+    }
+  });
+
+  it("stop closes an event stream that registers while stop drains its handler", async () => {
+    const { daemon, record } = fakeDaemon();
+    // A live run with no events yet keeps its stream open until stop closes it.
+    record.state = "running";
+    record.runDir = reapMk(join(tmpdir(), "claudexor-quiet-run-"));
+    let entered!: () => void;
+    const looking = new Promise<void>((resolve) => (entered = resolve));
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const delayed: DaemonFacadeClient = {
+      ...daemon,
+      async list(query) {
+        entered();
+        await gate;
+        return daemon.list(query);
+      },
+    };
+    const server = new DaemonControlApiServer({ ...readyIdentity, token, daemon: delayed });
+    const { host, port } = await server.start();
+    const stream = globalThis.fetch(`http://${host}:${port}/v2/runs/${record.runId}/events`, {
+      headers: { authorization: `Bearer ${token}`, "X-Claudexor-Protocol-Major": "3" },
+    });
+    await looking;
+    const stopped = server.stop();
+    release();
+    const response = await stream;
+    expect(response.status).toBe(200);
+    await response.text(); // Ends only when stop closes the stream.
+    await stopped;
+  });
+
   it("refuses a mutation delivered on a preconnected socket after stop is marked", async () => {
     const { daemon } = fakeDaemon();
     let enqueueCalls = 0;
@@ -10168,6 +10242,7 @@ describe("DaemonControlApiServer", () => {
       "winner: a01\nfacts:\n  lifecycle: succeeded\n  review: blocked\n  checks: not_configured\n  noChanges: false\n  reason: review_blocked\nfinal_verify:\n  attempted: true\n  applied_cleanly: true\n  gates_passed: true\n",
     );
     let enqueued: Record<string, unknown> | undefined;
+    let refusedBeforeRun = false;
     const tagged: DaemonFacadeClient = {
       ...daemon,
       async enqueue(params: unknown) {
@@ -10176,17 +10251,31 @@ describe("DaemonControlApiServer", () => {
       },
       async status(id: string) {
         if (id === record.id) return record;
-        return {
-          id: "job-rerun",
-          state: "running",
-          runId: "run-rerun",
-          runDir: record.runDir,
-          params: enqueued,
-        };
+        return refusedBeforeRun
+          ? {
+              id: "job-rerun",
+              state: "failed",
+              error: "Git is unavailable on this execution location",
+              errorCode: "git_unavailable",
+              errorStatus: 409,
+              params: enqueued,
+            }
+          : {
+              id: "job-rerun",
+              state: "running",
+              runId: "run-rerun",
+              runDir: record.runDir,
+              params: enqueued,
+            };
       },
     };
-    for (const storeId of [undefined, () => store]) {
+    for (const [storeId, refused] of [
+      [undefined, false],
+      [() => store, false],
+      [() => store, true],
+    ] as const) {
       enqueued = undefined;
+      refusedBeforeRun = refused;
       const server = new DaemonControlApiServer({
         ...readyIdentity,
         token,
@@ -10200,7 +10289,7 @@ describe("DaemonControlApiServer", () => {
           method: "POST",
           headers: {
             authorization: `Bearer ${token}`,
-            "Idempotency-Key": `decision-rerun-group-${storeId ? "store" : "none"}`,
+            "Idempotency-Key": `decision-rerun-group-${storeId ? "store" : "none"}-${refused}`,
           },
           body: JSON.stringify({ action: "rerun_with_feedback", feedback: "Keep the group." }),
         });
@@ -10210,6 +10299,15 @@ describe("DaemonControlApiServer", () => {
           expect(res.status).toBe(503);
           expect(body).toMatchObject({ code: "store_identity_unavailable", retryable: true });
           expect(enqueued).toBeUndefined();
+          continue;
+        }
+        if (refused) {
+          // A refusal before the run binds still names the accepted job and its group.
+          expect(res.status).toBe(409);
+          expect(body).toMatchObject({
+            code: "git_unavailable",
+            context: { jobId: "job-rerun", taskGroupId: group, storeId: store },
+          });
           continue;
         }
         expect(res.status).toBe(200);
