@@ -2657,8 +2657,10 @@ No memory, loop, timing or store measurements impose automatic admission thresho
 
 Retained task-group reads are composed by `sqlControlReadSources` and
 `readTaskGroupRuns`. The `taskGroupPage` method of `SqlCommandQueries` selects group membership
-before projection, using the summary expression indexes and descending
-`(created_at, id)` keysets. It selects at most `limit + 1` scalar rows from the
+before projection, through the canonical `command.task_group_id` column, its two
+partial indexes and descending `(created_at, id)` keysets. Membership ignores the
+letter case of the group UUID; answers echo the caller's spelling. It selects at
+most `limit + 1` scalar rows from the
 existing served-generation authority, without prompt, result, question-body or
 artifact hydration, a full-history traversal, or a count. Selected jobs reuse
 the body-free `readRunObservations` snapshots used by wait-many. A member's run
@@ -2668,8 +2670,22 @@ The served view hashes the set of partition name/epoch identities. A cursor
 binds that view, group, lifecycle filter, durable store and last returned key.
 An actual visibility change invalidates it; relinking the same project identity
 does not. Byte pagination advances only past returned members and refuses an
-unreturnable first member. CLI/MCP/HTTP are thin one-page projections of this
-owner. The bounded wire contract and reconnect example live in
+unreturnable first member; the page adds each member's JSON once and reserves
+the largest cursor. CLI/MCP/HTTP are thin one-page projections of this
+owner.
+
+Wait-many (`observeRunAttention`) publishes one completed pass at a time: a
+pass's facts and its attention indexes are computed together, `waitMs` bounds
+only the wait between passes, and the deadline asks for one last full pass
+instead of interrupting a read. Between the first and the last pass it re-reads
+only the handles named by the engine store's post-commit notices
+(`ObservationNotices`): command and interaction commits name their job
+and run ids after COMMIT, never for a rollback. A host without that feed is
+polled. A stopping daemon aborts the read and answers `503 daemon_stopping`.
+Observation tokens are SHA-256 digests of the observed facts; a digest the
+shared secret scan would flag is re-derived from the same facts with an attempt
+counter, so echoed tokens pass MCP input checks and other tokens keep their
+bytes. The bounded wire contract and reconnect example live in
 [Integrations](INTEGRATIONS.md#observing-and-directing-an-existing-run).
 The `current_served_generations`/`retained_only` qualifiers describe current
 visibility, not a permanent roster. Reads add no execution or approval authority.
@@ -3826,11 +3842,8 @@ kept only for cold import and an independent frozen copy kept for tests.
   upgraded store requires restoring a compatible complete backup made with all
   writers stopped; swapping only the executable is insufficient. Source and
   isolated-fixture qualification do not migrate an installed store.
-  Earlier unpublished schema-3 stores keep their broader indexes on reopen and
-  remain query-compatible with this reader; they retain the original storage cost.
-  No automatic rebuild is added. Earlier experimental binaries whose forced-index
-  queries lack the tagged predicate cannot query the narrower indexes. Do not swap
-  experimental binaries against the same store; the complete-backup rule applies.
+  Version 5 replaces both indexes, including the broader ones of earlier
+  unpublished schema-3 builds.
 - Schema version 4 adds the command-adjacent `deferred_message` table and its
   active-slot, predecessor, successor and blob-reference indexes through an
   atomic 3→4 migration. Older readers refuse the upgraded file. A waiting or
@@ -3855,6 +3868,18 @@ kept only for cold import and an independent frozen copy kept for tests.
   a waiting draft whatever the predecessor's lifecycle (`POST /v2/runs/:id/control`), and
   bounded reads add `controls`, the captured values by origin with
   `capturedAt`.
+- Schema version 5 moves task-group membership into the typed
+  `command.task_group_id` column, which holds the lower-case group UUID, so a
+  group reads the same whatever spelling its launches used. Accepted summaries
+  keep the caller's spelling and receipts echo it. The atomic 4→5 step adds the
+  column, backfills live tagged rows through the version-3 index and archived
+  ones (restoring a generation makes them live again) by a guarded scan, drops
+  both expression indexes and indexes the column for group and group/state
+  pages. The command writer fills the column in the acceptance transaction;
+  updates never change it. Fresh DDL and the migrated file have identical
+  `sqlite_master`. Older readers refuse the upgraded file, and a cursor issued
+  before the upgrade restarts with `stale_cursor`, because its view token used
+  the case-sensitive domain.
 - The flusher worker owns the power-loss barrier. Every 200 ms it fsyncs each
   directory registered since the previous pass, reads `data_version`, runs a
   PASSIVE checkpoint for space, and — whenever anything was committed since

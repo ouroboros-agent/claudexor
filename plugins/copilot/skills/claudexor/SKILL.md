@@ -142,7 +142,8 @@ Pages declare `current_served_generations` and `retained_only`: an empty page
 after pruning or archive is not proof of never-accepted work or a complete
 roster. Missing membership grants no resubmission authority. Group reads never
 launch, retry, resume, answer or cancel; interrupted jobs remain interrupted.
-Same-key replay needs the exact saved group/body; Exact Retry keeps the group.
+Same-key replay needs the exact saved group/body; Exact Retry and a decision
+rerun keep the group. Group UUIDs match in any letter case.
 A new continuation can explicitly supply a group, with no inheritance on
 omission. Thread turns, Delegate tools and ACP session settings do not take
 group input. This API adds no rights, budget inheritance or app UI handoff;
@@ -159,7 +160,9 @@ question bodies separately with `claudexor_run_result` and
 A `problems` response keeps healthy summaries: retain their handles/tokens.
 Reconcile `not_found` against store/receipts/group and remove only obsolete watch
 targets. Retry `snapshot_unavailable` with bounded backoff; keep `not_observed` for
-a later read. Never busy-loop unchanged problems or infer permission to relaunch.
+a later read. Echo a problem row's null token as its `seen` to acknowledge that
+problem and keep waiting for the healthy targets. Never busy-loop unchanged
+problems or infer permission to relaunch.
 Use `claudexor_run_wait` to follow events and resume with `nextSeq` as
 `afterSeq`. It returns events already written first, even while a question is
 pending, then waits for a batch or, with `wake: "event"`, the first new event.

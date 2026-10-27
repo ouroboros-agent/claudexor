@@ -316,8 +316,7 @@ itUnix(
         }),
     );
     await vi.waitFor(() => expect(listeners.size).toBe(4));
-    for (let i = 0; i < 20; i++)
-      for (const listener of listeners) listener(new Set(["unrelated"]));
+    for (let i = 0; i < 20; i++) for (const listener of listeners) listener(new Set(["unrelated"]));
     expect(settled).toBe(0);
     mkdirSync(repo); // The fixture producer explicitly releases A; recovery did not.
     expect(

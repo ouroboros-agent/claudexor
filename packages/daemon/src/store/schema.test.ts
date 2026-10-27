@@ -605,10 +605,7 @@ PRAGMA user_version=3;`);
         ["null-group", Buffer.from('{"params":{"taskGroupId":null}}')],
       ] as const)
         expect(insert.run(id, bytes).changes).toBe(1);
-      insert.run(
-        "compat-tagged",
-        Buffer.from(JSON.stringify({ params: { taskGroupId: GROUP } })),
-      );
+      insert.run("compat-tagged", Buffer.from(JSON.stringify({ params: { taskGroupId: GROUP } })));
       // A fresh store's command writer fills the column; the v2 file gets it by backfill.
       if (source === "fresh")
         db.prepare("UPDATE command SET task_group_id=? WHERE id='compat-tagged'").run(GROUP);

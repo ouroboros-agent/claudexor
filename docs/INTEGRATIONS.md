@@ -1056,10 +1056,14 @@ claudexor task-group-runs 11111111-1111-4111-8111-111111111111 --expected-store-
 HTTP clients use `GET /v2/task-groups/:id/runs` with optional query parameters
 `expectedStoreId`, `limit`, lifecycle `state`, and `cursor`. Supply the saved
 `expectedStoreId` for recovery. Limit is
-1..200 (default 50); a cursor is at most 2048 characters. Logical result JSON
+1..200 (default 50); a cursor is at most 2048 characters. The group UUID
+matches in any letter case, and the answer echoes the spelling of the request.
+Logical result JSON
 is capped at 131072 UTF-8 bytes, so a page can contain fewer than the requested
 number of members. The cursor binds group, filter, store and served view;
-`store_mismatch` and `stale_cursor` refuse incompatible recovery. A changed
+`store_mismatch` and `stale_cursor` refuse incompatible recovery. A cursor
+issued while group matching was case-sensitive is stale after the upgrade; read
+the first page again. A changed
 served view requires a fresh traversal, not a silent cursor reset. Commands and
 tools are usable only when advertised by the selected supporting engine. An
 older or unavailable backend fails typed; it is not an empty successful group.
@@ -1083,8 +1087,11 @@ running job `interrupted`; discovery does not resume it.
 For an uncertain launch response, if its key and body remain available and the
 idempotency binding is retained, replay KA or KB with its **identical** saved
 body; changing or removing its group conflicts. Lost keys cannot be reconstructed
-from a group page and never justify a replacement launch. Exact Retry retains the
-accepted group. A deliberately new continuation may explicitly supply `taskGroupId`, but
+from a group page and never justify a replacement launch. Exact Retry and a
+decision rerun (`rerun_with_feedback`) retain the accepted group; the rerun's
+answer carries `newJobId` and the group receipt. A tagged launch or rerun on a
+backend without a durable store identity is refused before acceptance
+(`store_identity_unavailable`, retryable). A deliberately new continuation may explicitly supply `taskGroupId`, but
 omission does not inherit it. Thread turns, Delegate tools and ACP session
 settings do not take group input. Groups confer no rights or budget inheritance,
 and there is no app UI handoff contract. See the
@@ -1108,11 +1115,17 @@ question has an unseen token. Echo a row's token as that target's `seen` to
 suppress unchanged attention, allowing another job's question or terminal to
 wake the next call. Replacing a question changes its token even at the same
 pending count. Tokens acknowledge only current observation: they are neither
-event cursors, answers, authorization nor output-readiness claims. Read question
+event cursors, answers, authorization nor output-readiness claims. A token never
+matches the secret scan that guards MCP input; if a token saved from an older
+engine is refused there, omit that `seen` once to receive the current token. Read question
 bodies with `claudexor_run_interactions` and output with `claudexor_run_result`.
 
-`waitMs: 0` reads once. Timeout returns the current snapshot without another
-wait; ordinary progress does not wake a call. Healthy attention takes precedence
+`waitMs: 0` reads once. `waitMs` bounds the wait between reads, not a read: a
+read under way at the deadline finishes and its complete facts are the answer,
+so a positive `waitMs` shorter than one read returns that read. An answer after
+the deadline rests on a fresh read of every target. Ordinary progress does not
+wake a call. A daemon that stops during a wait answers `503 daemon_stopping`
+(retryable); reconnect and repeat the wait. Healthy attention takes precedence
 over per-target problems, which remain visible. Results are capped at 128 KiB
 of logical JSON and requests at 1 MiB; MCP text mirrors the structured result.
 CLI `--json-stream` emits one compact line, including on error. Observation flags
@@ -1123,8 +1136,13 @@ or unsupported daemons fail without auto-start, reconnect or fallback to
 individual waits. This tool is absent from the Delegate belt.
 
 A `problems` response still contains the healthy targets. Keep their handles and
-tokens; reconcile each problematic position separately before repeating a long
-wait. An unchanged problematic target can make every call return immediately.
+tokens; reconcile each problematic position separately. A problem row's `token`
+is `null`: echo that `null` as the target's `seen` to acknowledge the problem,
+and the next call waits for the other targets instead of returning at once. The
+acknowledged target wakes a call again once it is observed with a pending
+question or a terminal lifecycle. Clients that predate this contract refuse
+`seen: null` locally; with them, an unchanged problematic target makes every
+call return immediately.
 
 | Per-target problem | Controller action |
 | --- | --- |

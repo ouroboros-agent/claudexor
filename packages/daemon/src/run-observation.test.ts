@@ -15,6 +15,7 @@ import { StoreBusyError, StoreCorruptError } from "./store/errors.js";
 import { SqlEventLedger } from "./store/event-store.js";
 import { setGlobalGenerationInTx } from "./store/generations.js";
 import { SqlInteractionStore } from "./store/interactions.js";
+import { runMutation } from "./store/mutation.js";
 import { createPartition } from "./store/partitions.js";
 import { resourceFixture } from "./store/test-support/resource-fixture.js";
 
@@ -363,5 +364,67 @@ describe("readRunObservations over real SQLite", () => {
     known(rows[1], "running", true);
     f.registry.dropForRun("run-b");
     await expect(disabled).resolves.toEqual({ kind: "released", reason: "run_terminal" });
+  });
+});
+
+describe("post-commit observation notices", () => {
+  function listen(f: Awaited<ReturnType<typeof fixture>>) {
+    const notices: Array<string[] | undefined> = [];
+    const unsubscribe = f.store.observations.subscribe((changed) =>
+      notices.push(changed && [...changed].sort()),
+    );
+    return { notices, unsubscribe };
+  }
+  function row(f: Awaited<ReturnType<typeof fixture>>, id: string) {
+    return prepareCommandRow(
+      { id, state: "running", runId: `run-${id}`, createdAt: TIME, params: { mode: "ask" } },
+      { pid: f.generation.pid, live: true, operation: "ask", clientId: "fixture" },
+      (bytes) => f.blobs.prepareBody(bytes),
+    );
+  }
+
+  it("names a committed command's job and run after COMMIT, and nothing for a rollback", async () => {
+    const f = await fixture();
+    const { notices, unsubscribe } = listen(f);
+    runMutation(f.store, (tx) => {
+      applyCommandInTx(tx, row(f, "job-a"), "accept");
+      expect(notices).toEqual([]);
+    });
+    expect(notices).toEqual([["job-a", "run-job-a"]]);
+    expect(() =>
+      runMutation(f.store, (tx) => {
+        applyCommandInTx(tx, row(f, "job-b"), "accept");
+        throw new Error("injected rollback");
+      }),
+    ).toThrow();
+    expect(f.queries.observationRecords(["job-b"])).toEqual([]);
+    expect(notices).toHaveLength(1);
+    unsubscribe();
+    runMutation(f.store, (tx) => applyCommandInTx(tx, row(f, "job-c"), "accept"));
+    expect(notices).toHaveLength(1);
+  });
+
+  it("names the run and every job bound to it when its question is asked or answered", async () => {
+    const f = await fixture();
+    f.seed("job-a", { runId: "run-a" });
+    const { notices } = listen(f);
+    f.pending.request(question("run-a", "question-a"));
+    expect(notices).toEqual([["job-a", "run-a"]]);
+    expect(f.pending.resolve("run-a", "question-a", "answered")).toBe("resolved");
+    expect(notices).toEqual([
+      ["job-a", "run-a"],
+      ["job-a", "run-a"],
+    ]);
+  });
+
+  it("keeps a throwing observer from failing the commit or starving other observers", async () => {
+    const f = await fixture();
+    f.store.observations.subscribe(() => {
+      throw new Error("observer defect");
+    });
+    const { notices } = listen(f);
+    runMutation(f.store, (tx) => applyCommandInTx(tx, row(f, "job-a"), "accept"));
+    expect(notices).toEqual([["job-a", "run-job-a"]]);
+    expect(f.queries.observationRecords(["job-a"])).toHaveLength(1);
   });
 });
