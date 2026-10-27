@@ -1,6 +1,7 @@
 import {
   readRunObservations,
   type CommandBackend,
+  type ObservationListener,
   type EngineStore,
   type createSqlDaemonServices,
 } from "@claudexor/daemon";
@@ -9,7 +10,7 @@ import type { TaskGroupRunsInput } from "@claudexor/schema";
 
 type ControlReadGraph = Pick<
   ReturnType<typeof createSqlDaemonServices>,
-  "commands" | "interactions" | "terminalFiles"
+  "store" | "commands" | "interactions" | "terminalFiles"
 >;
 
 /** Lazy read composition follows the attached graph through recovery. No identity
@@ -70,6 +71,8 @@ export function sqlControlReadSources(
       const graph = current();
       return readRunObservations(graph.commands.queries, graph.interactions, identity, ids, signal);
     },
+    runObservationChanges: (listener: ObservationListener) =>
+      current().store.observations.subscribe(listener),
     terminalFilesPending: (id: string) => current().terminalFiles.pending(id),
   };
 }
@@ -83,18 +86,8 @@ export function deferredCommands(current: () => CommandBackend): CommandBackend 
     findById: (id) => current().findById!(id),
     deferredFor: (id) => current().deferredFor?.(id),
     pruneHistory: (...args) => current().pruneHistory(...args),
+    // Observation reads use the attached graph directly (sqlControlReadSources).
     queries: {
-      observationRecords: (ids) => current().queries.observationRecords!(ids),
-      taskGroupPage: (input) => {
-        const queries = current().queries;
-        if (!queries.taskGroupPage)
-          throw Object.assign(new Error("indexed task group observation is unavailable"), {
-            code: "task_group_runs_unavailable",
-            status: 503,
-            retryable: false,
-          });
-        return queries.taskGroupPage(input);
-      },
       getByRunId: (id) => current().queries.getByRunId(id),
       select: (query) => current().queries.select(query),
       publicList: (query) => current().queries.publicList(query),

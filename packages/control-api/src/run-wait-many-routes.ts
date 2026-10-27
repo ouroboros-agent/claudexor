@@ -1,12 +1,14 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { RUN_WAIT_MANY_REQUEST_BYTES, RunWaitManyInput } from "@claudexor/schema";
-import { requestGone } from "./request-liveness.js";
-import { waitForRunAttention, type RunWaitManyHost } from "./run-wait-many.js";
+import { readLifetime, requestGone } from "./request-liveness.js";
+import { observeRunAttention, type RunWaitManyHost } from "./run-wait-many.js";
 
 interface RunWaitManyRouteContext {
   runObservations?: RunWaitManyHost["snapshot"];
-  bus?: { subscribe: NonNullable<RunWaitManyHost["subscribe"]> };
+  runObservationChanges?: RunWaitManyHost["subscribe"];
   pollMs?: number;
+  /** Fires when the server starts stopping; ends the wait with a typed 503. */
+  stopping?: AbortSignal;
   readBody(req: IncomingMessage, maxBytes?: number): Promise<unknown>;
   json(res: ServerResponse, status: number, body: unknown): void;
   requestError(res: ServerResponse, error: unknown, fallbackStatus?: 400 | 500): void;
@@ -21,11 +23,9 @@ export async function handleRunWaitManyRoute(
   res: ServerResponse,
 ): Promise<boolean> {
   if (!(method === "POST" && path === "/runs/wait-many")) return false;
-  let input: unknown;
+  let input: RunWaitManyInput;
   try {
-    input = await ctx.readBody(req, RUN_WAIT_MANY_REQUEST_BYTES);
-    // Keep original ingress for observer admission without materialized defaults.
-    RunWaitManyInput.parse(input);
+    input = RunWaitManyInput.parse(await ctx.readBody(req, RUN_WAIT_MANY_REQUEST_BYTES));
   } catch (error) {
     if (!requestGone(req, res)) ctx.requestError(res, error);
     return true;
@@ -45,31 +45,31 @@ export async function handleRunWaitManyRoute(
     return true;
   }
 
-  const abort = new AbortController();
-  const socket = req.socket;
-  const disconnected = () => {
-    // A consumed POST may emit close/destroyed while its response remains live.
-    if (requestGone(req, res)) abort.abort();
-  };
-  req.on("aborted", disconnected);
-  req.on("close", disconnected);
-  res.on("close", disconnected);
-  socket.on("close", disconnected);
+  const lifetime = readLifetime(req, res, ctx.stopping);
   try {
-    disconnected();
-    const result = await waitForRunAttention(
+    const result = await observeRunAttention(
       input,
-      { snapshot, subscribe: ctx.bus?.subscribe.bind(ctx.bus), pollMs: ctx.pollMs },
-      abort.signal,
+      { snapshot, subscribe: ctx.runObservationChanges, pollMs: ctx.pollMs },
+      lifetime.signal,
     );
-    if (!requestGone(req, res)) ctx.json(res, 200, result);
+    if (requestGone(req, res)) return true;
+    // Only a stopping server aborts a live request's wait. Tokens are
+    // level-triggered, so repeating the wait elsewhere loses nothing.
+    if (result.wakeReason === "aborted") ctx.requestError(res, stoppingError(), 500);
+    else ctx.json(res, 200, result);
   } catch (error) {
     if (!requestGone(req, res)) ctx.requestError(res, error, 500);
   } finally {
-    req.off("aborted", disconnected);
-    req.off("close", disconnected);
-    res.off("close", disconnected);
-    socket.off("close", disconnected);
+    lifetime.dispose();
   }
   return true;
+}
+
+function stoppingError(): Error {
+  return Object.assign(new Error("daemon is stopping; repeat the wait after reconnecting"), {
+    code: "daemon_stopping",
+    status: 503,
+    retryable: true,
+    requiredActions: ["reconnect"],
+  });
 }

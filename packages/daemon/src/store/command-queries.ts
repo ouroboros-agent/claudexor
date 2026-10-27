@@ -20,7 +20,6 @@ import {
 import type { EngineStore } from "./store.js";
 import { servedGenerations, SERVED_PIDS_SQL } from "./generations.js";
 import { StoreError } from "./errors.js";
-import { TASK_GROUP_PRESENT_SQL } from "./schema.js";
 
 type SummaryRow = {
   id: string;
@@ -83,7 +82,10 @@ export class SqlCommandQueries implements CommandQueries, ModelResourceQueries {
           false,
           "task group cursor belongs to another store",
         );
-      if (cursor.data.taskGroupId !== input.taskGroupId || cursor.data.state !== input.state)
+      if (
+        cursor.data.taskGroupId.toLowerCase() !== input.taskGroupId.toLowerCase() ||
+        cursor.data.state !== input.state
+      )
         throw new StoreError(
           "stale_cursor",
           409,
@@ -105,7 +107,8 @@ export class SqlCommandQueries implements CommandQueries, ModelResourceQueries {
       a[0]! < b[0]! ? -1 : a[0]! > b[0]! ? 1 : a[1]! < b[1]! ? -1 : a[1]! > b[1]! ? 1 : 0,
     );
     const viewToken = createHash("sha256")
-      .update(JSON.stringify(["claudexor.task-group-view", 1, identities]))
+      // Domain 2: membership became case-insensitive, so earlier cursors restart.
+      .update(JSON.stringify(["claudexor.task-group-view", 2, identities]))
       .digest("base64url");
     if (input.cursor && input.cursor.viewToken !== viewToken)
       throw new StoreError(
@@ -114,7 +117,8 @@ export class SqlCommandQueries implements CommandQueries, ModelResourceQueries {
         false,
         "served task group generations changed; read a fresh page",
       );
-    const bindings: Array<string | number> = [input.taskGroupId];
+    // Membership is canonical; accepted params keep the caller's spelling.
+    const bindings: Array<string | number> = [input.taskGroupId.toLowerCase()];
     const state = input.state === null ? "" : " AND c.state=?";
     if (input.state !== null) bindings.push(input.state);
     const keyset = input.cursor ? " AND (c.created_at,c.id) < (?,?)" : "";
@@ -123,13 +127,9 @@ export class SqlCommandQueries implements CommandQueries, ModelResourceQueries {
     const records = this.store
       .prepare(
         `SELECT c.id AS jobId,c.run_id AS runId,
-      p.name AS partition,p.epoch,c.state,c.created_at AS createdAt,
-      json_extract(CAST(c.summary AS TEXT),'$.params.taskGroupId') AS taskGroupId
-      FROM command c INDEXED BY ${input.state === null ? "command_task_group" : "command_task_group_state"}
-      JOIN partition p ON p.id=c.pid WHERE c.live=1 AND c.kind='product'
-      AND json_valid(CAST(c.summary AS TEXT))
-      AND ${TASK_GROUP_PRESENT_SQL}
-      AND json_extract(CAST(c.summary AS TEXT),'$.params.taskGroupId')=?${state}
+      p.name AS partition,p.epoch,c.state,c.created_at AS createdAt,c.task_group_id AS taskGroupId
+      FROM command c JOIN partition p ON p.id=c.pid WHERE c.live=1 AND c.kind='product'
+      AND c.task_group_id=?${state}
       AND c.pid IN (${SERVED_PIDS_SQL})${keyset}
       ORDER BY c.created_at DESC,c.id DESC LIMIT ?`,
       )

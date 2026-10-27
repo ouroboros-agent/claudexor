@@ -33,7 +33,12 @@ import {
 import type { DaemonFacadeClient } from "./daemon-server.js";
 import { assertContinuationAdmissible, resolveContinuationBody } from "./run-continuation-start.js";
 import { prepareRunStart } from "./run-start-preparation.js";
-export { acceptedTaskGroupReceipt, unboundRunStartResponse } from "./run-start-receipt.js";
+import { requireTaskGroupStoreIdentity } from "./run-start-receipt.js";
+export {
+  acceptedTaskGroupReceipt,
+  requireTaskGroupStoreIdentity,
+  unboundRunStartResponse,
+} from "./run-start-receipt.js";
 
 const NO_PROJECT_ROOT = noProjectRepoRoot();
 
@@ -311,6 +316,7 @@ export interface RunCreateRouteContext {
   requestError(res: ServerResponse, error: unknown, fallbackStatus?: 400 | 500): void;
   json(res: ServerResponse, status: number, body: unknown): void;
   respondToAcceptedJob(res: ServerResponse, jobId: string): Promise<void>;
+  storeId?: () => string | undefined;
   validateResources?: (refs: NonNullable<ControlRunStartRequest["attachments"]>) => Promise<void>;
   preflightRunRequirements?: (request: ControlRunStartRequest) => Promise<void>;
 }
@@ -478,6 +484,7 @@ export async function handleRunCreate(
   }
   let job: { id: string };
   try {
+    requireTaskGroupStoreIdentity(params, ctx.storeId);
     job = await ctx.daemon.enqueue(params, {
       idempotencyKey,
       clientId: "control-api",

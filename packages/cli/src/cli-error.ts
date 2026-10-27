@@ -65,6 +65,15 @@ export class CliError extends Error {
   }
 }
 
+/** A failure after the daemon accepted a job keeps that job's handle and receipt. */
+export function withAcceptedReceipt(err: unknown, receipt: Record<string, unknown>): CliError {
+  const problem = normalizeThrowable(err, "operational");
+  return new CliError(problem.category, problem.message, {
+    ...problem,
+    context: { ...problem.context, ...receipt },
+  });
+}
+
 /** A usage/validation failure (exit 2). An operational failure (exit 1) is
  * `new CliError("operational", ...)` — most operational failures reach the
  * projector as native throwables (Node errors, ControlProblem-derived errors)

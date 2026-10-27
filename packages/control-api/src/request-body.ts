@@ -1,4 +1,4 @@
-import type { IncomingMessage } from "node:http";
+import type { IncomingMessage, ServerResponse } from "node:http";
 
 const MAX_CONTROL_BODY_BYTES = 10 * 1024 * 1024;
 
@@ -9,13 +9,11 @@ export async function readControlRequestBody(
 ): Promise<unknown> {
   const chunks: Buffer[] = [];
   let size = 0;
-  // Returning the default iterator destroys the response socket before an
-  // unfinished upload can receive its typed 413. Leave it paused instead;
-  // the shared problem response closes it after flushing the rejection.
+  // Stopping early must not destroy the request: the response writer
+  // discards the unread rest so the client receives the typed 413.
   for await (const chunk of req.iterator({ destroyOnReturn: false })) {
     size += (chunk as Buffer).length;
     if (size > maxBytes) {
-      req.pause();
       chunks.length = 0;
       throw Object.assign(new Error("request body too large"), { status: 413 });
     }
@@ -46,4 +44,10 @@ export async function readControlRequestBody(
   } catch {
     throw Object.assign(new Error("invalid JSON body"), { status: 400 });
   }
+}
+
+/** An early answer to a request whose body is still arriving discards the rest
+ * and keeps the connection, so the client can read the answer. */
+export function discardUnreadBody(res: ServerResponse): void {
+  if (res.req && !res.req.complete) res.req.resume();
 }

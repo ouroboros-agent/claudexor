@@ -5,7 +5,7 @@ import { StoreSchemaUnsupportedError } from "./errors.js";
 /** `PRAGMA application_id` of every engine store ("CXEN"). */
 export const ENGINE_APPLICATION_ID = 0x4358454e;
 /** `PRAGMA user_version`: the one schema this engine creates and serves. */
-export const ENGINE_SCHEMA_VERSION = 4;
+export const ENGINE_SCHEMA_VERSION = 5;
 
 /** Version 4: one reserved editable next message; accepted params stay immutable. */
 const DEFERRED_MESSAGE_SQL = `
@@ -33,18 +33,40 @@ CREATE TABLE account_last_service(harness_id TEXT NOT NULL, profile_id TEXT NOT 
   PRIMARY KEY(harness_id, profile_id, requested_model_key, binding_digest)) WITHOUT ROWID, STRICT;
 `;
 
-/** Shared with the group query so SQLite can prove partial-index eligibility.
- * CASE guards extraction even for legal non-JSON summary bytes. */
-export const TASK_GROUP_PRESENT_SQL = `CASE WHEN json_valid(CAST(summary AS TEXT))
+/** CASE guards extraction even for legal non-JSON summary bytes. */
+const TASK_GROUP_PRESENT_SQL = `CASE WHEN json_valid(CAST(summary AS TEXT))
   THEN json_extract(CAST(summary AS TEXT),'$.params.taskGroupId') END IS NOT NULL`;
 
-/** Version 3 indexes tagged accepted summaries; no membership backfill. */
+/** Version 3 indexed tagged accepted summaries. Kept as the historical 2→3 step;
+ * version 5 moves membership into a column. */
 const TASK_GROUP_INDEX_SQL = `
 CREATE INDEX command_task_group ON command(json_extract(CAST(summary AS TEXT),'$.params.taskGroupId'),created_at DESC,id DESC)
   WHERE live=1 AND kind='product' AND json_valid(CAST(summary AS TEXT)) AND ${TASK_GROUP_PRESENT_SQL};
 CREATE INDEX command_task_group_state ON command(json_extract(CAST(summary AS TEXT),'$.params.taskGroupId'),state,created_at DESC,id DESC)
   WHERE live=1 AND kind='product' AND json_valid(CAST(summary AS TEXT)) AND ${TASK_GROUP_PRESENT_SQL};
 `;
+
+/** Canonical (lower-case) membership of tagged product commands. */
+const TASK_GROUP_COLUMN_INDEX_SQL = `
+CREATE INDEX command_task_group ON command(task_group_id,created_at DESC,id DESC)
+  WHERE live=1 AND kind='product' AND task_group_id IS NOT NULL;
+CREATE INDEX command_task_group_state ON command(task_group_id,state,created_at DESC,id DESC)
+  WHERE live=1 AND kind='product' AND task_group_id IS NOT NULL;
+`;
+
+/** Version 5: membership becomes a typed column. Accepted summaries keep the
+ * caller's spelling; live rows are found through the version-3 index, archived
+ * rows by a guarded scan, since restoring a generation makes them live again. */
+const TASK_GROUP_COLUMN_SQL = `
+ALTER TABLE command ADD COLUMN task_group_id TEXT;
+UPDATE command INDEXED BY command_task_group
+  SET task_group_id = lower(json_extract(CAST(summary AS TEXT),'$.params.taskGroupId'))
+  WHERE live=1 AND kind='product' AND json_valid(CAST(summary AS TEXT)) AND ${TASK_GROUP_PRESENT_SQL};
+UPDATE command SET task_group_id = lower(json_extract(CAST(summary AS TEXT),'$.params.taskGroupId'))
+  WHERE live=0 AND kind='product' AND json_valid(CAST(summary AS TEXT)) AND ${TASK_GROUP_PRESENT_SQL};
+DROP INDEX command_task_group;
+DROP INDEX command_task_group_state;
+${TASK_GROUP_COLUMN_INDEX_SQL}`;
 
 /**
  * SYNTHESIS_R5 §5 with R5_AMENDMENTS A1 (`command.kind`/`live` replace
@@ -70,7 +92,7 @@ CREATE TABLE command(id TEXT PRIMARY KEY, pid INTEGER NOT NULL, operation TEXT N
   run_id TEXT, task_id TEXT, run_dir TEXT, thread_id TEXT, turn_id TEXT, delegated_from TEXT, continue_from TEXT, scope_root TEXT,
   created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT, summary BLOB NOT NULL, params_sha TEXT NOT NULL, result_sha TEXT,
   error BLOB, last_event_seq INTEGER, response_state TEXT, response_expires_at TEXT, request_resource_id TEXT, response_resource_id TEXT,
-  kind TEXT NOT NULL, live INTEGER NOT NULL DEFAULT 1, needs_decision INTEGER NOT NULL DEFAULT 0) STRICT;
+  kind TEXT NOT NULL, live INTEGER NOT NULL DEFAULT 1, needs_decision INTEGER NOT NULL DEFAULT 0, task_group_id TEXT) STRICT;
 CREATE INDEX command_run       ON command(run_id);
 CREATE INDEX command_partition ON command(pid);
 CREATE INDEX command_active    ON command(state, pid) WHERE live = 1 AND state IN ('queued','running');
@@ -137,7 +159,7 @@ CREATE TABLE import_partition(name TEXT PRIMARY KEY, status TEXT NOT NULL, pid I
   previous_frame_hash TEXT, source_size INTEGER, source_mtime TEXT, fingerprint TEXT, records INTEGER, digest TEXT, problem TEXT) STRICT;
 CREATE TABLE unclassified(pid INTEGER NOT NULL, seq INTEGER NOT NULL, type TEXT NOT NULL, reason TEXT NOT NULL, payload BLOB NOT NULL,
   PRIMARY KEY(pid, seq)) WITHOUT ROWID, STRICT;
-${ACCOUNT_LAST_SERVICE_SQL}${TASK_GROUP_INDEX_SQL}${DEFERRED_MESSAGE_SQL}`;
+${ACCOUNT_LAST_SERVICE_SQL}${DEFERRED_MESSAGE_SQL}${TASK_GROUP_COLUMN_INDEX_SQL}`;
 
 /** Every table the DDL creates, in creation order (for tests and the importer seam). */
 export const ENGINE_TABLES: readonly string[] = Object.freeze(
@@ -154,6 +176,7 @@ const SCHEMA_MIGRATIONS: ReadonlyMap<number, (db: DatabaseSync) => void> = new M
   [1, (db: DatabaseSync) => db.exec(ACCOUNT_LAST_SERVICE_SQL)],
   [2, (db: DatabaseSync) => db.exec(TASK_GROUP_INDEX_SQL)],
   [3, (db: DatabaseSync) => db.exec(DEFERRED_MESSAGE_SQL)],
+  [4, (db: DatabaseSync) => db.exec(TASK_GROUP_COLUMN_SQL)],
 ]);
 
 export interface SchemaIdentity {
