@@ -6,7 +6,7 @@ import {
   type IncomingHttpHeaders,
   type Server,
 } from "node:http";
-import type { Socket } from "node:net";
+import { connect, type Socket } from "node:net";
 import { setImmediate as nextTurn, setTimeout as sleep } from "node:timers/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -21,6 +21,7 @@ import { digestPendingIdentities } from "../../daemon/src/interactions.js";
 import { readRunObservations } from "../../daemon/src/run-observation.js";
 import { StoreBusyError } from "../../daemon/src/store/errors.js";
 import { DaemonControlApiServer, type DaemonControlApiOptions } from "./daemon-server.js";
+import { RefusedBodies } from "./request-body.js";
 import type { RunObservationListener } from "./run-wait-many.js";
 
 const fixtureCleanups: Array<() => Promise<void>> = [];
@@ -615,6 +616,45 @@ describe("POST /v2/runs/wait-many over real HTTP", () => {
     } finally {
       agent.destroy();
     }
+  });
+
+  it("answers pipelined requests in order before closing a connection whose refused body is unfinished at stop", async () => {
+    const f = await fixture();
+    f.seed("job");
+    const refused = deferred<void>();
+    const discard = RefusedBodies.prototype.discard;
+    vi.spyOn(RefusedBodies.prototype, "discard").mockImplementation(function (
+      this: RefusedBodies,
+      res,
+    ) {
+      discard.call(this, res);
+      if (!res.req.complete) refused.resolve();
+    });
+    const { hostname, port } = new URL(f.base);
+    const socket = connect({ host: hostname, port: Number(port) });
+    socket.on("error", () => {});
+    let text = "";
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk: string) => {
+      text += chunk;
+    });
+    const ended = new Promise<string>((resolve) => socket.once("end", () => resolve(text)));
+    const head = (length: number) =>
+      `POST /v2/runs/wait-many HTTP/1.1\r\nHost: ${hostname}:${port}\r\nAuthorization: ${headers.authorization}\r\nX-Claudexor-Protocol-Major: 3\r\nContent-Type: application/json\r\nContent-Length: ${length}\r\n\r\n`;
+    const wait = JSON.stringify({ targets: [{ runId: "job" }], waitMs: 50_000 });
+    socket.write(head(Buffer.byteLength(wait)) + wait);
+    await bounded(f.firstRead.promise);
+    // Pipelined behind the open wait: a body the route refuses, left unfinished.
+    socket.write(head(16 * 1024 * 1024));
+    socket.write(Buffer.alloc(3 * 1024 * 1024, 0x20));
+    await bounded(refused.promise);
+    const stopped = f.server.stop();
+    const raw = await bounded(ended);
+    expect(raw.indexOf("HTTP/1.1 503 ")).toBe(0);
+    expect(raw.indexOf("HTTP/1.1 413 ")).toBeGreaterThan(0);
+    expect(raw).toContain('"code":"daemon_stopping"');
+    await bounded(stopped);
+    socket.destroy();
   });
 
   it("answers 503 when stop aborts a read that rejects on abort", async () => {

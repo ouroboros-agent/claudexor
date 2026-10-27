@@ -49,7 +49,8 @@ export async function readControlRequestBody(
 
 /** Connections still receiving a body that their answer refused. */
 export class RefusedBodies {
-  private readonly sockets = new Set<Socket>();
+  /** Each such connection with the answer that refused its body. */
+  private readonly refusals = new Map<Socket, ServerResponse>();
   private closing = false;
 
   /** An early answer discards the rest of the body and keeps the connection,
@@ -59,24 +60,31 @@ export class RefusedBodies {
     if (!req || req.complete) return;
     req.resume();
     const socket = req.socket;
-    if (this.sockets.has(socket)) return;
-    this.sockets.add(socket);
+    if (this.refusals.has(socket)) return;
+    this.refusals.set(socket, res);
     const settle = () => {
-      this.sockets.delete(socket);
+      this.refusals.delete(socket);
       req.off("end", settle);
       socket.off("close", settle);
     };
     req.once("end", settle);
     socket.once("close", settle);
-    if (this.closing) res.once("finish", () => socket.end());
+    if (this.closing) endAfter(res, socket);
   }
 
   /** Called first at stop: a client that keeps sending would hold the listener
-   * open, so each connection is half-closed after its answer, now and for every
-   * later refusal; the rest of the body is still read and discarded until the
-   * client closes its side. */
+   * open, so each connection is half-closed after its refusing answer, now and
+   * for every later refusal; the rest of the body is still read and discarded
+   * until the client closes its side. */
   close(): void {
     this.closing = true;
-    for (const socket of this.sockets) socket.end();
+    for (const [socket, res] of this.refusals) endAfter(res, socket);
   }
+}
+
+/** Half-close once the refusing answer is written. Answers queued before it on
+ * the connection go out first, and no request follows an unfinished body. */
+function endAfter(res: ServerResponse, socket: Socket): void {
+  if (res.writableFinished) socket.end();
+  else res.once("finish", () => socket.end());
 }
