@@ -1788,7 +1788,30 @@ text); error subtypes never claim finality, and `error_max_turns` /
 structured-output-retries-exhausted are benign turn-control outcomes, not run
 failures. Deltas: only MAIN-conversation `content_block_delta`/`text_delta`
 frames surface (flagged `delta`); subagent frames (`parent_tool_use_id`) and
-block/lifecycle frames never do — the complete message always follows.
+block/lifecycle frames never do. A complete message follows only a block the
+CLI completes: a stream cut short leaves its fragments without one.
+Speech identity: the parser keys only observed main-conversation lifecycles.
+Each `message_start` … `message_stop` is one response incarnation, and each
+text block in it (`content_block_start` … `content_block_stop`) gets one opaque
+key, namespaced per parser instance. Fragments carry `speech.op: "fragment"`. A
+complete `assistant` frame carries `op: "complete"` only when it holds exactly
+one text block, carries the incarnation's own `message.id`, and arrives while
+that keyed block is the single open block (2.1.311 emits each block's complete
+frame just before its stop). It is never linked in a `text_runs_joined`
+incarnation, which defers frames past their stops, or after a duplicate start of
+the index. Disagreeing ids, missing ids, `aborted` partials and non-streaming
+frames stay unkeyed. A frame whose own `api_message_id` names another response
+is never authoritative: such a `message_start` keys nothing in its incarnation,
+such a `content_block_stop` drops that block's key without closing it, and such
+a `message_stop` drops every key of the incarnation without ending it or
+stating abandonment. A replay that reuses a message id is a new incarnation
+with new keys. Only the CLI's own `message_stop.abandoned_blocks` adds an
+`op: "abandoned"` status for an uncompleted keyed block; its fragments stay.
+The terminal `result` states no link to any response, so its final never
+carries `speech`, even when its text equals the last completion; thinking, the
+ExitPlanMode plan message and tool events carry none. Pins: the four
+`recorded-partial-*.jsonl` controlled-endpoint fixtures (2.1.311) and
+`packages/harness-claude/src/speech.test.ts`.
 Plumbing: other `system` subtypes and `control_response`/`control_cancel_request`
 frames are recognized and consumed, never timeline events. `rate_limit_event`
 additionally preserves measured `unifiedWindows` and the reported current window
@@ -1949,8 +1972,16 @@ Known traps (class → CURRENT rule → pin):
   `thinking`. Pin: manifest `thinking_events` exact counts.
 - Delta chunks joined into the answer: display-stream chunks concatenated as
   if they were messages. Rule: delta messages carry `payload.delta === true`
-  and the complete message always follows; assemblers skip flagged deltas.
+  and assemblers skip them; a complete message follows only completed blocks,
+  so abandoned fragments never get one.
   Pins: `stream-deltas.jsonl` + `delta_messages` expectations.
+- Text twins reconciled by prose or native ids: a reader merges fragments,
+  complete snapshots and the final because their words or message ids match.
+  Rule: identity is only the adapter-issued `speech.key` of one observed text
+  block lifecycle; equal words or equal native ids under different or absent
+  keys stay separate, and a final carries a key only when its link is proven.
+  Pins: `packages/harness-claude/src/speech.test.ts`;
+  `run-timeline-text.test.ts`.
 - Rate limit read from prose: retry/limit conditions scraped from message
   text. Rule: adapters attach the typed `rate_limit`/`transient` fields (or a
   typed `status` event for a harness-owned `api_retry`); consumers never regex

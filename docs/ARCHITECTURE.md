@@ -3229,6 +3229,16 @@ separators inside model prose. Complete messages, tool/status events, and rows
 without text metadata remain separate; historical rows do not acquire guessed
 fragment semantics. Cursor thinking deltas use the native `subtype: delta`,
 while its complete assistant flush remains a complete message.
+A row's `speechKey`/`speechOp` project the harness event's adapter-issued
+`speech`: one opaque key per observed text block lifecycle (Claude is today's
+only producer). `fragment` rows stream that block, at most one `complete` row
+holds its complete text, and an `abandoned` status row records the harness's
+own statement that it will never complete, leaving its fragments as they were.
+Rows without a key stay separate, and equal text or equal native ids never
+imply identity. `textFinal` marks the typed final-answer row; it carries a key
+only when the adapter proved the link, so Claude's terminal `result` is a
+separate unkeyed final. The `harness.event` run event carries the same facts as
+top-level `speech` and `final`.
 
 Every `RunEvent` carries a monotonic per-run `seq` stamped by the engine's
 EventLog at emit time (control-api audit appends continue the same sequence).

@@ -9,6 +9,13 @@ import {
 } from "./context-signals.js";
 import { requiredMcpStartupReceipts } from "./required-mcp.js";
 import { claudeApiRetryEvents, claudeEntitlementEvents } from "./retry-signals.js";
+import {
+  claudeCompletion,
+  claudeStreamEvents,
+  closeClaudeSpeech,
+  createClaudeSpeechState,
+  type ClaudeSpeechState,
+} from "./speech.js";
 
 type Json = any;
 
@@ -34,7 +41,8 @@ export interface ClaudeParserOptions {
  * Create a stateful per-run parser for Claude `--output-format stream-json`.
  * State is needed to resolve tool_result blocks (which only carry tool_use_id)
  * back to the tool name/kind/target of the originating tool_use block, so the
- * normalized `tool_result` event is self-describing.
+ * normalized `tool_result` event is self-describing, and to key text blocks by
+ * their observed response lifecycle (speech.ts).
  * Returns `null` for unrecognized top-level shapes (counted as dropped by the
  * run loop) and `[]` for recognized events that produce nothing.
  */
@@ -43,8 +51,17 @@ export function createClaudeParser(opts: ClaudeParserOptions = {}): ClaudeEventP
   const deniedTools = new Set(opts.deniedTools ?? []);
   const requiredMcpServers = new Set(opts.requiredMcpServers ?? []);
   const turns: ClaudeTurnState = { results: 0, cumulativeCostUsd: null };
+  const speech = createClaudeSpeechState();
   return (obj: Json, sessionId: string): HarnessEvent[] | null =>
-    parseClaudeEventStateful(obj, sessionId, pendingTools, deniedTools, requiredMcpServers, turns);
+    parseClaudeEventStateful(
+      obj,
+      sessionId,
+      pendingTools,
+      deniedTools,
+      requiredMcpServers,
+      turns,
+      speech,
+    );
 }
 
 /**
@@ -146,6 +163,7 @@ function parseClaudeEventStateful(
   deniedTools = new Set<string>(),
   requiredMcpServers = new Set<string>(),
   turns: ClaudeTurnState = { results: 0, cumulativeCostUsd: null },
+  speech: ClaudeSpeechState = createClaudeSpeechState(),
 ): HarnessEvent[] | null {
   const ts = nowIso();
   const type = obj?.type;
@@ -219,11 +237,19 @@ function parseClaudeEventStateful(
     // changes); only its assistant TEXT/thinking is suppressed.
     const isSubagent = obj.parent_tool_use_id != null;
     const content: Json[] = obj.message?.content ?? [];
+    // The exact completion of the one open keyed text block, when proven.
+    const completion = isSubagent ? undefined : claudeCompletion(obj, speech);
     const out: HarnessEvent[] = [];
     for (const block of content) {
       if (block?.type === "text" && block.text) {
         if (isSubagent) continue;
-        out.push({ type: "message", session_id: sessionId, ts, text: String(block.text) });
+        out.push({
+          type: "message",
+          session_id: sessionId,
+          ts,
+          text: String(block.text),
+          ...(completion ? { speech: completion } : {}),
+        });
       } else if (
         block?.type === "thinking" &&
         typeof block.thinking === "string" &&
@@ -395,8 +421,10 @@ function parseClaudeEventStateful(
   }
 
   if (type === "result") {
-    // The session is finishing: release its accumulated task list.
+    // The session is finishing: release its accumulated task list. Its result is
+    // never a completion of a keyed block (no native link) and ends any open one.
     releaseSessionTasks(sessionId);
+    closeClaudeSpeech(speech);
     turns.results += 1;
     const out: HarnessEvent[] = [];
     const u = obj.usage ?? {};
@@ -492,32 +520,7 @@ function parseClaudeEventStateful(
     return out;
   }
 
-  if (type === "stream_event") {
-    // --include-partial-messages (F2.5 W-C4): raw API stream frames. Only
-    // MAIN-conversation text deltas become delta messages (subagent frames
-    // carry parent_tool_use_id); every other frame (message_start, thinking
-    // deltas, block boundaries) is recognized plumbing — the complete
-    // assistant/result events still deliver the authoritative text.
-    const delta = obj.event?.delta;
-    if (
-      obj.parent_tool_use_id == null &&
-      obj.event?.type === "content_block_delta" &&
-      delta?.type === "text_delta" &&
-      typeof delta.text === "string" &&
-      delta.text
-    ) {
-      return [
-        {
-          type: "message",
-          session_id: sessionId,
-          ts,
-          text: delta.text,
-          payload: { delta: true },
-        },
-      ];
-    }
-    return [];
-  }
+  if (type === "stream_event") return claudeStreamEvents(obj, sessionId, ts, speech);
 
   // recognized but uninteresting system subtypes (incl. 2.1.165's
   // `post_turn_summary` review-status frame): known plumbing, never counted as

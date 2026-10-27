@@ -786,7 +786,7 @@ export class Orchestrator {
   private readonly routingRationaleByRun = new Map<string, RouteRankingRationale>();
   /** Per-attempt cap on forwarded live delta chunks (W-C4 flood guard, sol
    * #10): past this the deltas are dropped and the cutoff is disclosed once;
-   * the complete message always still lands. */
+   * the complete message still lands for every completed block. */
   static readonly MAX_DELTAS_PER_ATTEMPT = 4000;
 
   constructor(private readonly deps: OrchestratorDeps) {
