@@ -1,7 +1,12 @@
-import { readFailure, strategyFromParams, legacyRunOutcomeFacts, planProjectionFor, projectAuthRoute } from "./run-card-facts.js";
+import {
+  readFailure,
+  strategyFromParams,
+  legacyRunOutcomeFacts,
+  planProjectionFor,
+  projectAuthRoute,
+} from "./run-card-facts.js";
 import { budgetSnapshot } from "./run-budget-snapshot.js";
 import { runRepoRoot, applyEligibilityFor } from "./run-apply-projection.js";
-export { runRepoRoot } from "./run-apply-projection.js";
 import { projectProcessScope } from "./run-detail-scope.js";
 
 import { readTextArtifact, safeReadStructuredArtifact } from "./run-artifact-read.js";
@@ -95,9 +100,6 @@ function projectMetadata(rec: DaemonRunRecord): {
 }
 const NO_PROJECT_ROOT = noProjectRepoRoot();
 
-
-/** v0.9 strategy flags projected back so surfaces can tell a race from a repair loop. */
-
 /**
  * Honest terminal outcome, projected from final/work_product.yaml's meta (the
  * orchestrator-owned record of what the turn produced). Answers the v0.9 "is the
@@ -123,8 +125,6 @@ export function runOutcomeFacts(
   if (!legacy) return null;
   return effectiveTerminalFacts(rec.runDir, legacy, decision, expectedRunFacts(rec)).outcomeFacts;
 }
-
-/** Legacy-only terminal projection retained for active/pre-RunFacts records. */
 
 /** D-16: the winning attempt's work_state from a run's telemetry.yaml, used to
  * fold the veto axis into a decision-less terminal's outcome facts. */
@@ -306,13 +306,10 @@ export function detailFor(
   children: ControlRunSummary[] = [],
   retentionProblem: string | null = null,
 ): ControlRunDetail {
-  // Snapshot fence: capture the event cursor BEFORE building any projection.
-  // The fence promise is "every event with seq <= lastSeq is reflected" — a
-  // cursor read AFTER the projections could skip an event that landed in
-  // between (the projections would not reflect it, and a client resuming from
-  // that cursor would never see it). A pre-projection cursor errs the other
-  // way: an in-between event is both reflected AND replayed, which clients
-  // absorb (event application is reconciled against the newer snapshot).
+  // Capture the resume fence before projection. Events arriving during queued
+  // work may appear in both detail and replay; clients reconcile duplicates.
+  // This prevents a resume gap without claiming an atomic snapshot across the
+  // independently published artifacts or displaying every retained event.
   const lastSeq = cursor ?? (rec.runDir ? lastRunEventSeq(join(rec.runDir, "events.jsonl")) : 0);
   const failure = readFailure(rec);
   const decision = safeReadStructuredArtifact(rec, "arbitration/decision.yaml", DecisionRecord);
@@ -400,10 +397,6 @@ function parseAccessMaybe(value: unknown): AccessProfile | undefined {
   const parsed = AccessProfile.safeParse(value);
   return parsed.success ? parsed.data : undefined;
 }
-
-/** Typed severity per event type — no string matching over event names. */
-/** Readiness AND open questions of a plan run, from ONE read of the same
- * final/questions.json artifact (D17) — no plan-text re-parse, no double read. */
 
 /** Council membership + merge disclosure (INV-031), projected from
  * `council/membership.yaml`. Null for solo plans and non-plan runs — the plan

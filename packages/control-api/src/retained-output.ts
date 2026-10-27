@@ -59,7 +59,7 @@ export class RetainedOutputPublisher {
       temporary = join(final, `.retained-output-${randomUUID()}.tmp`);
       // UTF-8 encoding happened in the worker; publication does no unbounded
       // string conversion on the control event loop.
-      await writeFile(temporary, bytes, { flag: "wx" });
+      await writeFile(temporary, bytes, { flag: "wx", mode: 0o600 });
       await rename(temporary, join(final, "retained-output.md"));
       return null;
     } catch {

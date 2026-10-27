@@ -26,12 +26,14 @@ function collect(path: string, lastEventId: number, initial?: EventReplayCursor)
   const frames: EventReplayFrame[] = [];
   let cursor = initial;
   let batches = 0;
+  let seekBatches = 0;
   for (;;) {
+    if (cursor?.phase === "seek" || (!cursor && lastEventId > 0)) seekBatches += 1;
     const batch = readEventReplayBatch({ path, lastEventId, cursor });
     frames.push(...batch.frames);
     cursor = batch.cursor;
     batches += 1;
-    if (!batch.progressed) return { frames, cursor, batches };
+    if (!batch.progressed) return { frames, cursor, batches, seekBatches };
     if (batches > 10_000) throw new Error("replay did not finish");
   }
 }
@@ -53,6 +55,36 @@ function oldReplay(text: string, lastEventId: number): EventReplayFrame[] {
 }
 
 describe("finite event replay", () => {
+  it("replays a one MiB event byte-for-byte with logarithmically many carry batches", () => {
+    const text = JSON.stringify({ type: "text", seq: 1, text: "x".repeat(1024 * 1024) });
+    const actual = collect(log(text + "\n"), 0);
+    expect(actual.frames).toEqual([{ seq: 1, type: "text", data: text, terminal: false }]);
+    // 64, 128, 256, 512, 1024 KiB of accumulated carry, then the end and quiet read.
+    expect(actual.batches).toBeLessThanOrEqual(7);
+  });
+
+  it.each([
+    { label: "ordinary", bytes: 256, maxSeekBatches: 1 },
+    { label: "one MiB", bytes: 1024 * 1024, maxSeekBatches: 6 },
+  ])(
+    "resumes before a $label newest event with exact frames and growing seek batches",
+    ({ bytes, maxSeekBatches }) => {
+      const text =
+        [
+          { type: "text", seq: 1, text: "already seen" },
+          { type: "text", seq: 2, text: "replay before newest" },
+          { type: "text", seq: 3, text: "x".repeat(bytes) },
+        ]
+          .map((event) => JSON.stringify(event))
+          .join("\n") + "\n";
+      const actual = collect(log(text), 1);
+      expect(actual.frames).toEqual(oldReplay(text, 1));
+      expect(actual.seekBatches).toBeGreaterThan(0);
+      // Incomplete lines grow the next read with the carry instead of adding 64 KiB each time.
+      expect(actual.seekBatches).toBeLessThanOrEqual(maxSeekBatches);
+    },
+  );
+
   it("resumes a large durable log from its tail without parsing its prefix", () => {
     const text =
       Array.from({ length: 4_000 }, (_, i) =>

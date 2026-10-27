@@ -1,26 +1,15 @@
-import { readFailure } from "./run-card-facts.js";
 import { lastRunEventSeq } from "@claudexor/event-log";
 import { isMainThread, parentPort, workerData } from "node:worker_threads";
-import { ControlRunSummary, Id, needsOperatorAttention, DecisionRecord } from "@claudexor/schema";
+import { ControlRunSummary, Id } from "@claudexor/schema";
 import { redactSecrets } from "@claudexor/util";
 import { readArtifact } from "./artifact-read.js";
 import { readEventReplayBatch } from "./event-replay-batch.js";
-import {
-  detailFor,
-  runOutcomeFacts,
-  runRepoRoot,
-  summarizeRun,
-  winnerWorkStateFor,
-} from "./run-projection.js";
-import { runPatchDigest } from "./run-exact-patch.js";
+import { detailFor, summarizeRun } from "./run-projection.js";
+import { validRunOperatorDecision } from "./run-apply-projection.js";
 import { inRunProjection } from "./projection-context.js";
 import { prepareInterruptedOutput } from "./retained-output.js";
 import { summaryFingerprint } from "./run-list-fingerprint.js";
-import {
-  paramsRecord,
-  type DaemonRunRecord,
-  type ControlOperatorDecisionRecord,
-} from "./run-record.js";
+import { paramsRecord, type DaemonRunRecord } from "./run-record.js";
 import {
   BULK_WORKER_ROLE,
   type BulkJob,
@@ -30,29 +19,26 @@ import {
   type WorkerReply,
   type BulkFailure,
 } from "./bulk-protocol.js";
-import { safeReadStructuredArtifact } from "./run-artifact-read.js";
-
-function validOperator(record: DaemonRunRecord, operator: ControlOperatorDecisionRecord | null) {
-  return operator && operator.patchSha256 === runPatchDigest(record, runRepoRoot(record))
-    ? operator
-    : null;
-}
 
 function summaryOrDiagnostic(record: DaemonRunRecord): ControlRunSummary {
   try {
     return summarizeRun(record);
   } catch (error) {
-    const parent = Id.safeParse(paramsRecord(record)["delegatedFromRunId"]);
-    return ControlRunSummary.parse({
-      jobId: record.id,
-      runId: record.runId ?? record.id,
-      ...(parent.success ? { delegatedFromRunId: parent.data } : {}),
-      state: "failed",
-      error: redactSecrets(
-        `unprojectable job record: ${error instanceof Error ? error.message : String(error)}`,
-      ),
-    });
+    return diagnosticSummary(record, error);
   }
+}
+
+function diagnosticSummary(record: DaemonRunRecord, error: unknown): ControlRunSummary {
+  const parent = Id.safeParse(paramsRecord(record)["delegatedFromRunId"]);
+  return ControlRunSummary.parse({
+    jobId: record.id,
+    runId: record.runId ?? record.id,
+    ...(parent.success ? { delegatedFromRunId: parent.data } : {}),
+    state: "failed",
+    error: redactSecrets(
+      `unprojectable job record: ${error instanceof Error ? error.message : String(error)}`,
+    ),
+  });
 }
 
 /** One context spans parent, children and the exact digest. No live service crosses the port. */
@@ -70,30 +56,19 @@ export function projectBulkJob(
         return readEventReplayBatch(job.input);
       case "summary": {
         const { record, cached } = job.input;
-        const fingerprint = summaryFingerprint(record, cached?.fingerprint);
-        return {
-          fingerprint,
-          summary:
-            cached?.fingerprint.value === fingerprint.value
-              ? cached.summary
-              : summaryOrDiagnostic(record),
-        };
-      }
-      case "attention": {
-        const { record, operator } = job.input;
-        if (record.state !== "succeeded") return false;
-        const decision = safeReadStructuredArtifact(
-          record,
-          "arbitration/decision.yaml",
-          DecisionRecord,
-        );
-        const facts = runOutcomeFacts(
-          record,
-          decision,
-          readFailure(record),
-          winnerWorkStateFor(record),
-        );
-        return !!facts && needsOperatorAttention(facts, validOperator(record, operator) !== null);
+        try {
+          const fingerprint = summaryFingerprint(record, cached?.fingerprint);
+          return {
+            fingerprint,
+            summary:
+              cached?.fingerprint.value === fingerprint.value
+                ? cached.summary
+                : summarizeRun(record),
+          };
+        } catch (error) {
+          // A failed fingerprint/projection is per-record evidence, never a cache entry.
+          return { summary: diagnosticSummary(record, error) };
+        }
       }
       case "detail": {
         const { record, pending, cursor, operator, children, deferred } = job.input;
@@ -103,7 +78,7 @@ export function projectBulkJob(
           record,
           pending,
           cursor,
-          validOperator(record, operator),
+          validRunOperatorDecision(record, operator),
           children.map(({ record: child, pending: waitingOnUser }) => ({
             ...summaryOrDiagnostic(child),
             waitingOnUser,

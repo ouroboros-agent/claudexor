@@ -126,7 +126,7 @@ describe("immutable artifact transfer after a finite manifest lookup", () => {
   });
 
   it.each([true, false])(
-    "shares work-product bytes within one request only (raw first=%s)",
+    "memoizes Files authority and presentation independently within a request (raw first=%s)",
     (rawFirst) => {
       const record = { id: "r", state: "succeeded", runDir: root };
       const path = join(root, "final/work_product.yaml");
@@ -134,6 +134,8 @@ describe("immutable artifact transfer after a finite manifest lookup", () => {
       inRunProjection(() => {
         if (rawFirst) expect(readRawTextArtifact(record, "final/work_product.yaml")).toBe(original);
         else expect(readFilesWorkProduct(record)?.manifestPath).toBe("final/files/manifest.json");
+        expect(readRawTextArtifact(record, "final/work_product.yaml")).toBe(original);
+        expect(readFilesWorkProduct(record)?.manifestPath).toBe("final/files/manifest.json");
         writeFileSync(path, "not-a-work-product");
         expect(readFilesWorkProduct(record)?.manifestPath).toBe("final/files/manifest.json");
         expect(readRawTextArtifact(record, "final/work_product.yaml")).toBe(original);

@@ -7,7 +7,6 @@ const complete: RunEventsIntegrity = {
   unreadable: false,
   malformedLines: 0,
   nonObjectLines: 0,
-  tailTruncated: false,
 };
 
 /** Deliberately expensive reference: project EVERY row before bounding. A

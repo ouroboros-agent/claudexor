@@ -35,8 +35,10 @@ function preview(
   maxBytes = PRIMARY_OUTPUT_PREVIEW_BYTES,
   metadataOnly = false,
 ): { text: string; bytes: number; truncated: boolean } | null {
-  return projectionRead(rec.runDir ?? rec.id, `preview:${maxBytes}:${metadataOnly}:${relPath}`, () =>
-    previewUncached(rec, relPath, maxBytes, metadataOnly),
+  return projectionRead(
+    rec.runDir ?? rec.id,
+    `preview:${maxBytes}:${metadataOnly}:${relPath}`,
+    () => previewUncached(rec, relPath, maxBytes, metadataOnly),
   );
 }
 

@@ -136,9 +136,9 @@ function confinementCard(raw: RawAttempt): ControlCandidateConfinement | null {
 }
 
 function readYamlMaybe<T>(runDir: string, relative: string): T | null {
-  return projectionRead(runDir, `yaml:raw:${relative}`, () => {
+  return projectionRead(runDir, `candidates:yaml:${relative}`, () => {
     try {
-      const raw = projectionRead<string | null>(runDir, `raw:${relative}`, () => {
+      const raw = projectionRead<string | null>(runDir, `candidates:raw:${relative}`, () => {
         const path = join(runDir, relative);
         return existsSync(path) ? readFileSync(path, "utf8") : null;
       });

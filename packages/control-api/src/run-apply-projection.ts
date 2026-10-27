@@ -1,7 +1,19 @@
 import { projectionRead } from "./projection-context.js";
 import { requiredGateSpecsFromTaskArtifact } from "./task-contract-gates.js";
-import { type ApplyGateInput, deriveApplyEligibility, validateApplyGate, verifyAndDeliver } from "@claudexor/delivery";
-import { DecisionRecord, WorkProduct, type ApplyEligibility, type ControlApplyCheckRequest, type ControlApplyRequest, type FinalVerifyRecord } from "@claudexor/schema";
+import {
+  type ApplyGateInput,
+  deriveApplyEligibility,
+  validateApplyGate,
+  verifyAndDeliver,
+} from "@claudexor/delivery";
+import {
+  DecisionRecord,
+  WorkProduct,
+  type ApplyEligibility,
+  type ControlApplyCheckRequest,
+  type ControlApplyRequest,
+  type FinalVerifyRecord,
+} from "@claudexor/schema";
 import { noProjectRepoRoot } from "@claudexor/util";
 import {
   paramsRecord,
@@ -136,7 +148,6 @@ export function readPatch(rec: DaemonRunRecord): string | null {
   return exactPatch.readExactRunPatch(rec, runRepoRoot(rec));
 }
 
-
 export function applyTargetRoot(
   target: ControlApplyCheckRequest["target"] | ControlApplyRequest["target"],
   rec: DaemonRunRecord,
@@ -158,7 +169,6 @@ export function applyGateError(
     ...(finalVerify ? { finalVerify } : {}),
   });
 }
-
 
 export function gateSpecsForRun(
   rec: DaemonRunRecord,

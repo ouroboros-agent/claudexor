@@ -2,7 +2,7 @@ import { handleThreadHistoryRoute, type ThreadHistoryServices } from "./thread-h
 import { liveRunEventSeq } from "@claudexor/event-log";
 import {
   readPatch,
-  runRepoRoot,
+  validRunOperatorDecision,
   applyTargetRoot,
   applyGateError,
   applyGateInputFor,
@@ -32,8 +32,8 @@ import { discardRunResult } from "./run-discard.js";
 import { applyFilesResult } from "./files-apply-route.js";
 import { deliverableWorkspaceChanges } from "@claudexor/workspace";
 import { streamRunEvents } from "./run-events-stream.js";
-import { projectTurnRunCards } from "./thread-projection.js";
 import {
+  projectTurnRunCards,
   projectSession,
   projectThread,
   projectThreadList,
@@ -151,6 +151,7 @@ import {
   DecisionRecord,
   Id,
   needsDecision,
+  needsOperatorAttention,
 } from "@claudexor/schema";
 import { resolveControlProtocol, type ControlServingMode } from "./control-protocol.js";
 import { readControlRequestBody } from "./request-body.js";
@@ -995,9 +996,11 @@ export class DaemonControlApiServer {
           detail.turns as { run_id?: string | null }[],
           runs,
           (record) => this.summarizeRunOrDiagnostic(record),
+          () => !requestGone(req, res),
         );
+        if (requestGone(req, res)) return;
         const headRec = byRun.get(thread.head_run_id ?? "");
-        const headNeedsHuman = headRec ? await this.runNeedsAttention(headRec) : false;
+        const headNeedsHuman = headRec ? this.runNeedsAttention(headRec) : false;
         return this.json(
           res,
           200,
@@ -2022,12 +2025,7 @@ export class DaemonControlApiServer {
   }
 
   private validOperatorDecisionFor(rec: DaemonRunRecord): ControlOperatorDecisionRecord | null {
-    const decision = this.operatorDecisionFor(rec);
-    if (!decision) return null;
-    // INV-062: the decision binds to the EXACT patch, never to a redacted copy.
-    return decision.patchSha256 === exactPatch.runPatchDigest(rec, runRepoRoot(rec))
-      ? decision
-      : null;
+    return validRunOperatorDecision(rec, this.operatorDecisionFor(rec));
   }
 
   /** The RISK-OVERRIDABLE needs-decision signal: a terminal run whose review is
@@ -2045,11 +2043,12 @@ export class DaemonControlApiServer {
   /** The needs-me / inbox signal (D8): EITHER a risk-overridable needs-decision
    * OR a non-overridable D-16 work_state needs-input veto. Inbox/head surfaces
    * fold both so a needs_input run still surfaces as needing the operator. */
-  private runNeedsAttention(rec: DaemonRunRecord): Promise<boolean> {
-    return this.bulk.execute({
-      kind: "attention",
-      input: { record: rec, operator: this.operatorDecisionFor(rec) },
-    });
+  private runNeedsAttention(rec: DaemonRunRecord): boolean {
+    if (rec.state !== "succeeded") return false;
+    const arb = safeReadStructuredArtifact(rec, "arbitration/decision.yaml", DecisionRecord);
+    const facts = runOutcomeFacts(rec, arb, readFailure(rec), winnerWorkStateFor(rec));
+    if (!facts) return false;
+    return needsOperatorAttention(facts, this.validOperatorDecisionFor(rec) !== null);
   }
 
   /** D-16: the non-overridable work_state veto on a succeeded run — the model
@@ -2159,12 +2158,7 @@ export class DaemonControlApiServer {
     { fingerprint: RunListFingerprint; summary: ControlRunSummary }
   >();
 
-  /**
-   * GET /runs is the app's main screen and used to re-read every artifact for
-   * every retained job on every poll (O(jobs x file size) sync I/O). Terminal
-   * runs change only when their artifacts change, so summaries are cached on a
-   * state+artifact-mtime fingerprint.
-   */
+  /** The summary LRU is invalidated by the worker's state+artifact fingerprint. */
   private static readonly SUMMARY_CACHE_MAX = 1_000;
 
   private async summarizeRunCached(rec: DaemonRunRecord): Promise<ControlRunSummary> {
@@ -2172,7 +2166,8 @@ export class DaemonControlApiServer {
       kind: "summary",
       input: { record: rec, cached: lruGet(this.summaryCache, rec.id) },
     });
-    lruSet(this.summaryCache, rec.id, snapshot, DaemonControlApiServer.SUMMARY_CACHE_MAX);
+    if ("fingerprint" in snapshot)
+      lruSet(this.summaryCache, rec.id, snapshot, DaemonControlApiServer.SUMMARY_CACHE_MAX);
     return snapshot.summary;
   }
 

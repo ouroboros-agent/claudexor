@@ -90,6 +90,8 @@ node scripts/model-hints-freshness.mjs # manifest known_models vs installed vend
 pnpm canary        # canary golden stories (offline fake harnesses; needs pnpm build first)
 ```
 
+Control-api tests load the built worker (`dist/bulk-worker.js`); run `pnpm --filter @claudexor/control-api build` before its focused tests.
+
 There is no root `pnpm lint` script at the moment. `pnpm format:check` checks
 Prettier formatting when a formatting pass is relevant. Note on Node versions:
 `.node-version` pins the development toolchain (24.16.0, matching CI); the

@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -59,8 +59,26 @@ describe("candidatesFor ranking scorecard projection (QA-028)", () => {
     expect(cards[0]?.diffstat).toBeNull();
   });
 
+  it.skipIf(process.platform === "win32").each([true, false])(
+    "keeps candidate symlink semantics independent of the raw reader (raw first=%s)",
+    (rawFirst) => {
+      const runDir = runDirWith({ a01: "attempt_id: a01\nharness_id: codex\n" });
+      mkdirSync(join(runDir, "reviews"));
+      writeFileSync(join(runDir, "reviews/target.yaml"), "review_verified: true\nfindings: []\n");
+      const relative = "reviews/a01.yaml";
+      symlinkSync("target.yaml", join(runDir, relative));
+      const record = { id: "r", state: "succeeded", runDir };
+      inRunProjection(() => {
+        if (rawFirst) expect(readRawTextArtifact(record, relative)).toBeNull();
+        else expect(candidatesFor(runDir, null)[0]?.reviewVerified).toBe(true);
+        expect(readRawTextArtifact(record, relative)).toBeNull();
+        expect(candidatesFor(runDir, null)[0]?.reviewVerified).toBe(true);
+      });
+    },
+  );
+
   it.each([true, false])(
-    "shares review bytes with other sections for one request only (raw first=%s)",
+    "memoizes each reader independently for one request only (raw first=%s)",
     (rawFirst) => {
       const runDir = runDirWith({ a01: "attempt_id: a01\nharness_id: codex\n" });
       mkdirSync(join(runDir, "reviews"));
@@ -71,6 +89,8 @@ describe("candidatesFor ranking scorecard projection (QA-028)", () => {
       inRunProjection(() => {
         if (rawFirst) expect(readRawTextArtifact(record, relative)).toBe(original);
         else expect(candidatesFor(runDir, null)[0]?.reviewVerified).toBe(true);
+        expect(readRawTextArtifact(record, relative)).toBe(original);
+        expect(candidatesFor(runDir, null)[0]?.reviewVerified).toBe(true);
         writeFileSync(join(runDir, relative), "review_verified: false\nfindings: []\n");
         expect(candidatesFor(runDir, null)[0]?.reviewVerified).toBe(true);
         expect(readRawTextArtifact(record, relative)).toBe(original);

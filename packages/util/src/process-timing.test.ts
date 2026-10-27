@@ -1,7 +1,17 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
 import { LatencyHistogram, ProcessTiming, measureSync, processTiming } from "./process-timing.js";
 
 describe("bounded process timing", () => {
+  it("records every worker kind without an attention kind in its input contract", () => {
+    const kinds = ["cursor", "detail", "summary", "event-replay", "artifact"] as const;
+    expectTypeOf<Parameters<ProcessTiming["recordBulk"]>[0]>().toEqualTypeOf<
+      (typeof kinds)[number]
+    >();
+    const timing = new ProcessTiming();
+    for (const kind of kinds) timing.recordBulk(kind, 1, 2);
+    expect(timing.facts().bulk.map((entry) => entry.kind)).toEqual(kinds);
+  });
+
   it("keeps approximate percentiles and exact count/max without storing samples", () => {
     const latency = new LatencyHistogram();
     expect(latency.facts()).toEqual({ count: 0, p50Ms: null, p99Ms: null, maxMs: null });

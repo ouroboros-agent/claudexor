@@ -119,10 +119,12 @@ export async function projectTurnRunCards(
   turns: readonly { run_id?: string | null }[],
   runs: readonly DaemonRunRecord[],
   summarize: (record: DaemonRunRecord) => ControlRunSummary | Promise<ControlRunSummary>,
+  active: () => boolean = () => true,
 ): Promise<Map<string, ControlTurnRunCard>> {
   const byRun = new Map(runs.map((run) => [run.runId ?? run.id, run]));
   const cards = new Map<string, ControlTurnRunCard>();
   for (const turn of turns) {
+    if (!active()) break;
     const runId = turn.run_id ?? null;
     const record = runId ? byRun.get(runId) : undefined;
     if (runId && record && !cards.has(runId)) {

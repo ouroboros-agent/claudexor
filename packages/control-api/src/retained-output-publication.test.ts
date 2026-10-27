@@ -1,6 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Worker } from "node:worker_threads";
@@ -124,4 +132,18 @@ describe("main-owned retained output publication", () => {
     expect(await publisher.publish(record, bytes)).toBeNull();
     expect(readFileSync(join(root, RETAINED_OUTPUT_PATH), "utf8")).toBe("retained\n");
   });
+
+  it.skipIf(process.platform === "win32")(
+    "publishes retained bytes with owner-only permissions",
+    async () => {
+      const publisher = new RetainedOutputPublisher();
+      const bytes = new TextEncoder().encode("private retained output\n");
+      expect(
+        await publisher.publish({ id: "r", state: "interrupted", runDir: root }, bytes),
+      ).toBeNull();
+      const path = join(root, RETAINED_OUTPUT_PATH);
+      expect(readFileSync(path)).toEqual(Buffer.from(bytes));
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+    },
+  );
 });

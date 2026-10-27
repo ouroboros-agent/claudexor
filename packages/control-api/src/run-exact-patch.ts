@@ -22,8 +22,10 @@ export function resolveRunPatch(
   projectRoot: string | null,
   maxBytes?: number,
 ): { patch: string | null; unavailable: boolean } {
-  return projectionRead(rec.runDir ?? rec.id, `exact-patch:${maxBytes ?? "all"}:${projectRoot}`, () =>
-    resolveUncached(rec, projectRoot, maxBytes),
+  return projectionRead(
+    rec.runDir ?? rec.id,
+    `exact-patch:${maxBytes ?? "all"}:${projectRoot}`,
+    () => resolveUncached(rec, projectRoot, maxBytes),
   );
 }
 
@@ -60,11 +62,19 @@ export function readExactRunPatch(rec: DaemonRunRecord, projectRoot: string | nu
 
 /** Digest a recorded operator decision must equal; null when there is no exact
  * patch to bind to (no artifact, or its exact bytes are unavailable). */
-export function runPatchDigest(rec: DaemonRunRecord, projectRoot: string | null, maxBytes?: number): string | null {
-  return projectionRead(rec.runDir ?? rec.id, `patch-digest:${maxBytes ?? "all"}:${projectRoot}`, () => {
-    const resolved = resolveRunPatch(rec, projectRoot, maxBytes);
-    return resolved.patch !== null && !resolved.unavailable ? sha256(resolved.patch) : null;
-  });
+export function runPatchDigest(
+  rec: DaemonRunRecord,
+  projectRoot: string | null,
+  maxBytes?: number,
+): string | null {
+  return projectionRead(
+    rec.runDir ?? rec.id,
+    `patch-digest:${maxBytes ?? "all"}:${projectRoot}`,
+    () => {
+      const resolved = resolveRunPatch(rec, projectRoot, maxBytes);
+      return resolved.patch !== null && !resolved.unavailable ? sha256(resolved.patch) : null;
+    },
+  );
 }
 
 /** A blob-only finding is invisible to a text scan of the patch, so the `pr`

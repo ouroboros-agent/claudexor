@@ -813,7 +813,6 @@
                       "cursor",
                       "detail",
                       "summary",
-                      "attention",
                       "event-replay",
                       "artifact"
                     ]

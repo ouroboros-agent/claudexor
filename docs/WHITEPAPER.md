@@ -260,9 +260,7 @@ frozen plan document with required sections replaced it); a separate
 
 ## Evidence Beats Summaries
 
-Inspecting retained history must leave admission, attention reads and Stop available.
-The history remains complete; clients observe current attention and progress
-without repeatedly rebuilding its presentation.
+The observation availability contract is [INV-145](../CLAUDEXOR_BIBLE.md#12-keep-the-codebase-small-and-direct).
 
 Model prose is context, never proof. Work product is proven by Git diffs or
 complete file manifests captured in the execution tree, deterministic checks,

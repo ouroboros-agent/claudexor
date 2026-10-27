@@ -25,15 +25,13 @@ export interface BulkInputs {
   cursor: { path: string };
   detail: DetailRead;
   summary: { record: DaemonRunRecord; cached?: SummarySnapshot };
-  attention: { record: DaemonRunRecord; operator: ControlOperatorDecisionRecord | null };
   "event-replay": EventReplayRequest;
   artifact: ArtifactReadRequest;
 }
 export interface BulkResults {
   cursor: number;
   detail: string;
-  summary: SummarySnapshot;
-  attention: boolean;
+  summary: SummarySnapshot | { summary: ControlRunSummary };
   "event-replay": EventReplayResult;
   artifact: ArtifactReadResult;
 }

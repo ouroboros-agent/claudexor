@@ -52,8 +52,12 @@ function computeBudgetSnapshot(
   // The ENGINE-EFFECTIVE cap lives in the immutable contract (request input,
   // surface default, or the configured global per-run default); request params
   // alone under-report a config-defaulted cap as "no cap".
-  const contractBudget = safeReadStructuredArtifact(rec, "context/task.yaml", TaskContract, maxBytes)?.budget
-    .paid_budget;
+  const contractBudget = safeReadStructuredArtifact(
+    rec,
+    "context/task.yaml",
+    TaskContract,
+    maxBytes,
+  )?.budget.paid_budget;
   const paidBudget = PaidBudget.safeParse(p["paidBudget"]).data ??
     contractBudget ?? { kind: "unlimited" as const };
   const evs = eventsSnapshot ?? readRunEvents(rec);

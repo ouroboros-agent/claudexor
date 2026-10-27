@@ -38,6 +38,40 @@ afterEach(() => {
 });
 
 describe("complete event snapshots through bounded read buffers", () => {
+  it.each([true, false])(
+    "keeps explicit history tails separate from complete snapshots (full first=%s)",
+    (fullFirst) => {
+      const { runDir, path } = fixture();
+      const events = Array.from({ length: 20 }, (_, i) => ({
+        seq: i + 1,
+        type: "text",
+        text: "🙂",
+      }));
+      const lines = events.map((event) => JSON.stringify(event) + "\n");
+      writeFileSync(path, lines.join(""));
+      const maxBytes = Buffer.byteLength(lines.slice(-3).join("")) + 5;
+      inRunProjection(() => {
+        const full = () => {
+          const read = readRunEventsWithIntegrity({ runDir });
+          expect(read.events).toEqual(events);
+          expect(read.integrity.tailTruncated).not.toBe(true);
+        };
+        const bounded = () => {
+          const read = readRunEventsWithIntegrity({ runDir }, maxBytes);
+          expect(read.events).toEqual(events.slice(-3));
+          expect(read.integrity).toMatchObject({ tailTruncated: true, malformedLines: 0 });
+        };
+        if (fullFirst) full();
+        else bounded();
+        full();
+        bounded();
+        const all = readRunEventsWithIntegrity({ runDir }, Buffer.byteLength(lines.join("")));
+        expect(all.events).toEqual(events);
+        expect(all.integrity.tailTruncated).toBe(false);
+      });
+    },
+  );
+
   it("shares one parse within a projection and reads fresh outside it", () => {
     const { runDir, path } = fixture();
     writeFileSync(path, '{"seq":1,"type":"first"}\n');
@@ -82,7 +116,6 @@ describe("complete event snapshots through bounded read buffers", () => {
       unreadable: false,
       malformedLines: 0,
       nonObjectLines: 0,
-      tailTruncated: false,
     });
     expect(latestPlanProgress({}, null, read.events, read.integrity)?.items).toEqual(
       prefix[1]!.payload.items,

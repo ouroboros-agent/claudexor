@@ -111,7 +111,7 @@ export const DaemonTimingFacts = z.object({
   bulk: z
     .array(
       z.object({
-        kind: z.enum(["cursor", "detail", "summary", "attention", "event-replay", "artifact"]),
+        kind: z.enum(["cursor", "detail", "summary", "event-replay", "artifact"]),
         queue: LatencyFacts,
         projection: LatencyFacts,
       }),

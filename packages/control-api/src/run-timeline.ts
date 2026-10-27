@@ -62,8 +62,8 @@ export interface RunEventsIntegrity {
   malformedLines: number;
   /** JSON values that parsed but were not plain objects (arrays/scalars/null) and were dropped. */
   nonObjectLines: number;
-  /** Compatibility with earlier bounded-tail snapshots; complete reads leave this false. */
-  tailTruncated: boolean;
+  /** Only explicit bounded history reads disclose whether the prefix was omitted. */
+  tailTruncated?: boolean;
 }
 
 export interface RunEventsRead {
@@ -76,13 +76,11 @@ const COMPLETE_INTEGRITY: RunEventsIntegrity = {
   unreadable: false,
   malformedLines: 0,
   nonObjectLines: 0,
-  tailTruncated: false,
 };
 
 /**
  * Collapse a typed integrity record to the three-state evidence level the DTOs
- * disclose. Intentional bounding (tailTruncated / absent-for-queued) is NOT an
- * integrity problem, so it maps to `complete` — only genuine unreadable files
+ * disclose. A legitimately absent file maps to `complete`; only unreadable files
  * and skipped corrupt lines degrade the level.
  */
 export function evidenceLevel(i: RunEventsIntegrity): ControlEvidenceIntegrity {
@@ -96,12 +94,10 @@ export function evidenceLevel(i: RunEventsIntegrity): ControlEvidenceIntegrity {
  * parsed objects AND a typed count of everything it skipped, so no caller can
  * mistake a partial/empty set for complete evidence (QA-074). `readRunEvents`
  * preserves the historical array-only shape for callers that do not disclose
- * integrity.
+ * integrity. Omitting maxBytes captures the complete log for detail/summary
+ * folds; bounded history receipts pass their explicit tail allowance.
  */
-export function readRunEventsWithIntegrity(
-  rec: RunDirCarrier,
-  maxBytes?: number,
-): RunEventsRead {
+export function readRunEventsWithIntegrity(rec: RunDirCarrier, maxBytes?: number): RunEventsRead {
   return projectionRead(rec.runDir ?? "", `events:${maxBytes ?? "all"}`, () =>
     readEventsSnapshot(rec, maxBytes),
   );
@@ -159,8 +155,8 @@ function readEventsSnapshot(rec: RunDirCarrier, maxBytes?: number): RunEventsRea
       const decoder = new StringDecoder("utf8");
       let carry = "";
       const startOffset = maxBytes === undefined ? 0 : Math.max(0, end - maxBytes);
-      integrity.tailTruncated = startOffset > 0;
-      let skipPartialLine = integrity.tailTruncated;
+      if (maxBytes !== undefined) integrity.tailTruncated = startOffset > 0;
+      let skipPartialLine = startOffset > 0;
       for (let offset = startOffset; offset < end;) {
         const read = readSync(fd, buf, 0, Math.min(buf.length, end - offset), offset);
         if (read === 0) throw new Error("Run events changed while reading");

@@ -25,8 +25,12 @@ import {
 import { sha256 } from "@claudexor/util";
 import { projectBulkJob } from "./bulk-worker.js";
 import { inRunProjection } from "./projection-context.js";
-import { readRawTextArtifact } from "./run-artifact-read.js";
+import { readRawTextArtifact, safeReadStructuredArtifact } from "./run-artifact-read.js";
 import { runPatchDigest } from "./run-exact-patch.js";
+import { runRepoRoot } from "./run-apply-projection.js";
+import { readFilesWorkProduct } from "./files-work-product.js";
+import { effectiveTerminalFacts, expectedRunFacts } from "./run-facts-projection.js";
+import { budgetSnapshot } from "./run-budget-snapshot.js";
 import { detailFor, summarizeRun } from "./run-projection.js";
 import type { DaemonRunRecord } from "./run-record.js";
 import { eventsParseCountForTests, resetEventsParseCountForTests } from "./run-timeline.js";
@@ -172,6 +176,45 @@ afterEach(() => {
 });
 
 describe("one request context for complete run projection", () => {
+  it.each([true, false])(
+    "keeps bounded artifact refusals distinct from complete reads (full first=%s)",
+    (fullFirst) => {
+      const { record, events } = fixture("read-policies");
+      writeFileSync(join(record.runDir!, "final/patch.diff"), "diff --git a/x b/x\n".repeat(10));
+      writeFileSync(
+        join(record.runDir!, "final/work_product.yaml"),
+        JSON.stringify({ id: "wp", source_task_id: record.taskId, kind: "report", meta: {} }),
+      );
+      const fromTask = { ...record, params: {} };
+      const readers = [
+        (maxBytes?: number) => readRawTextArtifact(record, "context/task.yaml", maxBytes),
+        (maxBytes?: number) =>
+          safeReadStructuredArtifact(record, "context/task.yaml", TaskContract, maxBytes),
+        (maxBytes?: number) => runRepoRoot(fromTask, maxBytes),
+        (maxBytes?: number) => readFilesWorkProduct(record, maxBytes),
+        (maxBytes?: number) => runPatchDigest(record, record.runDir!, maxBytes),
+        (maxBytes?: number) =>
+          effectiveTerminalFacts(record.runDir, null, null, expectedRunFacts(record), maxBytes),
+        (maxBytes?: number) => budgetSnapshot(record, null, events, undefined, maxBytes),
+      ];
+      const expected = readers.map((read) => read());
+      inRunProjection(() => {
+        for (const [index, read] of readers.entries()) {
+          const full = () => expect(read()).toEqual(expected[index]);
+          const bounded = () =>
+            expect(() => read(16)).toThrow(
+              expect.objectContaining({ status: 503, code: "artifact_read_limit" }),
+            );
+          if (fullFirst) full();
+          else bounded();
+          full();
+          bounded();
+          expect(read(1024 * 1024)).toEqual(expected[index]);
+        }
+      });
+    },
+  );
+
   it("parses events, budget, telemetry, task and run facts once and opens the primary output once", () => {
     const { record, events } = fixture("once");
     const task = vi.spyOn(TaskContract, "parse");

@@ -12,10 +12,14 @@ export function readTextArtifact(
   redact = true,
   maxBytes?: number,
 ): string | null {
-  return projectionRead(rec.runDir ?? rec.id, `text:${maxBytes ?? "all"}:${redact}:${relPath}`, () => {
-    const text = readRawTextArtifact(rec, relPath, maxBytes);
-    return text === null ? null : redact ? redactSecrets(text) : text;
-  });
+  return projectionRead(
+    rec.runDir ?? rec.id,
+    `text:${maxBytes ?? "all"}:${redact}:${relPath}`,
+    () => {
+      const text = readRawTextArtifact(rec, relPath, maxBytes);
+      return text === null ? null : redact ? redactSecrets(text) : text;
+    },
+  );
 }
 
 export function readRawTextArtifact(
@@ -62,7 +66,11 @@ export function safeReadStructuredArtifact<T>(
 ): T | null {
   return projectionRead(schema, `${rec.runDir ?? rec.id}:${maxBytes ?? "all"}:${relPath}`, () => {
     try {
-      return readStructured(readTextArtifact(rec, relPath, true, maxBytes), extname(relPath), schema);
+      return readStructured(
+        readTextArtifact(rec, relPath, true, maxBytes),
+        extname(relPath),
+        schema,
+      );
     } catch (error) {
       if (maxBytes !== undefined && (error as { status?: number }).status === 503) throw error;
       return null;

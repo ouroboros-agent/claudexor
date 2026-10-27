@@ -75,7 +75,7 @@ function readBytes(fd: number, start: number, length: number): Buffer {
  * safe fence for an earlier durable event.
  */
 function seek(fd: number, cursor: SeekCursor, lastEventId: number): EventReplayResult {
-  const start = Math.max(0, cursor.before - EVENT_REPLAY_BYTES);
+  const start = Math.max(0, cursor.before - Math.max(EVENT_REPLAY_BYTES, cursor.carry.length));
   const bytes = Buffer.concat([readBytes(fd, start, cursor.before - start), cursor.carry]);
   let end = bytes.length;
   let selected = cursor.selected;
@@ -184,7 +184,12 @@ function readTail(
   if (size === cursor.offset) return result(cursor, false);
   const bytes = Buffer.concat([
     cursor.carry,
-    readBytes(fd, cursor.offset, Math.min(EVENT_REPLAY_BYTES, size - cursor.offset)),
+    // Grow with an unfinished event so carry copying stays linear in its size.
+    readBytes(
+      fd,
+      cursor.offset,
+      Math.min(Math.max(EVENT_REPLAY_BYTES, cursor.carry.length), size - cursor.offset),
+    ),
   ]);
   const nextOffset = cursor.offset + bytes.length - cursor.carry.length;
   const lastNewline = bytes.lastIndexOf(10);

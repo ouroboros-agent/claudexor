@@ -1,8 +1,13 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Worker } from "node:worker_threads";
-import { ControlDaemonStatus, RunWaitManyResult, RunWaitManySummary } from "@claudexor/schema";
+import {
+  ControlDaemonStatus,
+  ControlThreadListResponse,
+  RunWaitManyResult,
+  RunWaitManySummary,
+} from "@claudexor/schema";
 import { expect, it } from "vitest";
 import { BulkExecutor } from "./bulk-executor.js";
 import { BULK_WORKER_ROLE } from "./bulk-protocol.js";
@@ -17,7 +22,7 @@ function latch() {
   return { promise, resolve };
 }
 
-it("serves control requests and stops while a real bulk worker is blocked", async () => {
+it("serves admission, inbox attention and control requests, then stops while a real bulk worker is blocked", async () => {
   const root = mkdtempSync(join(tmpdir(), "claudexor-worker-isolation-"));
   const barrier = new Int32Array(new SharedArrayBuffer(2 * Int32Array.BYTES_PER_ELEMENT));
   let server: DaemonControlApiServer | undefined;
@@ -44,10 +49,39 @@ it("serves control requests and stops while a real bulk worker is blocked", asyn
       runDir: root,
       params: { mode: "ask", scope: { kind: "project", root } },
     };
+    const heads = ["blocked", "clean"].map((id): DaemonRunRecord => {
+      const runDir = join(root, id);
+      mkdirSync(join(runDir, "arbitration"), { recursive: true });
+      writeFileSync(
+        join(runDir, "arbitration/decision.yaml"),
+        JSON.stringify({
+          winner: "a01",
+          facts: {
+            lifecycle: "succeeded",
+            review: id === "blocked" ? "blocked" : "approved",
+            checks: "passed",
+            noChanges: false,
+          },
+        }),
+      );
+      return { id, runId: id, state: "succeeded", runDir, params: { mode: "agent" } };
+    });
+    const records = [record, ...heads];
+    let admissions = 0;
     const daemon: DaemonFacadeClient = {
-      enqueue: async () => ({ id: record.id, state: "queued" }),
+      enqueue: async () => {
+        admissions += 1;
+        return { id: record.id, state: "queued" };
+      },
       status: async () => structuredClone(record),
-      list: async (query) => ("delegatedFromRunId" in query ? [] : [structuredClone(record)]),
+      list: async (query) =>
+        structuredClone(
+          "delegatedFromRunId" in query
+            ? []
+            : "ids" in query
+              ? records.filter((r) => query.ids.includes(r.runId!))
+              : records,
+        ),
       fenceDelegationParent: async () => ({}),
       cancel: async () => {
         record.state = "cancelled";
@@ -95,6 +129,18 @@ it("serves control requests and stops while a real bulk worker is blocked", asyn
     server = new DaemonControlApiServer({
       token: "worker-isolation",
       daemon,
+      services: {
+        listThreads: async () => ({
+          threads: records.map((r) => ({
+            id: `thread-${r.id}`,
+            head_run_id: r.runId,
+            run_ids: [r.runId],
+            mode: "agent",
+            created_at: timestamp,
+            updated_at: timestamp,
+          })),
+        }),
+      },
       runObservations: async (ids) =>
         ids.map((id) =>
           RunWaitManySummary.parse(
@@ -123,7 +169,11 @@ it("serves control requests and stops while a real bulk worker is blocked", asyn
       const post = (path: string, body: unknown) =>
         fetch(`${base}${path}`, {
           method: "POST",
-          headers: { ...headers, "content-type": "application/json" },
+          headers: {
+            ...headers,
+            "content-type": "application/json",
+            "Idempotency-Key": "worker-isolation",
+          },
           body: JSON.stringify(body),
         });
       let detailSettled = false;
@@ -148,6 +198,26 @@ it("serves control requests and stops while a real bulk worker is blocked", asyn
       ]);
       expect(controls.map((response) => response.status)).toEqual([200, 200, 200]);
       await Promise.all(controls.map((response) => response.arrayBuffer()));
+      const admitted = await post("/v2/runs", {
+        mode: "ask",
+        prompt: "fixture",
+        scope: { kind: "project", root },
+      });
+      expect(admitted.status).toBe(200);
+      expect(await admitted.json()).toMatchObject({ jobId: record.id, runId: record.runId });
+      expect(admissions).toBe(1);
+      const threads = await get("/v2/threads");
+      expect(threads.status).toBe(200);
+      expect(
+        ControlThreadListResponse.parse(await threads.json()).threads.map((t) => [
+          t.id,
+          t.needsHuman,
+        ]),
+      ).toEqual([
+        ["thread-job-one", false],
+        ["thread-blocked", true],
+        ["thread-clean", false],
+      ]);
       const attention = await post("/v2/runs/wait-many", {
         targets: [{ runId: "run-one" }],
         waitMs: 0,

@@ -2647,9 +2647,10 @@ when its response finishes, so it appears in a subsequent read.
 The `worstSync` array in `timing` retains only the 32 longest instrumented synchronous sections
 since start (descending, later samples win ties), with operation, duration and
 timestamp. Labels cover `store.begin_immediate`, `store.commit`, `store.external_write`,
-`scope.persist` and the historical control-projection labels. Detail and summary
-now report worker queue/projection wall time in `bulk`, not a main-thread sync
-span. Scope persistence measures synchronous serialization, not its asynchronous file writes. These
+`scope.persist`; `control.run_detail` and `control.run_summary` remain accepted
+so clients can parse status from engines that report those synchronous spans.
+Detail and summary report worker queue/projection wall time in `bulk`.
+Scope persistence measures synchronous serialization, not its asynchronous file writes. These
 samples may overlap and do not identify the cause of a delay. `store.commit`
 also exposes lifetime `p50_ms`/`p99_ms` using the same histogram precision.
 Older engines omit the new optional fields. The catalog still points to the
@@ -3472,7 +3473,7 @@ inspection, resnapshot or terminal collection; it is not a polling heartbeat.
 
 Each `DaemonControlApiServer` owns one lazily created bulk worker. Health,
 handshake and status alone create no thread. Detail projection, child and cold
-summary hydration, exact-patch digests, artifact walks/read-redact operations,
+summary hydration, detail's exact-patch digests, artifact walks/read-redact operations,
 and finite SSE seek/replay batches execute there. Only plain request records and
 results cross the port; daemon services, the registry and database remain with
 their owners. One projection context shares event parsing, structured reads,
@@ -3481,11 +3482,20 @@ context ends with the job. Timeline projection selects the last eligible rows
 before redaction and schema validation, with exact omitted/integrity markers;
 cash, valuation, plan and other folds still inspect the complete captured log.
 The final detail schema validation stays in the worker.
+Bounded thread-history receipts keep their explicit artifact and event byte
+allowances, partial event-count coverage and typed oversized-artifact refusals.
+The shared readers distinguish those limits and preview options in their
+request-local memo keys; a bounded receipt cannot replace a complete detail fold.
+Thread inbox/head attention uses synchronous main-thread artifact reads for
+succeeded heads, with an exact-patch digest only when an operator decision exists.
+Detail and summaries fold the complete retained log in the worker; a log the
+worker cannot hold fails that run's detail/summary and jobs queued with it with
+the typed retryable `503 bulk_worker_failed`, while the control plane stays available.
 
 The executor processes one finite job at a time. Live SSE waits and HTTP
 backpressure stay outside it; Node's HTTP response ordering preserves pipelined
 keep-alive order. Detail, artifact and SSE disconnects remove queued work and
-discard an active job's result; list projection stops between summaries.
+discard an active job's result; run lists and thread turn cards stop between summaries.
 Stop rejects queued and active reads immediately and requests worker
 termination without waiting for projection. A worker crash is a typed retryable
 `503 bulk_worker_failed`; the next requested read lazily creates its replacement.

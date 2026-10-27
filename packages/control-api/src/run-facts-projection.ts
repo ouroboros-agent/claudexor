@@ -121,8 +121,10 @@ function readRunFacts(
   expected: ExpectedRunFacts,
   maxBytes?: number,
 ): RunFacts | null {
-  return projectionRead(runDir ?? "", `run-facts:${maxBytes ?? "all"}:${JSON.stringify(expected)}`, () =>
-    readRunFactsUncached(runDir, expected, maxBytes),
+  return projectionRead(
+    runDir ?? "",
+    `run-facts:${maxBytes ?? "all"}:${JSON.stringify(expected)}`,
+    () => readRunFactsUncached(runDir, expected, maxBytes),
   );
 }
 
