@@ -385,7 +385,7 @@ async function populatedOldStore(version: 1 | 2) {
 
 describeStore("task group storage upgrade", () => {
   // Exact shipped v3 additive statements from 2202b8f6 schema.ts, applied to
-  // the independent frozen v2 owner above; not derived from current v4 DDL.
+  // the independent frozen v2 owner above; not derived from current v5 DDL.
   async function populatedV3() {
     const db = await populatedOldStore(2);
     db.exec(`
@@ -400,17 +400,17 @@ PRAGMA user_version=3;`);
     return db;
   }
 
-  it("migrates the populated v3 owner to v4 atomically without changing existing rows", async () => {
+  it("migrates the populated v3 owner to v5 atomically without changing existing rows", async () => {
     const db = await populatedV3();
     const before = tableSnapshot(db);
     ensureSchema(db);
-    expect(readSchemaIdentity(db).userVersion).toBe(4);
+    expect(readSchemaIdentity(db).userVersion).toBe(5);
     expect({ ...tableSnapshot(db), meta: [] }).toEqual({
       ...before,
       meta: [],
       deferred_message: [],
     });
-    const fresh = await connect("fresh-v4.sqlite");
+    const fresh = await connect("fresh-v5.sqlite");
     ensureSchema(fresh);
     expect(masterRows(db)).toEqual(masterRows(fresh));
     for (const [query, index] of [
@@ -441,7 +441,7 @@ PRAGMA user_version=3;`);
     expect(add.run("draft-2", "held").changes).toBe(1);
   });
 
-  it("rolls back the v3 to v4 table and indexes together on a late DDL fault", async () => {
+  it("rolls back the v3-to-v5 chain on a late deferred-message DDL fault", async () => {
     const db = await populatedV3();
     const beforeRows = tableSnapshot(db),
       beforeSchema = masterRows(db),
@@ -464,14 +464,14 @@ PRAGMA user_version=3;`);
     expect(masterRows(db)).toEqual(beforeSchema);
     expect(readSchemaIdentity(db)).toEqual(beforeIdentity);
     ensureSchema(db);
-    expect(readSchemaIdentity(db).userVersion).toBe(4);
+    expect(readSchemaIdentity(db).userVersion).toBe(5);
   });
 
   it("fresh DDL preserves exactly the two live product expression indexes at the current version", async () => {
     const db = await connect();
     ensureSchema(db);
-    expect(ENGINE_SCHEMA_VERSION).toBe(4);
-    expect(readSchemaIdentity(db).userVersion).toBe(4);
+    expect(ENGINE_SCHEMA_VERSION).toBe(5);
+    expect(readSchemaIdentity(db).userVersion).toBe(5);
     assertGroupIndexes(db);
   });
 
@@ -506,7 +506,7 @@ PRAGMA user_version=3;`);
       // The v2 fixture contains the raw bytes BEFORE either new index is built.
       // The fresh fixture proves writes AFTER both indexes already exist.
       ensureSchema(db);
-      expect(readSchemaIdentity(db).userVersion).toBe(4);
+      expect(readSchemaIdentity(db).userVersion).toBe(5);
       expect({ ...tableSnapshot(db), meta: [] }).toEqual({
         ...before,
         deferred_message: [],
@@ -543,14 +543,14 @@ PRAGMA user_version=3;`);
   );
 
   it.each([1, 2] as const)(
-    "upgrades populated v%s to v4 without rewriting params, results or membership",
+    "upgrades populated v%s to v5 without rewriting params, results or membership",
     async (version) => {
       const db = await populatedOldStore(version);
       const before = tableSnapshot(db);
       ensureSchema(db);
-      expect(readSchemaIdentity(db).userVersion).toBe(4);
+      expect(readSchemaIdentity(db).userVersion).toBe(5);
       expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({
-        value: "4",
+        value: "5",
       });
       const after = tableSnapshot(db);
       expect({ ...after, meta: [], account_last_service: [] }).toEqual({
@@ -610,10 +610,10 @@ PRAGMA user_version=3;`);
     },
   );
 
-  it("current-version reopen and a real frozen v2 reader leave a populated v4 file untouched", async () => {
+  it("current-version reopen and a real frozen v2 reader leave a populated v5 file untouched", async () => {
     const writer = await populatedOldStore(2);
     ensureSchema(writer);
-    expect(readSchemaIdentity(writer).userVersion).toBe(4);
+    expect(readSchemaIdentity(writer).userVersion).toBe(5);
     const observer = await connect();
     const beforeRows = tableSnapshot(writer),
       beforeSchema = masterRows(writer);
@@ -628,7 +628,7 @@ PRAGMA user_version=3;`);
         code: "store_schema_unsupported",
         status: 503,
         retryable: false,
-        userVersion: 4,
+        userVersion: 5,
       }),
     );
     expect(exec).not.toHaveBeenCalled();
@@ -694,6 +694,7 @@ describeStore("engine schema (SYNTHESIS_R5 §5)", () => {
         "project_root_active",
         "project_current_pid",
         "turn_run",
+        "turn_plan_answer",
         "upload_finalize",
       ].sort(),
     );

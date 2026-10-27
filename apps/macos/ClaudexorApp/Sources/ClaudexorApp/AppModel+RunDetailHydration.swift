@@ -72,9 +72,7 @@ extension AppModel {
             let queuedAlias = detail.summary.jobId == id && existingBaseIdx != nil
             guard exactIdentity || queuedAlias else { return }
             if existingBaseIdx == nil {
-                let belongsToSelectedThread = selectedThreadDetail?.turns.contains {
-                    $0.runId == id || ($0.run?.delegatedChildRunIds ?? []).contains(id)
-                } == true
+                let belongsToSelectedThread = selectedThreadAuthorizesColdRun(id)
                 guard exactIdentity, insertingIfMissing, belongsToSelectedThread else { return }
                 liveTasks.append(Self.liveTask(from: detail.summary))
             }
@@ -246,8 +244,10 @@ extension AppModel {
             // Re-resolve the row index at WRITE time: streams/refreshes may have
             // inserted or removed rows during the awaits above.
             if let writeIdx = liveTasks.firstIndex(where: { $0.id == id }) {
+                reconcileHistoryInteractions(&task, lastSeq: detail.lastSeq, at: .local)
                 liveTasks[writeIdx] = task
                 hydratedRunDetails.insert(id)
+                publishHistoryLive(task, locationID: .local)
             }
         } catch {
             guard !Task.isCancelled,

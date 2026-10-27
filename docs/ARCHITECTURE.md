@@ -2763,10 +2763,12 @@ visibility, not a permanent roster. Reads add no execution or approval authority
 - `GET /v2/threads/:id`
 - `PATCH /v2/threads/:id`
 - `POST /v2/threads/:id/apply`
+- `GET /v2/threads/:id/history`
 - `POST /v2/threads/:id/purge`
 - `POST /v2/threads/:id/restore`
 - `POST /v2/threads/:id/trash`
 - `POST /v2/threads/:id/turns`
+- `GET /v2/threads/:id/turns/:id/prompt`
 - `POST /v2/threads/:id/turns/:id/retry`
 - `GET /v2/trust`
 - `POST /v2/trust`
@@ -3118,6 +3120,231 @@ not retry automatically.
 
 `GET /healthz` is the only unauthenticated route; it is loopback-host guarded
 and returns liveness only.
+
+### Bounded thread history
+
+`GET /v2/threads/:id/history` is the addressed feed read. Its strict contract is
+`packages/schema/src/thread-history.ts`; the operation catalog, generated JSON
+Schemas, CLI/MCP and Swift Kit share that contract. The legacy thread-detail
+route keeps its full `turns`, `sessions` and `thread.runIds`: ACP replay accounting
+and explicit workspace inspection still depend on it. History does not call the
+legacy detail projector, enumerate the run archive, or hydrate run detail per turn.
+
+The query accepts `limit` (1–20, default 20), optional `expectedStoreId`, and at
+most one of `cursor`, `beforeTurnId`, `afterTurnId`, `aroundTurnId`. No selector
+opens the newest page or jumps to latest. Before/after use the client's actual
+mounted edge after eviction, exclusively. Around includes the addressed anchor
+and proceeds backward, then returns rows in ascending ordinal. A foreign edge is
+404, not a neighboring thread's page. Empty threads have an empty array and both
+coverage flags false. A before-oldest empty page has `hasNewer` and an inclusive
+reverse cursor back through the oldest turn; after-newest symmetrically has
+`hasOlder`. No replay cursor is minted for empty membership. Validation (400),
+absence (404), stale scope (409), purged thread (410), and read failures (503)
+are failures, never empty successes.
+
+The SQLite owner selects scalar keys through the unique `turn_thread(thread_id,
+ordinal)` index with `LIMIT limit+1`. Only emitted turn bodies and bounded prompt
+parts are decoded. The header returns compact thread fields without `runIds`, the
+true latest stored turn ID, its gap-free `latestOrdinal` (null for an empty
+thread), and its admission/refusal (including a queued job handle),
+head-run lifecycle facts, and at most 16 sessions with `sessionsComplete`. The
+session preview also packs to the remaining header byte budget; full session
+inspection remains on legacy detail. Header extraction currently uses
+SQLite JSON projection: no growing lineage array reaches the JavaScript decoder,
+but SQLite still parses the stored thread JSON. This residual cost must not be
+represented as constant work for arbitrarily large thread bodies.
+One observation on this shared arm64 Mac under load (2026-10-26, Darwin 25.4.0,
+Node 24.16.0, SQLite 3.53.0, 1-minute load average 10.90): a thread with 10,000
+run IDs (`run_` plus 32 hexadecimal digits) had a 390,548-byte body. Its single
+compact-header SQL execution took 0.216 ms, excluding preparation; the complete
+header read, including preparation, auxiliary queries and compact decoding, took
+0.582 ms. The compact thread JSON was 346 bytes. This was one read with no warmup
+or repetition on one loaded machine, not a performance gate or an asymptotic
+guarantee. No duplicate-header expression index is maintained.
+
+History metadata and exact-apply evidence reads enforce their 1 MiB cap on the
+opened file descriptor before allocating or parsing. A limit in exact-apply or
+decision-verification evidence degrades that row's eligibility coverage to
+`unavailable`, with null eligibility. If a recorded operator decision cannot be
+verified within the cap, `operatorDecision` stays null;
+`unverifiedOperatorDecision` discloses its action/time with
+`operatorDecisionCoverage: "unavailable"`. It cannot waive required actions or
+authorize apply. Complete coverage preserves the existing digest-validation
+owner, including rejecting a stale decision. Other metadata read failures and
+files changing during a read retain their typed errors; per-run owners retain
+their original refusals. Failure messages are bounded to 8 KiB after redaction,
+with `failureMessageInfo` recording delivered/known-total bytes and truncation,
+and the original `rawDetailRef` available for inspection.
+
+Command retention (default cap 500, age 30 days) removes command/run-terminal,
+interaction and operator-decision records while leaving thread turns and prompt
+blobs. History emits that turn with `runStatus: "not_retained"`, null `run`, and
+`primaryOutputStatus: "not_retained"`, rather than failing the page or inventing
+receipt counts. Available receipts use `runStatus: "available"`; unbound turns
+use `unbound`. The header's `headRunStatus` uses the same enum; a pruned head has
+null `headRun` while `thread.headRunId` keeps its address. The existing addressed
+artifact owner resolves run directories through the command record, which the
+pruner deletes. No retained bounded locator exists after that deletion: history
+does not guess a directory or claim that still-present artifact bytes have been
+physically reclaimed. With a retained command, canonical answer/tombstone reads
+remain unchanged. Indexed plan-answer relations and full prompt parts remain
+readable independently of command retention. Store read errors still propagate.
+
+Retained run rows also carry `runDir` and the canonical `authRoute` projection,
+so reopened file links and failure route captions use recorded facts without a
+per-card detail read. Missing route telemetry remains null.
+
+The row contract includes `answeredByTurnId`, a bounded `answeredByPrompt` and
+`planAnswerComplete`. Schema v5's `turn_plan_answer` expression index addresses
+each page plan's answering turns by thread, source plan run and ordinal. The
+query selects the first bound, unrefused queued, or retryably refused answer;
+only a non-retryable runless refusal is excluded, matching plan-answer admission
+and `PlanAnswerSubmission.acceptedTurn`. This remains true for superseded plans.
+Acceptance stays in the query, not the partial-index predicate; it examines only
+that plan's answer candidates, including any preceding refusals, rather than
+unrelated archive rows. Only the selected answer's bounded prompt is read.
+Successful reads set `planAnswerComplete: true`, with null answer fields when
+there is no accepted relation; missing/oversized evidence fails typed. Relations
+are current facts even when the answer is off-page or appended beyond a replay's
+frozen membership. Clients can remove the relation-dependent full-detail read.
+
+Cursors are strictly decoded, canonical base64url, at most 2,048 characters and
+bound to store, partition epoch, thread, limit and a frozen tail ordinal. Older
+and newer edges advance only past emitted rows, never the lookahead probe or a
+row excluded by the byte budget. Coverage is relative to that frozen traversal;
+`header.latestTurnId` remains current. Use a fresh edge selector or no selector to
+include later arrivals. A stale cursor returns `thread_history_cursor_stale` with
+`requiredActions: ["resnapshot"]`. Replays preserve their original ordinal
+membership across appends and refresh mutable facts. If larger answers now require
+more bytes, `replayNextCursor` continues the same membership; every segment returns
+the original `replayCursor`. Merge every segment before calling that refresh
+complete. No history stream or durable projection table is introduced.
+
+Shared byte bounds are 32 KiB per prompt preview, 64 KiB per answer, 32 KiB for the
+header, 832 KiB per serialized row and 2 MiB for the complete minified JSON page,
+including escaping, redaction and cursor envelope. Packing reserves a maximum row
+before decoding it and emits a contiguous traversal prefix. It measures the empty
+envelope once, then adds each serialized row's bytes and its array comma; the
+8 KiB cursor reserve covers later envelope changes. Final schema validation
+measures the complete page once, rather than reserializing a growing page per row.
+The reserve is
+conservative; `limitedBy` is `turns`, `bytes`, or null. One maximum row always fits.
+Run metadata and exact apply evidence have a 1 MiB per-artifact read bound; an
+oversized exact-apply evidence has unavailable coverage, never fabricated negative
+eligibility. Other oversized canonical metadata retains its typed read error.
+Receipt counts and budget evidence use a 256 KiB event tail. Counts disclose
+complete/partial/unavailable coverage; an absent log is unknown rather than zero.
+The file count is the number of file-kind tool calls, not a diffstat or a number
+of distinct paths. Activity transcripts remain explicit per-run expansion reads.
+
+Primary output is selected once per projected run by the canonical owner. The
+same selected output feeds readiness (pending/finalizing/ready/diagnostic), keeping
+retention and missing-output diagnostics. A patch is an artifact reference, never
+inline patch text. `textBytes` counts delivered redacted UTF-8; `totalTextBytes` is
+null when the full redacted length is unknown. Do not derive a remainder from raw
+artifact bytes. `GET /v2/threads/:id/turns/:turnId/prompt` supplies explicit full
+prompt parts for bound and runless refused turns: `offset` defaults to 0,
+`maxBytes` defaults to 32 KiB (4–64 KiB), UTF-8 boundaries are preserved, and
+`totalBytes`/`sha256` identify the immutable stored redacted prompt. U+FEFF remains
+part of those bytes at offset zero and at a later part boundary. Concatenate
+through `nextOffset == totalBytes` and verify the SHA-256. Full answers retain the
+existing addressed artifact read.
+
+The projection revision producer is `createThreadHistoryRead`: it allocates
+`{epoch, sequence}` **before** the synchronous SQL/artifact projection and does not
+await during projection. Sequence advances on every observation, including output
+publication before terminal commit, operator/apply overlays and retention. An old
+projection therefore cannot receive a later sampled revision; delayed HTTP
+responses retain their older revision. Epoch is a random serving-owner incarnation
+and resets when the attached store graph changes. It is separate from the durable
+partition epoch in paging cursors. Compare sequence only within an incarnation;
+resnapshot across incarnations. The producer is shared by HTTP, CLI and MCP.
+
+Clients merge by turn id/revision and keep visible content during refresh. A
+retry/bind updates that id and ordinal; it is not an arrival. Coalesce thread pings
+and lifecycle notifications to one in-flight mounted-range read and at most one
+trailing read (INV-136). The existing addressed live-run stream and terminal read
+remain the authority for the answer settling while open; never replace that newer
+live answer with a delayed page. A terminal delivered during the trailing read
+must therefore render without chaining a third history request. The same contract
+applies through the remote gateway. The app owns viewport retention, and this
+engine read does not authorize background eviction or automatically fetch the
+legacy workspace roster.
+
+The macOS app consumes this contract through one `ThreadHistoryStore` per selected
+`ExecutionLocationID` and thread ID. Both local and remote requests use
+`gateway(for:)`. Open/Jump use no selector; Earlier/Later use the current mounted
+edges, never an evicted page's outer cursor. The DTO cache retains at most two
+transport pages, 40 rows and 4 MiB; the eager mounted island has at most 20 turns.
+Presentation drafts/expansions are separate and do not retain historical DTOs.
+Replay coverage follows the mounted IDs and consumes every continuation with the
+limit that minted its cursor, including reissued tokens and partially evicted
+ranges. Encoded row sizes are cached by ID/revision and reclaimed with DTOs.
+Same-thread refresh never clears the painted feed. Cursor/owner resets read around
+the reading anchor and follow newer coverage to refill beneath it; a follower
+instead requests the newest page and keeps following with no reading anchor.
+Recovery revalidates focus and the current reading position after the awaited
+read; focus gained during a follower read triggers an anchored read before paint.
+An empty boundary page updates coverage without replacing the painted island.
+Gestures cancel travel, Jump and recovery navigation, not background facts. A tail
+refresh rechecks following after its awaited fetch before changing mounted IDs.
+Membership changes also require an unchanged completed-navigation revision and
+no newer installed read; superseded responses still merge useful row/header facts.
+A Jump overtaken by a newer revision retries its newest read once. Arrivals use
+`latestOrdinal` differences, never refresh counts; missing ordinal evidence is
+shown as unnumbered “new”. Travel counts arrivals first observed while leaving
+following. Show later follows at the tail bottom when it reaches the newest
+turn; otherwise it anchors the former last turn at the bottom edge.
+
+The app renders settled prompt, answer, receipt, plan relation and retention
+facts from each history row. Its live-run overlay records which history reads
+were already in flight when a run detail published; those responses cannot erase
+that answer, even when they report terminal state with older output. Stream
+changes publish card-visible live facts immediately. Detail snapshots own pending
+questions through `lastSeq`; only requests with a newer event sequence override
+that list. Covered deferred resolutions clean up the presentation without replaying
+covered spend/timeline events, and acknowledged answers cannot be resurrected.
+Request sequences and resolved-interaction sets are pruned to mounted runs and
+the head. Native prose reports the old selection/focus keys cleared before a
+document replacement and on dismantling, so expansion or eviction cannot leave
+stale keys preventing following from resuming. Explicit earlier/later travel may
+end an evicted selection; presentation drafts remain independent of membership.
+
+A settled reading passage records the visible turn, prose document, character
+index and line offset after scrolling or focus/selection pauses following. Width changes restore that passage after layout settles
+through the feed's single programmatic scroll path; following still pins the
+bottom. Native prose hosts register weakly, without row geometry observers. Full-prompt
+sheets clear the inherited feed registry and message identity.
+Code wraps within the prose selection host, with a language/Copy header excluded
+from plain-text and rich-text copies. Code actions use the native link delegate, and the native
+context menu retains selection Copy alongside whole-message Markdown copying.
+Tables expose whole-table copying and fading sides only where columns are hidden.
+Prompt/answer folds use their content rule, with word-bounded source long enough
+for the whole-line clip, a visual last-line fade and the newest turn initially
+expanded. Typing in message text restores the registered composer’s saved native
+selection (or its draft end before first focus), then delivers the original key
+event to the field editor for native input composition. An unavailable destination
+leaves the message alone. Tab/Shift-Tab leave clicked prose through the window’s
+native key-view loop without making prose an ordinary Tab destination.
+Interaction selections/free text live in the located presentation store keyed by
+run, interaction and question, survive eviction, and clear on acknowledged answer,
+withdrawal, timeout or terminal resolution. Composer/Stop use the page header, not
+the mounted slice. Acknowledged PATCH metadata updates that header immediately and
+survives reads already in flight. A remote authority replacement retires the old
+history projection/store pin before validating the new projection.
+
+The old last-five hydration and per-card eligibility hydrators are removed. A
+mounted parent whose page projects missing Delegate children authorizes one
+addressed parent-detail load per mounted residence (at most eight child IDs);
+ordinary settled cards never cause hydration. Inline families and workspace
+membership resolve children from the same execution location, including when
+local and remote stores reuse a run ID. The workspace panel separately
+reads the legacy full roster only when shown. Accepted turns and changes to the
+header's latest-turn membership invalidate it through its own coalescer; routine
+replays do not. A new mounted receipt remains selectable while that roster is
+catching up. Full prompt parts are fetched only by explicit Copy/Show actions.
+Initial loading, loaded-empty and failed history remain distinct from a new draft
+conversation.
 
 ### Plan lifecycle (typed open questions → readiness → Implement freezes the plan)
 
@@ -3821,7 +4048,7 @@ kept only for cold import and an independent frozen copy kept for tests.
   their predicates. Membership is committed in the original
   acceptance transaction, before ACK/dispatch; there is no group table, backfill
   or retention pin. Fresh DDL and the atomic 2→3 migration have the same indexes;
-  version 1 follows 1→2→3, and reopening the current version is write-free.
+  version 1 follows 1→2→3→4→5, and reopening the current version is write-free.
   A version-2 reader refuses the upgraded file before writing. Downgrading an
   upgraded store requires restoring a compatible complete backup made with all
   writers stopped; swapping only the executable is insufficient. Source and
@@ -3855,6 +4082,19 @@ kept only for cold import and an independent frozen copy kept for tests.
   a waiting draft whatever the predecessor's lifecycle (`POST /v2/runs/:id/control`), and
   bounded reads add `controls`, the captured values by origin with
   `capturedAt`.
+- Schema version 5 adds only `turn_plan_answer`, keyed by thread id, guarded
+  `answers_plan_run_id` JSON expression and ascending ordinal. Its minimal partial
+  predicate is answer-present; `CASE WHEN json_valid(...)` guards both extraction
+  and membership. Missing/null relations and non-JSON bodies remain writable and
+  occupy no index entry. Bound, queued and refused relations all occupy it;
+  acceptance is evaluated by the history query, so retry/bind changes retain the
+  same turn identity. The atomic 4→5 migration builds the index without rewriting
+  turn, prompt, event or other domain rows; it updates only schema metadata.
+  Building it scans existing turns once, and subsequent turn writes maintain it.
+  Fresh stores start at version 5; version 4 and older readers refuse them before writes.
+  Earlier versions follow the existing migration map. This introduces no history
+  table, header-body copy, backfill or stream. The complete-backup downgrade rule
+  above still applies, including between experimental builds of one release.
 - The flusher worker owns the power-loss barrier. Every 200 ms it fsyncs each
   directory registered since the previous pass, reads `data_version`, runs a
   PASSIVE checkpoint for space, and — whenever anything was committed since
