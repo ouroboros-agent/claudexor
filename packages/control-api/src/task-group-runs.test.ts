@@ -3,7 +3,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ControlOperationCatalog,
   ControlProblem,
+  TASK_GROUP_CURSOR_CHARS,
+  TASK_GROUP_RUNS_RESULT_BYTES,
   TaskGroupRunsResult,
+  decodeTaskGroupCursor,
+  type RunObservationRecord,
+  type TaskGroupPageQuery,
   type TaskGroupRunsInput,
 } from "@claudexor/schema";
 import { DaemonControlApiServer, type DaemonControlApiOptions } from "./daemon-server.js";
@@ -151,6 +156,10 @@ describe("GET /v2/task-groups/:id/runs", () => {
     "?limit=201",
     "?limit=1.5",
     "?limit=1x",
+    "?limit=1e1",
+    "?limit=+5",
+    "?limit=0x10",
+    "?limit=05",
     "?limit=",
     "?limit=2&limit=3",
     "?state=pending",
@@ -275,5 +284,119 @@ describe("GET /v2/task-groups/:id/runs", () => {
     } finally {
       client.destroy();
     }
+  });
+});
+
+describe("readTaskGroupRuns page building", () => {
+  const observation = {
+    status: "running" as const,
+    pending: false,
+    token: "T".repeat(43),
+    problem: null,
+  };
+  const record = (jobId: string): RunObservationRecord => ({
+    jobId,
+    runId: `run-${jobId}`,
+    partition: "global",
+    epoch: "e".repeat(32),
+    state: "running",
+    createdAt: "2026-10-22T00:00:00.000Z",
+    taskGroupId: GROUP,
+  });
+  function host(records: RunObservationRecord[], hasMore: boolean) {
+    return {
+      storeId: () => STORE,
+      page: vi.fn((_query: TaskGroupPageQuery) => ({
+        records,
+        hasMore,
+        viewToken: "V".repeat(43),
+      })),
+      snapshot: vi.fn(async (ids: readonly string[]) => ids.map(() => observation)),
+    };
+  }
+
+  it("serves the store's canonical rows for any spelling of the group and echoes the caller's", async () => {
+    const lettered = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+    const upper = lettered.toUpperCase();
+    const h = host(
+      [record("job-a"), record("job-b")].map((row) => ({ ...row, taskGroupId: lettered })),
+      true,
+    );
+    const first = await readTaskGroupRuns({ taskGroupId: upper, limit: 1 }, h);
+    expect(first).toMatchObject({ taskGroupId: upper, hasMore: true });
+    expect(first.members.map((member) => member.jobId)).toEqual(["job-a"]);
+    // A cursor from one spelling continues the page of another.
+    const next = await readTaskGroupRuns(
+      { taskGroupId: lettered, limit: 1, cursor: first.nextCursor! },
+      h,
+    );
+    expect(next.taskGroupId).toBe(lettered);
+    expect(h.page.mock.calls[1]![0].cursor).toMatchObject({ taskGroupId: upper });
+  });
+
+  it("refuses a page row from another group as an invalid service response", async () => {
+    const h = host(
+      [{ ...record("job-a"), taskGroupId: "33333333-3333-4333-8333-333333333333" }],
+      false,
+    );
+    await expect(readTaskGroupRuns({ taskGroupId: GROUP, limit: 5 }, h)).rejects.toMatchObject({
+      code: "invalid_service_response",
+      status: 500,
+    });
+  });
+
+  it("answers a typed 500 when a first member cannot fit the page or a cursor cannot be encoded", async () => {
+    const huge = host([record("x".repeat(TASK_GROUP_RUNS_RESULT_BYTES))], false);
+    await expect(readTaskGroupRuns({ taskGroupId: GROUP, limit: 5 }, huge)).rejects.toMatchObject({
+      code: "task_group_member_too_large",
+      status: 500,
+    });
+    // The page fits, but the cursor naming its last member would exceed 2048 characters.
+    const long = host([record("y".repeat(TASK_GROUP_CURSOR_CHARS)), record("job-next")], true);
+    await expect(readTaskGroupRuns({ taskGroupId: GROUP, limit: 1 }, long)).rejects.toMatchObject({
+      code: "invalid_service_response",
+      status: 500,
+    });
+  });
+
+  it("keeps the longest byte-bounded prefix with room for its cursor, serializing each member once", async () => {
+    const id = (i: number) => `${String(i).padStart(3, "0")}-${"é".repeat(250)}`;
+    const records = Array.from({ length: 201 }, (_, i) => record(id(i)));
+    const h = host(records, true);
+    const original = JSON.stringify.bind(JSON);
+    let serialized = 0;
+    const stringify = vi.spyOn(JSON, "stringify").mockImplementation((...args) => {
+      const text = original(...(args as Parameters<typeof JSON.stringify>));
+      serialized += text?.length ?? 0;
+      return text;
+    });
+    const result = await readTaskGroupRuns({ taskGroupId: GROUP, limit: 200 }, h);
+    stringify.mockRestore();
+    const bytes = Buffer.byteLength(JSON.stringify(result), "utf8");
+    expect(bytes).toBeLessThanOrEqual(TASK_GROUP_RUNS_RESULT_BYTES);
+    expect(result.members.length).toBeGreaterThan(0);
+    expect(result.members.length).toBeLessThan(200);
+    expect(result.hasMore).toBe(true);
+    expect(decodeTaskGroupCursor(result.nextCursor!).last.id).toBe(result.members.at(-1)!.jobId);
+    // One more member would not fit beside a cursor of the largest size.
+    const following = records[result.members.length]!;
+    const grown = {
+      ...result,
+      members: [
+        ...result.members,
+        {
+          jobId: following.jobId,
+          runId: following.runId,
+          createdAt: following.createdAt,
+          observation,
+        },
+      ],
+      nextCursor: "c".repeat(TASK_GROUP_CURSOR_CHARS),
+    };
+    expect(Buffer.byteLength(JSON.stringify(grown), "utf8")).toBeGreaterThan(
+      TASK_GROUP_RUNS_RESULT_BYTES,
+    );
+    // Re-serializing the page per member would be quadratic in its size.
+    expect(serialized).toBeLessThan(5 * bytes);
   });
 });

@@ -219,6 +219,41 @@ describe("enqueueAndAwait typed ControlProblem transport", () => {
     });
   });
 
+  it.each(["status read fails", "start times out"] as const)(
+    "keeps the accepted job's receipt when its %s",
+    async (failure) => {
+      const group = "11111111-1111-4111-8111-111111111111";
+      const store = "22222222-2222-4222-8222-222222222222";
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(
+          async () =>
+            new Response(
+              JSON.stringify({ jobId: "job-accepted", taskGroupId: group, storeId: store }),
+              { status: 202, headers: { "content-type": "application/json" } },
+            ),
+        ),
+      );
+      const client = {
+        status:
+          failure === "status read fails"
+            ? vi.fn().mockRejectedValue(new Error("daemon socket closed"))
+            : vi.fn().mockResolvedValue({ id: "job-accepted", state: "queued" }),
+      };
+      const failed = enqueueAndAwait(
+        client as never,
+        { baseUrl: "http://127.0.0.1:1", token: "t" },
+        { prompt: "go", mode: "agent", taskGroupId: group },
+        { waitForTerminal: true, startTimeoutMs: failure === "start times out" ? 0 : 60_000 },
+      );
+      await expect(failed).rejects.toBeInstanceOf(CliError);
+      await expect(failed).rejects.toMatchObject({
+        context: { jobId: "job-accepted", taskGroupId: group, storeId: store },
+      });
+      expect(client.status).toHaveBeenCalledTimes(failure === "start times out" ? 0 : 1);
+    },
+  );
+
   it("preserves the typed terminal problem when an NDJSON/human run merges final status", () => {
     expect(
       mergeDaemonRunOutcome(

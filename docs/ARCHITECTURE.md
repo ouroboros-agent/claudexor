@@ -2661,8 +2661,10 @@ No memory, loop, timing or store measurements impose automatic admission thresho
 
 Retained task-group reads are composed by `sqlControlReadSources` and
 `readTaskGroupRuns`. The `taskGroupPage` method of `SqlCommandQueries` selects group membership
-before projection, using the summary expression indexes and descending
-`(created_at, id)` keysets. It selects at most `limit + 1` scalar rows from the
+before projection, through the canonical `command.task_group_id` column, its two
+partial indexes and descending `(created_at, id)` keysets. Membership ignores the
+letter case of the group UUID; answers echo the caller's spelling. It selects at
+most `limit + 1` scalar rows from the
 existing served-generation authority, without prompt, result, question-body or
 artifact hydration, a full-history traversal, or a count. Selected jobs reuse
 the body-free `readRunObservations` snapshots used by wait-many. A member's run
@@ -2672,8 +2674,24 @@ The served view hashes the set of partition name/epoch identities. A cursor
 binds that view, group, lifecycle filter, durable store and last returned key.
 An actual visibility change invalidates it; relinking the same project identity
 does not. Byte pagination advances only past returned members and refuses an
-unreturnable first member. CLI/MCP/HTTP are thin one-page projections of this
-owner. The bounded wire contract and reconnect example live in
+unreturnable first member; the page adds each member's JSON once and reserves
+the largest cursor. CLI/MCP/HTTP are thin one-page projections of this
+owner.
+
+Wait-many (`observeRunAttention`) publishes one completed pass at a time: a
+pass's facts and its attention indexes are computed together, `waitMs` bounds
+only the wait between passes, and the deadline asks for one last full pass
+instead of interrupting a read. Between the first and the last pass it re-reads
+only the handles named by the engine store's post-commit notices
+(`ObservationNotices`): command and interaction commits name their job
+and run ids after COMMIT, never for a rollback. A host without that feed is
+polled. Pruning, archive and generation changes publish no notice; the
+deadline's full pass reports a target they hide. A stopping daemon aborts the
+read and answers `503 daemon_stopping`.
+Observation tokens are SHA-256 digests of the observed facts; a digest the
+shared secret scan would flag is re-derived from the same facts with an attempt
+counter, so echoed tokens pass MCP input checks and other tokens keep their
+bytes. The bounded wire contract and reconnect example live in
 [Integrations](INTEGRATIONS.md#observing-and-directing-an-existing-run).
 The `current_served_generations`/`retained_only` qualifiers describe current
 visibility, not a permanent roster. Reads add no execution or approval authority.
@@ -4098,24 +4116,18 @@ kept only for cold import and an independent frozen copy kept for tests.
   an older build of the same release version, which the semantic floor cannot
   tell apart — refuses the upgraded file with `store_schema_unsupported` before
   any write.
-- Schema version 3 adds two expression indexes over accepted command-summary
+- Schema version 3 added two expression indexes over accepted command-summary
   `params.taskGroupId`, ordered for group pages and group/state pages with the
-  live product, valid-JSON and guarded non-null group predicates. Untagged rows,
-  JSON null groups and non-JSON BLOB summaries remain writable and occupy neither
-  index. Building the indexes still scans existing rows, and writes still evaluate
-  their predicates. Membership is committed in the original
-  acceptance transaction, before ACK/dispatch; there is no group table, backfill
-  or retention pin. Fresh DDL and the atomic 2→3 migration have the same indexes;
-  version 1 follows 1→2→3→4→5, and reopening the current version is write-free.
-  A version-2 reader refuses the upgraded file before writing. Downgrading an
+  live product, valid-JSON and guarded non-null group predicates; untagged rows,
+  JSON null groups and non-JSON BLOB summaries stayed writable and occupied
+  neither index. The atomic 2→3 step still builds them on the way to the current
+  version, and version 6 replaces them with the membership column. Membership is
+  committed in the original acceptance transaction, before ACK/dispatch; there is
+  no group table or retention pin. Reopening the current version is write-free.
+  An older reader refuses an upgraded file before writing. Downgrading an
   upgraded store requires restoring a compatible complete backup made with all
   writers stopped; swapping only the executable is insufficient. Source and
   isolated-fixture qualification do not migrate an installed store.
-  Earlier unpublished schema-3 stores keep their broader indexes on reopen and
-  remain query-compatible with this reader; they retain the original storage cost.
-  No automatic rebuild is added. Earlier experimental binaries whose forced-index
-  queries lack the tagged predicate cannot query the narrower indexes. Do not swap
-  experimental binaries against the same store; the complete-backup rule applies.
 - Schema version 4 adds the command-adjacent `deferred_message` table and its
   active-slot, predecessor, successor and blob-reference indexes through an
   atomic 3→4 migration. Older readers refuse the upgraded file. A waiting or
@@ -4149,10 +4161,22 @@ kept only for cold import and an independent frozen copy kept for tests.
   same turn identity. The atomic 4→5 migration builds the index without rewriting
   turn, prompt, event or other domain rows; it updates only schema metadata.
   Building it scans existing turns once, and subsequent turn writes maintain it.
-  Fresh stores start at version 5; version 4 and older readers refuse them before writes.
+  Version 4 and older readers refuse the upgraded file before writes.
   Earlier versions follow the existing migration map. This introduces no history
   table, header-body copy, backfill or stream. The complete-backup downgrade rule
   above still applies, including between experimental builds of one release.
+- Schema version 6 moves task-group membership into the typed
+  `command.task_group_id` column, which holds the lower-case group UUID, so a
+  group reads the same whatever spelling its launches used. Accepted summaries
+  keep the caller's spelling and receipts echo it. The atomic 5→6 step adds the
+  column, backfills live tagged rows through the version-3 index and archived
+  ones (restoring a generation makes them live again) by a guarded scan, drops
+  both expression indexes and indexes the column for group and group/state
+  pages. The command writer fills the column in the acceptance transaction;
+  updates never change it. Fresh DDL and the migrated file have identical
+  `sqlite_master`. Older readers refuse the upgraded file, and a cursor issued
+  before the upgrade restarts with `stale_cursor`, because its view token used
+  the case-sensitive domain.
 - The flusher worker owns the power-loss barrier. Every 200 ms it fsyncs each
   directory registered since the previous pass, reads `data_version`, runs a
   PASSIVE checkpoint for space, and — whenever anything was committed since

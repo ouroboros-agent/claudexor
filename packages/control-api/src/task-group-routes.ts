@@ -4,6 +4,7 @@ import {
   ControlRunState,
   TaskGroupRunsInput,
   TaskGroupRunsResult,
+  TASK_GROUP_CURSOR_CHARS,
   TASK_GROUP_RUNS_RESULT_BYTES,
   decodeTaskGroupCursor,
   encodeTaskGroupCursor,
@@ -13,7 +14,7 @@ import {
 } from "@claudexor/schema";
 import type { OperationDraft } from "./operation-draft.js";
 import { queryParam } from "./operation-parameters.js";
-import { requestGone } from "./request-liveness.js";
+import { readLifetime, requestGone } from "./request-liveness.js";
 
 interface TaskGroupRunsHost {
   storeId(): string | undefined;
@@ -45,7 +46,9 @@ export async function readTaskGroupRuns(
   const state = input.state ?? null;
   if (cursor?.storeId !== undefined && cursor.storeId !== storeId)
     throw failure("store_mismatch", 409, "task group cursor belongs to another durable store");
-  if (cursor && (cursor.taskGroupId !== input.taskGroupId || cursor.state !== state))
+  // Membership is case-insensitive; the answer echoes the caller's spelling.
+  const group = input.taskGroupId.toLowerCase();
+  if (cursor && (cursor.taskGroupId.toLowerCase() !== group || cursor.state !== state))
     throw failure("stale_cursor", 409, "task group cursor belongs to another group or filter");
   const page = host.page({
     taskGroupId: input.taskGroupId,
@@ -56,7 +59,7 @@ export async function readTaskGroupRuns(
   });
   if (page.records.length > input.limit + 1 || page.hasMore !== page.records.length > input.limit)
     throw invalidResponse();
-  if (page.records.some((row) => row.taskGroupId !== input.taskGroupId)) throw invalidResponse();
+  if (page.records.some((row) => row.taskGroupId?.toLowerCase() !== group)) throw invalidResponse();
   signal?.throwIfAborted();
   const selected = page.records.slice(0, input.limit);
   const observations = await host.snapshot(
@@ -65,7 +68,7 @@ export async function readTaskGroupRuns(
   );
   signal?.throwIfAborted();
   if (observations.length !== selected.length) throw invalidResponse();
-  let result: TaskGroupRunsResult = {
+  const result: TaskGroupRunsResult = {
     taskGroupId: input.taskGroupId,
     storeId,
     visibility: "current_served_generations",
@@ -75,6 +78,10 @@ export async function readTaskGroupRuns(
     hasMore: false,
     nextCursor: null,
   };
+  // A running total over each member's own JSON; the cursor is sized at its
+  // maximum and encoded once, for the last member the page keeps.
+  let bytes =
+    Buffer.byteLength(JSON.stringify(result), "utf8") + TASK_GROUP_CURSOR_CHARS + 2 - "null".length;
   for (let index = 0; index < selected.length; index++) {
     signal?.throwIfAborted();
     const row = selected[index]!;
@@ -86,28 +93,9 @@ export async function readTaskGroupRuns(
     });
     if (!member.success)
       throw failure("invalid_service_response", 500, "malformed retained task group member");
-    const hasMore = page.hasMore || index + 1 < selected.length;
-    let nextCursor: string | null = null;
-    try {
-      if (hasMore)
-        nextCursor = encodeTaskGroupCursor({
-          version: 1,
-          taskGroupId: input.taskGroupId,
-          state,
-          storeId,
-          viewToken: page.viewToken,
-          last: { createdAt: member.data.createdAt, id: member.data.jobId },
-        });
-    } catch {
-      if (result.members.length) break;
-      throw failure(
-        "invalid_service_response",
-        500,
-        "first retained member cannot fit a bounded task group cursor",
-      );
-    }
-    const candidate = { ...result, members: [...result.members, member.data], hasMore, nextCursor };
-    if (Buffer.byteLength(JSON.stringify(candidate), "utf8") > TASK_GROUP_RUNS_RESULT_BYTES) {
+    const added =
+      Buffer.byteLength(JSON.stringify(member.data), "utf8") + (result.members.length ? 1 : 0);
+    if (bytes + added > TASK_GROUP_RUNS_RESULT_BYTES) {
       if (result.members.length) break;
       throw failure(
         "task_group_member_too_large",
@@ -115,7 +103,28 @@ export async function readTaskGroupRuns(
         "first retained member exceeds the task group page byte limit",
       );
     }
-    result = candidate;
+    bytes += added;
+    result.members.push(member.data);
+  }
+  result.hasMore = page.hasMore || result.members.length < selected.length;
+  if (result.hasMore) {
+    const last = result.members.at(-1)!;
+    try {
+      result.nextCursor = encodeTaskGroupCursor({
+        version: 1,
+        taskGroupId: input.taskGroupId,
+        state,
+        storeId,
+        viewToken: page.viewToken,
+        last: { createdAt: last.createdAt, id: last.jobId },
+      });
+    } catch {
+      throw failure(
+        "invalid_service_response",
+        500,
+        "retained task group cursor cannot be encoded",
+      );
+    }
   }
   const parsed = TaskGroupRunsResult.safeParse(result);
   if (!parsed.success) throw invalidResponse();
@@ -186,7 +195,7 @@ export async function handleTaskGroupRunsRoute(
         Object.hasOwn(query, key)
       )
         throw failure("invalid_argument", 400, "unknown or repeated task group query field");
-      if (key === "limit" && !/^[0-9]+$/.test(value))
+      if (key === "limit" && !/^[1-9][0-9]*$/.test(value))
         throw failure("invalid_argument", 400, "limit must be an integer from 1 to 200");
       query[key] = key === "limit" ? Number(value) : value;
     }
@@ -203,18 +212,10 @@ export async function handleTaskGroupRunsRoute(
     );
     return true;
   }
-  const abort = new AbortController();
-  const disconnected = () => {
-    if (requestGone(req, res)) abort.abort();
-  };
-  req.on("aborted", disconnected);
-  req.on("close", disconnected);
-  res.on("close", disconnected);
-  req.socket.on("close", disconnected);
+  const lifetime = readLifetime(req, res);
   try {
-    disconnected();
-    if (!abort.signal.aborted) {
-      const result = await ctx.taskGroupRuns(input, abort.signal);
+    if (!lifetime.signal.aborted) {
+      const result = await ctx.taskGroupRuns(input, lifetime.signal);
       const parsed = TaskGroupRunsResult.safeParse(result);
       if (
         !parsed.success ||
@@ -228,10 +229,7 @@ export async function handleTaskGroupRunsRoute(
   } catch (error) {
     if (!requestGone(req, res)) ctx.requestError(res, error, 500);
   } finally {
-    req.off("aborted", disconnected);
-    req.off("close", disconnected);
-    res.off("close", disconnected);
-    req.socket.off("close", disconnected);
+    lifetime.dispose();
   }
   return true;
 }

@@ -10,6 +10,7 @@ import {
 } from "./run-apply-projection.js";
 import { BulkExecutor } from "./bulk-executor.js";
 import { requestGone } from "./request-liveness.js";
+import { setTimeout as sleep } from "node:timers/promises";
 import { trackRequest } from "./request-timing.js";
 import { serveRunDetail } from "./run-detail-route.js";
 import { handleDeferredMessageRoute } from "./deferred-message-routes.js";
@@ -154,7 +155,7 @@ import {
   needsOperatorAttention,
 } from "@claudexor/schema";
 import { resolveControlProtocol, type ControlServingMode } from "./control-protocol.js";
-import { readControlRequestBody } from "./request-body.js";
+import { RefusedBodies, readControlRequestBody } from "./request-body.js";
 import { withControlHttpTimeouts } from "./http-server-options.js";
 import {
   assertNoInlineSecretValues,
@@ -194,6 +195,8 @@ export interface DaemonControlApiOptions {
   storeId?: () => string | undefined;
   /** Body-free, positional run observations from the current durable store. */
   runObservations?: RunWaitManyHost["snapshot"];
+  /** Post-commit notices for those observations; without them waits poll. */
+  runObservationChanges?: RunWaitManyHost["subscribe"];
   threadHistoryReads?: ThreadHistoryServices;
   taskGroupRuns?: (input: TaskGroupRunsInput, signal?: AbortSignal) => Promise<TaskGroupRunsResult>;
   bus?: { subscribe(listener: (event: { run_id: string }) => void): () => void };
@@ -485,7 +488,10 @@ export class DaemonControlApiServer {
   private startPromise: Promise<{ host: string; port: number }> | null = null;
   private stopPromise: Promise<void> | null = null;
   private stopping = false;
+  /** Fires first in stop(): long reads end instead of holding the drain. */
+  private readonly stopSignal = new AbortController();
   private readonly sseClients = new Set<ServerResponse>();
+  private readonly refusedBodies = new RefusedBodies();
   /** Exact request-handler promises. Client disconnect never removes a handler. */
   private readonly activeHandlers = new Set<Promise<void>>();
   /** Per-thread turn submission chains (serialize head_run_id lineage updates). */
@@ -526,6 +532,7 @@ export class DaemonControlApiServer {
 
   stop(): Promise<void> {
     this.stopping = true;
+    this.stopSignal.abort();
     this.bulk.stop();
     this.stopPromise ??= this.stopOnce();
     return this.stopPromise;
@@ -534,8 +541,10 @@ export class DaemonControlApiServer {
   private async stopOnce(): Promise<void> {
     const listenerClosed = this.closeListener();
     this.closeSseClients();
-    await Promise.all([listenerClosed, this.drainActiveHandlers()]);
-    this.closeSseClients();
+    this.refusedBodies.close();
+    await this.drainActiveHandlers();
+    this.closeSseClients(); // Streams that registered while their handlers drained.
+    await listenerClosed;
   }
 
   private closeSseClients(): void {
@@ -610,6 +619,7 @@ export class DaemonControlApiServer {
     contentType = "application/json",
   ): void {
     if (res.destroyed) return;
+    this.refusedBodies.discard(res);
     if (status >= 400 && contentType === "application/json") {
       const error = controlProblemError(status, body);
       return this.problem(res, status, error, error.code, false, error.message);
@@ -630,12 +640,6 @@ export class DaemonControlApiServer {
     fallbackRetryable: boolean,
     fallbackMessage?: string,
   ): void {
-    if (status === 413) {
-      // The bounded reader leaves incomplete uploads paused so this problem
-      // reaches the client. Close after flushing; never drain an unbounded tail.
-      res.shouldKeepAlive = false;
-      res.once("finish", () => res.destroy());
-    }
     this.json(
       res,
       status,
@@ -720,10 +724,11 @@ export class DaemonControlApiServer {
       daemon: this.opts.daemon,
       services: this.opts.services,
       runObservations: this.opts.runObservations,
+      runObservationChanges: this.opts.runObservationChanges,
       taskGroupRuns: this.opts.taskGroupRuns,
       threadHistoryReads: this.opts.threadHistoryReads,
-      bus: this.opts.bus,
       pollMs: this.opts.pollMs,
+      stopping: this.stopSignal.signal,
       readBody: (request: IncomingMessage, maxBytes?: number) => this.readBody(request, maxBytes),
       json: (response: ServerResponse, status: number, body: unknown) =>
         this.json(response, status, body),
@@ -768,6 +773,7 @@ export class DaemonControlApiServer {
           requestError: (response, error, fallback) => this.requestError(response, error, fallback),
           json: (response, status, body) => this.json(response, status, body),
           respondToAcceptedJob: (response, jobId) => this.respondToAcceptedJob(response, jobId),
+          storeId: this.opts.storeId,
           validateResources: this.opts.services?.validateResources,
           preflightRunRequirements: this.opts.services?.preflightRunRequirements,
         },
@@ -1322,6 +1328,7 @@ export class DaemonControlApiServer {
             serializeThreadMutation: (threadId, work) =>
               chainThreadMutation(this.threadTurnChains, threadId, work),
             waitForRunStart: (id) => this.waitForRunStart(id),
+            storeId: this.opts.storeId,
             appendAudit: (record, payload) =>
               appendRunAuditEvent(record, "control.applied", payload),
             json: (response, status, responseBody) => this.json(response, status, responseBody),
@@ -1947,8 +1954,8 @@ export class DaemonControlApiServer {
       last = rec;
       if (rec.runId && rec.runDir) return rec;
       if (TERMINAL_STATES.has(rec.state)) return rec;
-      if (Date.now() > deadline) return last;
-      await new Promise((r) => setTimeout(r, pollMs));
+      if (Date.now() > deadline || this.stopSignal.signal.aborted) return last; // Answer the receipt.
+      await sleep(pollMs, undefined, { signal: this.stopSignal.signal }).catch(() => {});
     }
   }
 

@@ -217,6 +217,7 @@ async function exactRetry(
     const request = { ...activeParams, ...(retryTurnId ? { turnId: retryTurnId } : {}) };
     let job: { id: string };
     try {
+      runStart.requireTaskGroupStoreIdentity(request, ctx.storeId);
       job = await ctx.daemon.enqueue(request, {
         idempotencyKey,
         clientId: "control-api",
