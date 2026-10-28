@@ -1167,6 +1167,11 @@ function windowsConptyCustodyFindings(workflow) {
     assembledSmoke,
   );
   requirePattern(
+    "assembled Windows stop must retry the retryable refusals of a just-started daemon",
+    /--stop \$env:VERSION \$env:PREPARED_SHA[\s\S]*?\$stop\.retryable[\s\S]*?\$stopDeadline[\s\S]*?Start-Sleep[\s\S]*?WaitForExit\(15000\)/,
+    assembledSmoke,
+  );
+  requirePattern(
     "npm publication must be gated by the assembled Windows smoke",
     /needs:\s*\[[^\]]*windows-conpty-candidate-smoke[^\]]*\]/,
     publishNpm,

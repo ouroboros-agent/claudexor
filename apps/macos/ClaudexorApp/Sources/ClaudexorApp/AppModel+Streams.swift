@@ -11,13 +11,6 @@ import ClaudexorKit
 // its own file).
 
 extension AppModel {
-    static func interactionResolutionActivityTitle(type: String, reason: String?) -> String {
-        if type == "interaction.answered" { return "Answer delivered" }
-        if type == "interaction.withdrawn" { return "Question withdrawn by the agent — no answer needed" }
-        if reason == "cancelled" { return "Question closed — run cancelled" }
-        return "Question timed out — continuing with assumptions"
-    }
-
     // MARK: Live SSE stream
 
     /// Attach (idempotently) a live stream for a run. Reconnects with
@@ -309,14 +302,17 @@ extension AppModel {
                 threadHeadRevisions[threadId] = revision
             }
             scheduleThreadsRefresh()
+            if selectedExecutionLocation == .local, selectedThreadId == threadId {
+                Task { await refreshOpenThread(locationID: .local, id: threadId) }
+            }
             return
         }
         guard let runId = event.payload["run_id"]?.stringValue, !runId.isEmpty else { return }
         let type = event.payload["type"]?.stringValue ?? ""
         let isTerminalEvent = type == "run.completed" || type == "run.failed" || type == "run.blocked"
         if let threadId = event.payload["thread_id"]?.stringValue, !threadId.isEmpty {
-            if threadId == selectedThreadId, (type == "run.created" || isTerminalEvent) {
-                await openThread(threadId)
+            if selectedExecutionLocation == .local, threadId == selectedThreadId, (type == "run.created" || isTerminalEvent) {
+                Task { await refreshOpenThread(locationID: .local, id: threadId) }
                 if type == "run.created", streamTasks[runId] == nil { stream(runId: runId) }
             }
             if isTerminalEvent { await refreshThreads() }
@@ -381,6 +377,7 @@ extension AppModel {
             if taskChanged {
                 t.updatedAt = .now
                 liveTasks[idx] = t
+                publishHistoryLive(t, locationID: .local)
                 Self.notifyTransition(from: before, to: t.phase, title: t.title)
             }
             if shouldLoadDetail {
@@ -533,6 +530,7 @@ extension AppModel {
             shouldLoadDetail = true
         } else if type == "interaction.requested" {
             if let pending = Self.pendingInteraction(from: payload, runId: runId) {
+                recordHistoryInteractionRequest(runID: runId, interactionID: pending.interactionId, seq: env.seq, at: .local)
                 t.pendingInteractions.removeAll { $0.interactionId == pending.interactionId }
                 t.pendingInteractions.append(pending)
                 t.waitingOnUser = true
@@ -543,6 +541,7 @@ extension AppModel {
             }
         } else if ["interaction.answered", "interaction.timeout", "interaction.withdrawn"].contains(type) {
             if let interactionId = payload["interaction_id"]?.stringValue {
+                resolveHistoryInteraction(runID: runId, interactionID: interactionId, at: .local)
                 t.pendingInteractions.removeAll { $0.interactionId == interactionId }
             }
             t.waitingOnUser = !t.pendingInteractions.isEmpty

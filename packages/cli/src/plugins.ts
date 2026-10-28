@@ -194,6 +194,9 @@ function hostFallbackCommands(runtime: RuntimePaths): string[] {
 /** Exact Claude plugin skill invocation; plain `/claudexor` is not an alias (QA-029A). */
 const CLAUDE_SLASH_COMMAND = "/claudexor:claudexor";
 
+const MCP_THREAD_HISTORY_GUIDANCE =
+  "Read retained thread answers with `claudexor_thread_history`: `{threadId, limit?, cursor?, beforeTurnId?, afterTurnId?, aroundTurnId?, expectedStoreId?}`. Limit is 1..20 (default 20); omit selectors for the newest page, or supply exactly one selector. `aroundTurnId` returns the anchor and earlier turns; follow `newerCursor` for later turns. Rows are ordered oldest first; opaque cursors are bound to store, epoch, thread and limit. Follow olderCursor/newerCursor explicitly; replayCursor refreshes the same membership, with replayNextCursor for additional segments if answers grow. Prompt/answer previews are bounded; missing evidence and incomplete plan-answer relations are not proof of absence. `claudexor_thread_prompt` reads full prompts, including runless refusals, in UTF-8 parts with `{threadId, turnId, offset?, maxBytes?, expectedStoreId?}`; continue at nextOffset while it is below totalBytes. Full answers use the existing artifact read. These reads never start a daemon, enqueue work or authorize a retry; legacy `claudexor_thread_read` remains available for complete inspection.";
+
 const MCP_DOCUMENT_GUIDANCE = [
   "For an explicitly selected document on an already-running daemon, first call `claudexor_store_identity` and durably save its `storeId`. Save a caller-owned import key with the exact arguments, then call `claudexor_upload_import` with `{expectedStoreId,path,idempotencyKey}` (optional `kind`, `mime`, `name`). Select one absolute regular file on the MCP-server host, not a remote client's path, URL, glob or directory; sensitive source/content checks still apply. After any uncertainty or failure repeat the identical call with the saved store id and key, never a later store answer. A completed import returns its original `resource` without reading the file again, even after the file changed or was deleted. Other arguments under a used key fail `idempotency_conflict`; a new edition needs a new key. An unfinished import whose source changed or vanished fails `upload_import_source_changed` or `upload_import_source_unavailable` with its `uploadId`; another store fails `store_mismatch` before the file is touched.",
   "The low-level stages remain available. Save a caller-owned create key and exact body before `claudexor_upload_create` with `{idempotencyKey,request:{kind,mime,name,sizeBytes}}`. Save its `uploadId`, then call `claudexor_upload_import_local` with `{uploadId,path}`; save the returned `expectedSha256`. Save a separate finalize key and exact body before `claudexor_upload_finalize` with `{uploadId,idempotencyKey,request:{expectedSha256}}`.",
@@ -243,6 +246,7 @@ function skillText(host: PluginHost, runtime: RuntimePaths): string {
     "",
     MCP_RUN_HANDLE_GUIDANCE,
     MCP_WORKER_CONTROL_GUIDANCE,
+    MCP_THREAD_HISTORY_GUIDANCE,
     "Use an explicit `repoPath` when the host cwd may not be the target project. Use `credentialProfileId` for a strict account pin. For multi-turn supervision, create the thread once, enqueue each follow-up with `claudexor_thread_turn` (pass an `idempotencyKey` and retry an unknown outcome with the same key and body), then follow its returned `runId` with the ordinary status/result tools. If the turn returns only a queued `jobId`, use `claudexor_runs` to recover its `runId` after binding; `claudexor_thread_read` lists earlier turns without starting work.",
     "",
     READINESS_GUIDANCE,
@@ -293,6 +297,7 @@ function commandText(host: PluginHost, runtime: RuntimePaths): string {
     "",
     MCP_RUN_HANDLE_GUIDANCE,
     READINESS_GUIDANCE,
+    MCP_THREAD_HISTORY_GUIDANCE,
     "",
     "For durable MCP conversations, create once with `claudexor_thread_create`, continue with `claudexor_thread_turn`, and inspect with `claudexor_thread_read`. These tools do not expose portable native vendor sessions or a live vendor conversation. Ask for an explicit repo path if the target project is ambiguous.",
     "",
@@ -326,6 +331,7 @@ function readmeText(host: PluginHost, runtime: RuntimePaths): string {
         ]
       : []),
     MCP_RUN_HANDLE_GUIDANCE,
+    MCP_THREAD_HISTORY_GUIDANCE,
     "Long-running MCP tools (claudexor_run, claudexor_best_of, claudexor_create) are daemon-tracked: every result carries a `runId:` trailer, so a call abandoned by a host timeout stays recoverable via `claudexor inspect <runId>` / `claudexor follow <runId>`.",
     "",
   ].join("\n");

@@ -316,10 +316,9 @@ every descendant `Text`. This is THE mechanism — do NOT sprinkle per-`Text`
 nothing opts in. The ONE documented exception is the CONVERSATION FEED (D-13 B,
 a performance scope): the scrolled column overrides the root global to
 `.textSelection(.disabled)` so the receipts / chips / status containers carry no
-selectable NSText backing, and the message / answer / transcript PROSE nodes
-re-enable it locally (a descendant `.enabled` wins over the ancestor
-`.disabled`) — selection is preserved exactly where users select, backing cost
-removed where they never do. Persistent banners (thread status line and equivalents)
+selectable NSText backing. Message, answer and transcript prose uses `ProseText`,
+a read-only TextKit 1 `NSTextView` per contiguous prose run. Table cells are not selectable and offer one “Copy table” action for the complete
+Markdown source; tool/error captions retain their existing selectable fields. Native prose hosts stay out of the Tab loop. Persistent banners (thread status line and equivalents)
 additionally carry an explicit copy button (`doc.on.doc`, `.plain` style, "Copy
 message" help). An unselectable content surface is a defect, not a style choice.
 
@@ -432,13 +431,13 @@ frequency and volume are. The contracts:
 - **Per-run detail single-flight.** Gate/reviewer/finding/output/terminal event
   bursts share one in-flight detail GET and request at most one trailing
   refresh. Run-list refresh never N+1-fetches details merely because a row has
-  zero findings; selected thread/inspector hydration owns detail loading.
+  zero findings; the live head and an explicit workspace inspection own detail loading.
 - **Bounded feeds with honest truncation.** The live activity feed is a ring
   of the newest 1000 events with a visible "N older events collapsed" note
   (mirroring the server's capped timeline); transcripts cap at 200 blocks with
   the same disclosure. Full logs stay in `events.jsonl` — the UI never
   pretends the capped view is complete.
-- **Bounded chat presentation.** The chat card is a progress SUMMARY: it lazily
+- **Bounded chat presentation.** The chat card is a progress SUMMARY: it eagerly
   renders only the newest 80 folded rows and at most 4,000 characters from one
   narration block, with an honest omitted count/link to raw evidence. The
   reducer's larger 200-block / text budgets protect evidence retention; they
@@ -456,13 +455,78 @@ frequency and volume are. The contracts:
   metadata, not the loaded `[DiffFile]`; a pre-metadata tab open retriggers when
   metadata lands, while 413/network/non-text failures show the reason, artifact
   path, and Retry instead of a perpetual spinner.
-- **No nested lazy; the per-turn transcript is a PLAIN VStack (D-13 A).** The
-  conversation FEED is the outer `LazyVStack` (one row per turn). The inline
-  activity transcript INSIDE a receipt is a plain `VStack`, NOT a second
-  `LazyVStack`: it is a single turn's transcript and the reducer hard-caps it at
-  200 blocks, so laziness buys nothing — while a `LazyVStack` nested inside the
-  feed's `LazyVStack` was the nested-lazy pattern behind GH #23's runaway layout
-  loop. No materialized reversed copies, no eagerly-built thousand-row stacks.
+- **Bounded eager history; no lazy nesting (D-13 A).** Reopening long selectable
+  chat text can still trigger a SwiftUI lazy-geometry layout/allocation loop on
+  macOS 26 even without expanding a receipt. `ConversationHistoryStack` uses a
+  plain `VStack`, and `ThreadHistoryStore` mounts at most 20 turn IDs.
+  In-feed “Show earlier turns” and “Show later turns” move the window. One
+  “Jump to latest” sits beside the later control at its bottom edge, otherwise
+  in a solid raised capsule above the composer while reading. Its 64pt count
+  slot reports the header ordinal difference, or unnumbered “new” when ordinal
+  evidence is unavailable; it never shifts the label. A click or selection at the
+  real tail bottom shows no floating Jump; clearing text focus/selection there
+  resumes following. Prose clears the old selection/focus keys before replacing a document and when
+  dismantled, including on eviction. Explicit earlier/later travel may end a
+  selection in an evicted turn; drafts remain in the presentation store. The whole-thread tail hides “Beginning of saved history”.
+  Show later pins to the bottom and follows when it reaches the newest turn;
+  within older history it keeps the former last turn at the bottom edge. Opens use
+  the bottom initial anchor; explicit moves use `ScrollPosition` by ID.
+  A reading window stays fixed when new turns arrive. Local and remote feeds
+  use the addressed engine history read; a selected thread retains at most two
+  pages of DTOs (40 rows / 4 MiB). An engine older than that read (kept while
+  its work runs) gets a Retry with an update explanation, never an empty feed. The inline transcript
+  remains a plain `VStack` with its existing reducer/presentation caps. No
+  cumulative unbounded "load more", reversed copies, or thousand-row eager stacks.
+- **History observation and recovery.** Open and Jump request the newest page.
+  Earlier/later address the first/last mounted turn, including after partial
+  eviction. Refresh replays the mounted ranges with each cursor’s original request limit
+  through every continuation, coalescing one in-flight read and at most one trailing read. Only newer row
+  revisions replace painted facts. Stale cursors or a new serving incarnation
+  re-snapshot around the visible reading turn, then refill below it; followers
+  recover from the newest page and clear their reading anchor. Recovery rechecks
+  focus and the reading position after its read; a newly focused turn gets an
+  anchored recovery before the painted island changes. Gestures cancel
+  explicit navigation while background facts still land. A tail refresh must
+  recheck following after the read and cannot replace membership established by
+  a later completed navigation or newer installed read. A Jump overtaken by a newer revision retries
+  its newest read once. One
+  scroll-level target-visibility callback identifies the first visible card in
+  mounted order, including partially visible and taller-than-viewport cards.
+  Navigation markers have separate typed IDs; there are no row geometry observers.
+  A prior programmatic scroll target is not treated as the reader's current place.
+  Painted content remains during loading and errors; a background replay never evicts rows.
+  The live head retains its per-run stream and terminal read. A terminal answer
+  published during the trailing replay wins without a third chained history GET.
+- **History evidence and actions.** Collapsed prompt and answer sources end at a word boundary and retain enough
+  text to fill the 260pt whole-line fold at the 680pt measure; the existing
+  character/line content rule still decides whether to fold. Prompt previews disclose `promptInfo`; full
+  prompts load in UTF-8 parts only on Copy full prompt / Show full prompt. Answers
+  use the page's bounded primary output and its existing artifact address.
+  Pruned runs retain their prompt and a quiet retention explanation, without a
+  fabricated receipt. Unretained answers say so. Unavailable apply evidence
+  disables Apply with a reason; an unverified recorded decision never waives
+  required actions. Truncated failure messages link their full recorded detail.
+  Composer and Stop read the compact header, independent of the mounted range.
+  Plan-answer relations come from the engine even when the answer is off page.
+- **Presentation and workspace ownership.** Drafts, expansions and transcript
+  pins outlive rows in the selected located thread's presentation store. Interaction
+  choices and free text are keyed by run/interaction/question and clear only on
+  acknowledged resolution, including withdrawal/timeout. They do not pin DTOs.
+  The workspace's legacy full-detail roster is fetched only while the panel is
+  shown, with independent coalesced invalidation on accepted turns and header
+  membership changes. Routine feed replay does not re-fetch it; a freshly selected
+  receipt remains addressable before its roster catches up. A mounted parent with
+  projected missing Delegate children gets one bounded addressed parent read;
+  child lookup stays in that parent’s execution location.
+  Stream updates publish live card fields; older detail reads preserve pending
+  questions only when their request event is newer than the snapshot's sequence.
+  Resolutions covered by a detail snapshot clear the question and draft even
+  when the event fence suppresses replay. Resolution/request bookkeeping is
+  pruned to mounted runs plus the head. A travel that leaves following counts
+  the ordinal delta it observes, including arrivals first seen by that travel.
+  PATCH metadata wins over older
+  in-flight reads; a replacement remote store retires the old history pin. Initial loading, loaded
+  empty history, and a failed read remain distinct from the new-thread illustration.
 - **Per-card equatable containment (D-13 E).** `AppModel` is one coarse
   `@Observable`, so a low-frequency write to the `liveTasks` array (a status flip
   on one run, a list refresh) re-runs EVERY mounted `TurnCard.body`. The dominant
@@ -476,16 +540,45 @@ frequency and volume are. The contracts:
 - **Selection backing is scoped in the feed (D-13 B).** `.textSelection` creates
   selectable NSText backing for every enabled descendant `Text`. The conversation
   feed OVERRIDES the window-root global (§2.9) to `.textSelection(.disabled)` and
-  re-enables it only on the message / answer / transcript prose nodes that users
-  actually select — the receipts, chips, and status containers carry no backing.
+  hosts prose in `ProseText`, with cached heights keyed by document ID, font
+  generation and EXACT width. Measuring writes no SwiftUI state. Unchanged
+  document IDs retain native storage and selection. Wrapped code shares the
+  prose selection host, with a small language/Copy header in the rounded code
+  well; header labels never enter plain-text or rich-text copies. Copy code goes through the
+  native link delegate and gives brief “Copied” / “Copy failed” feedback. The
+  native context menu adds “Copy message” for the authored Markdown source while
+  retaining selection Copy. Printable typing in focused message text moves to
+  the registered, enabled conversation composer, restoring its saved caret or
+  selection (the draft end if it has never been focused). The original key event
+  goes to its field editor, preserving the unsent draft and native dead-key/input
+  method composition. Tab and Shift-Tab leave clicked prose through the native
+  key-view loop; prose remains outside ordinary Tab entry. Command shortcuts,
+  selection keys and scrolling keys keep their native routing. Without an
+  available composer, typing does nothing.
+  Table cells offer whole-table Markdown copying; existing selectable tool/error
+  captions remain disclosed residuals.
+- **Reading passages survive width changes.** While reading, the feed captures
+  the first visible card, its prose character at the viewport top and the line's
+  offset after scrolling settles or text focus/selection pauses following. A settled width change restores that
+  character through the same programmatic scroll path, outside layout. Hosts
+  register weakly; there are no per-row geometry observers or per-frame text
+  measurements. A new gesture or explicit navigation cancels a pending restore.
+  Following continues to pin the bottom and ends only on the reader's own upward scroll
+  (wheel, trackpad, scroller or keys) or on focus, selection and navigation, never on
+  placement, anchoring or growth. A message never scrolls the feed because its size
+  changed: AppKit's request to keep a resized text view's selection in view, which on
+  macOS 26.6 moves a followed feed to a growing answer's first line, is dropped.
+  Full-prompt sheets own independent prose:
+  they inherit neither the feed registry nor a turn’s selection/focus identity.
 - **Per-row readable measure (D-13 C).** The 680pt conversation measure
   (`conversationMeasure()`) is applied PER ROW (each `TurnCard`), not as a
-  double-frame around the whole feed `LazyVStack`; a sidebar drag / width change
+  double-frame around the whole history page; a sidebar drag / width change
   then no longer relayouts the entire scrolled column as one framed unit. The
   composer keeps its own measure.
 - **Off-screen eviction.** Terminal runs outside the open thread / inspected
   run release their heavy feed and transcript arrays on route/thread change;
-  reopening reloads the feed from the server timeline (`loadRunDetail`).
+  the history page restores settled receipts and answers; explicit workspace
+  inspection can read the run timeline (`loadRunDetail`).
   Live/streaming runs are never evicted.
 
 ---
@@ -737,6 +830,22 @@ frequency and volume are. The contracts:
     FINAL ANSWER bubble (loudest element — solid `surfaceRaisedHi` inset, 2 pt
     accent leading edge, W22 Show-more clamp), the persistent RECEIPT row, and
     the inline activity transcript. The always-live composer closes the feed.
+  - **Conversation prose:** code fences wrap at word boundaries in a rounded,
+    filled and stroked code well, with a two-character continuation indent.
+    The small header names the fence language (or “text”) and offers “Copy” with
+    “Copy code” help and accessible name. Selection continues through prose and
+    code; the header is excluded from plain text and code copies preserve source
+    lines. Tables have non-selectable cells and one “Copy table” action with help;
+    each side fades only while it hides horizontally scrolled columns. Words stay
+    whole and overlong tokens can wrap. Long prompts and answers use the content
+    rule of about 1,200 characters or 14 lines, with Show more / Show less and a
+    soft fade on the last whole visible line. The newest turn starts expanded.
+    The fade never decides whether content folds. Past 32 KiB the prompt preview
+    remains explicit, with user-initiated Show full / Copy full prompt reads.
+    Images and tables split prose runs. `ProseLinkGate` owns external/scoped-file
+    links; code-copy links are consumed by the same native delegate first.
+    Loading and failed selected-thread states use “Loading saved history…” and
+    “Retry loading messages”, separately from the draft illustration.
   - **Thread workspace (trailing `.inspector`, glass chrome):** the panel's
     IDENTITY is the CURRENT THREAD's workspace (D42), not a per-run inspector.
     Three always-present tabs — **Changes / Artifacts / Evidence** — aggregate

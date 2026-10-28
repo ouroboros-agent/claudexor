@@ -1,3 +1,4 @@
+import { threadHistoryTools } from "./thread-history-tools.js";
 import mcpThreadTurnResultSchemaRaw from "@claudexor/schema/generated/McpThreadTurnResult.schema.json" with { type: "json" };
 import {
   AccessProfile,
@@ -109,6 +110,7 @@ export function threadTools(runner: RunnerFn): McpTool[] {
     }
   };
   return [
+    ...threadHistoryTools(runner),
     {
       name: "claudexor_thread_create",
       description:

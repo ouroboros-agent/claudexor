@@ -1,3 +1,4 @@
+import { THREAD_HISTORY_OPERATION_DRAFTS } from "./thread-history-routes.js";
 import { ACCOUNT_RESOURCE_OPERATION_DRAFTS } from "./account-resource-routes.js";
 import {
   CONTROL_PROTOCOL_MAJOR,
@@ -31,6 +32,7 @@ const operations: ControlOperationDescriptor[] = [
       "Read one exact deferred draft and its existing predecessor result and successor handles",
   }),
   ...TASK_GROUP_RUNS_OPERATION_DRAFTS.map(descriptor),
+  ...THREAD_HISTORY_OPERATION_DRAFTS.map(descriptor),
   ...MODEL_OPERATION_DRAFTS.map(descriptor),
   j("POST", "/v2/uploads", "mutating", "ControlUploadCreateRequest", "ControlUploadStatus", {
     idempotency: "key_required",

@@ -60,6 +60,8 @@ describe("portable Agent Skill, Copilot plugin, and MCP distribution", () => {
         "claudexor_run_event_read",
         "claudexor_run_message",
         "claudexor_run_continue",
+        "claudexor_thread_history",
+        "claudexor_thread_prompt",
         "claudexor_store_identity",
         "claudexor_upload_import",
         "claudexor_upload_create",
