@@ -12,18 +12,20 @@ import { dirname, join } from "node:path";
 import { redactSecrets } from "@claudexor/util";
 
 /**
- * The vendor allow rule that lets agy read any POSIX path without asking.
+ * The vendor allow rule documented as matching "all files on the system".
  * Claude and Codex agents read anywhere in every access profile; agy instead
  * asks before a read outside its workspace folders, and a headless run cannot
  * answer, so the read is auto-denied and the turn often ends without output.
  * A read grant changes no write confinement: plan mode still withholds edits,
  * accept-edits still asks before an edit outside the workspace, and shell
- * commands keep their own approval.
+ * commands keep their own approval. The vendor evaluates Deny > Ask > Allow,
+ * so a read_file deny rule or `toolPermission: "strict"` in the same file still
+ * wins over this grant.
  */
-export const AGY_READ_ANYWHERE_RULE = "read_file(/)";
+export const AGY_READ_ANYWHERE_RULE = "read_file(*)";
 
 export type AgyReadGrant =
-  { state: "present" | "added" } | { state: "unproven" | "unavailable"; reason: string };
+  { state: "present" | "added" } | { state: "unavailable"; reason: string };
 
 /** agy has no settings-path variable: the profile HOME selects this file. */
 export function agySettingsPath(profileHome: string): string {
@@ -37,13 +39,7 @@ export function agySettingsPath(profileHome: string): string {
  * never rewritten: the run proceeds with the vendor's own read policy and the
  * caller discloses the reason.
  */
-export function ensureAgyReadGrant(
-  profileHome: string,
-  platform: NodeJS.Platform = process.platform,
-): AgyReadGrant {
-  // `/` is a POSIX root; how agy matches drive-letter paths is unproven.
-  if (platform === "win32")
-    return { state: "unproven", reason: "agy read rules for Windows paths are unproven" };
+export function ensureAgyReadGrant(profileHome: string): AgyReadGrant {
   const path = agySettingsPath(profileHome);
   let text = "";
   let mode = 0o600;
@@ -83,7 +79,9 @@ export function ensureAgyReadGrant(
 }
 
 /** Same-directory temp file + rename: a concurrent run reads the old or the
- * new file, never a torn one. Concurrent writers add the same rule. */
+ * new file, never a torn one. Concurrent writers add the same rule. A
+ * symlinked settings file is replaced by a regular file (its target is left
+ * alone), and a process killed between write and rename leaves its temp file. */
 function writeAtomically(path: string, text: string, mode: number): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const temp = `${path}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;

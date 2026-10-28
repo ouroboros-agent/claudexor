@@ -35,7 +35,7 @@ const siblings = (home: string): string[] => readdirSync(dirname(agySettingsPath
 describe("agy profile read grant", () => {
   it("creates private settings with the read rule when the profile has none", () => {
     const home = profileHome();
-    expect(ensureAgyReadGrant(home, "darwin")).toEqual({ state: "added" });
+    expect(ensureAgyReadGrant(home)).toEqual({ state: "added" });
     expect(read(home)).toEqual({ permissions: { allow: [AGY_READ_ANYWHERE_RULE] } });
     expect(statSync(agySettingsPath(home)).mode & 0o777).toBe(0o600);
     expect(siblings(home)).toEqual(["settings.json"]);
@@ -48,7 +48,7 @@ describe("agy profile read grant", () => {
         permissions: { allow: ["command(git status)"], deny: ["command(sudo *)"] },
       }),
     );
-    expect(ensureAgyReadGrant(home, "linux")).toEqual({ state: "added" });
+    expect(ensureAgyReadGrant(home)).toEqual({ state: "added" });
     const expected = {
       theme: "dark",
       permissions: {
@@ -59,7 +59,7 @@ describe("agy profile read grant", () => {
     expect(read(home)).toEqual(expected);
     expect(statSync(agySettingsPath(home)).mode & 0o777).toBe(0o640);
     const before = readFileSync(agySettingsPath(home), "utf8");
-    expect(ensureAgyReadGrant(home, "linux")).toEqual({ state: "present" });
+    expect(ensureAgyReadGrant(home)).toEqual({ state: "present" });
     expect(readFileSync(agySettingsPath(home), "utf8")).toBe(before);
     expect(siblings(home)).toEqual(["settings.json"]);
   });
@@ -74,12 +74,12 @@ describe("agy profile read grant", () => {
     ],
     [
       "a non-list allow",
-      JSON.stringify({ permissions: { allow: "read_file(/)" } }),
+      JSON.stringify({ permissions: { allow: "read_file(*)" } }),
       "allow is not a list",
     ],
   ])("never rewrites %s and reports why", (_label, settings, reason) => {
     const home = profileHome(settings);
-    const grant = ensureAgyReadGrant(home, "darwin");
+    const grant = ensureAgyReadGrant(home);
     expect(grant.state).toBe("unavailable");
     expect(grant).toMatchObject({ reason: expect.stringContaining(reason) });
     expect(readFileSync(agySettingsPath(home), "utf8")).toBe(settings);
@@ -88,13 +88,27 @@ describe("agy profile read grant", () => {
 
   it("treats an empty settings file as no settings", () => {
     const home = profileHome("  \n");
-    expect(ensureAgyReadGrant(home, "darwin")).toEqual({ state: "added" });
+    expect(ensureAgyReadGrant(home)).toEqual({ state: "added" });
     expect(read(home)).toEqual({ permissions: { allow: [AGY_READ_ANYWHERE_RULE] } });
   });
 
-  it("does not claim a Windows read rule it has not proven", () => {
-    const home = profileHome();
-    expect(ensureAgyReadGrant(home, "win32")).toMatchObject({ state: "unproven" });
-    expect(() => statSync(agySettingsPath(home))).toThrow();
-  });
+  it.skipIf(process.platform === "win32")(
+    "reports a failed write and leaves no temp file behind",
+    () => {
+      const home = profileHome();
+      const dir = dirname(agySettingsPath(home));
+      mkdirSync(dir, { recursive: true });
+      chmodSync(dir, 0o500);
+      try {
+        const grant = ensureAgyReadGrant(home);
+        expect(grant).toMatchObject({
+          state: "unavailable",
+          reason: expect.stringContaining("could not be written"),
+        });
+        expect(readdirSync(dir)).toEqual([]);
+      } finally {
+        chmodSync(dir, 0o700);
+      }
+    },
+  );
 });

@@ -145,14 +145,14 @@ describe("AGY native raw stdin selection", () => {
     expect(options.args).not.toContain("--dangerously-skip-permissions");
     const settingsPath = agySettingsPath(input.credential_profile!.isolation_locator!);
     expect(JSON.parse(readFileSync(settingsPath, "utf8"))).toEqual({
-      permissions: { allow: ["read_file(/)"] },
+      permissions: { allow: ["read_file(*)"] },
     });
     expect(options.input).toMatch(
       /^\[SYSTEM INSTRUCTIONS\]\ncaller instructions\n\nENGINE NOTE \(read-only Antigravity run\): Your file tools may read any file or folder on this machine, inside or outside the workspace\. Shell commands are unavailable in this mode: .+\n\[END SYSTEM INSTRUCTIONS\]\n\nReview the attached screenshot\.$/,
     );
-    expect(events.some((event) => event.payload?.["code"] === "agy_read_grant_unavailable")).toBe(
-      false,
-    );
+    const codes = events.map((event) => event.payload?.["code"]);
+    expect(codes).toContain("agy_readonly_access_note");
+    expect(codes).not.toContain("agy_read_grant_unavailable");
   });
 
   it("discloses a missing read grant instead of rewriting foreign settings", async () => {
@@ -163,14 +163,25 @@ describe("AGY native raw stdin selection", () => {
     const events = await collect(input);
     expect(readFileSync(settingsPath, "utf8")).toBe("{ not json");
     expect(events).toContainEqual(
-      expect.objectContaining({
-        type: "status",
-        payload: { code: "agy_read_grant_unavailable", read_grant: "unavailable" },
-      }),
+      expect.objectContaining({ type: "status", payload: { code: "agy_read_grant_unavailable" } }),
     );
     expect(observed.options[0]!.input).toContain(
       "A read outside the workspace folder may be refused without asking.",
     );
+  });
+
+  it("keeps full-access input and events free of readonly disclosures", async () => {
+    const input = spec("Fix it.", "caller instructions", "full");
+    const settingsPath = agySettingsPath(input.credential_profile!.isolation_locator!);
+    mkdirSync(dirname(settingsPath), { recursive: true });
+    writeFileSync(settingsPath, "{ not json");
+    const events = await collect(input);
+    expect(observed.options[0]!.input).toBe(
+      "[SYSTEM INSTRUCTIONS]\ncaller instructions\n[END SYSTEM INSTRUCTIONS]\n\nFix it.",
+    );
+    const codes = events.map((event) => event.payload?.["code"]);
+    expect(codes).not.toContain("agy_read_grant_unavailable");
+    expect(codes).not.toContain("agy_readonly_access_note");
   });
 
   it("refuses only actual empty input before spawn, while instructions alone remain usable", async () => {

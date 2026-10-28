@@ -60,7 +60,7 @@ export {
  * shell command: on 2026-10-28, 62 of 123 managed readonly runs (agy 1.3.4)
  * ended without an answer that way. The profile read grant (read-grant.ts)
  * restores reading anywhere; commands stay unavailable in plan mode, and the
- * readonly prompt says so instead of letting a refused command end the turn.
+ * readonly instructions say so instead of letting a refused command end the turn.
  */
 function accessArgs(access: AccessProfile): string[] {
   switch (access) {
@@ -523,21 +523,29 @@ async function* runAgy(
   }
 
   const readGrant = ensureAgyReadGrant(route.home);
-  if (readGrant.state === "unproven" || readGrant.state === "unavailable")
+  // Full access auto-approves every read, so only the other profiles can lose one.
+  if (readGrant.state === "unavailable" && spec.access !== "full")
     yield {
       type: "status",
       session_id: spec.session_id,
       ts: nowIso(),
       text: `agy may refuse reads outside the workspace without asking: ${readGrant.reason}`,
-      payload: { code: "agy_read_grant_unavailable", read_grant: readGrant.state },
+      payload: { code: "agy_read_grant_unavailable" },
+    };
+  const note = spec.access === "readonly" ? agyReadonlyAccessNote(readGrant) : null;
+  if (note)
+    yield {
+      type: "status",
+      session_id: spec.session_id,
+      ts: nowIso(),
+      text: "agy readonly: the engine appended its access note to the instructions",
+      payload: { code: "agy_readonly_access_note", note },
     };
   const input = promptWithInstructions(
-    spec.access === "readonly"
+    note
       ? {
           prompt: spec.prompt,
-          instructions: [spec.instructions?.trim(), agyReadonlyAccessNote(readGrant)]
-            .filter(Boolean)
-            .join("\n\n"),
+          instructions: [spec.instructions?.trim(), note].filter(Boolean).join("\n\n"),
         }
       : spec,
   );

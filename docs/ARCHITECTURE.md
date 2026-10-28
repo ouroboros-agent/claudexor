@@ -1070,7 +1070,10 @@ operational setup miss leaves the vendor's config-file fallback available.
 The implementation creates the DB first under a neutral bootstrap filename
 and adopts the canonical name, avoiding Apple's user search-list side effect
 for a direct `create-keychain .../login.keychain-db` call. It never bridges the
-host Keychain or copies credential bytes.
+host Keychain or copies credential bytes. Before every agy child the adapter
+also ensures the profile's vendor `settings.json` allows `read_file(*)`, so
+reads outside the workspace are not auto-denied in headless runs
+([INTEGRATIONS](INTEGRATIONS.md)).
 Linux keeps the config-file/HOME route.
 On Windows the credential is an OS-user-scoped vendor Keychain item: the named
 HOME scopes mutable vendor state without claiming an independent Google
@@ -5543,9 +5546,6 @@ sticky fact of the attempt (an accepted answer, agent progress, a file change
 or a diff in any try). An attempt that did not act keeps the rotation and
 transient rules above, except typed context exhaustion and native permission
 refusal end the attempt rather than replaying the same limitation. AGY's adapter
-prevents the common refusal, a read outside the workspace, with a read rule in
-the profile's own vendor settings
-([INTEGRATIONS](INTEGRATIONS.md)), and
 recognizes exact native-stderr auto-denial, not empty output or model prose.
 Only a nonempty typed final keeps an answer with that warning; narration
 cannot make the refusal successful. `permission_denial` records

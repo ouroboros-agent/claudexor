@@ -2096,14 +2096,17 @@ prompt on piped stdin, without a print flag (agy 1.1.13 selects print mode
 from non-empty non-TTY stdin)
 (`--dangerously-skip-permissions` for full access; `--conversation <id>`
 resumes). Before a run the adapter ensures the profile's own
-`.gemini/antigravity-cli/settings.json` allows `read_file(/)`, keeping every
-other key and rule, so the agent reads any POSIX path in every access profile
-as claude and codex agents do; without it a headless plan-mode run auto-denies
-any read outside its workspace folder. Unexpected settings are never rewritten
-and the run reports `agy_read_grant_unavailable`; Windows path rules are
-unproven, so no Windows rule is written. Plan mode has no approved shell path,
-so a readonly prompt ends with an engine note that shell commands are
-unavailable. Events: `init` → `started` (the vendor `conversation_id` is the
+`.gemini/antigravity-cli/settings.json` allows `read_file(*)`, which the vendor
+documents as matching all files on the system, keeping every other key and
+rule. The agent then reads any path in every access profile, as claude and
+codex agents do; without it a headless plan-mode run auto-denies any read
+outside its workspace folder. The vendor evaluates Deny > Ask > Allow, so a
+`read_file` deny rule or `toolPermission: "strict"` in that file still wins.
+Settings the adapter cannot parse are never rewritten, and a non-full run
+reports `agy_read_grant_unavailable`. Plan mode has no approved shell path, so
+the instructions of a readonly run end with an engine note that shell commands
+are unavailable, recorded as an `agy_readonly_access_note` status. Events:
+`init` → `started` (the vendor `conversation_id` is the
 resumable native session id); tool steps emit `tool_call` on `ACTIVE`.
 `DONE` emits an error `tool_result` for native tool errors, a successful
 `tool_result` (+ `file_change` for writers) only with reported output, otherwise
