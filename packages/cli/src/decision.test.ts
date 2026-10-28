@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseArgs } from "./args.js";
-import { resolveDecisionBody } from "./decision.js";
+import { decisionAnswerLines, resolveDecisionBody } from "./decision.js";
 import { exitCodeForState } from "./daemon-run.js";
 
 const resolve = (argv: string[]) => resolveDecisionBody(parseArgs(argv));
@@ -62,6 +62,39 @@ describe("resolveDecisionBody", () => {
       ok: true,
       body: { action: "accept_clean_patch" },
     });
+  });
+});
+
+describe("decisionAnswerLines", () => {
+  it("names the follow-up run, or its job while that run is still unbound", () => {
+    expect(
+      decisionAnswerLines("rerun_with_feedback", "old-run", {
+        accepted: true,
+        status: "requeued",
+        newRunId: "run-next",
+        newJobId: "job-next",
+        message: "follow-up run enqueued with reviewer feedback",
+      }),
+    ).toEqual([
+      "decision rerun_with_feedback on old-run: accepted [requeued]",
+      "  new run: run-next",
+      "  follow-up run enqueued with reviewer feedback",
+    ]);
+    expect(
+      decisionAnswerLines("rerun_with_feedback", "old-run", {
+        accepted: true,
+        status: "requeued",
+        newJobId: "job-next",
+        message: "follow-up job enqueued; run start is still pending",
+      }),
+    ).toEqual([
+      "decision rerun_with_feedback on old-run: accepted [requeued]",
+      "  new job: job-next",
+      "  follow-up job enqueued; run start is still pending",
+    ]);
+    expect(decisionAnswerLines("revert_run", "old-run", { accepted: false })).toEqual([
+      "decision revert_run on old-run: rejected [?]",
+    ]);
   });
 });
 
