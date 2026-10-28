@@ -3766,7 +3766,7 @@ and error count/first error. A clean observed pass clears holds; previews never 
 A queued pass cancelled before it enters the runner writes nothing. A pass that
 starts but obtains no inventory preserves the preceding holds, held counts and
 `since` while reporting its own failure or truncation. A truncated pass also carries
-preceding hold classes it did not observe again, retaining their earliest `since`
+preceding hold classes it does not report again, retaining their earliest `since`
 and the larger previous/current held counts. A pass that runs to its end records
 only the holds it observed. Only a pass with no hold,
 suppression or error reports `completed`. Permanently `not_pruned` native adapters
