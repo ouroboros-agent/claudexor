@@ -1,5 +1,17 @@
 # @claudexor/harness-claude
 
+## 4.8.2
+
+### Patch Changes
+
+- Updated dependencies [97e2f17]
+- Updated dependencies [67b8833]
+- Updated dependencies [f88a561]
+  - @claudexor/schema@4.8.2
+  - @claudexor/util@4.8.2
+  - @claudexor/core@4.8.2
+  - @claudexor/secrets@4.8.2
+
 ## 4.8.1
 
 ### Patch Changes
