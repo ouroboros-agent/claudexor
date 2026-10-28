@@ -61,6 +61,9 @@ export {
  * ended without an answer that way. The profile read grant (read-grant.ts)
  * restores reading anywhere; commands stay unavailable in plan mode, and the
  * readonly instructions say so instead of letting a refused command end the turn.
+ * Live-proven on agy 1.3.4 (2026-10-28, production profile): with the grant a
+ * read and an image outside the workspace succeeded and a write stayed refused;
+ * without the note the agent tried a command and the refusal ended the turn.
  */
 function accessArgs(access: AccessProfile): string[] {
   switch (access) {
