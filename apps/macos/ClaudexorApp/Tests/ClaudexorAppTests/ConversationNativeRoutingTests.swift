@@ -164,6 +164,9 @@ struct ConversationNativeRoutingTests {
         state.navigate(toY: prose.convert(line, to: document).minY + 4)
         await settle(host, count: 10)
         #expect(state.readingPosition.passage != nil)
+        // Parallel suites can resume this test after a 180 ms restore already ran (#520);
+        // hold the restore so the newer intent always meets it pending and must cancel it.
+        state.readingPosition.restoreDelay = .seconds(30)
         window.setContentSize(NSSize(width: 420, height: 700))
         host.setFrameSize(NSSize(width: 420, height: 700))
         await settle(host, count: 1)

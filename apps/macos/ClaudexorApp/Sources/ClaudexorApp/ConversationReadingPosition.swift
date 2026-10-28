@@ -23,6 +23,8 @@ import SwiftUI
     private(set) var passage: Passage?
     private(set) var isResizing = false
     private(set) var isFollowingResize = false
+    /// How long a width change lets layout settle before the passage is restored.
+    var restoreDelay: Duration = .milliseconds(180)
     /// AppKit's user-driven live scroll: a gesture or a scroller-knob drag.
     var liveScrolling = false
 
@@ -128,8 +130,9 @@ import SwiftUI
         isFollowingResize = state.follows
         let navigation = state.navigationRevision
         let following = state.follows
+        let delay = restoreDelay
         restoreTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(180))
+            try? await Task.sleep(for: delay)
             guard !Task.isCancelled, let self, let state = self.state else { return }
             self.isResizing = false
             self.isFollowingResize = false
