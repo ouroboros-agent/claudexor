@@ -2660,6 +2660,39 @@ Older engines omit the new optional fields. The catalog still points to the
 same `ControlDaemonStatus` response schema.
 No memory, loop, timing or store measurements impose automatic admission thresholds.
 
+The authenticated read-only `GET /v2/daemon/route-health` answers, for the
+last seven days before the request, how each route fared, a route being one
+harness crossed with one effective access profile: the terminal product runs
+that finished inside the window, counted as succeeded, failed, cancelled
+(cancelled or interrupted) and other, plus for every route its three most
+frequent failure groups, keyed by the typed failure category, sub-code and the
+first line of the display-safe message (redacted, at most 160 characters). The
+harness is the run's settled route harness from telemetry, else its failure's
+harness, else its primary harness, else `unknown`; the access profile is the
+one the engine enforced (telemetry, else the task contract), else `unknown`,
+and the retired `external_sandbox_full` counts as `full`. Routes are sorted by
+harness, then access. The answer is computed on demand from the retained run
+records: no store and no background job. The scan walks the public run page
+newest-first by creation time, projects only the window's terminal runs
+through the shared cached run summarizer (one bulk worker job per run,
+yielding between runs; the lifecycle comes from the daemon job state, so a
+record the projection can only degrade to a diagnostic row still counts under
+its real lifecycle) and ends at the first record created before the window
+start, at the end of the retained records, or after 2,000 records. Only that
+bound makes the answer incomplete (`complete: false`,
+`incompleteReason: "scan_bound"`; the counts then cover the newest runs read):
+the engine keeps every terminal command record for at least thirty days,
+longer than the window, so an exhausted listing is complete. Disclosed limits:
+a run created before the window start and finished inside it is not counted;
+runs of removed projects are not served and cannot be told from runs that
+never happened; a run whose tree retention already deleted keeps its lifecycle
+and job error but reports `unknown` access and, when it failed, an `unknown`
+failure category; a window wider than the summary cache re-projects on every
+call. No threshold or alarm is derived from the counts. The operation catalog
+lists the read, so a client discovers it; an older engine answers 404, which
+`claudexor doctor` prints as unavailable while it prints the summary line and
+the routes with failures of a current engine (`route_health` in `doctor --json`).
+
 `POST /v2/handshake` returns top-level `storeId`, the durable engine store's UUID (stable across restarts, absent when unavailable), only to a request sending `X-Claudexor-Store-Identity: 1`, so older strict same-major clients keep the legacy shape; a run 404 is meaningful only together with the same `storeId`.
 
 Retained task-group reads are composed by `sqlControlReadSources` and
@@ -2711,6 +2744,7 @@ visibility, not a permanent roster. Reads add no execution or approval authority
 - `POST /v2/credential-profiles`
 - `DELETE /v2/credential-profiles/:harness/:profileId`
 - `PATCH /v2/credential-profiles/:harness/:profileId`
+- `GET /v2/daemon/route-health`
 - `GET /v2/daemon/status`
 - `GET /v2/filesystem/directories`
 - `GET /v2/global/events`
