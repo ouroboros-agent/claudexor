@@ -404,8 +404,22 @@ deferred; they are recorded here now.
   and transport stops are done (in-run continuation ladder); the remaining
   context-exhaustion follow-ups (`prompt_too_long`, codex typed context frames,
   a second continuation) stay deferred.
-- D-13 step D: transcript List migration for pathologically long threads —
-  A/B/C/E sufficed at owner dogfood, List reserved for pathological threads.
+- D-13 step D: native prose and bounded eager history verification —
+  PR #504 mockups use TextKit 1 prose and an eager window of at most 20 turns.
+  Engine paging and review regressions (cursor scopes, live interactions, Delegate
+  restoration, workspace invalidation, snapshot-covered resolutions, completed
+  navigation membership and focus-aware follower recovery) are covered by
+  hermetic tests. The chosen presentation is wrapped code, Copy table, folded
+  long prompts and first-key handoff to the composer, preserving drafts and the
+  saved insertion point with native input composition and Tab traversal. Explicit travel can end an
+  evicted selection while retaining drafts; width changes restore a settled text
+  passage, including focus that pauses following. Word-bounded fold sources,
+  sheet isolation and plain/rich code-header exclusion have native regression
+  coverage. macOS 26.5 stress verification remains. List is reserved for a separately measured future experiment;
+  neither List nor LazyVStack is the current history strategy.
+- Conversation Find: a future feed-level NSTextFinderClient can search mounted
+  prose runs; searching unmounted history needs a dedicated engine search contract.
+  The bounded paging API does not implement Find. Find remains deferred.
 
 ## v3.1.0 dogfood finding (2026-07-23)
 

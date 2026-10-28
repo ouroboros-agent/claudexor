@@ -1,5 +1,24 @@
 # Frozen legacy replay oracle
 
+The separate `fixtures/schema-v3.ts.txt` fixture is the exact schema owner from
+`711cee0e5ec5f551ffcde78b9a336472fd162312`, outside the journal oracle below.
+`fixtures/schema-v4.ts.txt` is the exact main schema owner from
+`bc979941fb7dbd95f535255d42b0cdd9e33047b3` (SHA-256
+`124495fcf197c47487fe9d6496f30b5ef29b577a9776e98155dbcce672a102a0`).
+`fixtures/schema-v5.ts.txt` is the exact main schema owner from
+`4e870bea067e678373dd195fa7fdb0510a753f18` (SHA-256
+`10fb655eaf1f5e2ac819e53ac6873042ef9016fe70ffa175471d3a75e0f4e8e6`).
+`schema-history-upgrade.test.ts` executes the three frozen owners on temporary
+databases to prove that the v3→v6 chain, the index-only v4→v5 step and the v5→v6
+membership column preserve domain rows and the indexes they do not replace,
+including populated deferred-message rows. It verifies rollback on failure and
+refusal by the actual v3/v4/v5 readers after upgrade.
+The current store creates schema v6; 1→2 adds account service, 2→3 adds task-group
+indexes, 3→4 adds deferred messages, 4→5 adds the guarded plan-answer index, and
+5→6 moves task-group membership into a column.
+Neither frozen owner is derived from current DDL; never regenerate them to make
+a test pass.
+
 Baseline: `820e849cd15cca47758b700603e156ef29129fbf`, the accepted PR-C oracle
 baseline. This is test support, excluded from the daemon's production build.
 It does not select a runtime backend, open the SQL store, migrate a real data

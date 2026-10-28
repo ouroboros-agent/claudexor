@@ -449,7 +449,7 @@ PRAGMA user_version=3;`);
     expect(add.run("draft-2", "held").changes).toBe(1);
   });
 
-  it("rolls back the v3 to v4 table and indexes together on a late DDL fault", async () => {
+  it("rolls back the v3-to-v5 chain on a late deferred-message DDL fault", async () => {
     const db = await populatedV3();
     const beforeRows = tableSnapshot(db),
       beforeSchema = masterRows(db),
@@ -580,8 +580,8 @@ PRAGMA user_version=3;`);
   it("fresh DDL indexes membership by the canonical column at the current version", async () => {
     const db = await connect();
     ensureSchema(db);
-    expect(ENGINE_SCHEMA_VERSION).toBe(5);
-    expect(readSchemaIdentity(db).userVersion).toBe(5);
+    expect(ENGINE_SCHEMA_VERSION).toBe(6);
+    expect(readSchemaIdentity(db).userVersion).toBe(6);
     assertGroupIndexes(db);
   });
 
@@ -803,6 +803,7 @@ describeStore("engine schema (SYNTHESIS_R5 §5)", () => {
         "project_root_active",
         "project_current_pid",
         "turn_run",
+        "turn_plan_answer",
         "upload_finalize",
       ].sort(),
     );

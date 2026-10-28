@@ -1,3 +1,4 @@
+import { sqlThreadHistoryReads } from "./sql-thread-history.js";
 import {
   readRunObservations,
   type CommandBackend,
@@ -10,7 +11,7 @@ import type { TaskGroupRunsInput } from "@claudexor/schema";
 
 type ControlReadGraph = Pick<
   ReturnType<typeof createSqlDaemonServices>,
-  "store" | "commands" | "interactions" | "terminalFiles"
+  "commands" | "interactions" | "terminalFiles" | "store" | "blobs" | "threads"
 >;
 
 /** Lazy read composition follows the attached graph through recovery. No identity
@@ -20,6 +21,7 @@ export function sqlControlReadSources(
   storeId: () => string | undefined,
 ) {
   return {
+    threadHistoryReads: sqlThreadHistoryReads(current),
     taskGroupRuns: (input: TaskGroupRunsInput, signal?: AbortSignal) => {
       let selected: { graph: ControlReadGraph; storeId: string } | undefined;
       return readTaskGroupRuns(

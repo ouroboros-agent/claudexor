@@ -72,3 +72,6 @@ export {
   type CapabilityAttempt,
   type CapabilityBinding,
 } from "./model-capability-ledger.js";
+
+export { SqlThreadHistoryRead } from "./store/thread-history-read.js";
+export { readThreadPromptPart } from "./store/thread-prompt-read.js";

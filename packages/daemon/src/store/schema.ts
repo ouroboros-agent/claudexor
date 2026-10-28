@@ -5,7 +5,7 @@ import { StoreSchemaUnsupportedError } from "./errors.js";
 /** `PRAGMA application_id` of every engine store ("CXEN"). */
 export const ENGINE_APPLICATION_ID = 0x4358454e;
 /** `PRAGMA user_version`: the one schema this engine creates and serves. */
-export const ENGINE_SCHEMA_VERSION = 5;
+export const ENGINE_SCHEMA_VERSION = 6;
 
 /** Version 4: one reserved editable next message; accepted params stay immutable. */
 const DEFERRED_MESSAGE_SQL = `
@@ -38,12 +38,22 @@ const TASK_GROUP_PRESENT_SQL = `CASE WHEN json_valid(CAST(summary AS TEXT))
   THEN json_extract(CAST(summary AS TEXT),'$.params.taskGroupId') END IS NOT NULL`;
 
 /** Version 3 indexed tagged accepted summaries. Kept as the historical 2→3 step;
- * version 5 moves membership into a column. */
+ * version 6 moves membership into a column. */
 const TASK_GROUP_INDEX_SQL = `
 CREATE INDEX command_task_group ON command(json_extract(CAST(summary AS TEXT),'$.params.taskGroupId'),created_at DESC,id DESC)
   WHERE live=1 AND kind='product' AND json_valid(CAST(summary AS TEXT)) AND ${TASK_GROUP_PRESENT_SQL};
 CREATE INDEX command_task_group_state ON command(json_extract(CAST(summary AS TEXT),'$.params.taskGroupId'),state,created_at DESC,id DESC)
   WHERE live=1 AND kind='product' AND json_valid(CAST(summary AS TEXT)) AND ${TASK_GROUP_PRESENT_SQL};
+`;
+
+/** Version 5: guard both the expression key and partial predicate against non-JSON bodies.
+ * Acceptance is mutable query policy, not index membership. */
+export const PLAN_ANSWER_RUN_SQL = `CASE WHEN json_valid(CAST(body AS TEXT))
+  THEN json_extract(CAST(body AS TEXT),'$.answers_plan_run_id') END`;
+export const PLAN_ANSWER_PRESENT_SQL = `${PLAN_ANSWER_RUN_SQL} IS NOT NULL`;
+const PLAN_ANSWER_INDEX_SQL = `
+CREATE INDEX turn_plan_answer ON turn(thread_id,${PLAN_ANSWER_RUN_SQL},ordinal)
+  WHERE ${PLAN_ANSWER_PRESENT_SQL};
 `;
 
 /** Canonical (lower-case) membership of tagged product commands. */
@@ -54,7 +64,7 @@ CREATE INDEX command_task_group_state ON command(task_group_id,state,created_at 
   WHERE live=1 AND kind='product' AND task_group_id IS NOT NULL;
 `;
 
-/** Version 5: membership becomes a typed column. Accepted summaries keep the
+/** Version 6: membership becomes a typed column. Accepted summaries keep the
  * caller's spelling; live rows are found through the version-3 index, archived
  * rows by a guarded scan, since restoring a generation makes them live again. */
 const TASK_GROUP_COLUMN_SQL = `
@@ -159,7 +169,7 @@ CREATE TABLE import_partition(name TEXT PRIMARY KEY, status TEXT NOT NULL, pid I
   previous_frame_hash TEXT, source_size INTEGER, source_mtime TEXT, fingerprint TEXT, records INTEGER, digest TEXT, problem TEXT) STRICT;
 CREATE TABLE unclassified(pid INTEGER NOT NULL, seq INTEGER NOT NULL, type TEXT NOT NULL, reason TEXT NOT NULL, payload BLOB NOT NULL,
   PRIMARY KEY(pid, seq)) WITHOUT ROWID, STRICT;
-${ACCOUNT_LAST_SERVICE_SQL}${DEFERRED_MESSAGE_SQL}${TASK_GROUP_COLUMN_INDEX_SQL}`;
+${ACCOUNT_LAST_SERVICE_SQL}${DEFERRED_MESSAGE_SQL}${PLAN_ANSWER_INDEX_SQL}${TASK_GROUP_COLUMN_INDEX_SQL}`;
 
 /** Every table the DDL creates, in creation order (for tests and the importer seam). */
 export const ENGINE_TABLES: readonly string[] = Object.freeze(
@@ -176,7 +186,8 @@ const SCHEMA_MIGRATIONS: ReadonlyMap<number, (db: DatabaseSync) => void> = new M
   [1, (db: DatabaseSync) => db.exec(ACCOUNT_LAST_SERVICE_SQL)],
   [2, (db: DatabaseSync) => db.exec(TASK_GROUP_INDEX_SQL)],
   [3, (db: DatabaseSync) => db.exec(DEFERRED_MESSAGE_SQL)],
-  [4, (db: DatabaseSync) => db.exec(TASK_GROUP_COLUMN_SQL)],
+  [4, (db: DatabaseSync) => db.exec(PLAN_ANSWER_INDEX_SQL)],
+  [5, (db: DatabaseSync) => db.exec(TASK_GROUP_COLUMN_SQL)],
 ]);
 
 export interface SchemaIdentity {

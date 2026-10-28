@@ -212,8 +212,9 @@ describeStore("durable last-served facts (engine store schema v2)", () => {
     const before = dump(v1, V1_TABLES);
     v1.close();
     // Version 2 adds account_last_service; version 3 adds task-group indexes.
-    // Version 4 adds deferred_message and its four indexes. Version 5 moves
-    // task-group membership into a column and rebuilds both group indexes on it.
+    // Version 4 adds deferred_message and its four indexes; v5 adds turn_plan_answer.
+    // Version 6 moves task-group membership into a column and rebuilds both group
+    // indexes on it.
     expect([...ENGINE_TABLES].sort()).toEqual(
       [...V1_TABLES, "account_last_service", "deferred_message"].sort(),
     );
@@ -223,7 +224,7 @@ describeStore("durable last-served facts (engine store schema v2)", () => {
       applicationId: ENGINE_APPLICATION_ID,
       userVersion: ENGINE_SCHEMA_VERSION,
     });
-    expect(ENGINE_SCHEMA_VERSION).toBe(5);
+    expect(ENGINE_SCHEMA_VERSION).toBe(6);
     expect(
       upgraded.store
         .prepare(
@@ -234,6 +235,7 @@ describeStore("durable last-served facts (engine store schema v2)", () => {
     ).toEqual(
       [
         ...[...V1_DDL.matchAll(/CREATE (?:UNIQUE )?INDEX (\w+)/g)].map((match) => match[1]!),
+        "turn_plan_answer",
         "command_task_group",
         "command_task_group_state",
         "deferred_message_slot",
