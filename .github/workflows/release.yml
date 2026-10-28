@@ -954,9 +954,19 @@ jobs:
             if (-not $handshake.compatible -or $handshake.engine.version -ne $env:VERSION -or $handshake.engine.sha -ne $env:PREPARED_SHA) {
               throw "assembled daemon handshake identity mismatch"
             }
-            $stop = (& node $entry --stop $env:VERSION $env:PREPARED_SHA | ConvertFrom-Json)
-            if ($LASTEXITCODE -ne 0 -or -not $stop.stopped) {
-              throw "assembled daemon graceful stop failed"
+            # A just-started daemon refuses replacement stop with a retryable code until it can
+            # read its own records (runtime_activity_unknown) or while work is active
+            # (runtime_replacement_busy). Retry only those refusals, within a bounded window.
+            $stopDeadline = [DateTime]::UtcNow.AddSeconds(30)
+            while ($true) {
+              $stopText = (& node $entry --stop $env:VERSION $env:PREPARED_SHA | Out-String)
+              $stopExit = $LASTEXITCODE
+              try { $stop = $stopText | ConvertFrom-Json } catch { throw "assembled daemon stop answered no JSON: $stopText" }
+              if ($stopExit -eq 0 -and $stop.stopped) { break }
+              if (-not $stop.retryable -or [DateTime]::UtcNow -ge $stopDeadline) {
+                throw "assembled daemon graceful stop failed: $($stopText.Trim())"
+              }
+              Start-Sleep -Milliseconds 500
             }
             if (-not $daemon.WaitForExit(15000)) { throw "assembled daemon remained after graceful stop" }
           } finally {
