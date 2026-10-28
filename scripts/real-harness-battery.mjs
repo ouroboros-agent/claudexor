@@ -15,7 +15,7 @@
  * - never prints secret values.
  */
 import { spawn, spawnSync } from "node:child_process";
-import { createHash, randomBytes, randomInt } from "node:crypto";
+import { createHash } from "node:crypto";
 import { createInterface } from "node:readline";
 import {
   existsSync,
@@ -48,7 +48,9 @@ import {
   nativeBatteryRowReady,
   projectBatteryHarnessReadiness,
   projectBatteryDaemonLease,
+  readonlyCapabilityFixture,
   readonlyCapabilityPrompt,
+  readonlyCapabilityRequest,
   readonlyCapabilityRows,
   relevantRunAttemptKeys,
   resolveRealHarnessBatteryLayout,
@@ -3025,11 +3027,9 @@ async function runNativeReadonlyCapabilityRow(phase, row) {
   const outside = join(batteryRoot, "outside", cleanName(`${phase}-${row.id}`));
   rmSync(outside, { recursive: true, force: true });
   mkdirSync(join(outside, "listing"), { recursive: true });
-  const word = `word-${randomBytes(4).toString("hex")}`;
-  const fileCount = randomInt(3, 7);
-  writeFileSync(join(outside, "secret.txt"), `The secret word is ${word}.\n`);
-  for (let index = 0; index < fileCount; index += 1)
-    writeFileSync(join(outside, "listing", `item-${index}.txt`), `${index}\n`);
+  const fixture = readonlyCapabilityFixture();
+  writeFileSync(join(outside, "secret.txt"), `The secret word is ${fixture.word}.\n`);
+  for (const name of fixture.listing) writeFileSync(join(outside, "listing", name), `${name}\n`);
   const outsideBefore = treeDigest(outside);
   const model = selectBatteryModel(row.harness);
   try {
@@ -3038,22 +3038,15 @@ async function runNativeReadonlyCapabilityRow(phase, row) {
     const outcome = await enqueueAndAwait(
       client,
       addr,
-      withBatteryReviewerModels({
+      readonlyCapabilityRequest({
+        row,
         prompt: readonlyCapabilityPrompt({
           secretPath: join(outside, "secret.txt"),
           listingDir: join(outside, "listing"),
         }),
-        mode: "ask",
-        scope: { kind: "project", root: stable },
-        harnesses: [row.harness],
-        primaryHarness: row.harness,
-        access: "readonly",
-        ...(row.profileId ? { credentialProfileId: row.profileId } : {}),
-        ...(model.id ? { model: model.id } : {}),
-        web: "auto",
-        effort: "low",
-        paidBudget: { kind: "finite", maxUsd: Number(maxUsd) },
-        maxSeconds: 15 * 60,
+        projectRoot: stable,
+        modelId: model.id,
+        maxUsd,
       }),
       { waitForTerminal: true },
     );
@@ -3062,10 +3055,7 @@ async function runNativeReadonlyCapabilityRow(phase, row) {
       : { detail: null, error: "run id missing" };
     const detail = projected.detail;
     const answer = detail?.primaryOutput?.text ?? "";
-    const { wordFound, filesMatch } = evaluateReadonlyCapabilityAnswer(answer, {
-      word,
-      fileCount,
-    });
+    const { wordFound, filesMatch, firstMatch } = evaluateReadonlyCapabilityAnswer(answer, fixture);
     const stableUntouched =
       runGit(["rev-parse", "HEAD^{tree}"], stable) === stableTree &&
       run("git", ["status", "--porcelain"], { cwd: stable }).stdout.trim() === "";
@@ -3076,6 +3066,7 @@ async function runNativeReadonlyCapabilityRow(phase, row) {
       detail?.summary?.effectiveAccess === "readonly" &&
       wordFound &&
       filesMatch &&
+      firstMatch &&
       stableUntouched &&
       outsideUntouched;
     (valid ? pass : fail)(phase, row.name, {
@@ -3087,7 +3078,7 @@ async function runNativeReadonlyCapabilityRow(phase, row) {
       },
       profile: { requested: row.profileId ?? null },
       model: model.id ?? null,
-      reads: { wordFound, filesMatch, fileCount },
+      reads: { wordFound, filesMatch, firstMatch, fileCount: fixture.fileCount },
       mutation: { stableUntouched, outsideUntouched },
       answer: answer.slice(0, 200),
       projectionError: projected.error ?? null,

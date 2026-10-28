@@ -53,9 +53,12 @@ import {
   withExplicitBatteryModels,
   READONLY_CAPABILITY_HARNESSES,
   evaluateReadonlyCapabilityAnswer,
+  readonlyCapabilityFixture,
   readonlyCapabilityPrompt,
+  readonlyCapabilityRequest,
   readonlyCapabilityRows,
 } from "./real-harness-battery-state.mjs";
+import { normalizeRunStartRequest } from "../../packages/control-api/dist/run-start.js";
 
 const fixtureRoots = [];
 
@@ -1372,29 +1375,154 @@ test("the readonly probe names both outside paths and the exact answer shape", (
   });
   expect(prompt).toContain("/tmp/outside/secret.txt");
   expect(prompt).toContain("/tmp/outside/listing");
-  expect(prompt).toContain("WORD=<the secret word>; FILES=<number of files>");
+  expect(prompt).toContain(
+    "WORD=<the secret word>; FILES=<number of files>; FIRST=<alphabetically first file name>",
+  );
 });
 
-test("only an answer that actually read both outside facts passes", () => {
-  const facts = { word: "word-1a2b3c4d", fileCount: 4 };
-  expect(evaluateReadonlyCapabilityAnswer("WORD=word-1a2b3c4d; FILES=4", facts)).toEqual({
-    wordFound: true,
-    filesMatch: true,
-  });
+test("a fixture's listing has random distinct names and one alphabetically first name", () => {
+  const firsts = new Set();
+  for (let round = 0; round < 20; round += 1) {
+    const fixture = readonlyCapabilityFixture();
+    expect(fixture.word).toMatch(/^word-[0-9a-f]{8}$/);
+    expect(fixture.fileCount).toBeGreaterThanOrEqual(3);
+    expect(fixture.fileCount).toBeLessThanOrEqual(6);
+    expect(fixture.listing).toHaveLength(fixture.fileCount);
+    expect(new Set(fixture.listing).size).toBe(fixture.fileCount);
+    for (const name of fixture.listing) expect(name).toMatch(/^entry-[a-z]{8}\.txt$/);
+    expect(fixture.firstName).toBe([...fixture.listing].sort()[0]);
+    firsts.add(fixture.firstName);
+  }
+  // Random names: the first name differs from fixture to fixture, so it cannot be guessed.
+  expect(firsts.size).toBeGreaterThan(1);
+});
+
+test("an answer passes only with the word, the exact count and the exact first name", () => {
+  const facts = {
+    word: "word-1a2b3c4d",
+    fileCount: 4,
+    firstName: "entry-bcdefgha.txt",
+  };
+  const pass = { wordFound: true, filesMatch: true, firstMatch: true };
+  expect(
+    evaluateReadonlyCapabilityAnswer(
+      "WORD=word-1a2b3c4d; FILES=4; FIRST=entry-bcdefgha.txt",
+      facts,
+    ),
+  ).toEqual(pass);
+  // Markdown around the name and a closing period are formatting, not a different name.
+  expect(
+    evaluateReadonlyCapabilityAnswer(
+      "WORD=word-1a2b3c4d; FILES=4; FIRST=`entry-bcdefgha.txt`.",
+      facts,
+    ),
+  ).toEqual(pass);
   expect(evaluateReadonlyCapabilityAnswer("OK", facts)).toEqual({
     wordFound: false,
     filesMatch: false,
-  });
-  expect(evaluateReadonlyCapabilityAnswer("WORD=word-1a2b3c4d; FILES=5", facts)).toEqual({
-    wordFound: true,
-    filesMatch: false,
-  });
-  expect(evaluateReadonlyCapabilityAnswer("WORD=unknown; FILES=4", facts)).toEqual({
-    wordFound: false,
-    filesMatch: true,
+    firstMatch: false,
   });
   expect(evaluateReadonlyCapabilityAnswer(undefined, facts)).toEqual({
     wordFound: false,
     filesMatch: false,
+    firstMatch: false,
   });
+  expect(
+    evaluateReadonlyCapabilityAnswer("WORD=unknown; FILES=4; FIRST=entry-bcdefgha.txt", facts),
+  ).toEqual({ ...pass, wordFound: false });
+  expect(
+    evaluateReadonlyCapabilityAnswer(
+      "WORD=word-1a2b3c4d; FILES=5; FIRST=entry-bcdefgha.txt",
+      facts,
+    ),
+  ).toEqual({ ...pass, filesMatch: false });
+});
+
+test("a right count without the listing fails: FIRST must name the exact first file", () => {
+  const facts = {
+    word: "word-1a2b3c4d",
+    fileCount: 4,
+    firstName: "entry-bcdefgha.txt",
+  };
+  const guessed = { wordFound: true, filesMatch: true, firstMatch: false };
+  expect(
+    evaluateReadonlyCapabilityAnswer(
+      "WORD=word-1a2b3c4d; FILES=4 (guess; listing unavailable)",
+      facts,
+    ),
+  ).toEqual(guessed);
+  expect(
+    evaluateReadonlyCapabilityAnswer(
+      "WORD=word-1a2b3c4d; FILES=4; FIRST=entry-zzzzzzzz.txt",
+      facts,
+    ),
+  ).toEqual(guessed);
+  expect(
+    evaluateReadonlyCapabilityAnswer(
+      "WORD=word-1a2b3c4d; FILES=4; FIRST=entry-bcdefgha.txt; FIRST=entry-zzzzzzzz.txt",
+      facts,
+    ),
+  ).toEqual(guessed);
+  // A caller that lost the first name never passes on an answer without one.
+  expect(
+    evaluateReadonlyCapabilityAnswer("WORD=word-1a2b3c4d; FILES=4", {
+      word: facts.word,
+      fileCount: 4,
+    }).firstMatch,
+  ).toBe(false);
+});
+
+test("a count that is not one plain integer fails", () => {
+  const facts = {
+    word: "word-1a2b3c4d",
+    fileCount: 4,
+    firstName: "entry-bcdefgha.txt",
+  };
+  for (const files of ["4.5", "4e0", "4,5", "four", "-4", ""]) {
+    expect(
+      evaluateReadonlyCapabilityAnswer(
+        `WORD=word-1a2b3c4d; FILES=${files}; FIRST=entry-bcdefgha.txt`,
+        facts,
+      ).filesMatch,
+    ).toBe(false);
+  }
+  expect(
+    evaluateReadonlyCapabilityAnswer(
+      "WORD=word-1a2b3c4d; FILES=4; FILES=5; FIRST=entry-bcdefgha.txt",
+      facts,
+    ).filesMatch,
+  ).toBe(false);
+});
+
+test("the readonly capability request passes the shared run-start admission", () => {
+  const root = mkdtempSync(join(tmpdir(), "claudexor-readonly-capability-"));
+  fixtureRoots.push(root);
+  const prompt = readonlyCapabilityPrompt({
+    secretPath: join(root, "..", "secret.txt"),
+    listingDir: join(root, "..", "listing"),
+  });
+  const rows = readonlyCapabilityRows({ agy: { profile: { profile_id: "fixture-agy" } } });
+  for (const row of rows) {
+    const request = readonlyCapabilityRequest({
+      row,
+      prompt,
+      projectRoot: root,
+      modelId: "fixture-model",
+      maxUsd: "1.50",
+    });
+    const admitted = normalizeRunStartRequest(request);
+    expect(admitted).toMatchObject({
+      mode: "ask",
+      access: "readonly",
+      primaryHarness: row.harness,
+      scope: { kind: "project", root },
+    });
+    expect(admitted.reviewerModels).toBeUndefined();
+    if (row.profileId) expect(admitted.credentialProfileId).toBe(row.profileId);
+    // The same body with the Agent-only reviewer models is what every row sent
+    // before: the shared admission refuses it before any harness runs.
+    expect(() => normalizeRunStartRequest(withBatteryReviewerModels(request))).toThrow(
+      /reviewerModels only applies to agent runs/,
+    );
+  }
 });

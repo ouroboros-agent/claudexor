@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes, randomInt } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -279,23 +279,77 @@ export function readonlyCapabilityRows(named = {}) {
   });
 }
 
-/** The probe prompt: a secret word in a file outside the project and the number
- * of files in an outside directory, neither guessable without reading. */
+/** One row's outside facts: a random secret word and three to six files whose
+ * names are random lowercase letters. The word, the count and the
+ * alphabetically first name each come only from a real read or listing. */
+export function readonlyCapabilityFixture() {
+  const letters = (length) =>
+    [...randomBytes(length)].map((byte) => String.fromCharCode(97 + (byte % 26))).join("");
+  const names = new Set();
+  const count = randomInt(3, 7);
+  while (names.size < count) names.add(`entry-${letters(8)}.txt`);
+  const listing = [...names];
+  return {
+    word: `word-${randomBytes(4).toString("hex")}`,
+    listing,
+    fileCount: listing.length,
+    firstName: [...listing].sort()[0],
+  };
+}
+
+/** The probe prompt: a secret word in a file outside the project, the number of
+ * files in an outside directory and the alphabetically first of their names. */
 export function readonlyCapabilityPrompt({ secretPath, listingDir }) {
   return (
-    `Read the file ${secretPath}, which is outside this project, and count the files in the ` +
+    `Read the file ${secretPath}, which is outside this project, and list the files in the ` +
     `directory ${listingDir}. Do not edit anything. Answer in one line exactly: ` +
-    "WORD=<the secret word>; FILES=<number of files>."
+    "WORD=<the secret word>; FILES=<number of files>; FIRST=<alphabetically first file name>."
   );
 }
 
-/** Both facts must be present; an answer that never read cannot contain them. */
-export function evaluateReadonlyCapabilityAnswer(answer, { word, fileCount }) {
+/** The run body of one capability row: an Ask run with readonly access. It
+ * carries no reviewerModels, which only Agent runs accept: the shared run-start
+ * admission answers such a body with HTTP 400 before any harness starts. */
+export function readonlyCapabilityRequest({ row, prompt, projectRoot, modelId, maxUsd }) {
+  return {
+    prompt,
+    mode: "ask",
+    scope: { kind: "project", root: projectRoot },
+    harnesses: [row.harness],
+    primaryHarness: row.harness,
+    access: "readonly",
+    ...(row.profileId ? { credentialProfileId: row.profileId } : {}),
+    ...(modelId ? { model: modelId } : {}),
+    web: "auto",
+    effort: "low",
+    paidBudget: { kind: "finite", maxUsd: Number(maxUsd) },
+    maxSeconds: 15 * 60,
+  };
+}
+
+/** The one value after `KEY=`, or undefined when the key is missing or given
+ * twice. Wrapping quotes, backticks or asterisks and a closing period or comma
+ * are formatting, not part of the value. */
+function answerValue(text, key) {
+  const values = [...text.matchAll(new RegExp(`\\b${key}\\s*=\\s*([^\\s;]+)`, "g"))].map((match) =>
+    match[1]
+      .replace(/[.,]+$/, "")
+      .replace(/^[`'"*]+|[`'"*]+$/g, "")
+      .replace(/[.,]+$/, ""),
+  );
+  return values.length === 1 ? values[0] : undefined;
+}
+
+/** All three facts must match; an answer that never read or listed cannot hold
+ * them. The count is a plain integer given once (FILES=4.5 or two counts fail)
+ * and FIRST is the exact name, so a guessed count alone never passes. */
+export function evaluateReadonlyCapabilityAnswer(answer, { word, fileCount, firstName }) {
   const text = typeof answer === "string" ? answer : "";
-  const files = /FILES\s*=\s*(\d+)/.exec(text)?.[1];
+  const files = answerValue(text, "FILES");
   return {
     wordFound: text.includes(word),
-    filesMatch: files !== undefined && Number(files) === fileCount,
+    filesMatch: files !== undefined && /^\d+$/.test(files) && Number(files) === fileCount,
+    firstMatch: typeof firstName === "string" && answerValue(text, "FIRST") === firstName,
   };
 }
 

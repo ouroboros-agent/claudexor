@@ -389,9 +389,12 @@ Tests and local smokes must never touch real user state:
   SKIP. The lane revokes every temporary disposable-repo full-access grant.
   Each of Codex, Claude, Cursor and Agy (named) also runs a readonly
   capability row: an `ask` run must report a random word from a file outside
-  the project and the number of files in an outside directory, and neither the
-  project nor the outside files may change. An echo or a write denial cannot
+  the project, the number of files in an outside directory and the
+  alphabetically first of their random names, and neither the project nor the
+  outside files may change. An echo, a write denial or a guessed count cannot
   pass it, which is how agy readonly shipped unable to read (claudexor#525).
+  The row's request is an Ask body without reviewer models (Agent-only), and a
+  unit test runs it through the shared run-start admission.
   Every Codex and
   Claude task attempt in the daemon's complete new-job inventory must disclose
   `local_session` from `native_session`; an API fallback or undisclosed route
