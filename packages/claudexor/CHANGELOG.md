@@ -1,5 +1,13 @@
 # claudexor
 
+## 4.8.2
+
+### Patch Changes
+
+- Updated dependencies [67b8833]
+- Updated dependencies [f88a561]
+  - @claudexor/cli@4.8.2
+
 ## 4.8.1
 
 ### Patch Changes

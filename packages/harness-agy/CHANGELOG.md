@@ -1,5 +1,17 @@
 # @claudexor/harness-agy
 
+## 4.8.2
+
+### Patch Changes
+
+- bd69a20: Antigravity runs can now read files outside their workspace folder. Readonly runs mapped to agy's plan mode, which asks before such a read; a headless run cannot answer, so agy refused the read and usually ended the turn without an answer. On a production install about half of readonly agy runs failed this way, while claude and codex readonly runs almost never did. The adapter now ensures the profile's own `settings.json` allows `read_file(*)`, which the vendor documents as matching all files on the system, before every run and keeps all other settings, so agy reads like the other harnesses; write confinement is unchanged. A `read_file` deny rule in that file still wins, and `toolPermission: "strict"` still prompts before every read. Settings the adapter cannot read, parse or write are left alone and a non-full run reports `agy_read_grant_unavailable`. Plan mode still has no approved shell path, so the instructions of a readonly run now end with an engine note that shell commands are unavailable, recorded as an `agy_readonly_access_note` status, instead of letting a refused command end the run.
+- Updated dependencies [97e2f17]
+- Updated dependencies [67b8833]
+- Updated dependencies [f88a561]
+  - @claudexor/schema@4.8.2
+  - @claudexor/util@4.8.2
+  - @claudexor/core@4.8.2
+
 ## 4.8.1
 
 ### Patch Changes
