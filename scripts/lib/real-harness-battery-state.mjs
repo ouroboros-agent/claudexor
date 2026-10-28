@@ -283,8 +283,9 @@ export function readonlyCapabilityRows(named = {}) {
  * names are random lowercase letters. The word, the count and the
  * alphabetically first name each come only from a real read or listing. */
 export function readonlyCapabilityFixture() {
+  // randomInt draws each letter uniformly; a byte modulo 26 would favour a-v.
   const letters = (length) =>
-    [...randomBytes(length)].map((byte) => String.fromCharCode(97 + (byte % 26))).join("");
+    Array.from({ length }, () => String.fromCharCode(97 + randomInt(26))).join("");
   const names = new Set();
   const count = randomInt(3, 7);
   while (names.size < count) names.add(`entry-${letters(8)}.txt`);
