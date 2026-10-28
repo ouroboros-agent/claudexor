@@ -1,0 +1,110 @@
+import { randomBytes } from "node:crypto";
+import {
+  chmodSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join } from "node:path";
+import { redactSecrets } from "@claudexor/util";
+
+/**
+ * The vendor allow rule that lets agy read any POSIX path without asking.
+ * Claude and Codex agents read anywhere in every access profile; agy instead
+ * asks before a read outside its workspace folders, and a headless run cannot
+ * answer, so the read is auto-denied and the turn often ends without output.
+ * A read grant changes no write confinement: plan mode still withholds edits,
+ * accept-edits still asks before an edit outside the workspace, and shell
+ * commands keep their own approval.
+ */
+export const AGY_READ_ANYWHERE_RULE = "read_file(/)";
+
+export type AgyReadGrant =
+  { state: "present" | "added" } | { state: "unproven" | "unavailable"; reason: string };
+
+/** agy has no settings-path variable: the profile HOME selects this file. */
+export function agySettingsPath(profileHome: string): string {
+  return join(profileHome, ".gemini", "antigravity-cli", "settings.json");
+}
+
+/**
+ * Ensure the Claudexor-owned profile settings carry the read grant, keeping
+ * every other key and rule. The file belongs to the whole profile, so the
+ * grant applies to every run on it. Unreadable or unexpected settings are
+ * never rewritten: the run proceeds with the vendor's own read policy and the
+ * caller discloses the reason.
+ */
+export function ensureAgyReadGrant(
+  profileHome: string,
+  platform: NodeJS.Platform = process.platform,
+): AgyReadGrant {
+  // `/` is a POSIX root; how agy matches drive-letter paths is unproven.
+  if (platform === "win32")
+    return { state: "unproven", reason: "agy read rules for Windows paths are unproven" };
+  const path = agySettingsPath(profileHome);
+  let text = "";
+  let mode = 0o600;
+  try {
+    text = readFileSync(path, "utf8");
+    mode = statSync(path).mode & 0o777;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code !== "ENOENT")
+      return unavailable(`settings.json is unreadable: ${message(error)}`);
+  }
+  let settings: Record<string, unknown> = {};
+  if (text.trim()) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      return unavailable("settings.json is not valid JSON");
+    }
+    if (!isRecord(parsed)) return unavailable("settings.json is not a JSON object");
+    settings = parsed;
+  }
+  const permissions = settings["permissions"] ?? {};
+  if (!isRecord(permissions)) return unavailable("settings.json permissions is not an object");
+  const allow = permissions["allow"] ?? [];
+  if (!Array.isArray(allow)) return unavailable("settings.json permissions.allow is not a list");
+  if (allow.includes(AGY_READ_ANYWHERE_RULE)) return { state: "present" };
+  const next = {
+    ...settings,
+    permissions: { ...permissions, allow: [...allow, AGY_READ_ANYWHERE_RULE] },
+  };
+  try {
+    writeAtomically(path, `${JSON.stringify(next, null, 2)}\n`, mode);
+  } catch (error) {
+    return unavailable(`settings.json could not be written: ${message(error)}`);
+  }
+  return { state: "added" };
+}
+
+/** Same-directory temp file + rename: a concurrent run reads the old or the
+ * new file, never a torn one. Concurrent writers add the same rule. */
+function writeAtomically(path: string, text: string, mode: number): void {
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const temp = `${path}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
+  try {
+    writeFileSync(temp, text, { encoding: "utf8", mode, flag: "wx" });
+    chmodSync(temp, mode);
+    renameSync(temp, path);
+  } catch (error) {
+    rmSync(temp, { force: true });
+    throw error;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function unavailable(reason: string): AgyReadGrant {
+  return { state: "unavailable", reason };
+}
+
+function message(error: unknown): string {
+  return redactSecrets(error instanceof Error ? error.message : String(error)).slice(0, 200);
+}

@@ -5543,6 +5543,9 @@ sticky fact of the attempt (an accepted answer, agent progress, a file change
 or a diff in any try). An attempt that did not act keeps the rotation and
 transient rules above, except typed context exhaustion and native permission
 refusal end the attempt rather than replaying the same limitation. AGY's adapter
+prevents the common refusal, a read outside the workspace, with a read rule in
+the profile's own vendor settings
+([INTEGRATIONS](INTEGRATIONS.md)), and
 recognizes exact native-stderr auto-denial, not empty output or model prose.
 Only a nonempty typed final keeps an answer with that warning; narration
 cannot make the refusal successful. `permission_denial` records
