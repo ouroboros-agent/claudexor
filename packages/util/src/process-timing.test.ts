@@ -1,7 +1,17 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
 import { LatencyHistogram, ProcessTiming, measureSync, processTiming } from "./process-timing.js";
 
 describe("bounded process timing", () => {
+  it("records every worker kind without an attention kind in its input contract", () => {
+    const kinds = ["cursor", "detail", "summary", "event-replay", "artifact"] as const;
+    expectTypeOf<Parameters<ProcessTiming["recordBulk"]>[0]>().toEqualTypeOf<
+      (typeof kinds)[number]
+    >();
+    const timing = new ProcessTiming();
+    for (const kind of kinds) timing.recordBulk(kind, 1, 2);
+    expect(timing.facts().bulk.map((entry) => entry.kind)).toEqual(kinds);
+  });
+
   it("keeps approximate percentiles and exact count/max without storing samples", () => {
     const latency = new LatencyHistogram();
     expect(latency.facts()).toEqual({ count: 0, p50Ms: null, p99Ms: null, maxMs: null });
@@ -71,4 +81,24 @@ describe("bounded process timing", () => {
       expect.arrayContaining(["scope.persist", "control.run_detail"]),
     );
   });
+});
+
+it("keeps queue residence separate from worker projection and route outcomes", () => {
+  const timing = new ProcessTiming();
+  timing.recordRequest("GET", "/v2/runs/:id", 2, "not_found");
+  timing.recordRequest("GET", "/v2/runs/:id", 100, "served");
+  timing.recordBulk("detail", 75, 25);
+  expect(timing.facts().routes).toMatchObject([
+    {
+      lifetime: { count: 2 },
+      outcomes: [
+        { outcome: "not_found", lifetime: { count: 1, maxMs: 2 } },
+        { outcome: "served", lifetime: { count: 1, maxMs: 100 } },
+      ],
+    },
+  ]);
+  expect(timing.facts().bulk).toMatchObject([
+    { kind: "detail", queue: { count: 1, maxMs: 75 }, projection: { count: 1, maxMs: 25 } },
+  ]);
+  expect(timing.facts().worstSync).toEqual([]);
 });

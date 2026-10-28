@@ -260,6 +260,8 @@ frozen plan document with required sections replaced it); a separate
 
 ## Evidence Beats Summaries
 
+The observation availability contract is [INV-145](../CLAUDEXOR_BIBLE.md#12-keep-the-codebase-small-and-direct).
+
 Model prose is context, never proof. Work product is proven by Git diffs or
 complete file manifests captured in the execution tree, deterministic checks,
 reviewer artifacts, typed events, and recorded side effects. Diffs round-trip

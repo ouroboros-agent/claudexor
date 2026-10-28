@@ -17,7 +17,6 @@ const CLEAN: RunEventsIntegrity = {
   unreadable: false,
   malformedLines: 0,
   nonObjectLines: 0,
-  tailTruncated: false,
 };
 const INTEGRITY: Array<RunEventsIntegrity | undefined> = [
   undefined,

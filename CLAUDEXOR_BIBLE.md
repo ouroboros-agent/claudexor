@@ -940,6 +940,12 @@ invariant or operator decision before proceeding.
   corruption before a read. verify: `packages/daemon/src/store/durability.test.ts`;
   `packages/daemon/src/store/main-thread-sync.test.ts`; flusher generation,
   retention query-plan, importer and recovery tests.
+- **INV-145** Observing retained run history never requires the control plane
+  to finish that history before it serves Stop, admission or an attention read.
+  verify: `packages/control-api/src/bulk-worker-isolation.test.ts`
+  ("serves admission, inbox attention and control requests, then stops while a real bulk worker is blocked");
+  `packages/control-api/src/bulk-server.test.ts`;
+  `packages/control-api/src/bulk-executor.test.ts`.
 - **INV-123** Dead code is deleted, not allowlisted (justified, dated
   baseline entries tied to a locked decision are the only exception). Docs
   claims about endpoints, mode ids, and CLI flags are checked against

@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { Worker } from "node:worker_threads";
 import { afterEach, expect, it, vi } from "vitest";
 import { ControlRunListResponse, ControlThreadListResponse, TaskContract } from "@claudexor/schema";
 import {
@@ -10,7 +11,6 @@ import {
   retainForContinuation,
   writeContinuationSources,
   writeEnvelopeCustody,
-  readContinuationSources,
   retainedEnvelopeBase,
 } from "@claudexor/workspace";
 import { DaemonControlApiServer, type DaemonControlApiOptions } from "./daemon-server.js";
@@ -19,6 +19,8 @@ import { EventLog } from "@claudexor/event-log";
 import { runRetentionPass } from "./retention.js";
 import { finalizeStructuredOutput } from "../../orchestrator/src/structuredOutput.js";
 import type { DaemonRunRecord } from "./run-record.js";
+import { BulkExecutor } from "./bulk-executor.js";
+import { BULK_WORKER_ROLE } from "./bulk-protocol.js";
 
 const io = vi.hoisted(() => ({
   reads: [] as string[],
@@ -33,14 +35,6 @@ vi.mock("node:fs", async (original) => {
       io.onRead?.();
       return fs.readFileSync(...args);
     },
-  };
-});
-vi.mock("@claudexor/workspace", async (original) => {
-  const ws = await original<typeof import("@claudexor/workspace")>();
-  return {
-    ...ws,
-    readContinuationSources: vi.fn(ws.readContinuationSources),
-    retainedEnvelopeBase: vi.fn(ws.retainedEnvelopeBase),
   };
 });
 
@@ -92,6 +86,18 @@ async function withServer(
       enqueue: async () => ({ id: "unused", state: "queued" }),
       cancel: async () => ({}),
     },
+  });
+  // Keep cost assertions on real worker reads, not main-thread-only spies.
+  (server as unknown as { bulk: BulkExecutor }).bulk = new BulkExecutor(() => {
+    const worker = new Worker(new URL("./test-support/bulk-read-counter.mjs", import.meta.url), {
+      workerData: { role: BULK_WORKER_ROLE },
+    });
+    worker.on("message", (message: { type?: string; path: string }) => {
+      if (message.type !== "test:artifact-read") return;
+      io.reads.push(message.path);
+      io.onRead?.();
+    });
+    return worker;
   });
   const { host, port } = await server.start();
   try {
@@ -191,12 +197,8 @@ it("keeps hot pages free of artifact/continuation reads and invalidates custody-
     const first = await page();
     expect(first.runs[0]?.resumable?.workspace.kind).toBe("retained_envelope");
     io.reads = [];
-    vi.mocked(readContinuationSources).mockClear();
-    vi.mocked(retainedEnvelopeBase).mockClear();
     expect(await page()).toEqual(first);
-    expect(io.reads.filter((p) => p.startsWith(head.runDir!))).toEqual([]);
-    expect(readContinuationSources).not.toHaveBeenCalled();
-    expect(retainedEnvelopeBase).not.toHaveBeenCalled();
+    expect(io.reads).toEqual([]);
     // Adoption writes custody before removing the pointer: test that interval.
     writeEnvelopeCustody(envelopeBaseOf(env), {
       ...custody,
@@ -205,7 +207,7 @@ it("keeps hot pages free of artifact/continuation reads and invalidates custody-
     });
     const changed = await page();
     expect(changed.runs[0]?.resumable?.workspace.kind).toBe("none");
-    expect(readContinuationSources).toHaveBeenCalled();
+    expect(io.reads).toContain(join(head.runDir!, "context/continuation.json"));
     expect(io.reads.some((p) => p === join(head.runDir!, "final/telemetry.yaml"))).toBe(true);
     expect(await page()).toEqual(changed);
   });

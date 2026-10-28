@@ -328,6 +328,11 @@ jobs:
           packages/daemon/src/store/cursors.test.ts
           packages/daemon/src/store/main-thread-sync.test.ts
           packages/cli/src/store-worker-bundle.test.ts
+          packages/cli/src/bulk-worker-bundle.test.ts
+          packages/control-api/src/bulk-executor.test.ts
+          packages/control-api/src/bulk-worker-isolation.test.ts
+          packages/control-api/src/event-replay-batch.test.ts
+          packages/event-log/src/live-seq.test.ts
           packages/daemon/src/store/legacy-journal/frame-reader.test.ts
           packages/daemon/src/store/legacy-journal/frame-reader-shrink.test.ts
           packages/daemon/src/store/command-contract.test.ts

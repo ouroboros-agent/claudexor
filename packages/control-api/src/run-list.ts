@@ -112,16 +112,16 @@ export function lruSet<K, V>(map: Map<K, V>, key: K, value: V, cap: number): voi
   }
 }
 
-/** One synchronous summary per event-loop turn; other requests can run between them. */
+/** One summary per job/turn; other requests can run between them. */
 export async function summarizeRunPage<T>(
   page: readonly DaemonRunRecord[],
-  summarize: (record: DaemonRunRecord) => T,
+  summarize: (record: DaemonRunRecord) => T | Promise<T>,
   active: () => boolean = () => true,
 ): Promise<T[]> {
   const summaries: T[] = [];
   for (const [i, record] of page.entries()) {
     if (!active()) break;
-    summaries.push(summarize(record));
+    summaries.push(await summarize(record));
     if (i + 1 < page.length) await setImmediate();
   }
   return summaries;
@@ -129,7 +129,7 @@ export async function summarizeRunPage<T>(
 
 interface RunListContext {
   daemon: DaemonFacadeClient;
-  summarize(record: DaemonRunRecord): ControlRunSummary;
+  summarize(record: DaemonRunRecord): ControlRunSummary | Promise<ControlRunSummary>;
   requestError(res: ServerResponse, error: unknown): void;
   json(res: ServerResponse, status: number, body: unknown): void;
 }

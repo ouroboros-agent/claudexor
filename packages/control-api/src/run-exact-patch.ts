@@ -5,6 +5,7 @@ import { PATCH_EXACT_BYTES_UNAVAILABLE, resolveExactPatch } from "@claudexor/wor
 import { readRawTextArtifact, safeReadStructuredArtifact } from "./run-artifact-read.js";
 import { recordedExecutionRoot } from "./run-delivery-state.js";
 import type { DaemonRunRecord } from "./run-record.js";
+import { projectionRead } from "./projection-context.js";
 
 /**
  * The ONE interpretation point for a run's saved patch (INV-062).
@@ -17,6 +18,18 @@ import type { DaemonRunRecord } from "./run-record.js";
  * holds the saved copy for display, and nothing may be applied from it.
  */
 export function resolveRunPatch(
+  rec: DaemonRunRecord,
+  projectRoot: string | null,
+  maxBytes?: number,
+): { patch: string | null; unavailable: boolean } {
+  return projectionRead(
+    rec.runDir ?? rec.id,
+    `exact-patch:${maxBytes ?? "all"}:${projectRoot}`,
+    () => resolveUncached(rec, projectRoot, maxBytes),
+  );
+}
+
+function resolveUncached(
   rec: DaemonRunRecord,
   projectRoot: string | null,
   maxBytes?: number,
@@ -54,8 +67,14 @@ export function runPatchDigest(
   projectRoot: string | null,
   maxBytes?: number,
 ): string | null {
-  const resolved = resolveRunPatch(rec, projectRoot, maxBytes);
-  return resolved.patch !== null && !resolved.unavailable ? sha256(resolved.patch) : null;
+  return projectionRead(
+    rec.runDir ?? rec.id,
+    `patch-digest:${maxBytes ?? "all"}:${projectRoot}`,
+    () => {
+      const resolved = resolveRunPatch(rec, projectRoot, maxBytes);
+      return resolved.patch !== null && !resolved.unavailable ? sha256(resolved.patch) : null;
+    },
+  );
 }
 
 /** A blob-only finding is invisible to a text scan of the patch, so the `pr`

@@ -40,6 +40,8 @@ export type SyncOperation =
   | "scope.persist";
 type LatencyFacts = ReturnType<LatencyHistogram["facts"]>;
 type SyncSample = { operation: SyncOperation; durationMs: number; at: string };
+export type RequestOutcome =
+  "served" | "not_found" | "disconnected_at_entry" | "disconnected" | "failed";
 const empty = (): LatencyFacts => ({ count: 0, p50Ms: null, p99Ms: null, maxMs: null });
 
 /** Shared by the in-process HTTP and daemon owners, without a dependency cycle. */
@@ -49,16 +51,24 @@ export class ProcessTiming {
     {
       method: string;
       route: string;
+      outcomes: Map<
+        RequestOutcome,
+        { lifetime: LatencyHistogram; current: LatencyHistogram; window: LatencyFacts | null }
+      >;
       lifetime: LatencyHistogram;
       current: LatencyHistogram;
       window: LatencyFacts | null;
     }
   >();
   private readonly worst: SyncSample[] = [];
+  private readonly bulk = new Map<
+    string,
+    { queue: LatencyHistogram; projection: LatencyHistogram }
+  >();
   private windowMs: number | null = null;
   private windowEndedAt: string | null = null;
 
-  recordRequest(method: string, route: string, durationMs: number): void {
+  recordRequest(method: string, route: string, durationMs: number, outcome?: RequestOutcome): void {
     let key = `${method} ${route}`;
     // Reserve one slot for unknown methods/routes and future catalog growth.
     if (!this.routes.has(key) && this.routes.size >= 255) {
@@ -71,6 +81,7 @@ export class ProcessTiming {
       entry = {
         method,
         route,
+        outcomes: new Map(),
         lifetime: new LatencyHistogram(),
         current: new LatencyHistogram(),
         window: this.windowEndedAt === null ? null : empty(),
@@ -79,6 +90,35 @@ export class ProcessTiming {
     }
     entry.lifetime.record(durationMs);
     entry.current.record(durationMs);
+    if (outcome) {
+      let split = entry.outcomes.get(outcome);
+      if (!split) {
+        split = {
+          lifetime: new LatencyHistogram(),
+          current: new LatencyHistogram(),
+          window: this.windowEndedAt === null ? null : empty(),
+        };
+        entry.outcomes.set(outcome, split);
+      }
+      split.lifetime.record(durationMs);
+      split.current.record(durationMs);
+    }
+  }
+
+  /** Queue residence and worker execution are wall time, never main-thread sync spans. */
+  recordBulk(
+    kind: "cursor" | "detail" | "summary" | "event-replay" | "artifact",
+    queueMs: number,
+    projectionMs: number,
+  ): void {
+    let entry = this.bulk.get(kind);
+    if (!entry)
+      this.bulk.set(
+        kind,
+        (entry = { queue: new LatencyHistogram(), projection: new LatencyHistogram() }),
+      );
+    entry.queue.record(queueMs);
+    entry.projection.record(projectionMs);
   }
 
   recordSync(operation: SyncOperation, durationMs: number): void {
@@ -98,6 +138,10 @@ export class ProcessTiming {
     for (const entry of this.routes.values()) {
       entry.window = entry.current.facts();
       entry.current.reset();
+      for (const split of entry.outcomes.values()) {
+        split.window = split.current.facts();
+        split.current.reset();
+      }
     }
     this.windowMs = windowMs;
     this.windowEndedAt = windowEndedAt;
@@ -110,10 +154,24 @@ export class ProcessTiming {
       routes: [...this.routes.values()].map((entry) => ({
         method: entry.method,
         route: entry.route,
+        ...(entry.outcomes.size
+          ? {
+              outcomes: [...entry.outcomes].map(([outcome, split]) => ({
+                outcome,
+                lifetime: split.lifetime.facts(),
+                window: split.window && { ...split.window },
+              })),
+            }
+          : {}),
         lifetime: entry.lifetime.facts(),
         window: entry.window && { ...entry.window },
       })),
       worstSync: this.worst.map((sample) => ({ ...sample })),
+      bulk: [...this.bulk].map(([kind, entry]) => ({
+        kind,
+        queue: entry.queue.facts(),
+        projection: entry.projection.facts(),
+      })),
     };
   }
 }

@@ -6,6 +6,7 @@ import { safeArtifactPath } from "./artifact-paths.js";
 import type { DaemonRunRecord } from "./daemon-server.js";
 import { readRunTombstone } from "./retention.js";
 import { TERMINAL_STATES } from "./sse-shared.js";
+import { projectionRead } from "./projection-context.js";
 
 const PRIMARY_OUTPUT_PREVIEW_BYTES = 256 * 1024;
 const REDACTION_OVERLAP_BYTES = 1024;
@@ -33,6 +34,19 @@ function preview(
   relPath: string,
   maxBytes = PRIMARY_OUTPUT_PREVIEW_BYTES,
   metadataOnly = false,
+): { text: string; bytes: number; truncated: boolean } | null {
+  return projectionRead(
+    rec.runDir ?? rec.id,
+    `preview:${maxBytes}:${metadataOnly}:${relPath}`,
+    () => previewUncached(rec, relPath, maxBytes, metadataOnly),
+  );
+}
+
+function previewUncached(
+  rec: DaemonRunRecord,
+  relPath: string,
+  maxBytes: number,
+  metadataOnly: boolean,
 ): { text: string; bytes: number; truncated: boolean } | null {
   if (!rec.runDir) return null;
   const path = safeArtifactPath(rec.runDir, relPath);

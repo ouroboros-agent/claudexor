@@ -1,12 +1,8 @@
-import { join } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { lastRunEventSeq } from "@claudexor/event-log";
 import {
   directDelegatedChildrenFromRecords,
-  type ControlRunSummary,
   type DeferredMessageProjection,
 } from "@claudexor/schema";
-import { measureSync } from "@claudexor/util";
 import type { DaemonRunRecord } from "./run-record.js";
 import { requestGone } from "./request-liveness.js";
 
@@ -14,9 +10,16 @@ interface RunDetailContext {
   findRun(id: string): Promise<DaemonRunRecord | null>;
   deferred?(id: string): Promise<DeferredMessageProjection | null>;
   children(parent: string): Promise<DaemonRunRecord[]>;
-  summarize(record: DaemonRunRecord): ControlRunSummary;
-  project(record: DaemonRunRecord, cursor: number, children: ControlRunSummary[]): unknown;
+  cursor(record: DaemonRunRecord, signal: AbortSignal): Promise<number>;
+  project(
+    record: DaemonRunRecord,
+    cursor: number,
+    children: DaemonRunRecord[],
+    deferred: DeferredMessageProjection | null | undefined,
+    signal: AbortSignal,
+  ): Promise<string>;
   json(res: ServerResponse, status: number, body: unknown): void;
+  serialized(res: ServerResponse, body: string): void;
 }
 
 export async function serveRunDetail(
@@ -26,23 +29,29 @@ export async function serveRunDetail(
   res: ServerResponse,
 ): Promise<void> {
   if (requestGone(req, res)) return;
-  const rec = await ctx.findRun(id);
-  if (requestGone(req, res)) return;
-  if (!rec) return ctx.json(res, 404, { error: "no such run" });
-  // Fence cursor FIRST, before pending interactions and every projection.
-  const cursor = rec.runDir ? lastRunEventSeq(join(rec.runDir, "events.jsonl")) : 0;
-  const parent = rec.runId ?? rec.id;
-  // Reapply the addressed-child bound for engines predating this list query.
-  const records = await ctx.children(parent);
-  if (requestGone(req, res)) return;
-  const children = directDelegatedChildrenFromRecords(parent, records).map(ctx.summarize);
-  const deferred = ctx.deferred ? { deferredMessage: await ctx.deferred(rec.id) } : {};
-  ctx.json(
-    res,
-    200,
-    measureSync("control.run_detail", () => ({
-      ...(ctx.project(rec, cursor, children) as object),
-      ...deferred,
-    })),
-  );
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  req.once("aborted", abort);
+  res.once("close", abort);
+  try {
+    const rec = await ctx.findRun(id);
+    if (requestGone(req, res)) return;
+    if (!rec) return ctx.json(res, 404, { error: "no such run" });
+    // Fence FIRST, before pending interactions or projection bytes. The worker
+    // also owns legacy/oversized-line fallback scans. Later bytes may replay;
+    // a later cursor must never be stamped onto earlier pending state.
+    const cursor = await ctx.cursor(rec, controller.signal);
+    if (requestGone(req, res)) return;
+    const parent = rec.runId ?? rec.id;
+    const records = await ctx.children(parent);
+    if (requestGone(req, res)) return;
+    const children = directDelegatedChildrenFromRecords(parent, records);
+    const deferred = ctx.deferred ? await ctx.deferred(rec.id) : undefined;
+    if (requestGone(req, res)) return;
+    const body = await ctx.project(rec, cursor, children, deferred, controller.signal);
+    if (!requestGone(req, res)) ctx.serialized(res, body);
+  } finally {
+    req.off("aborted", abort);
+    res.off("close", abort);
+  }
 }

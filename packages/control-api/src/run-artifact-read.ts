@@ -1,3 +1,4 @@
+import { projectionRead } from "./projection-context.js";
 import { lstatSync, readFileSync } from "node:fs";
 import { extname } from "node:path";
 import { parse as parseYaml } from "yaml";
@@ -11,8 +12,14 @@ export function readTextArtifact(
   redact = true,
   maxBytes?: number,
 ): string | null {
-  const text = readRawTextArtifact(rec, relPath, maxBytes);
-  return text === null ? null : redact ? redactSecrets(text) : text;
+  return projectionRead(
+    rec.runDir ?? rec.id,
+    `text:${maxBytes ?? "all"}:${redact}:${relPath}`,
+    () => {
+      const text = readRawTextArtifact(rec, relPath, maxBytes);
+      return text === null ? null : redact ? redactSecrets(text) : text;
+    },
+  );
 }
 
 export function readRawTextArtifact(
@@ -20,6 +27,12 @@ export function readRawTextArtifact(
   relPath: string,
   maxBytes?: number,
 ): string | null {
+  return projectionRead(rec.runDir ?? rec.id, `artifact:raw:${maxBytes ?? "all"}:${relPath}`, () =>
+    rawText(rec, relPath, maxBytes),
+  );
+}
+
+function rawText(rec: DaemonRunRecord, relPath: string, maxBytes?: number): string | null {
   if (!rec.runDir) return null;
   const path = safeArtifactPath(rec.runDir, relPath);
   if (!path) return null;
@@ -51,10 +64,16 @@ export function safeReadStructuredArtifact<T>(
   schema: { parse(value: unknown): T },
   maxBytes?: number,
 ): T | null {
-  try {
-    return readStructured(readTextArtifact(rec, relPath, true, maxBytes), extname(relPath), schema);
-  } catch (error) {
-    if (maxBytes !== undefined && (error as { status?: number }).status === 503) throw error;
-    return null;
-  }
+  return projectionRead(schema, `${rec.runDir ?? rec.id}:${maxBytes ?? "all"}:${relPath}`, () => {
+    try {
+      return readStructured(
+        readTextArtifact(rec, relPath, true, maxBytes),
+        extname(relPath),
+        schema,
+      );
+    } catch (error) {
+      if (maxBytes !== undefined && (error as { status?: number }).status === 503) throw error;
+      return null;
+    }
+  });
 }
