@@ -10,10 +10,10 @@
  * proves every run of the window was seen. Each selected run contributes its
  * bounded route facts (route-health-facts.ts), read in the shared bulk worker
  * one run at a time with a yield between runs, so the control plane stays
- * responsive; terminal runs do not change, so a long-lived cache keeps a
- * repeated scan from reading a run twice. The lifecycle comes from the daemon
- * job state, so a run whose artifacts are unreadable still counts under its
- * real lifecycle.
+ * responsive; terminal runs do not change, so a cache of the last answer's
+ * runs keeps a repeated scan from reading an unchanged run twice. The
+ * lifecycle comes from the daemon job state, so a run whose artifacts are
+ * unreadable still counts under its real lifecycle.
  */
 import {
   ControlRouteHealth,
@@ -30,7 +30,7 @@ import {
 import { redactSecrets } from "@claudexor/util";
 import type { DaemonRunRecord } from "./run-record.js";
 import type { RouteHealthFacts } from "./route-health-facts.js";
-import { lruGet, lruSet, summarizeRunPage } from "./run-list.js";
+import { summarizeRunPage } from "./run-list.js";
 
 /** Records read per daemon page while scanning (the run list's own default page). */
 export const ROUTE_HEALTH_PAGE_LIMIT = 200;
@@ -46,9 +46,11 @@ export interface RouteHealthRun {
   facts: RouteHealthFacts;
 }
 
-/** Route facts of terminal runs by record id, valid while the record's
- * lifecycle, finish time, error and run directory stay the same (a run writes
- * these artifacts before its job turns terminal); bounded like the scan. */
+/** Route facts of the runs the last answered scan read, by record id. An
+ * entry is valid while the record's lifecycle, finish time, error and run
+ * directory stay the same (a run writes these artifacts before its job turns
+ * terminal). Each answer replaces the cache with its own runs, so it never
+ * holds more than one scan bound and has no eviction order to defeat. */
 export type RouteHealthFactsCache = Map<string, { key: string; facts: RouteHealthFacts }>;
 
 export interface RouteHealthScan {
@@ -193,10 +195,12 @@ function timeOf(value: string | undefined): number {
   return value === undefined ? Number.NaN : Date.parse(value);
 }
 
-/** One run's facts, from the cache while its record is unchanged. */
+/** One run's facts, from the cache while its record is unchanged; either way
+ * they join this answer's working set. */
 async function factsOf(
   source: RouteHealthSource,
   record: DaemonRunRecord,
+  working: RouteHealthFactsCache,
 ): Promise<RouteHealthFacts> {
   const key = JSON.stringify([
     record.state,
@@ -204,10 +208,9 @@ async function factsOf(
     record.error ?? null,
     record.runDir ?? null,
   ]);
-  const cached = source.cache && lruGet(source.cache, record.id);
-  if (cached?.key === key) return cached.facts;
-  const facts = await source.facts(record);
-  if (source.cache) lruSet(source.cache, record.id, { key, facts }, ROUTE_HEALTH_SCAN_BOUND);
+  const cached = source.cache?.get(record.id);
+  const facts = cached?.key === key ? cached.facts : await source.facts(record);
+  working.set(record.id, { key, facts });
   return facts;
 }
 
@@ -256,12 +259,17 @@ export async function scanRouteHealth(
     const tail = page[page.length - 1]!;
     cursor = { createdAt: tail.createdAt ?? "", id: tail.id };
   }
+  const working: RouteHealthFactsCache = new Map();
   const runs = await summarizeRunPage(
     selected,
-    async (record) => ({ lifecycle: record.state, facts: await factsOf(source, record) }),
+    async (record) => ({ lifecycle: record.state, facts: await factsOf(source, record, working) }),
     source.active,
   );
   if (source.active && !source.active()) return null;
+  if (source.cache) {
+    source.cache.clear();
+    for (const [id, entry] of working) source.cache.set(id, entry);
+  }
   return aggregateRouteHealth(runs, {
     from,
     generatedAt,

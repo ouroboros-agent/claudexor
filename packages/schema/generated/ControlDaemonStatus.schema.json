@@ -814,8 +814,7 @@
                       "detail",
                       "summary",
                       "event-replay",
-                      "artifact",
-                      "route-facts"
+                      "artifact"
                     ]
                   },
                   "queue": {

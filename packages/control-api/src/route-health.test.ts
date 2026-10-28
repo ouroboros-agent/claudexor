@@ -306,6 +306,29 @@ describe("route health scan", () => {
     expect(uncached.facts).toHaveBeenCalledTimes(2);
   });
 
+  it("reads only the new run when the cache holds a full scan, and drops runs past the bound", async () => {
+    const cache: RouteHealthFactsCache = new Map();
+    const records = series(ROUTE_HEALTH_SCAN_BOUND);
+    const first = pageSource(records, undefined, cache);
+    await scanRouteHealth(first, now);
+    expect(first.facts).toHaveBeenCalledTimes(ROUTE_HEALTH_SCAN_BOUND);
+    // One new terminal run pushes the oldest past the scan bound: only the new
+    // run is read, and the cache becomes exactly this answer's runs.
+    const fresh = record(
+      "fresh",
+      "succeeded",
+      "2026-10-28T11:30:00.000Z",
+      "2026-10-28T11:31:00.000Z",
+    );
+    const second = pageSource([fresh, ...records], undefined, cache);
+    const health = await scanRouteHealth(second, now);
+    expect(second.facts.mock.calls.map(([rec]) => rec.id)).toEqual(["fresh"]);
+    expect(health).toMatchObject({ scannedRuns: ROUTE_HEALTH_SCAN_BOUND, complete: false });
+    expect(cache.size).toBe(ROUTE_HEALTH_SCAN_BOUND);
+    expect(cache.has("fresh")).toBe(true);
+    expect(cache.has(records[ROUTE_HEALTH_SCAN_BOUND - 1]!.id)).toBe(false);
+  });
+
   it("pages back with the tail cursor until the retained records end, which is complete", async () => {
     const records = series(ROUTE_HEALTH_PAGE_LIMIT * 2 + 50);
     const source = pageSource(records);

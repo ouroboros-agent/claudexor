@@ -3,14 +3,7 @@ import { LatencyHistogram, ProcessTiming, measureSync, processTiming } from "./p
 
 describe("bounded process timing", () => {
   it("records every worker kind without an attention kind in its input contract", () => {
-    const kinds = [
-      "cursor",
-      "detail",
-      "summary",
-      "event-replay",
-      "artifact",
-      "route-facts",
-    ] as const;
+    const kinds = ["cursor", "detail", "summary", "event-replay", "artifact"] as const;
     expectTypeOf<Parameters<ProcessTiming["recordBulk"]>[0]>().toEqualTypeOf<
       (typeof kinds)[number]
     >();

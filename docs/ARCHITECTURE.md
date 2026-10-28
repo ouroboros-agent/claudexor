@@ -2690,9 +2690,12 @@ failure record, each capped at 1 MiB. The event journal, budgets and the rest
 of the run card are never read, and an artifact that is absent, malformed or
 over the cap counts as absent. The lifecycle comes from the daemon job state,
 so a run whose artifacts are unreadable still counts under its real
-lifecycle. A process-wide cache keeps the facts of up to 2,000 terminal runs,
-each valid while its lifecycle, finish time, job error and run directory stay
-the same, so a repeated poll reads only the runs new to it. Disclosed limits:
+lifecycle. A process-wide cache holds the facts of the runs the last answer
+read (at most 2,000), each valid while its lifecycle, finish time, job error
+and run directory stay the same; every answer replaces it with its own runs,
+so a repeated poll reads only the runs new to it. Route-facts jobs are not
+timed in `GET /v2/daemon/status`, whose bulk kinds stay the closed set older
+strict clients validate. Disclosed limits:
 runs of removed projects are not served and cannot be told from runs that
 never happened; a run whose tree retention already deleted before a scan
 cached its facts keeps its lifecycle and job error but reports `unknown`

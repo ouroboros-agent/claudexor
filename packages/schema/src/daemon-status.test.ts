@@ -8,13 +8,11 @@ describe("daemon timing contract", () => {
   it("accepts every bulk worker kind", () => {
     const facts = {
       ...timing,
-      bulk: ["cursor", "detail", "summary", "event-replay", "artifact", "route-facts"].map(
-        (kind) => ({
-          kind,
-          queue: latency,
-          projection: latency,
-        }),
-      ),
+      bulk: ["cursor", "detail", "summary", "event-replay", "artifact"].map((kind) => ({
+        kind,
+        queue: latency,
+        projection: latency,
+      })),
     };
     expect(DaemonTimingFacts.parse(facts)).toEqual(facts);
   });

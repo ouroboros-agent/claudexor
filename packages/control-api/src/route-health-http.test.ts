@@ -4,11 +4,13 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   ControlRouteHealth,
+  DaemonTimingFacts,
   RunFailure,
   RunTelemetry,
   SCHEMA_VERSION,
   selectRunListPage,
 } from "@claudexor/schema";
+import { processTiming } from "@claudexor/util";
 import { DaemonControlApiServer } from "./daemon-server.js";
 import type { DaemonFacadeClient, DaemonRunRecord } from "./run-record.js";
 
@@ -242,6 +244,28 @@ describe("GET /v2/daemon/route-health over the control API", () => {
         topFailures: [],
       },
     ]);
+  });
+
+  it("keeps route-facts jobs out of the daemon status timing facts", async () => {
+    const get = await fixture([
+      {
+        id: "t1",
+        state: "failed",
+        createdAt: recent,
+        primaryHarness: "agy",
+        settled: { harnessId: "agy", access: "readonly" },
+        failure: refused,
+      },
+    ]);
+    expect((await get("/v2/daemon/route-health")).status).toBe(200);
+    expect((await get("/v2/runs")).status).toBe(200);
+    const facts = processTiming.facts();
+    const kinds = facts.bulk.map((entry) => entry.kind);
+    // The run list's summary jobs are still timed; route-facts jobs are not, so
+    // the closed kind set an older strict client validates never meets a new value.
+    expect(kinds).toContain("summary");
+    expect(kinds).not.toContain("route-facts");
+    expect(DaemonTimingFacts.parse(facts)).toEqual(facts);
   });
 
   it("answers an empty window honestly and refuses query parameters", async () => {
