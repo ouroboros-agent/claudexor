@@ -1,5 +1,16 @@
 # @claudexor/event-log
 
+## 4.8.2
+
+### Patch Changes
+
+- 97e2f17: Keep retained run observation off the control event loop: share request-local reads, preserve complete history for event folds, and use one lazy bulk worker for detail, summaries, artifact reads and finite event replay. Inbox attention stays independent of the bulk queue; disconnected turn-card readers stop scheduling summaries, and unreadable runs retain per-row diagnostics. Resume sequenced streams from the tail while preserving legacy cursors, redaction and terminal delivery. Expose route outcomes and separate worker queue/projection timing.
+- Updated dependencies [97e2f17]
+- Updated dependencies [67b8833]
+- Updated dependencies [f88a561]
+  - @claudexor/schema@4.8.2
+  - @claudexor/util@4.8.2
+
 ## 4.8.1
 
 ### Patch Changes
