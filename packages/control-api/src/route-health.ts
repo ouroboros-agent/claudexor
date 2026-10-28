@@ -4,13 +4,16 @@
  * and no background job exists. A route is one harness crossed with one
  * effective access profile.
  *
- * The scan walks the public run page newest-first (the same keyset page as
- * `GET /v2/runs`), keeps only terminal product runs that finished inside the
- * window, projects them through the shared cached run summarizer (one worker
- * job per run, yielding between runs, so the control plane stays responsive)
- * and groups the summaries here. The lifecycle comes from the daemon job state
- * read before projection, so a record the projection could only degrade to a
- * diagnostic row still counts under its real lifecycle.
+ * The window is a creation cohort: the terminal product runs created inside
+ * it. The scan walks the public run page newest-first by creation (the same
+ * keyset page and index as `GET /v2/runs`), so reaching the first older record
+ * proves every run of the window was seen. Each selected run contributes its
+ * bounded route facts (route-health-facts.ts), read in the shared bulk worker
+ * one run at a time with a yield between runs, so the control plane stays
+ * responsive; terminal runs do not change, so a long-lived cache keeps a
+ * repeated scan from reading a run twice. The lifecycle comes from the daemon
+ * job state, so a run whose artifacts are unreadable still counts under its
+ * real lifecycle.
  */
 import {
   ControlRouteHealth,
@@ -22,12 +25,12 @@ import {
   selectRunListPage,
   type ControlRouteHealthFailure,
   type ControlRouteHealthRoute,
-  type ControlRunSummary,
   type RunListQuery,
 } from "@claudexor/schema";
 import { redactSecrets } from "@claudexor/util";
 import type { DaemonRunRecord } from "./run-record.js";
-import { summarizeRunPage } from "./run-list.js";
+import type { RouteHealthFacts } from "./route-health-facts.js";
+import { lruGet, lruSet, summarizeRunPage } from "./run-list.js";
 
 /** Records read per daemon page while scanning (the run list's own default page). */
 export const ROUTE_HEALTH_PAGE_LIMIT = 200;
@@ -36,12 +39,17 @@ export const ROUTE_HEALTH_PAGE_LIMIT = 200;
 export const ROUTE_HEALTH_SCAN_BOUND = 2_000;
 const DAY_MS = 24 * 60 * 60 * 1_000;
 
-/** One terminal run of the window: its lifecycle plus the shared projection. */
+/** One terminal run of the window: its lifecycle plus its bounded route facts. */
 export interface RouteHealthRun {
-  /** The daemon job state (the run lifecycle, D8), read before projection. */
+  /** The daemon job state (the run lifecycle, D8), read before the facts. */
   lifecycle: string;
-  summary: ControlRunSummary;
+  facts: RouteHealthFacts;
 }
+
+/** Route facts of terminal runs by record id, valid while the record's
+ * lifecycle, finish time, error and run directory stay the same (a run writes
+ * these artifacts before its job turns terminal); bounded like the scan. */
+export type RouteHealthFactsCache = Map<string, { key: string; facts: RouteHealthFacts }>;
 
 export interface RouteHealthScan {
   from: string;
@@ -53,8 +61,10 @@ export interface RouteHealthScan {
 export interface RouteHealthSource {
   /** One public run page (`GET /v2/runs` semantics: newest first, limit + 1 rows). */
   list(query: RunListQuery): Promise<DaemonRunRecord[]>;
-  /** The shared cached summarizer: a diagnostic row for a corrupt record, a typed 503 for a worker failure. */
-  summarize(record: DaemonRunRecord): Promise<ControlRunSummary>;
+  /** The bounded route facts of one run (the bulk worker's `route-facts` job); a worker failure is a typed 503. */
+  facts(record: DaemonRunRecord): Promise<RouteHealthFacts>;
+  /** Facts of runs read by earlier scans; without it every scan reads every run. */
+  cache?: RouteHealthFactsCache;
   /** False once the caller stopped waiting; the scan then ends without an answer. */
   active?(): boolean;
 }
@@ -67,13 +77,13 @@ function nonEmpty(value: string | null | undefined): string | null {
 }
 
 /** harness: settled route, else the failure's harness, else the primary harness, else unknown. */
-function routeOf(summary: ControlRunSummary): RouteKey {
+function routeOf(facts: RouteHealthFacts): RouteKey {
   const harnessId =
-    nonEmpty(summary.route?.harnessId) ??
-    nonEmpty(summary.failure?.harnessId) ??
-    nonEmpty(summary.primaryHarness) ??
+    nonEmpty(facts.route?.harnessId) ??
+    nonEmpty(facts.failure?.harnessId) ??
+    nonEmpty(facts.primaryHarness) ??
     "unknown";
-  const recorded = summary.effectiveAccess;
+  const recorded = facts.effectiveAccess;
   const access =
     recorded === undefined
       ? "unknown"
@@ -96,12 +106,12 @@ export function failureMessageLine(text: string): string {
 
 /** A failed run without a typed failure record (and without a job error) is one
  * `unknown` group with an empty message: absence is reported, never invented. */
-function failureGroupOf(summary: ControlRunSummary): FailureGroup {
-  const failure = summary.failure;
+function failureGroupOf(facts: RouteHealthFacts): FailureGroup {
+  const failure = facts.failure;
   return {
     category: failure?.category ?? "unknown",
     code: failure?.code ?? null,
-    message: failureMessageLine(failure?.safeMessage ?? summary.error ?? ""),
+    message: failureMessageLine(failure?.safeMessage ?? facts.error ?? ""),
   };
 }
 
@@ -125,7 +135,7 @@ export function aggregateRouteHealth(
 ): ControlRouteHealth {
   const tallies = new Map<string, RouteTally>();
   for (const run of runs) {
-    const key = routeOf(run.summary);
+    const key = routeOf(run.facts);
     const id = JSON.stringify([key.harnessId, key.access]);
     let tally = tallies.get(id);
     if (!tally) {
@@ -138,7 +148,7 @@ export function aggregateRouteHealth(
         break;
       case "failed": {
         tally.failed += 1;
-        const group = failureGroupOf(run.summary);
+        const group = failureGroupOf(run.facts);
         const groupId = JSON.stringify([group.category, group.code, group.message]);
         const counted = tally.failures.get(groupId);
         if (counted) counted.count += 1;
@@ -183,19 +193,40 @@ function timeOf(value: string | undefined): number {
   return value === undefined ? Number.NaN : Date.parse(value);
 }
 
+/** One run's facts, from the cache while its record is unchanged. */
+async function factsOf(
+  source: RouteHealthSource,
+  record: DaemonRunRecord,
+): Promise<RouteHealthFacts> {
+  const key = JSON.stringify([
+    record.state,
+    record.finishedAt ?? null,
+    record.error ?? null,
+    record.runDir ?? null,
+  ]);
+  const cached = source.cache && lruGet(source.cache, record.id);
+  if (cached?.key === key) return cached.facts;
+  const facts = await source.facts(record);
+  if (source.cache) lruSet(source.cache, record.id, { key, facts }, ROUTE_HEALTH_SCAN_BOUND);
+  return facts;
+}
+
 /**
  * Walk the retained run records newest-first by creation time and answer for
  * the fixed window. The walk ends at the first record created before the
- * window start (every later record is older), at the end of the retained
- * records, or at the scan bound; only the bound makes the answer incomplete.
- * Returns null when the caller stopped waiting before the answer was ready.
+ * window start (every later record is older, so the cohort is complete), at
+ * the end of the retained records, or at the scan bound; only the bound makes
+ * the answer incomplete. A run that finished after `generatedAt` belongs to a
+ * later answer. Returns null when the caller stopped waiting before the
+ * answer was ready.
  */
 export async function scanRouteHealth(
   source: RouteHealthSource,
   now: Date = new Date(),
 ): Promise<ControlRouteHealth | null> {
   const generatedAt = now.toISOString();
-  const fromMs = now.getTime() - ROUTE_HEALTH_WINDOW_DAYS * DAY_MS;
+  const nowMs = now.getTime();
+  const fromMs = nowMs - ROUTE_HEALTH_WINDOW_DAYS * DAY_MS;
   const from = new Date(fromMs).toISOString();
   const selected: DaemonRunRecord[] = [];
   let cursor: RunListQuery["cursor"] = null;
@@ -211,10 +242,10 @@ export async function scanRouteHealth(
     if (source.active && !source.active()) return null;
     for (const record of page) {
       read += 1;
-      if (timeOf(record.createdAt) < fromMs) break scanning;
-      if (!isTerminalLifecycle(record.state)) continue;
-      const finished = timeOf(record.finishedAt ?? record.createdAt);
-      if (Number.isNaN(finished) || finished < fromMs) continue;
+      const created = timeOf(record.createdAt);
+      if (created < fromMs) break scanning;
+      if (Number.isNaN(created) || !isTerminalLifecycle(record.state)) continue;
+      if (timeOf(record.finishedAt) > nowMs) continue;
       selected.push(record);
     }
     if (!hasMore) break;
@@ -227,7 +258,7 @@ export async function scanRouteHealth(
   }
   const runs = await summarizeRunPage(
     selected,
-    async (record) => ({ lifecycle: record.state, summary: await source.summarize(record) }),
+    async (record) => ({ lifecycle: record.state, facts: await factsOf(source, record) }),
     source.active,
   );
   if (source.active && !source.active()) return null;

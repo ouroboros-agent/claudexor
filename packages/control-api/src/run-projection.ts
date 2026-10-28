@@ -1,4 +1,5 @@
 import {
+  controlRoute,
   readFailure,
   strategyFromParams,
   legacyRunOutcomeFacts,
@@ -47,7 +48,6 @@ import {
   ControlRunSummary,
   PaidBudget,
   type ControlPendingInteraction,
-  type ControlRouteInfo,
   DecisionRecord,
   ModeKind,
   RoutingGoal,
@@ -265,37 +265,6 @@ export function summarizeRun(
     startedAt: rec.startedAt,
     finishedAt: rec.finishedAt,
   });
-}
-
-/**
- * Run-level route evidence: observed model comes ONLY from telemetry (the
- * harness stream's own disclosure); the requested model from run params.
- * `verified` is never inferred from the request alone.
- */
-function controlRoute(
-  telemetry: RunTelemetry | null,
-  p: Record<string, unknown>,
-): ControlRouteInfo | null {
-  if (!telemetry) return null;
-  const finalAttempt = telemetry.final_attempt_id
-    ? telemetry.attempts.find((a) => a.attempt_id === telemetry.final_attempt_id)
-    : undefined;
-  const observed =
-    finalAttempt?.observed_model ??
-    telemetry.attempts.find((a) => a.observed_model)?.observed_model ??
-    null;
-  const harnessId =
-    finalAttempt?.harness_id ??
-    telemetry.attempts.find((a) => a.observed_model)?.harness_id ??
-    null;
-  return {
-    // Scalar-only by design until per-candidate route evidence lands:
-    // map-only pool members show requestedModel null here, honestly.
-    requestedModel: typeof p["model"] === "string" ? p["model"] : null,
-    observedModel: observed,
-    harnessId,
-    verified: observed !== null,
-  };
 }
 
 export function detailFor(

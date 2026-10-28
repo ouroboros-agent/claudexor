@@ -52,7 +52,7 @@ export const ControlRouteHealthRoute = z
         "Effective access profile the engine enforced; unknown when the run recorded none. The retired external_sandbox_full counts as full.",
       ),
     runs: count.describe(
-      "Terminal product runs of the route that finished inside the window; always succeeded + failed + cancelled + other.",
+      "Terminal product runs of the route created inside the window; always succeeded + failed + cancelled + other.",
     ),
     succeeded: count.describe("Runs whose lifecycle ended succeeded."),
     failed: count.describe("Runs whose lifecycle ended failed."),
@@ -78,7 +78,9 @@ export type ControlRouteHealthRoute = z.infer<typeof ControlRouteHealthRoute>;
 export const ControlRouteHealth = z
   .object({
     windowDays: z.literal(ROUTE_HEALTH_WINDOW_DAYS).describe("Length of the fixed window in days."),
-    from: IsoTimestamp.describe("Start of the window: generatedAt minus windowDays."),
+    from: IsoTimestamp.describe(
+      "Start of the window: generatedAt minus windowDays. The window holds the terminal product runs created at or after it.",
+    ),
     generatedAt: IsoTimestamp.describe("When the daemon computed this answer; nothing is stored."),
     scannedRuns: count.describe(
       "Terminal product runs read inside the window; the sum of every route's runs.",

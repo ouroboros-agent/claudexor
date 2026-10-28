@@ -134,7 +134,7 @@ const refused = {
 };
 
 describe("GET /v2/daemon/route-health over the control API", () => {
-  it("projects the window through the shared summarizer and groups runs per route", async () => {
+  it("reads the window's bounded route facts and groups runs per route", async () => {
     const get = await fixture([
       {
         id: "a1",

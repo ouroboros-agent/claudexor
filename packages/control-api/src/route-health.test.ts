@@ -11,6 +11,7 @@ import {
   aggregateRouteHealth,
   failureMessageLine,
   scanRouteHealth,
+  type RouteHealthFactsCache,
   type RouteHealthRun,
 } from "./route-health.js";
 import type { DaemonRunRecord } from "./run-record.js";
@@ -36,7 +37,7 @@ function run(
 ): RouteHealthRun {
   return {
     lifecycle,
-    summary: summary({
+    facts: summary({
       state: lifecycle,
       route: { harnessId },
       ...(effectiveAccess === undefined ? {} : { effectiveAccess }),
@@ -128,7 +129,7 @@ describe("route health aggregation", () => {
       [
         {
           lifecycle: "failed",
-          summary: summary({
+          facts: summary({
             state: "failed",
             route: { harnessId: null },
             failure: failure({ harnessId: "cursor" }),
@@ -137,10 +138,10 @@ describe("route health aggregation", () => {
         },
         {
           lifecycle: "succeeded",
-          summary: summary({ state: "succeeded", primaryHarness: "codex" }),
+          facts: summary({ state: "succeeded", primaryHarness: "codex" }),
         },
-        { lifecycle: "succeeded", summary: summary({ state: "succeeded", primaryHarness: "" }) },
-        { lifecycle: "succeeded", summary: summary({ state: "succeeded" }) },
+        { lifecycle: "succeeded", facts: summary({ state: "succeeded", primaryHarness: "" }) },
+        { lifecycle: "succeeded", facts: summary({ state: "succeeded" }) },
       ],
       scan,
     );
@@ -163,7 +164,7 @@ describe("route health aggregation", () => {
         }),
         {
           lifecycle: "expired",
-          summary: summary({ state: "failed", effectiveAccess: "readonly" }),
+          facts: summary({ state: "failed", effectiveAccess: "readonly" }),
         },
       ],
       scan,
@@ -227,15 +228,19 @@ function record(
 }
 
 /** The daemon's page selector: newest first, keyset cursor, limit + 1 rows. */
-function pageSource(records: DaemonRunRecord[], active?: () => boolean) {
-  // The lifecycle counted is the record's, so the fake projection can stay fixed.
-  const summarized = summary({ state: "succeeded", route: { harnessId: "claude" } });
+function pageSource(
+  records: DaemonRunRecord[],
+  active?: () => boolean,
+  cache?: RouteHealthFactsCache,
+) {
+  // The lifecycle counted is the record's, so the fake facts can stay fixed.
+  const fixed = summary({ state: "succeeded", route: { harnessId: "claude" } });
   const list = vi.fn(
     async (query: RunListQuery) =>
       selectRunListPage(records, { ...query, limit: query.limit + 1 }).page,
   );
-  const summarize = vi.fn(async (_rec: DaemonRunRecord) => summarized);
-  return { list, summarize, ...(active ? { active } : {}) };
+  const facts = vi.fn(async (_rec: DaemonRunRecord) => fixed);
+  return { list, facts, ...(active ? { active } : {}), ...(cache ? { cache } : {}) };
 }
 
 function series(count: number, start = Date.parse("2026-10-28T11:00:00.000Z")): DaemonRunRecord[] {
@@ -246,17 +251,19 @@ function series(count: number, start = Date.parse("2026-10-28T11:00:00.000Z")): 
 }
 
 describe("route health scan", () => {
-  it("counts terminal runs finished inside the window and stops at the first older creation", async () => {
+  it("counts terminal runs created inside the window and stops at the first older creation", async () => {
     const source = pageSource([
+      // Finished after generatedAt: it belongs to a later answer.
+      record("late", "succeeded", "2026-10-28T11:30:00.000Z", "2026-10-28T12:00:00.001Z"),
       record("newest", "succeeded", "2026-10-28T11:00:00.000Z", "2026-10-28T11:05:00.000Z"),
       record("live", "running", "2026-10-27T10:00:00.000Z"),
       record("queued", "queued", "2026-10-27T09:00:00.000Z"),
+      // Created inside the window: counted whatever its (skewed) finish time.
       record("skewed", "failed", "2026-10-26T10:00:00.000Z", "2026-10-20T10:00:00.000Z"),
       record("timeless", "failed", undefined),
       record("edge", "failed", from, "2026-10-21T12:30:00.000Z"),
-      // Created one millisecond before the window: the walk ends here. A run
-      // created before the window and finished inside it is therefore not
-      // counted; the documented boundary rule, pinned.
+      // Created one millisecond before the window: outside the creation cohort
+      // even though it finished inside, and the walk ends here, complete.
       record("straggler", "succeeded", "2026-10-21T11:59:59.999Z", "2026-10-21T13:00:00.000Z"),
       record("old", "failed", "2026-10-01T00:00:00.000Z", "2026-10-01T00:10:00.000Z"),
     ]);
@@ -264,15 +271,39 @@ describe("route health scan", () => {
     expect(health).toMatchObject({
       from,
       generatedAt: now.toISOString(),
-      scannedRuns: 2,
+      scannedRuns: 3,
       complete: true,
       incompleteReason: null,
     });
-    expect(source.summarize.mock.calls.map(([rec]) => rec.id)).toEqual(["newest", "edge"]);
+    expect(source.facts.mock.calls.map(([rec]) => rec.id)).toEqual(["newest", "skewed", "edge"]);
     expect(source.list).toHaveBeenCalledTimes(1);
     expect(health?.routes).toEqual([
-      expect.objectContaining({ harnessId: "claude", access: "unknown", runs: 2, failed: 1 }),
+      expect.objectContaining({ harnessId: "claude", access: "unknown", runs: 3, failed: 2 }),
     ]);
+  });
+
+  it("reads a terminal run's facts once while its record is unchanged", async () => {
+    const cache: RouteHealthFactsCache = new Map();
+    const records = [
+      record("a", "failed", "2026-10-28T10:00:00.000Z", "2026-10-28T10:05:00.000Z"),
+      record("b", "succeeded", "2026-10-28T09:00:00.000Z", "2026-10-28T09:05:00.000Z"),
+    ];
+    const first = pageSource(records, undefined, cache);
+    await scanRouteHealth(first, now);
+    expect(first.facts).toHaveBeenCalledTimes(2);
+    const second = pageSource(records, undefined, cache);
+    const again = await scanRouteHealth(second, now);
+    expect(second.facts).not.toHaveBeenCalled();
+    expect(again).toMatchObject({ scannedRuns: 2 });
+    // A changed record (here a corrected finish time) is read again; so is
+    // every run when the caller keeps no cache.
+    records[0] = record("a", "failed", "2026-10-28T10:00:00.000Z", "2026-10-28T10:06:00.000Z");
+    const third = pageSource(records, undefined, cache);
+    await scanRouteHealth(third, now);
+    expect(third.facts.mock.calls.map(([rec]) => rec.id)).toEqual(["a"]);
+    const uncached = pageSource(records);
+    await scanRouteHealth(uncached, now);
+    expect(uncached.facts).toHaveBeenCalledTimes(2);
   });
 
   it("pages back with the tail cursor until the retained records end, which is complete", async () => {
@@ -293,7 +324,7 @@ describe("route health scan", () => {
     const source = pageSource(series(ROUTE_HEALTH_SCAN_BOUND + 50));
     const health = await scanRouteHealth(source, now);
     expect(source.list).toHaveBeenCalledTimes(ROUTE_HEALTH_SCAN_BOUND / ROUTE_HEALTH_PAGE_LIMIT);
-    expect(source.summarize).toHaveBeenCalledTimes(ROUTE_HEALTH_SCAN_BOUND);
+    expect(source.facts).toHaveBeenCalledTimes(ROUTE_HEALTH_SCAN_BOUND);
     expect(health).toMatchObject({
       scannedRuns: ROUTE_HEALTH_SCAN_BOUND,
       complete: false,
@@ -314,6 +345,6 @@ describe("route health scan", () => {
     let calls = 0;
     const source = pageSource(series(5), () => ++calls < 2);
     expect(await scanRouteHealth(source, now)).toBeNull();
-    expect(source.summarize).not.toHaveBeenCalled();
+    expect(source.facts).not.toHaveBeenCalled();
   });
 });

@@ -536,8 +536,8 @@ allowed correlated re-send and the receipt fields.
 
 `GET /v2/daemon/route-health` (no parameters; the operation catalog lists it,
 and an older engine answers 404, which a client treats as "unavailable from
-this engine") returns the last seven days of terminal runs per route, a route
-being one harness crossed with one effective access profile: `runs`,
+this engine") returns the terminal runs created in the last seven days per
+route, a route being one harness crossed with one effective access profile: `runs`,
 `succeeded`, `failed`, `cancelled` (cancelled or interrupted), `other`, and up
 to three `topFailures` groups per route (`category`, `code`, a redacted
 160-character `message`, `count`), with `scannedRuns`, `complete` and

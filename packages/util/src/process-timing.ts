@@ -107,7 +107,7 @@ export class ProcessTiming {
 
   /** Queue residence and worker execution are wall time, never main-thread sync spans. */
   recordBulk(
-    kind: "cursor" | "detail" | "summary" | "event-replay" | "artifact",
+    kind: "cursor" | "detail" | "summary" | "event-replay" | "artifact" | "route-facts",
     queueMs: number,
     projectionMs: number,
   ): void {
