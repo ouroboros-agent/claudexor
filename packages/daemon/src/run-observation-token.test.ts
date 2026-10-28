@@ -53,7 +53,7 @@ async function token() {
 afterEach(() => flagged.clear());
 
 describe("observation tokens a caller can echo", () => {
-  it("keeps the 4.8.0 bytes when the secret scan accepts the digest", async () => {
+  it("keeps the earlier bytes when the secret scan accepts the digest", async () => {
     expect(await token()).toBe(attempt(0));
   });
 

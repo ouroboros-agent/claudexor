@@ -24,7 +24,7 @@ function connect() {
   return db;
 }
 
-/** Exact owners from 711cee0e5 (v3), bc979941f (v4) and the 4.8.0 main (v5), never
+/** Exact owners from 711cee0e5 (v3), bc979941f (v4) and 4e870bea0 (v5), never
  * derived from current DDL. */
 function frozenOwner(version: 3 | 4 | 5): { ensureSchema(db: DatabaseSync): void } {
   const source = readFileSync(

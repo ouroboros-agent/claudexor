@@ -94,7 +94,7 @@ async function fixture() {
 }
 
 describe("SQL taskGroupPage retained selection", () => {
-  it("matches membership in any letter case, answers the canonical id and restarts 4.8.0 cursors", async () => {
+  it("matches membership in any letter case, answers the canonical id and restarts earlier cursors", async () => {
     const f = await fixture();
     const lettered = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
     const upper = lettered.toUpperCase();
@@ -116,7 +116,7 @@ describe("SQL taskGroupPage retained selection", () => {
       cursor: { ...f.cursor(first), taskGroupId: upper },
     });
     expect(next.records.map((row) => row.jobId)).toEqual(["job-lower"]);
-    // A 4.8.0 cursor hashed the same view under the case-sensitive domain.
+    // An earlier cursor hashed the same view under the case-sensitive domain.
     const caseSensitive = createHash("sha256")
       .update(JSON.stringify(["claudexor.task-group-view", 1, [["global", "a".repeat(32)]]]))
       .digest("base64url");
