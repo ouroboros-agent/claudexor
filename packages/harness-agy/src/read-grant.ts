@@ -28,6 +28,15 @@ export const AGY_READ_ANYWHERE_RULE = "read_file(*)";
 export type AgyReadGrant =
   { state: "present" | "added" } | { state: "unavailable"; reason: string };
 
+/** The readonly capability delta, disclosed in the child's own instructions. */
+export function agyReadonlyAccessNote(readGrant: AgyReadGrant): string {
+  const reads =
+    readGrant.state === "unavailable"
+      ? "A read outside the workspace folder may be refused without asking."
+      : "Your file tools may read any file or folder on this machine, inside or outside the workspace.";
+  return `ENGINE NOTE (read-only Antigravity run): ${reads} Shell commands are unavailable in this mode: a command is refused without asking and can end the run without an answer, so inspect files with your file tools instead.`;
+}
+
 /** agy has no settings-path variable: the profile HOME selects this file. */
 export function agySettingsPath(profileHome: string): string {
   return join(profileHome, ".gemini", "antigravity-cli", "settings.json");

@@ -37,7 +37,7 @@ import {
 import { AGY_VENDOR_CLI_VERSION } from "./vendor-cli-version.js";
 import { listAgyModels } from "./models.js";
 import { applyAgyRunProcessing, prepareAgyProcessing } from "./processing.js";
-import { ensureAgyReadGrant, type AgyReadGrant } from "./read-grant.js";
+import { agyReadonlyAccessNote, ensureAgyReadGrant } from "./read-grant.js";
 // The package publishes only what other packages consume. The profile probe,
 // the route resolver and the stream parser are reached through the adapter
 // this file returns, so re-exporting them would be a dead public surface.
@@ -58,12 +58,10 @@ export {
  * Those proofs read only inside the workspace. Real readonly callers also read
  * outside it, and in a headless run plan mode auto-denies such reads and every
  * shell command: on 2026-10-28, 62 of 123 managed readonly runs (agy 1.3.4)
- * ended without an answer that way. The profile read grant (read-grant.ts)
- * restores reading anywhere; commands stay unavailable in plan mode, and the
- * readonly instructions say so instead of letting a refused command end the turn.
- * Live-proven on agy 1.3.4 (2026-10-28, production profile): with the grant a
- * read and an image outside the workspace succeeded and a write stayed refused;
- * without the note the agent tried a command and the refusal ended the turn.
+ * ended without an answer that way. The profile read grant (read-grant.ts,
+ * live-proven on 1.3.4) restores reading anywhere; commands stay unavailable in
+ * plan mode, and the readonly instructions say so instead of letting a refused
+ * command end the turn.
  */
 function accessArgs(access: AccessProfile): string[] {
   switch (access) {
@@ -76,15 +74,6 @@ function accessArgs(access: AccessProfile): string[] {
     case "inherit_native":
       return [];
   }
-}
-
-/** The readonly capability delta, disclosed in the child's own prompt. */
-function agyReadonlyAccessNote(readGrant: AgyReadGrant): string {
-  const reads =
-    readGrant.state === "present" || readGrant.state === "added"
-      ? "Your file tools may read any file or folder on this machine, inside or outside the workspace."
-      : "A read outside the workspace folder may be refused without asking.";
-  return `ENGINE NOTE (read-only Antigravity run): ${reads} Shell commands are unavailable in this mode: a command is refused without asking and can end the run without an answer, so inspect files with your file tools instead.`;
 }
 
 /**
