@@ -172,6 +172,18 @@
     },
     {
       "method": "GET",
+      "path": "/v2/daemon/route-health",
+      "mutating": false,
+      "applicability": "global",
+      "summary": "Count the last seven days of terminal runs per harness and effective access profile, with each route's most frequent failures; computed on demand from retained run records, facts without thresholds.",
+      "auth": "loopback_bearer",
+      "request_schema": null,
+      "parameters": [],
+      "response_schema": "ControlRouteHealth",
+      "error_schema": "ControlProblem"
+    },
+    {
+      "method": "GET",
       "path": "/v2/daemon/status",
       "mutating": false,
       "applicability": "global",

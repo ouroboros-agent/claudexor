@@ -143,29 +143,31 @@ export const PoolAttemptFailure = z
   .describe("Per-try account attribution of a failed execution try (diagnostic evidence only).");
 export type PoolAttemptFailure = z.infer<typeof PoolAttemptFailure>;
 
+/** The typed category axis of a run failure, shared by the failure record and
+ * the route-health groups that count failures by it. Described at each use. */
+export const RunFailureCategory = z.enum([
+  "validation",
+  "project",
+  "auth",
+  "harness_unavailable",
+  "harness_error",
+  "config_error",
+  "budget",
+  "policy",
+  "cancelled",
+  "internal",
+  "unknown",
+]);
+export type RunFailureCategory = z.infer<typeof RunFailureCategory>;
+
 export const RunFailure = z
   .object({
     requestRefusal: HarnessRequestRefusal.optional(),
     captureFailure: WorkspaceCaptureFailure.optional(),
     phase: z.string().default("unknown").describe("Pipeline phase where the failure happened."),
-    category: z
-      .enum([
-        "validation",
-        "project",
-        "auth",
-        "harness_unavailable",
-        "harness_error",
-        "config_error",
-        "budget",
-        "policy",
-        "cancelled",
-        "internal",
-        "unknown",
-      ])
-      .default("unknown")
-      .describe(
-        "Typed failure category (validation, project, auth, harness, config, budget, policy, cancelled, internal, unknown). config_error is a settings/routing misconfiguration (e.g. quality routing with no comparable tier), corrected by changing configuration, not by re-auth or waiting for a harness.",
-      ),
+    category: RunFailureCategory.default("unknown").describe(
+      "Typed failure category (validation, project, auth, harness, config, budget, policy, cancelled, internal, unknown). config_error is a settings/routing misconfiguration (e.g. quality routing with no comparable tier), corrected by changing configuration, not by re-auth or waiting for a harness.",
+    ),
     code: RunFailureCode.nullable()
       .default(null)
       .describe(

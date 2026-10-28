@@ -534,6 +534,19 @@ signal and, when created with `captureRoutingEvidence=true`, their routing
 receipt; [the host retry contract](MODEL_CAPABILITY_ROUTING.md) describes the one
 allowed correlated re-send and the receipt fields.
 
+`GET /v2/daemon/route-health` (no parameters; the operation catalog lists it,
+and an older engine answers 404, which a client treats as "unavailable from
+this engine") returns the terminal runs created in the last seven days per
+route, a route being one harness crossed with one effective access profile: `runs`,
+`succeeded`, `failed`, `cancelled` (cancelled or interrupted), `other`, and up
+to three `topFailures` groups per route (`category`, `code`, a redacted
+160-character `message`, `count`), with `scannedRuns`, `complete` and
+`incompleteReason` disclosing the bounded newest-first scan. Facts only: read
+the shares and judge them yourself; nothing in the answer is a threshold or an
+alarm. `claudexor doctor` prints the same answer as a summary line plus the
+routes with failures, and `doctor --json` carries it as `route_health`. The
+semantics and limits live in [Architecture](ARCHITECTURE.md#7-control-api).
+
 `GET /v2/run-applicability` takes an absolute `repoRoot` query and returns the
 live Workspace Git status plus the engine-owned in-place/isolated run-shape
 matrix for Git-backed thread choices. Directory support is advertised separately

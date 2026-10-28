@@ -39,8 +39,20 @@ export interface MaintenanceRouteContext {
   requestError(res: ServerResponse, error: unknown, fallbackStatus?: 400 | 500): void;
 }
 
-/** The maintenance route family's catalog entries, kept beside the routes. */
+/** The maintenance route family's catalog entries, kept beside the routes,
+ * plus the daemon-status family's route-health read (daemon-status-routes.ts),
+ * which shares this operator-diagnostics list. */
 export const MAINTENANCE_OPERATION_DRAFTS: OperationDraft[] = [
+  {
+    method: "GET",
+    path: "/v2/daemon/route-health",
+    mutability: "read_only",
+    requestSchema: null,
+    responseSchema: "ControlRouteHealth",
+    responseKind: "json",
+    summary:
+      "Count the last seven days of terminal runs per harness and effective access profile, with each route's most frequent failures; computed on demand from retained run records, facts without thresholds.",
+  },
   {
     method: "GET",
     path: "/v2/maintenance/gc",

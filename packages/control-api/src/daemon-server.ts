@@ -729,6 +729,8 @@ export class DaemonControlApiServer {
       threadHistoryReads: this.opts.threadHistoryReads,
       pollMs: this.opts.pollMs,
       stopping: this.stopSignal.signal,
+      summarize: (record: DaemonRunRecord) => this.summarizeRunOrDiagnostic(record),
+      bulk: this.bulk,
       readBody: (request: IncomingMessage, maxBytes?: number) => this.readBody(request, maxBytes),
       json: (response: ServerResponse, status: number, body: unknown) =>
         this.json(response, status, body),
@@ -2197,12 +2199,10 @@ export class DaemonControlApiServer {
 
   /**
    * Degrade contract shared by GET /runs and the thread-detail turn cards:
-   * one unprojectable job record becomes a diagnostic row, never a 500 for
-   * the whole list/thread.
+   * artifact corruption becomes a diagnostic row in the worker, never a 500
+   * for the whole read; a worker failure stays a typed 503.
    */
   private summarizeRunOrDiagnostic(rec: DaemonRunRecord): Promise<ControlRunSummary> {
-    // Artifact corruption becomes a diagnostic summary in the worker; a worker
-    // failure remains a typed 503, never a fabricated failed run.
     return this.summarizeRunLive(rec);
   }
 
