@@ -1,5 +1,12 @@
 # claudexor
 
+## 4.8.1
+
+### Patch Changes
+
+- Release verification no longer fails when the Windows smoke asks a just-started daemon to stop before the daemon can read its own records. The smoke now retries the graceful runtime stop while the daemon answers with a retryable refusal, until a 30-second deadline passes, and still fails on any other answer. 4.8.0 was tagged but its publication stopped at that smoke, so everything listed under 4.8.0 ships in 4.8.1.
+  - @claudexor/cli@4.8.1
+
 ## 4.8.0
 
 ### Patch Changes

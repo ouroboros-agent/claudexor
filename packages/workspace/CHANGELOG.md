@@ -1,5 +1,14 @@
 # @claudexor/workspace
 
+## 4.8.1
+
+### Patch Changes
+
+- @claudexor/core@4.8.1
+- @claudexor/event-log@4.8.1
+- @claudexor/schema@4.8.1
+- @claudexor/util@4.8.1
+
 ## 4.8.0
 
 ### Patch Changes
