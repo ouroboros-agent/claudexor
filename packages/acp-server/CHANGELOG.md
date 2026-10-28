@@ -1,5 +1,12 @@
 # @claudexor/acp-server
 
+## 4.8.1
+
+### Patch Changes
+
+- @claudexor/schema@4.8.1
+- @claudexor/util@4.8.1
+
 ## 4.8.0
 
 ### Patch Changes
