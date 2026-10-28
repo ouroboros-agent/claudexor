@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, utimesSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
   fsyncDirectory,
@@ -50,9 +50,13 @@ function persistRevertAnchor(repo: string, patch: string): string {
       throw new WorkspaceError(`revert anchor ${id} failed its content digest`);
     }
     fsyncDirectory(targetDir);
-    return id;
+  } else {
+    writePatchObject(projectRuntimeDir(repo), target, patch);
   }
-  writePatchObject(projectRuntimeDir(repo), target, patch);
+  // Every publication renews the run-owned anchor, including a fresh hard link
+  // to an old cache inode. Sibling unlink ctime does not extend this age window.
+  const now = new Date();
+  utimesSync(target, now, now);
   return id;
 }
 

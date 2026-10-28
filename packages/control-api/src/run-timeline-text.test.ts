@@ -204,7 +204,6 @@ describe("timeline text metadata across native parser and event-log projection",
       unreadable: false,
       malformedLines: 1,
       nonObjectLines: 0,
-      tailTruncated: false,
     });
     expect(rows.slice(0, 2).map((row) => [row.type, row.textKind, row.textDelta])).toEqual([
       ["timeline.evidence_incomplete", null, false],

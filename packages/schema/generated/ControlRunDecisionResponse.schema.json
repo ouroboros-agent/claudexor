@@ -24,6 +24,20 @@
           "minLength": 1,
           "description": "New run id when the decision re-enqueues a turn (rerun_with_feedback)."
         },
+        "newJobId": {
+          "$ref": "#/definitions/ControlRunDecisionResponse/properties/newRunId",
+          "description": "Accepted job handle of the re-enqueued work, present even before its run binds."
+        },
+        "taskGroupId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Caller-generated UUID saved before launching the first member. Each job still needs its own idempotency key; the group grants no execution authority."
+        },
+        "storeId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Identity of the durable engine store that accepted this group member, stable across restarts."
+        },
         "message": {
           "type": "string",
           "description": "Human-readable detail."

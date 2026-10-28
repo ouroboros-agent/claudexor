@@ -244,9 +244,14 @@ describe("SQL command authority", () => {
     ).toEqual({ group_id: null });
   });
 
-  it.each(["blob", "command", "idempotency"])(
-    "accept rolls back a fault in %s before exposing any authority",
-    async (table) => {
+  it.each(
+    ["blob", "command", "idempotency"].flatMap((table) => [
+      [table, "tagged"],
+      [table, "untagged"],
+    ]),
+  )(
+    "accept rolls back a fault in %s before exposing any authority (%s)",
+    async (table, membership) => {
       const f = await fixture();
       const generation = f.store.facts().flusher.generation;
       f.store.transaction(() =>
@@ -254,10 +259,11 @@ describe("SQL command authority", () => {
           `CREATE TRIGGER accept_fault BEFORE INSERT ON ${table} BEGIN SELECT RAISE(ABORT,'accept fault'); END`,
         ),
       );
+      const group = membership === "tagged" ? "11111111-1111-4111-8111-111111111111" : null;
       const tagged = request("failed", {
         mode: "ask",
         prompt: "hello",
-        taskGroupId: "11111111-1111-4111-8111-111111111111",
+        ...(group ? { taskGroupId: group } : {}),
       });
       expect(() => f.commands.accept(tagged)).toThrow(/accept fault/);
       for (const name of ["blob", "command", "idempotency", "event"])
@@ -270,12 +276,27 @@ describe("SQL command authority", () => {
       expect(
         f.store
           .prepare(
-            "SELECT json_extract(CAST(summary AS TEXT),'$.params.taskGroupId') AS group_id FROM command",
+            "SELECT json_extract(CAST(summary AS TEXT),'$.params.taskGroupId') AS group_id, task_group_id FROM command",
           )
           .get(),
-      ).toEqual({ group_id: "11111111-1111-4111-8111-111111111111" });
+      ).toEqual({ group_id: group, task_group_id: group });
     },
   );
+
+  it("accept stores canonical membership beside the caller's spelling, and updates keep it", async () => {
+    const f = await fixture();
+    const spelled = "AAAAAAAA-1111-4111-8111-111111111111";
+    f.commands.accept(request("upper", { mode: "ask", prompt: "hello", taskGroupId: spelled }));
+    const membership = () =>
+      f.store
+        .prepare(
+          "SELECT json_extract(CAST(summary AS TEXT),'$.params.taskGroupId') AS spelled, task_group_id FROM command",
+        )
+        .get();
+    expect(membership()).toEqual({ spelled, task_group_id: spelled.toLowerCase() });
+    f.commands.update("upper", { state: "running", runId: "run-upper", runDir: "/runs/upper" });
+    expect(membership()).toEqual({ spelled, task_group_id: spelled.toLowerCase() });
+  });
   it("pure import reducers reproduce the frozen logical fixture without runtime mutations", async () => {
     const f = await fixture();
     const source = readLogicalFixture(

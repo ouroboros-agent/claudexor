@@ -9,7 +9,7 @@ import {
 } from "../interactions.js";
 import type { InteractionStorePort, PendingIdentityDigest } from "../store-contracts.js";
 import type { SqlEventLedger } from "./event-store.js";
-import { requireTransaction, runMutation, type SqlWriteContext } from "./mutation.js";
+import { mutationOf, requireTransaction, runMutation, type SqlWriteContext } from "./mutation.js";
 import type { EngineStore } from "./store.js";
 
 /** Pure import/runtime reducer. Resolution is retained in state after its
@@ -31,6 +31,7 @@ export function applyInteractionInTx(
         value.runId,
         Buffer.from(JSON.stringify(value)),
       );
+    noteRunObservation(sql, value.runId);
     return;
   }
   const value = parseInteractionResolution(payload);
@@ -47,6 +48,18 @@ export function applyInteractionInTx(
       );
     if (Number(result.changes) !== 1) throw new Error("interaction resolution precedes request");
   }
+  noteRunObservation(sql, value.runId);
+}
+
+/** A waiter may hold the run's job id, so the notice names every address.
+ * The single-column lookup keeps the command_run index. */
+function noteRunObservation(sql: SqlWriteContext, runId: string): void {
+  const mutation = mutationOf(sql);
+  if (!mutation) return;
+  const jobs = sql.prepare("SELECT id FROM command WHERE run_id = ?").all(runId) as Array<{
+    id: string;
+  }>;
+  mutation.observationChanged(runId, ...jobs.map((job) => job.id));
 }
 
 export class SqlInteractionStore implements InteractionStorePort {

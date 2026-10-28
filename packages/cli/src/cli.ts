@@ -99,7 +99,7 @@ import { inspectBudgetLine } from "./run-detail-projections.js";
 import { readRunFactsArtifact } from "./run-facts-projection.js";
 import { projectTerminalRunOutput, terminalRunRequiredActionLines } from "./terminal-run-output.js";
 import { runPlanQuestionLoop } from "./plan-question-loop.js";
-import { resolveDecisionBody } from "./decision.js";
+import { decisionAnswerLines, resolveDecisionBody } from "./decision.js";
 import { primaryOutputForCli } from "./primary-output.js";
 import { pluginCommandErrorResult } from "./plugins.js";
 import { pluginCommand } from "./plugin-cli.js";
@@ -838,16 +838,8 @@ async function decisionCommand(args: ParsedArgs, json: boolean): Promise<number>
         { messagePrefix: "claudexor decision:" },
       );
     }
-    if (json) {
-      printJson(data);
-    } else {
-      const accepted = data["accepted"] === true;
-      print(
-        `decision ${action} on ${runId}: ${accepted ? "accepted" : "rejected"} [${String(data["status"] ?? "?")}]`,
-      );
-      if (typeof data["newRunId"] === "string") print(`  new run: ${data["newRunId"]}`);
-      if (typeof data["message"] === "string") print(`  ${data["message"]}`);
-    }
+    if (json) printJson(data);
+    else for (const line of decisionAnswerLines(action, runId, data)) print(line);
     return data["accepted"] === true ? 0 : 1;
   } catch (err) {
     return renderCliFailure(json, err, { messagePrefix: "claudexor decision:" });

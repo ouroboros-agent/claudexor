@@ -1,5 +1,10 @@
-import { RunWaitManyInput } from "@claudexor/schema";
-import { flagBool, flagStr, requiredStringFlagError, type ParsedArgs } from "./args.js";
+import {
+  decimalFlag,
+  flagBool,
+  flagStr,
+  requiredStringFlagError,
+  type ParsedArgs,
+} from "./args.js";
 import { renderCliFailure, usageError } from "./cli-error.js";
 import { printJson, printJsonLine } from "./cli-io.js";
 import { runsWaitQuery } from "./mcp-runs-wait.js";
@@ -26,14 +31,10 @@ export async function runsWaitCommand(args: ParsedArgs, json: boolean): Promise<
         code: "invalid_argument",
       });
     }
-    const wait = flagStr(args, "wait-ms");
-    const input = RunWaitManyInput.parse({
-      targets,
-      ...(wait === undefined ? {} : { waitMs: Number(wait) }),
-    });
+    const wait = decimalFlag(args, "wait-ms", "--wait-ms must be an integer from 0 to 50000");
     const result = await runsWaitQuery({
-      targets: input.targets,
-      ...(wait === undefined ? {} : { waitMs: input.waitMs }),
+      targets,
+      ...(wait === undefined ? {} : { waitMs: wait }),
     });
     if (stream) printJsonLine(result);
     else printJson(result);

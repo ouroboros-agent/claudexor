@@ -61,8 +61,7 @@ it.each(["lookup", "children"] as const)(
     const disconnected = new Promise<void>((resolve) => {
       closed = resolve;
     });
-    const project = vi.fn(() => ({ projected: true }));
-    const summarize = vi.fn();
+    const project = vi.fn(async () => JSON.stringify({ projected: true }));
     let held = true;
     const block = async (at: string): Promise<void> => {
       if (held && phase === at) {
@@ -85,7 +84,8 @@ it.each(["lookup", "children"] as const)(
               return [];
             },
             project,
-            summarize,
+            cursor: async () => 0,
+            serialized: (response, body) => response.end(body),
             json: (response, status, body) => {
               response.writeHead(status, { "content-type": "application/json" });
               response.end(JSON.stringify(body));
@@ -111,7 +111,6 @@ it.each(["lookup", "children"] as const)(
       release();
       await Promise.all(pending);
       expect(project).not.toHaveBeenCalled();
-      expect(summarize).not.toHaveBeenCalled();
       held = false;
       const live = await fetch(url);
       expect(live.status).toBe(200);

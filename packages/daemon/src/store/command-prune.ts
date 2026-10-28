@@ -45,11 +45,16 @@ export function applyCommandPruneInTx(sql: SqlWriteContext, rows: readonly Prune
         `r:${row.run_id}:t`,
         `d:${row.run_id}`,
       );
+      // Node 24.15 truncates TEXT at NUL; decode the full runId\0interactionId from bytes.
       const interactions = sql
-        .prepare("DELETE FROM interaction WHERE run_id=? AND pid=? RETURNING id")
-        .all(row.run_id, row.pid) as Array<{ id: string }>;
-      for (const interaction of interactions)
-        keys.push(`i:${row.run_id}:${interaction.id.slice(row.run_id.length + 1)}`);
+        .prepare(
+          "DELETE FROM interaction WHERE run_id=? AND pid=? RETURNING CAST(id AS BLOB) AS id",
+        )
+        .all(row.run_id, row.pid) as Array<{ id: Uint8Array }>;
+      for (const interaction of interactions) {
+        const id = Buffer.from(interaction.id).toString("utf8");
+        keys.push(`i:${row.run_id}:${id.slice(row.run_id.length + 1)}`);
+      }
       sql
         .prepare("DELETE FROM operator_decision WHERE run_id=? AND pid=?")
         .run(row.run_id, row.pid);

@@ -17,15 +17,16 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 function connect() {
-  const root = mkdtempSync(join(tmpdir(), "cx-schema-v5-"));
+  const root = mkdtempSync(join(tmpdir(), "cx-schema-history-"));
   roots.push(root);
   const db = new sqlite!.DatabaseSync(join(root, "engine.sqlite"));
   connections.push(db);
   return db;
 }
 
-/** Exact owners from 711cee0e5 (v3) and bc979941f (v4), never derived from current DDL. */
-function frozenOwner(version: 3 | 4): { ensureSchema(db: DatabaseSync): void } {
+/** Exact owners from 711cee0e5 (v3), bc979941f (v4) and 4e870bea0 (v5), never
+ * derived from current DDL. */
+function frozenOwner(version: 3 | 4 | 5): { ensureSchema(db: DatabaseSync): void } {
   const source = readFileSync(
     new URL(`./test-support/fixtures/schema-v${version}.ts.txt`, import.meta.url),
     "utf8",
@@ -119,39 +120,42 @@ function seedDeferredMessages(db: DatabaseSync) {
 }
 
 describe.skipIf(!sqlite)("thread-history schema v5", () => {
-  it("creates a fresh v5 store with deferred messages and a minimal answer-present index", () => {
+  it("creates a fresh current store with deferred messages and a minimal answer-present index", () => {
     const db = connect();
     ensureSchema(db);
-    expect(ENGINE_SCHEMA_VERSION).toBe(5);
-    expect(readSchemaIdentity(db).userVersion).toBe(5);
+    expect(ENGINE_SCHEMA_VERSION).toBe(6);
+    expect(readSchemaIdentity(db).userVersion).toBe(6);
     expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({
-      value: "5",
+      value: "6",
     });
     seed(db);
     seedDeferredMessages(db);
     assertIndex(db);
   });
 
-  it.each([3, 4] as const)(
-    "migrates frozen populated v%s to v5 without changing domain rows or existing indexes",
+  it.each([3, 4, 5] as const)(
+    "migrates frozen populated v%s to the current version without changing domain rows or other indexes",
     (version) => {
       const db = connect();
       frozenOwner(version).ensureSchema(db);
       expect(readSchemaIdentity(db).userVersion).toBe(version);
       seed(db); // Invalid JSON and refusals predate index creation.
-      if (version === 4) seedDeferredMessages(db);
+      if (version >= 4) seedDeferredMessages(db);
       const before = rows(db),
         previousSchema = schema(db);
       ensureSchema(db);
-      expect(readSchemaIdentity(db).userVersion).toBe(5);
+      expect(readSchemaIdentity(db).userVersion).toBe(ENGINE_SCHEMA_VERSION);
       expect({ ...rows(db), meta: [] }).toEqual({ deferred_message: [], ...before, meta: [] });
       expect(rows(db).meta).toEqual(
         (before.meta as { key: string; value: string }[]).map((row) =>
-          row.key === "schema_version" ? { ...row, value: "5" } : row,
+          row.key === "schema_version" ? { ...row, value: String(ENGINE_SCHEMA_VERSION) } : row,
         ),
       );
+      // Version 6 adds the membership column and rebuilds both group indexes on it.
+      const replaced = new Set(["command", "command_task_group", "command_task_group_state"]);
       const added = new Set([
-        "turn_plan_answer",
+        ...replaced,
+        ...(version < 5 ? ["turn_plan_answer"] : []),
         ...(version === 3
           ? [
               "deferred_message",
@@ -163,7 +167,12 @@ describe.skipIf(!sqlite)("thread-history schema v5", () => {
             ]
           : []),
       ]);
-      expect(schema(db).filter((row) => !added.has(row.name as string))).toEqual(previousSchema);
+      expect(schema(db).filter((row) => !added.has(row.name as string))).toEqual(
+        previousSchema.filter((row) => !replaced.has(row.name as string)),
+      );
+      expect(
+        (db.prepare("PRAGMA table_info(command)").all() as { name: string }[]).at(-1)?.name,
+      ).toBe("task_group_id");
       assertIndex(db);
       const fresh = connect();
       ensureSchema(fresh);
@@ -172,9 +181,12 @@ describe.skipIf(!sqlite)("thread-history schema v5", () => {
       const exec = vi.spyOn(db, "exec");
       ensureSchema(db);
       expect(exec).not.toHaveBeenCalled();
-      for (const oldVersion of [3, 4] as const)
+      for (const oldVersion of [3, 4, 5] as const)
         expect(() => frozenOwner(oldVersion).ensureSchema(db)).toThrow(
-          expect.objectContaining({ code: "store_schema_unsupported", userVersion: 5 }),
+          expect.objectContaining({
+            code: "store_schema_unsupported",
+            userVersion: ENGINE_SCHEMA_VERSION,
+          }),
         );
       expect(exec).not.toHaveBeenCalled();
     },
@@ -200,27 +212,31 @@ describe.skipIf(!sqlite)("thread-history schema v5", () => {
       expect(rows(db)).toEqual(before);
       expect(schema(db)).toEqual(previousSchema);
       ensureSchema(db);
-      expect(readSchemaIdentity(db).userVersion).toBe(5);
+      expect(readSchemaIdentity(db).userVersion).toBe(ENGINE_SCHEMA_VERSION);
       assertIndex(db);
     },
   );
 
-  it("refuses a newer store before writes and still opens a current v5 store", () => {
+  it("refuses a newer store before writes and still opens a current store", () => {
     const db = connect();
     ensureSchema(db);
     seed(db);
-    db.exec("PRAGMA user_version=6");
+    db.exec(`PRAGMA user_version=${ENGINE_SCHEMA_VERSION + 1}`);
     const before = rows(db),
       previousSchema = schema(db);
     const exec = vi.spyOn(db, "exec");
     expect(() => ensureSchema(db)).toThrow(
-      expect.objectContaining({ code: "store_schema_unsupported", userVersion: 6, status: 503 }),
+      expect.objectContaining({
+        code: "store_schema_unsupported",
+        userVersion: ENGINE_SCHEMA_VERSION + 1,
+        status: 503,
+      }),
     );
     expect(exec).not.toHaveBeenCalled();
     expect(rows(db)).toEqual(before);
     expect(schema(db)).toEqual(previousSchema);
     exec.mockRestore();
-    db.exec("PRAGMA user_version=5"); // Fixture-only restoration of its original header.
+    db.exec(`PRAGMA user_version=${ENGINE_SCHEMA_VERSION}`); // Fixture-only header restoration.
     ensureSchema(db);
     assertIndex(db);
   });

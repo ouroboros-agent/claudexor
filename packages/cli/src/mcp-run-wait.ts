@@ -7,10 +7,10 @@ import {
   McpRunWaitResult,
 } from "@claudexor/schema";
 import { connectDaemonIfRunning } from "./daemon-run.js";
-import { controlProblemError } from "./cli-error.js";
-import { controlApiFetch, type ControlApiAddress } from "./live.js";
+import type { ControlApiAddress } from "./live.js";
 import { daemonUnavailableError } from "./mcp-daemon-unavailable.js";
 import { canonicalRunId } from "./mcp-run-projections.js";
+import { invalidServiceResponse, readObservationJson } from "./observation-read.js";
 import { observeRunEvents, type Observation } from "./run-wait-events.js";
 
 /** Discovery, each snapshot, and a zero-wait replay of available events each get this budget. */
@@ -56,30 +56,15 @@ export async function connectForObservation(signal?: AbortSignal) {
 }
 
 async function snapshot(addr: ControlApiAddress, runId: string, signal?: AbortSignal) {
-  const controller = new AbortController();
-  const abort = () => controller.abort();
-  signal?.addEventListener("abort", abort, { once: true });
-  if (signal?.aborted) abort();
-  const timer = setTimeout(abort, STAGE_BUDGET_MS);
-  try {
-    const response = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}`, {
-      method: "GET",
-      signal: controller.signal,
-    });
-    const body: unknown = await response.json();
-    if (!response.ok)
-      throw controlProblemError(
-        response.status,
-        body,
-        `run snapshot failed (HTTP ${response.status})`,
-      );
-    const parsed = Snapshot.parse(body);
-    return { ...parsed, runId: canonicalRunId(runId, parsed.summary) };
-  } finally {
-    clearTimeout(timer);
-    signal?.removeEventListener("abort", abort);
-    controller.abort();
-  }
+  const body = await readObservationJson(
+    addr,
+    `/runs/${encodeURIComponent(runId)}`,
+    { method: "GET", timeoutMs: STAGE_BUDGET_MS, label: "run snapshot" },
+    signal,
+  );
+  const parsed = Snapshot.safeParse(body);
+  if (!parsed.success) throw invalidServiceResponse("daemon returned an invalid run snapshot");
+  return { ...parsed.data, runId: canonicalRunId(runId, parsed.data.summary) };
 }
 
 /** Precedence: abort, terminal lifecycle, a question event in the page, then the stream's own stop. */

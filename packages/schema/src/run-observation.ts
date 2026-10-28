@@ -50,7 +50,15 @@ export const RunWaitManyInput = z
     z
       .object({
         targets: z
-          .array(z.object({ runId: handle, seen: token.optional() }).strict())
+          .array(
+            z
+              .object({
+                runId: handle,
+                // Echo each summary token; a problem row's null acknowledges that problem.
+                seen: token.nullable().optional(),
+              })
+              .strict(),
+          )
           .min(1)
           .max(RUN_WAIT_MANY_MAX_TARGETS),
         waitMs: z.number().int().min(0).max(50_000).default(25_000),

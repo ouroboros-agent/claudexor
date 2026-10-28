@@ -15,7 +15,7 @@
   "packages/cli/src/plugins.ts": 1848,
   "packages/cli/src/setup-jobs.ts": 1518,
   "packages/cli/src/setup-login-runner.ts": 581,
-  "packages/control-api/src/daemon-server.ts": 2773,
+  "packages/control-api/src/daemon-server.ts": 2286,
   "packages/control-api/src/operation-catalog.ts": 469,
   "packages/control-api/src/thread-turn-routes.ts": 600,
   "packages/daemon/src/server.ts": 608,

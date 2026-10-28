@@ -1,3 +1,4 @@
+import { projectionRead } from "./projection-context.js";
 import { lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -116,6 +117,18 @@ export function projectRunFactsForDetail(
 
 /** RunFacts is already redacted; avoid a second presentation-redaction pass. */
 function readRunFacts(
+  runDir: string | undefined,
+  expected: ExpectedRunFacts,
+  maxBytes?: number,
+): RunFacts | null {
+  return projectionRead(
+    runDir ?? "",
+    `run-facts:${maxBytes ?? "all"}:${JSON.stringify(expected)}`,
+    () => readRunFactsUncached(runDir, expected, maxBytes),
+  );
+}
+
+function readRunFactsUncached(
   runDir: string | undefined,
   expected: ExpectedRunFacts,
   maxBytes?: number,

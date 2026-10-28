@@ -4,8 +4,16 @@ import {
   TaskContract,
   type DecisionRecord,
 } from "@claudexor/schema";
-import { paramsRecord, type DaemonRunRecord } from "./run-record.js";
 import { safeReadStructuredArtifact } from "./run-artifact-read.js";
+import { paramsRecord, type DaemonRunRecord } from "./run-record.js";
+import { projectionRead } from "./projection-context.js";
+import {
+  type RunEventsIntegrity,
+  eventPayload,
+  evidenceLevel,
+  readRunEvents,
+  readRunEventsWithIntegrity,
+} from "./run-timeline.js";
 import {
   budgetValuationFromEvents,
   cashEstimatedFromLedgerEvent,
@@ -14,13 +22,26 @@ import {
   decisionCashAnchor,
   normalizeLegacyBudgetComponents,
 } from "./budget-valuation.js";
-import {
-  readRunEvents,
-  eventPayload,
-  evidenceLevel,
-  type RunEventsIntegrity,
-} from "./run-timeline.js";
+
 export function budgetSnapshot(
+  rec: DaemonRunRecord,
+  decision: DecisionRecord | null,
+  eventsSnapshot?: Record<string, unknown>[],
+  integrity?: RunEventsIntegrity,
+  maxBytes?: number,
+): ControlBudgetSnapshot {
+  return projectionRead(rec.runDir ?? rec.id, `budget:${maxBytes ?? "all"}`, () =>
+    computeBudgetSnapshot(
+      rec,
+      decision,
+      eventsSnapshot,
+      integrity ?? readRunEventsWithIntegrity(rec).integrity,
+      maxBytes,
+    ),
+  );
+}
+
+function computeBudgetSnapshot(
   rec: DaemonRunRecord,
   decision: DecisionRecord | null,
   eventsSnapshot?: Record<string, unknown>[],

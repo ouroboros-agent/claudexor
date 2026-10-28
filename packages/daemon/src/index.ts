@@ -29,6 +29,7 @@ export { EngineStateRecovery } from "./store/engine-state-recovery.js";
 export { SqlPartitionRecovery } from "./store/sql-recovery.js";
 export { sqlRecoveryProjections } from "./store/sql-validation.js";
 export { EngineStore } from "./store/store.js";
+export type { ObservationListener } from "./store/observation-notices.js";
 export { BlobFiles } from "./store/blob-files.js";
 export { type MaintenanceCommandSummary } from "./store/command-rows.js";
 export { createSqlDaemonServices } from "./store/sql-daemon-services.js";

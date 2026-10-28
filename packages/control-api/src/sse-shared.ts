@@ -1,4 +1,3 @@
-import { closeSync, openSync, readSync, statSync } from "node:fs";
 import { redactSecrets } from "@claudexor/util";
 import { TERMINAL_LIFECYCLES } from "@claudexor/schema";
 
@@ -16,7 +15,6 @@ export function redactedSseLine(raw: string): string {
     return redacted;
   }
 }
-
 /**
  * The run event stream's identity for one non-empty events.jsonl line, shared
  * by the stream and the event-part reader: its persisted seq, else its 1-based
@@ -32,28 +30,5 @@ export function streamLineIdentity(raw: string, lineNo: number): { seq: number; 
     };
   } catch {
     return { seq: lineNo, type: "malformed" };
-  }
-}
-
-/** Incremental line reader for events.jsonl tails (rotation-tolerant). */
-export function readNewLines(
-  path: string,
-  offset: number,
-  carry: string,
-): { lines: string[]; nextOffset: number; rest: string } {
-  const size = statSync(path).size;
-  const start = size < offset ? 0 : offset; // file rotated/truncated; start over
-  const len = size - start;
-  if (len <= 0) return { lines: [], nextOffset: start, rest: carry };
-  const fd = openSync(path, "r");
-  try {
-    const buf = Buffer.allocUnsafe(len);
-    readSync(fd, buf, 0, len, start);
-    const text = carry + buf.toString("utf8");
-    const parts = text.split("\n");
-    const rest = parts.pop() ?? "";
-    return { lines: parts.filter(Boolean), nextOffset: size, rest };
-  } finally {
-    closeSync(fd);
   }
 }

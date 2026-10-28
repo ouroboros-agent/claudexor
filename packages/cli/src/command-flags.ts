@@ -316,6 +316,7 @@ export const CLI_FLAGS: readonly CliFlagSpec[] = [
   ),
   booleanFlag("json", "Machine-readable JSON output"),
   booleanFlag("all", null),
+  booleanFlag("last", "GC: read the durable last pass without starting cleanup"),
   booleanFlag(
     "browser-redirect",
     "Codex login: opt into the localhost-callback flow instead of the device-auth default",
