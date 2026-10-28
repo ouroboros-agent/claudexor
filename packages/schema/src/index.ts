@@ -100,6 +100,7 @@ export * from "./continuation-admission.js";
 export * from "./run-list-page.js";
 export * from "./command-summary.js";
 export * from "./daemon-status.js";
+export * from "./route-health.js";
 export * from "./store-status.js";
 export * from "./account-resources.js";
 export * from "./account-routing-evidence.js";
