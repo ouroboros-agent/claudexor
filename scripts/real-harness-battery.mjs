@@ -41,12 +41,17 @@ import {
   canonicalBatteryProfileState,
   describeFileSnapshot,
   durableAttemptRouteEvidence,
+  evaluateReadonlyCapabilityAnswer,
   evaluateRequiredNativeRoutes,
   isBatteryRepoRoot,
   isCrossFamilyConvergenceRefusal,
   nativeBatteryRowReady,
   projectBatteryHarnessReadiness,
   projectBatteryDaemonLease,
+  readonlyCapabilityFixture,
+  readonlyCapabilityPrompt,
+  readonlyCapabilityRequest,
+  readonlyCapabilityRows,
   relevantRunAttemptKeys,
   resolveRealHarnessBatteryLayout,
   runtimeReplacementIdentityFromHandshake,
@@ -3002,6 +3007,90 @@ async function runNativeAccessSuccessRow(phase, row, profileEntry) {
   }
 }
 
+/** A digest of every file under `dir`, so a readonly row can prove it changed nothing there. */
+function treeDigest(dir) {
+  const hash = createHash("sha256");
+  const walk = (current) => {
+    for (const name of readdirSync(current).sort()) {
+      const path = join(current, name);
+      if (statSync(path).isDirectory()) walk(path);
+      else hash.update(relative(dir, path)).update("\0").update(readFileSync(path));
+    }
+  };
+  walk(dir);
+  return hash.digest("hex");
+}
+
+async function runNativeReadonlyCapabilityRow(phase, row) {
+  const stable = makeMathRepo(`${phase}-${row.id}-stable`, { addBug: true });
+  const stableTree = runGit(["rev-parse", "HEAD^{tree}"], stable);
+  const outside = join(batteryRoot, "outside", cleanName(`${phase}-${row.id}`));
+  rmSync(outside, { recursive: true, force: true });
+  mkdirSync(join(outside, "listing"), { recursive: true });
+  const fixture = readonlyCapabilityFixture();
+  writeFileSync(join(outside, "secret.txt"), `The secret word is ${fixture.word}.\n`);
+  for (const name of fixture.listing) writeFileSync(join(outside, "listing", name), `${name}\n`);
+  const outsideBefore = treeDigest(outside);
+  const model = selectBatteryModel(row.harness);
+  try {
+    const { ensureDaemon, enqueueAndAwait } = await import("../packages/cli/dist/daemon-run.js");
+    const { client, addr } = await ensureDaemon();
+    const outcome = await enqueueAndAwait(
+      client,
+      addr,
+      readonlyCapabilityRequest({
+        row,
+        prompt: readonlyCapabilityPrompt({
+          secretPath: join(outside, "secret.txt"),
+          listingDir: join(outside, "listing"),
+        }),
+        projectRoot: stable,
+        modelId: model.id,
+        maxUsd,
+      }),
+      { waitForTerminal: true },
+    );
+    const projected = outcome.runId
+      ? await controlRunDetail(outcome.runId)
+      : { detail: null, error: "run id missing" };
+    const detail = projected.detail;
+    const answer = detail?.primaryOutput?.text ?? "";
+    const { wordFound, filesMatch, firstMatch } = evaluateReadonlyCapabilityAnswer(answer, fixture);
+    const stableUntouched =
+      runGit(["rev-parse", "HEAD^{tree}"], stable) === stableTree &&
+      run("git", ["status", "--porcelain"], { cwd: stable }).stdout.trim() === "";
+    const outsideUntouched = treeDigest(outside) === outsideBefore;
+    const valid =
+      outcome.status === "succeeded" &&
+      detail?.summary?.requestedAccess === "readonly" &&
+      detail?.summary?.effectiveAccess === "readonly" &&
+      wordFound &&
+      filesMatch &&
+      firstMatch &&
+      stableUntouched &&
+      outsideUntouched;
+    (valid ? pass : fail)(phase, row.name, {
+      runId: outcome.runId ?? null,
+      status: outcome.status,
+      access: {
+        requested: detail?.summary?.requestedAccess ?? null,
+        effective: detail?.summary?.effectiveAccess ?? null,
+      },
+      profile: { requested: row.profileId ?? null },
+      model: model.id ?? null,
+      reads: { wordFound, filesMatch, firstMatch, fileCount: fixture.fileCount },
+      mutation: { stableUntouched, outsideUntouched },
+      answer: answer.slice(0, 200),
+      projectionError: projected.error ?? null,
+      error: outcome.error ?? null,
+    });
+  } catch (error) {
+    fail(phase, row.name, {
+      error: redactSecrets(error instanceof Error ? error.message : String(error)),
+    });
+  }
+}
+
 async function runNativeAccessRefusalRow(phase, row, wantedCode) {
   const stable = makeMathRepo(`${phase}-${row.id}-stable`, { addBug: true });
   const execution = makeExecutionClone(stable, `${phase}-${row.id}`);
@@ -3254,6 +3343,33 @@ async function runNativeAccessPhase() {
       continue;
     }
     await runNativeAccessSuccessRow(phase, row, entry);
+  }
+
+  for (const row of readonlyCapabilityRows(named)) {
+    if (!requestedHarnesses.includes(row.harness)) {
+      skip(phase, row.name, { reason: `${row.harness} not requested` });
+      continue;
+    }
+    if (row.requiresProfile && !row.profileId) {
+      skip(phase, row.name, { reason: "required named profile is absent or not ready" });
+      continue;
+    }
+    if (
+      !nativeBatteryRowReady({
+        defaultHarnessReady: harnessAutomaticallyReady(row.harness),
+        requiresProfile: row.requiresProfile === true,
+        profileEntry: row.requiresProfile ? named[row.harness] : null,
+      })
+    ) {
+      skip(phase, row.name, {
+        reason: row.requiresProfile
+          ? "required named profile is not ready"
+          : `${row.harness} has no automatic route`,
+        readiness: evidence.harnessReadiness[row.harness] ?? null,
+      });
+      continue;
+    }
+    await runNativeReadonlyCapabilityRow(phase, row);
   }
 
   const codexProfileId = named.codex?.profile?.profile_id;

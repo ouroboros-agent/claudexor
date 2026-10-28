@@ -43,7 +43,10 @@ These are LOCKED rules for all future work. Do not re-litigate them.
   and why existing trust, review, custody, and rollback controls are insufficient.
   If a restriction touches a supported path, its acceptance proof includes a
   positive production-shaped E2E of the promised capability, not only a denial
-  or policy-shape assertion; capability loss blocks the restriction.
+  or policy-shape assertion; capability loss blocks the restriction. Mapping an
+  access profile onto a vendor mode is such a restriction: its proof is the
+  battery's capability row for that profile, which needs content only a real
+  read can produce.
 - **Staged-field rule.** A schema field ships only WITH a real producer AND a real
   consumer in the SAME change; otherwise it is deleted, never left as a dead or
   fake knob. This is exactly what `pnpm knip` plus the docs-truth gate enforce.
@@ -383,6 +386,12 @@ pnpm test
   over overfit; meta over patch.
 - Reject scope drift and overengineering that does not serve the accepted user
   intent.
+- Look for lost capability as hard as for excess power: a promised capability
+  that fails on a real path is a serious finding, never demoted as hardening.
+- Refute a finding only with evidence that exercises its own scenario; a probe
+  that never touches what the finding names is not a refutation. A finding
+  that says the owner should know something reaches the owner summary with its
+  disposition, even when rejected.
 - Use the release protocol below for this repository. An empty, erroneous, or
   wrong-tree review is not evidence; obtain a complete independent review.
 - If a change intentionally edits existing protected gate/test files, record the
