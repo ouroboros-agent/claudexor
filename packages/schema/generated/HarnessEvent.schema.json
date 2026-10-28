@@ -492,6 +492,31 @@
           "type": "boolean",
           "description": "True on the harness's typed final-answer message (vendor terminal result); mid-run narration never sets it."
         },
+        "speech": {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Opaque adapter-issued key of one observed text block; equality only."
+            },
+            "op": {
+              "type": "string",
+              "enum": [
+                "fragment",
+                "complete",
+                "abandoned"
+              ],
+              "description": "fragment: a verbatim streamed piece of the keyed text block; complete: the harness's complete text of that block (at most once per key); abandoned: the harness stated the block will never be completed (partial fragments stay as emitted)."
+            }
+          },
+          "required": [
+            "key",
+            "op"
+          ],
+          "additionalProperties": false,
+          "description": "Adapter-issued speech identity of a text event (fragment/complete on messages, abandoned on a status event); absent when no block lifecycle was exactly observed. A typed final never carries it unless the adapter proves the link."
+        },
         "tool": {
           "type": "object",
           "properties": {

@@ -175,6 +175,24 @@ describe("harnessEventPayload (run-event projection)", () => {
     };
     expect(harnessEventPayload("codex", "a01", narration)["final"]).toBeUndefined();
   });
+
+  it("carries the adapter-issued speech key and op beside finality and never invents one (issue1698)", () => {
+    const fragment: HarnessEvent = {
+      type: "message",
+      session_id: "ses-1",
+      ts: "2026-10-27T00:00:00Z",
+      text: "Checking",
+      speech: { key: "claude:0123456789ab:1:0", op: "fragment" },
+      payload: { delta: true },
+    };
+    const projected = harnessEventPayload("claude", "a01", fragment);
+    expect(projected["speech"]).toEqual({ key: "claude:0123456789ab:1:0", op: "fragment" });
+    expect((projected["payload"] as Record<string, unknown>)["delta"]).toBe(true);
+    const unkeyed: HarnessEvent = { ...fragment, speech: undefined, payload: undefined };
+    expect(
+      "speech" in JSON.parse(JSON.stringify(harnessEventPayload("claude", "a01", unkeyed))),
+    ).toBe(false);
+  });
 });
 
 describe("harnessEventPayload keeps the typed terminal facts (run-event journal)", () => {

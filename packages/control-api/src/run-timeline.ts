@@ -12,6 +12,7 @@ import {
   type ControlEvidenceIntegrity,
   ControlWebEvidence,
   FallbackReason,
+  HarnessSpeech,
   type RunTelemetry,
   type TaskContract,
 } from "@claudexor/schema";
@@ -313,6 +314,9 @@ export function timelineEvents(
         ? payload["type"]
         : null;
     const textDelta = textKind !== null && eventPayload(payload)["delta"] === true;
+    // The adapter-issued speech identity (typed only) and text-row finality.
+    const speech = HarnessSpeech.safeParse(payload["speech"]).data;
+    const textFinal = textKind !== null && payload["final"] === true;
     // Typed tool info travels on the normalized HarnessEvent `tool` field.
     const tool =
       payload["tool"] && typeof payload["tool"] === "object" && !Array.isArray(payload["tool"])
@@ -377,6 +381,9 @@ export function timelineEvents(
         detail,
         textKind,
         textDelta,
+        speechKey: speech ? stringOrNull(speech.key) : null,
+        speechOp: speech?.op ?? null,
+        textFinal,
         severity,
         toolName,
         target,

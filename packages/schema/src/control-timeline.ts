@@ -1,4 +1,5 @@
 import { z } from "zod/v3";
+import { HarnessSpeechOp } from "./harness-speech.js";
 
 export const ControlTimelineEvent = z
   .object({
@@ -40,6 +41,22 @@ export const ControlTimelineEvent = z
       .default(false)
       .describe(
         "True only for adapter-declared text fragments. Consecutive deltas of the same textKind and attempt may be concatenated verbatim; complete messages and other events remain separate.",
+      ),
+    speechKey: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe(
+        "Adapter-issued key of the observed text block this row belongs to (the harness event's speech.key); compare by equality only. Null when no block lifecycle was exactly observed; such rows stay separate.",
+      ),
+    speechOp: HarnessSpeechOp.nullable()
+      .default(null)
+      .describe("The harness event's speech.op on keyed rows; null otherwise."),
+    textFinal: z
+      .boolean()
+      .default(false)
+      .describe(
+        "True only on the harness's typed final-answer text row (the harness event's final flag). It carries a speech key only when the adapter proved the link; otherwise it is a separate terminal result.",
       ),
     severity: z
       .enum(["info", "warning", "error"])

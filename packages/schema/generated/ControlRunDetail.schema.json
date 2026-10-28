@@ -3206,6 +3206,37 @@
                 "default": false,
                 "description": "True only for adapter-declared text fragments. Consecutive deltas of the same textKind and attempt may be concatenated verbatim; complete messages and other events remain separate."
               },
+              "speechKey": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "default": null,
+                "description": "Adapter-issued key of the observed text block this row belongs to (the harness event's speech.key); compare by equality only. Null when no block lifecycle was exactly observed; such rows stay separate."
+              },
+              "speechOp": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "fragment",
+                      "complete",
+                      "abandoned"
+                    ],
+                    "description": "fragment: a verbatim streamed piece of the keyed text block; complete: the harness's complete text of that block (at most once per key); abandoned: the harness stated the block will never be completed (partial fragments stay as emitted)."
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The harness event's speech.op on keyed rows; null otherwise.",
+                "default": null
+              },
+              "textFinal": {
+                "type": "boolean",
+                "default": false,
+                "description": "True only on the harness's typed final-answer text row (the harness event's final flag). It carries a speech key only when the adapter proved the link; otherwise it is a separate terminal result."
+              },
               "severity": {
                 "type": "string",
                 "enum": [

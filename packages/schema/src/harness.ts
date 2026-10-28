@@ -1,4 +1,4 @@
-import { EffortResolution } from "./effort.js";
+import { EffortHint, EffortResolution, ModelEffortCapability } from "./effort.js";
 import { z } from "zod/v3";
 import { AuthSourceKind, AuthSourceReadiness, CredentialRoute } from "./auth.js";
 import { CredentialProfile } from "./credential-profile.js";
@@ -27,8 +27,8 @@ import {
 } from "./raw.js";
 import { HarnessAccountUsageFields } from "./harness-quota.js";
 import { ObservedModelEventFields } from "./harness-model.js";
+import { HarnessSpeechEventFields } from "./harness-speech.js";
 import { RateLimitSignal } from "./rate-limit.js";
-import { EffortHint, ModelEffortCapability } from "./effort.js";
 import {
   ProcessingCostBasis,
   ProcessingPreference,
@@ -750,6 +750,7 @@ export const HarnessEvent = z
       .describe(
         "True on the harness's typed final-answer message (vendor terminal result); mid-run narration never sets it.",
       ),
+    ...HarnessSpeechEventFields,
     /** Typed tool info; set on `tool_call` and `tool_result` events. */
     tool: ToolRef.optional().describe("Typed tool info; set on tool_call and tool_result events."),
     /** Set on `interaction_requested` events. */

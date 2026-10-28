@@ -299,8 +299,10 @@ export function harnessEventPayload(
     tool: safe.tool,
     interaction: safe.interaction,
     // Preserve finality/status for answer dedup and activity (W-C1/W-C2);
-    // losing them here broke both on the live path (F2.5 E2E).
+    // losing them here broke both on the live path (F2.5 E2E). The adapter-
+    // issued speech key/op rides beside them so readers key text by identity.
     final: safe.final,
+    speech: safe.speech,
     status: safe.status,
     payload: safe.payload,
   };
