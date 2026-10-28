@@ -359,6 +359,11 @@ gate's explicit exemptions):
 - `--json-stream`: NDJSON — early `run.started` frame with the runId, one line
   per run event, terminal summary object last. `--json` keeps its
   exactly-one-object contract.
+- `--task-group-id <uuid>`: tags a one-shot launch with a caller-saved group,
+  so `claudexor task-group-runs` (MCP `claudexor_task_group_runs`) can recover
+  its job handles later; `claudexor runs-wait` (MCP `claudexor_runs_wait`)
+  watches many handles at once. See
+  [Observing and directing an existing run](#observing-and-directing-an-existing-run).
 
 Run summaries (`GET /v2/runs/:id`, CLI `--json`) carry the matching receipts:
 `inputTokens`/`outputTokens`/`cachedInputTokens` (null when a harness reported
@@ -1094,10 +1099,15 @@ claudexor task-group-runs 11111111-1111-4111-8111-111111111111 --expected-store-
 HTTP clients use `GET /v2/task-groups/:id/runs` with optional query parameters
 `expectedStoreId`, `limit`, lifecycle `state`, and `cursor`. Supply the saved
 `expectedStoreId` for recovery. Limit is
-1..200 (default 50); a cursor is at most 2048 characters. Logical result JSON
+1..200 (default 50); a cursor is at most 2048 characters. The group UUID
+matches in any letter case, and the answer echoes the spelling of the request.
+Logical result JSON
 is capped at 131072 UTF-8 bytes, so a page can contain fewer than the requested
-number of members. The cursor binds group, filter, store and served view;
-`store_mismatch` and `stale_cursor` refuse incompatible recovery. A changed
+number of members. The cursor binds group, filter, store and served view
+(`viewToken` names that view; clients pass cursors back and need not read it);
+`store_mismatch` and `stale_cursor` refuse incompatible recovery. A cursor
+issued while group matching was case-sensitive is stale after the upgrade; read
+the first page again. A changed
 served view requires a fresh traversal, not a silent cursor reset. Commands and
 tools are usable only when advertised by the selected supporting engine. An
 older or unavailable backend fails typed; it is not an empty successful group.
@@ -1121,13 +1131,18 @@ running job `interrupted`; discovery does not resume it.
 For an uncertain launch response, if its key and body remain available and the
 idempotency binding is retained, replay KA or KB with its **identical** saved
 body; changing or removing its group conflicts. Lost keys cannot be reconstructed
-from a group page and never justify a replacement launch. Exact Retry retains the
-accepted group. A deliberately new continuation may explicitly supply `taskGroupId`, but
+from a group page and never justify a replacement launch. Exact Retry and a
+decision rerun (`rerun_with_feedback`) retain the accepted group; the rerun's
+answer carries `newJobId` and the group receipt. A tagged launch, Exact Retry or
+rerun on a backend without a durable store identity is refused before acceptance
+(`store_identity_unavailable`, retryable). A deliberately new continuation may explicitly supply `taskGroupId`, but
 omission does not inherit it. Thread turns, Delegate tools and ACP session
 settings do not take group input. Groups confer no rights or budget inheritance,
 and there is no app UI handoff contract. See the
 [storage compatibility caveat](ARCHITECTURE.md#sqlite-engine-store) before opening
 an existing store with a new engine.
+
+For routine observation, use attention waits plus the events stream; fetch full detail for inspection, resnapshot or terminal output collection (see [the observation contract](ARCHITECTURE.md#observation-and-bulk-retained-reads)).
 
 **Waiting for several jobs.** `claudexor_runs_wait` observes attention from
 1..1000 existing job/run handles with one `POST /v2/runs/wait-many`. Pass
@@ -1146,11 +1161,19 @@ question has an unseen token. Echo a row's token as that target's `seen` to
 suppress unchanged attention, allowing another job's question or terminal to
 wake the next call. Replacing a question changes its token even at the same
 pending count. Tokens acknowledge only current observation: they are neither
-event cursors, answers, authorization nor output-readiness claims. Read question
+event cursors, answers, authorization nor output-readiness claims. A token never
+matches the secret scan that guards MCP input; if a token saved from an older
+engine is refused there, omit that `seen` once to receive the current token. Read question
 bodies with `claudexor_run_interactions` and output with `claudexor_run_result`.
 
-`waitMs: 0` reads once. Timeout returns the current snapshot without another
-wait; ordinary progress does not wake a call. Healthy attention takes precedence
+`waitMs: 0` reads once. `waitMs` bounds the wait between reads, not a read: a
+read under way at the deadline finishes and its complete facts are the answer,
+so a positive `waitMs` shorter than one read returns that read. An answer after
+the deadline rests on a fresh read of every target. Ordinary progress does not
+wake a call, and neither do pruning, project archive or generation changes: a
+target they hide shows `not_found` in the read at the deadline. A daemon that
+stops during a wait answers `503 daemon_stopping` (retryable); reconnect and
+repeat the wait. Healthy attention takes precedence
 over per-target problems, which remain visible. Results are capped at 128 KiB
 of logical JSON and requests at 1 MiB; MCP text mirrors the structured result.
 CLI `--json-stream` emits one compact line, including on error. Observation flags
@@ -1161,14 +1184,20 @@ or unsupported daemons fail without auto-start, reconnect or fallback to
 individual waits. This tool is absent from the Delegate belt.
 
 A `problems` response still contains the healthy targets. Keep their handles and
-tokens; reconcile each problematic position separately before repeating a long
-wait. An unchanged problematic target can make every call return immediately.
+tokens; reconcile each problematic position separately. A problem row's `token`
+is `null`: echo that `null` as the target's `seen` to acknowledge the problem,
+and the next call waits for the other targets instead of returning at once. The
+acknowledged target wakes a call again once it is observed with a pending
+question or a terminal lifecycle. Clients that predate this contract refuse
+`seen: null` locally, and an older daemon refuses a request that carries it;
+there, omit `seen` for problem rows, and an unchanged problematic target makes
+every call return immediately.
 
 | Per-target problem | Controller action |
 | --- | --- |
 | `not_found` | Check the serving store identity, saved receipts and retained group view. Remove a target from the active watch only when reconciled as obsolete; retain unresolved receipt history. Absence does not authorize resubmission. |
 | `snapshot_unavailable` | Keep the target and retry the read with bounded backoff. A temporary read failure supplies no lifecycle fact. |
-| `not_observed` | Keep the target: this pass did not reach it, for example after cancellation. Read again when observation is wanted. |
+| `not_observed` | Keep the target: no completed read covered it yet. Read again when observation is wanted. |
 
 For example, if `[A, B, old]` returns healthy A/B summaries and `not_found` for
 `old`, continue watching A/B with their own `seen` tokens while reconciling `old`.
@@ -2245,11 +2274,12 @@ repository's `.claudexor/` remains user-owned config. No-project Ask uses a
 synthetic cwd and writes artifacts under `~/.claudexor/v3/runs/`. An explicitly
 bound host data root keeps its own location.
 
-The current SQLite schema is version 5. Its atomic 4→5 upgrade adds only the
-guarded plan-answer expression index for thread history; existing domain rows
-are untouched. Earlier versions follow 1→2 (account service), 2→3 (task-group
-indexes), 3→4 (deferred messages), then 4→5. Reopening version 5 is write-free; older readers refuse an
-upgraded store. See [SQLite engine store](ARCHITECTURE.md#sqlite-engine-store)
+The current SQLite schema is version 6. Its atomic 5→6 upgrade moves task-group
+membership into a lower-case column, backfilled from accepted summaries, and
+rebuilds both group indexes on it; summaries and other domain rows are untouched.
+Earlier versions follow 1→2 (account service), 2→3 (task-group indexes), 3→4
+(deferred messages), 4→5 (the guarded plan-answer index for thread history), then
+5→6. Reopening version 6 is write-free; older readers refuse an upgraded store. See [SQLite engine store](ARCHITECTURE.md#sqlite-engine-store)
 for migration and complete-backup downgrade precautions.
 
 The 4.0 migration requires Node 24.15.0 or newer with supported bundled SQLite.

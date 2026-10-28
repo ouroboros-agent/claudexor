@@ -19,10 +19,13 @@ import {
   type GcKeepCounts,
   type GcRunDeletion,
 } from "@claudexor/schema";
-import { prunePatchObjects } from "@claudexor/util";
+import { prunePatchObjects, redactSecrets } from "@claudexor/util";
 export { readRunTombstone } from "./run-tombstone.js";
 import { treeReclaimableBytes } from "./retention-bytes.js";
 import { ageStampOf, runKeepReason } from "./retention-candidates.js";
+import { survivingAnchorIds, pruneRunAnchors } from "./retention-anchors.js";
+import { pruneEmptyRuntimeDirectories } from "./retention-directories.js";
+import { scanDataRootUnrecognized, type DataRootMode } from "./retention-data-root.js";
 import {
   pendingRetirements,
   prepareRetirement,
@@ -54,9 +57,9 @@ export interface RetentionRunRecord {
   finishedAt?: string;
 }
 
-type DataRootMode = "default" | "override";
-
 export interface RetentionDeps {
+  /** Any skipped namespace makes cross-namespace anchor ownership unknown. */
+  anchorsHeld?: boolean;
   signal?: AbortSignal;
   projects: () => RetentionProject[];
   /** The daemon's journal-projected command records (terminality truth). */
@@ -94,94 +97,6 @@ export interface RetentionDeps {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const TOMBSTONE = "tombstone.yaml";
-/**
- * Exact top-level names the engine (or its documented operator surface) owns
- * in BOTH data-root modes. The default root retains these legacy top-level
- * names from pre-generation layouts; an explicit override is itself the
- * complete active root and owns the same direct names. Everything else is
- * foreign debris. Dotfiles are treated as config/service files and omitted.
- */
-const COMMON_ROOT_OWNED_ENTRIES = new Set([
-  // current engine + documented operator dirs
-  "node",
-  "profiles",
-  "runtime",
-  "cache",
-  "dogfood",
-  "keys",
-  "release-authority",
-  "planning",
-  "remote",
-  // legacy engine generations kept as the archive (owner decision, v3.0.0)
-  "daemon",
-  "projects",
-  "native",
-  "runs",
-  "trust",
-  "telemetry",
-  // config files
-  "config.yaml",
-]);
-/**
- * Mode-specific owned names. The default root owns the archived v2 generation
- * and active v3 generation. An explicit CLAUDEXOR_CONFIG_DIR override is the
- * complete active tree: it owns direct secrets/plugins/quota/workspaces but no
- * generation children. v1-era data was unversioned directly under the default
- * root, so neither mode owns a `v1` child.
- */
-const ROOT_OWNED_ENTRIES_BY_MODE: Record<DataRootMode, ReadonlySet<string>> = {
-  default: new Set([...COMMON_ROOT_OWNED_ENTRIES, "v2", "v3"]),
-  override: new Set([
-    ...COMMON_ROOT_OWNED_ENTRIES,
-    "secrets.json",
-    "plugins",
-    "quota",
-    "workspaces",
-  ]),
-};
-/** Owned names the engine expects as plain FILES; every other owned name is a directory. */
-const ENGINE_OWNED_FILE_ENTRIES = new Set(["config.yaml", "secrets.json"]);
-
-/**
- * Names of top-level data-root entries the engine does not own (the full
- * sorted list — advisory disclosure, never a deletion surface), classified
- * against the owned set for the injected root mode. An entry whose NAME the
- * engine owns but whose on-disk kind is wrong — a symbolic link of any owned
- * name (dirents are read WITHOUT following links), a non-directory where the
- * engine expects a directory, or a non-file where it expects a plain file —
- * is reported as `<name> (unexpected-kind)`. Throws on an unreadable root —
- * the caller degrades that to an errors[] entry and an ABSENT field, never a
- * misleading empty list and never a failed pass.
- */
-async function scanDataRootUnrecognized(dataRoot: string, mode: DataRootMode): Promise<string[]> {
-  const owned = ROOT_OWNED_ENTRIES_BY_MODE[mode];
-  const report: string[] = [];
-  for (const entry of await readdir(dataRoot, { withFileTypes: true })) {
-    const name = entry.name;
-    if (name.startsWith(".")) continue;
-    if (!owned.has(name)) {
-      report.push(name);
-      continue;
-    }
-    const kindOk =
-      !entry.isSymbolicLink() &&
-      (ENGINE_OWNED_FILE_ENTRIES.has(name) ? entry.isFile() : entry.isDirectory());
-    if (!kindOk) report.push(`${name} (unexpected-kind)`);
-  }
-  return report.sort();
-}
-/** Daemon-record states with an operator or scheduler still attached. */
-/**
- * Run states whose tree is COMPLETE and may age out — an explicit allowlist,
- * mirroring ControlRunState's terminal half. A blocklist would fail OPEN: a
- * state added to the enum later (or an unrecognized string from a
- * newer/older daemon's records) would default to deletable, which is exactly
- * the "fail closed on unknown state" contract this service owes. Anything not
- * named here — live, unknown, or future — keeps its tree.
- */
-// Terminal set = the ONE projection-owned lifecycle terminals (D8). A
-// non-terminal (queued/running) or unrecognized state protects its tree.
-
 export async function runRetentionPass(
   policy: RetentionPolicy,
   request: ControlGcRequest,
@@ -208,6 +123,7 @@ export async function runRetentionPass(
   const deletedRuns: GcRunDeletion[] = [];
   const deletedReviews: { path: string; freed_bytes: number }[] = [];
   const errors: string[] = [];
+  const holds: ControlGcReceipt["holds"] = [];
   let examined = 0;
   let freedBytes = 0;
   const plannedUnlinks = new Map<string, number>();
@@ -465,6 +381,62 @@ export async function runRetentionPass(
       }
     }
   }
+  let namedAnchors: Set<string> | undefined;
+  if (!deps.anchorsHeld && !invalidated && !deps.signal?.aborted) {
+    try {
+      namedAnchors = await survivingAnchorIds(
+        projects,
+        new Set(
+          deletedRuns.flatMap((run) =>
+            projects
+              .filter((project) => project.root === run.project_root)
+              .map((project) => join(project.runsDir, run.run_id)),
+          ),
+        ),
+        deps.signal,
+      );
+    } catch (error) {
+      const example = `anchors kept: ${redactSecrets(String(error))}`;
+      holds.push({ class: "anchor_references_unreadable", count: 1, example });
+      errors.push(example);
+    }
+  }
+  for (const project of projects) {
+    try {
+      if (invalidated || deps.signal?.aborted) break;
+      await refreshProof();
+      if (!proofCurrent()) break;
+      if (namedAnchors)
+        freedBytes += await pruneRunAnchors({
+          runtime: dirname(project.runsDir),
+          named: namedAnchors,
+          cutoff: runCutoff,
+          dryRun,
+          planned: plannedUnlinks,
+          current: proofCurrent,
+          signal: deps.signal,
+        });
+      freedBytes += await prunePatchObjects(
+        dirname(project.runsDir),
+        dryRun,
+        plannedUnlinks,
+        deps.signal,
+      );
+      if (!dryRun && proofCurrent())
+        pruneEmptyRuntimeDirectories(
+          dirname(project.runsDir),
+          Date.parse(startedAt),
+          (path, error) =>
+            errors.push(
+              `runtime cleanup ${path}: ${error instanceof Error ? error.message : String(error)}`,
+            ),
+        );
+    } catch (error) {
+      errors.push(`runtime cleanup: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    await yieldToAdmission();
+  }
+
   if (truncated) {
     deps.onTruncated?.();
     errors.push(
@@ -472,24 +444,15 @@ export async function runRetentionPass(
     );
   }
   if (invalidated) {
+    holds.push({
+      class: "references_changed",
+      count: 1,
+      example: "remaining candidates kept; retry with a fresh snapshot",
+    });
     deps.onTruncated?.();
     errors.push(
       "retention references changed during inventory; remaining candidates kept; retry with a fresh snapshot",
     );
-  }
-
-  for (const project of projects) {
-    try {
-      if (invalidated || deps.signal?.aborted) break;
-      freedBytes += await prunePatchObjects(
-        dirname(project.runsDir),
-        dryRun,
-        plannedUnlinks,
-        deps.signal,
-      );
-    } catch (error) {
-      errors.push(`patch objects: ${error instanceof Error ? error.message : String(error)}`);
-    }
   }
 
   // Advisory data-root disclosure (never a deletion surface): a failed scan
@@ -530,6 +493,8 @@ export async function runRetentionPass(
     examined_runs: examined,
     deleted_runs: deletedRuns,
     kept,
+    holds,
+    truncated: truncated || invalidated || deps.signal?.aborted === true,
     deleted_reviews: deletedReviews,
     freed_bytes: freedBytes,
     errors,

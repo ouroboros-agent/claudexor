@@ -9,6 +9,10 @@
           "default": false,
           "description": "Report what WOULD be deleted without touching disk."
         },
+        "retention_report": {
+          "type": "boolean",
+          "description": "Include typed holds, root/home counts and truncation; lockstep clients only."
+        },
         "model_payload_report": {
           "type": "boolean",
           "description": "Include exact model-purpose resource cleanup outcomes. Cleanup itself always runs; opt-in keeps older strict receipt readers compatible."

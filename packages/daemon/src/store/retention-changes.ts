@@ -34,8 +34,10 @@ function observe(store: EngineStore, listener: Listener): () => void {
   if (!listeners) {
     const targets = new Set<Listener>();
     store.db.function("disk_retention_changed", (table, id, operation) => {
+      // Node 24.15 truncates TEXT at NUL; interaction keys must arrive as bytes.
+      const decodedId = Buffer.from(id as Uint8Array).toString("utf8");
       for (const target of targets)
-        target({ table: table as Table, id: String(id), operation: String(operation) });
+        target({ table: table as Table, id: decodedId, operation: String(operation) });
       return null;
     });
     for (const [table, fields] of Object.entries(columns)) {
@@ -52,7 +54,7 @@ function observe(store: EngineStore, listener: Listener): () => void {
           operation === "UPDATE" ? ["OLD", "NEW"] : [operation === "DELETE" ? "OLD" : "NEW"];
         store.exec(`CREATE TEMP TRIGGER disk_retention_${table}_${operation}
           AFTER ${operation} ON main.${table} ${changed} BEGIN
-          ${rows.map((row) => `SELECT disk_retention_changed('${table}',${row}.${key},'${operation}');`).join("\n")}
+          ${rows.map((row) => `SELECT disk_retention_changed('${table}',CAST(${row}.${key} AS BLOB),'${operation}');`).join("\n")}
           END`);
       }
     }

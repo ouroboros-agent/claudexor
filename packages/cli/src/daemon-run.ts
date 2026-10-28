@@ -13,7 +13,7 @@ import {
 } from "@claudexor/daemon";
 import { harnessRuntimeEnv } from "@claudexor/core";
 import { hashJson } from "@claudexor/util";
-import { CliError, controlProblemError } from "./cli-error.js";
+import { CliError, controlProblemError, withAcceptedReceipt } from "./cli-error.js";
 import { daemonOwner, managedDaemonUnavailable } from "./daemon-owner.js";
 import {
   CLI_DAEMON_LAUNCH_SOURCES,
@@ -496,6 +496,9 @@ export async function enqueueAndAwait(
       if (opts.onPollTick) await opts.onPollTick({ runId: rec.runId ?? runId });
       await sleep(250);
     }
+  } catch (error) {
+    // The job stays accepted whatever failed here; keep its receipt.
+    throw jobId ? withAcceptedReceipt(error, { jobId, ...metadata }) : error;
   } finally {
     removeSignalHandlers();
   }

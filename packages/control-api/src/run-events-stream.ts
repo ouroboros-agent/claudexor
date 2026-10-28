@@ -1,17 +1,19 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join } from "node:path";
-import { existsSync } from "node:fs";
-import type { DaemonRunRecord } from "./daemon-server.js";
-import {
-  TERMINAL_STATES,
-  readNewLines,
-  redactedSseLine,
-  streamLineIdentity,
-} from "./sse-shared.js";
+import type { DaemonRunRecord } from "./run-record.js";
+import { TERMINAL_STATES } from "./sse-shared.js";
+import type {
+  EventReplayCursor,
+  EventReplayRequest,
+  EventReplayResult,
+} from "./event-replay-batch.js";
+import { thrownProblemCode } from "./problem-response.js";
+import { requestGone } from "./request-liveness.js";
 
 export interface StreamEventsCtx {
   findRun(id: string): Promise<DaemonRunRecord | null | undefined>;
   json(res: ServerResponse, status: number, value: unknown): void;
+  readBatch(request: EventReplayRequest, signal: AbortSignal): Promise<EventReplayResult>;
   opts: {
     daemon: { status(id: string): Promise<DaemonRunRecord> };
     bus?: { subscribe(fn: (event: { run_id?: string }) => void): () => void } | undefined;
@@ -27,8 +29,8 @@ export interface StreamEventsCtx {
  * GET /runs/:id/events — replay + live tail of the run's events.jsonl as SSE
  * (snapshot-then-subscribe with durable seq cursors, drain-await
  * backpressure, and a single re-entrancy flag across the queued-phase
- * status await). Extracted from DaemonControlApiServer verbatim; the ctx
- * object carries the four server facilities the stream needs.
+ * status await). Live stream ownership stays here; finite file/read/redact
+ * batches run on the server's shared bulk executor.
  */
 export async function streamRunEvents(
   ctx: StreamEventsCtx,
@@ -44,6 +46,33 @@ export async function streamRunEvents(
   // run starts, so `follow <jobId>` works from enqueue time. 404 stays for
   // truly unknown ids only.
   let eventsPath = rec.runDir ? join(rec.runDir, "events.jsonl") : null;
+  let cursor: EventReplayCursor | undefined;
+  let closed = false;
+  let terminalSeen = false;
+  const lifetime = new AbortController();
+  const pendingTerminalFiles = () => ctx.opts.terminalFilesPending?.(rec.runId ?? rec.id) === true;
+  let unsubscribe: (() => void) | undefined;
+  let timer: ReturnType<typeof setInterval> | undefined;
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
+  const cleanup = () => {
+    if (closed) return;
+    closed = true;
+    lifetime.abort();
+    clearInterval(timer);
+    clearInterval(heartbeat);
+    unsubscribe?.();
+    ctx.sseClients.delete(res);
+  };
+  req.on("close", () => {
+    if (requestGone(req, res)) cleanup();
+  });
+  req.on("aborted", cleanup);
+  res.on("close", cleanup);
+  const readBatch = () =>
+    ctx.readBatch({ path: eventsPath!, lastEventId, cursor }, lifetime.signal);
+  // A first-job failure can still return the executor's typed HTTP problem.
+  let nextBatch = eventsPath ? await readBatch() : undefined;
+  if (closed || res.writableEnded || res.destroyed) return cleanup();
   res.writeHead(200, {
     "content-type": "text/event-stream",
     "cache-control": "no-cache, no-transform",
@@ -51,24 +80,9 @@ export async function streamRunEvents(
   });
   res.write(": connected\n\n");
   ctx.sseClients.add(res);
-
-  let lineNo = 0;
-  let offset = 0;
-  let carry = "";
-  let closed = false;
-  let terminalSeen = false;
-  const pendingTerminalFiles = () => ctx.opts.terminalFilesPending?.(rec.runId ?? rec.id) === true;
-  let unsubscribe: (() => void) | undefined;
-  const cleanup = () => {
-    closed = true;
-    clearInterval(timer);
-    clearInterval(heartbeat);
-    unsubscribe?.();
-    ctx.sseClients.delete(res);
-  };
   // Heartbeat: a quiet harness phase (long tool call, slow model) must not be
   // indistinguishable from a dead connection — clients and proxies need bytes.
-  const heartbeat = setInterval(() => {
+  heartbeat = setInterval(() => {
     if (!closed) res.write(`: ping ${Date.now()}\n\n`);
   }, ctx.opts.heartbeatMs ?? 15_000);
   heartbeat.unref?.();
@@ -101,6 +115,7 @@ export async function streamRunEvents(
           // it) or the job goes terminal without one (validation failure — a
           // run that never materialized ends the stream honestly).
           const latest = await ctx.opts.daemon.status(rec.id).catch(() => rec);
+          if (closed || res.writableEnded || res.destroyed) return cleanup();
           if (latest.runDir) {
             eventsPath = join(latest.runDir, "events.jsonl");
           } else if (TERMINAL_STATES.has(latest.state) && !pendingTerminalFiles()) {
@@ -113,26 +128,20 @@ export async function streamRunEvents(
             return;
           }
         }
-        if (!existsSync(eventsPath)) {
+        const batch = nextBatch ?? (await readBatch());
+        nextBatch = undefined;
+        if (closed || res.writableEnded || res.destroyed) return cleanup();
+        if (batch.missing) {
           if (pending) continue;
           return;
         }
-        const { lines, nextOffset, rest } = readNewLines(eventsPath, offset, carry);
-        offset = nextOffset;
-        carry = rest;
-        for (const raw of lines) {
-          lineNo += 1;
-          // Durable cursor: the event's own persisted seq, else its line number,
-          // so resume ids stay consistent either way (shared with event parts).
-          const { seq, type } = streamLineIdentity(raw, lineNo);
-          const terminal =
-            type === "run.completed" || type === "run.failed" || type === "run.blocked";
-          if (terminal) terminalSeen = true;
-          if (seq <= lastEventId) continue;
+        cursor = batch.cursor;
+        terminalSeen ||= batch.terminalSeen;
+        for (const { seq, type, data, terminal } of batch.frames) {
           // Backpressure: a large replay into a slow client must not balloon
           // the socket buffer — pause the tail until the kernel drains it
           // (or the client goes away, which resolves via `close`).
-          if (!res.write(`id: ${seq}\nevent: ${type}\ndata: ${redactedSseLine(raw)}\n\n`)) {
+          if (!res.write(`id: ${seq}\nevent: ${type}\ndata: ${data}\n\n`)) {
             await new Promise<void>((resolve) => {
               const done = (): void => {
                 res.off("drain", done);
@@ -142,7 +151,7 @@ export async function streamRunEvents(
               res.once("drain", done);
               res.once("close", done);
             });
-            if (closed) return;
+            if (closed || res.writableEnded || res.destroyed) return cleanup();
           }
           if (terminal && !pendingTerminalFiles()) {
             res.write("event: end\ndata: {}\n\n");
@@ -153,23 +162,19 @@ export async function streamRunEvents(
         }
         // A productive pass may have surfaced only a PREFIX of the tail: loop to
         // re-read from the advanced cursor before deciding anything.
-        if (lines.length > 0) continue;
-        if (terminalSeen && !pendingTerminalFiles()) {
-          res.write("event: end\ndata: {}\n\n");
-          res.end();
-          cleanup();
-          return;
-        }
+        if (batch.progressed) continue;
         const latest = await ctx.opts.daemon.status(rec.id).catch(() => rec);
-        if (TERMINAL_STATES.has(latest.state) && !pendingTerminalFiles()) {
+        if (closed || res.writableEnded || res.destroyed) return cleanup();
+        if ((terminalSeen || TERMINAL_STATES.has(latest.state)) && !pendingTerminalFiles()) {
           // A materialized run commits SQL terminal state with a file-publication
           // obligation. Its cleared obligation proves the canonical terminal is
           // readable after publication. Re-check the file
           // cursor: only conclude `end` when the file yields nothing new AND a
           // wakeup is not already pending — otherwise loop and deliver the tail,
           // whose canonical terminal ends the stream through the branch above.
-          const tail = readNewLines(eventsPath, offset, carry);
-          if (tail.lines.length > 0 || pending) continue;
+          nextBatch = await readBatch();
+          if (closed || res.writableEnded || res.destroyed) return cleanup();
+          if (nextBatch.progressed || nextBatch.frames.length > 0 || pending) continue;
           res.write("event: end\ndata: {}\n\n");
           res.end();
           cleanup();
@@ -178,6 +183,22 @@ export async function streamRunEvents(
         if (pending) continue;
         return;
       }
+    } catch (error) {
+      if (!closed && !res.writableEnded && !res.destroyed) {
+        res.write(
+          `event: error\ndata: ${JSON.stringify({
+            code: thrownProblemCode(error),
+            message: "Run event stream could not be read.",
+            retryable: true,
+            fieldErrors: [],
+            requiredActions: ["reconnect"],
+            evidenceRefs: [],
+            context: {},
+          })}\n\n`,
+        );
+        res.end();
+      }
+      cleanup();
     } finally {
       draining = false;
     }
@@ -187,9 +208,7 @@ export async function streamRunEvents(
   unsubscribe = ctx.opts.bus?.subscribe((event) => {
     if (!closed && event.run_id === (rec.runId ?? rec.id)) void writeAvailable();
   });
-  const timer = setInterval(() => void writeAvailable(), ctx.opts.pollMs ?? 250);
+  timer = setInterval(() => void writeAvailable(), ctx.opts.pollMs ?? 250);
   timer.unref?.();
-  req.on("close", cleanup);
-  res.on("close", cleanup);
   await writeAvailable();
 }

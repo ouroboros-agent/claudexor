@@ -1,60 +1,40 @@
-import { projectAuthRoute } from "./run-card-facts.js";
 import { handleThreadHistoryRoute, type ThreadHistoryServices } from "./thread-history-routes.js";
+import { liveRunEventSeq } from "@claudexor/event-log";
 import {
-  runRepoRoot,
-  applyGateInputFor,
-  applyEligibilityFor,
+  readPatch,
   validRunOperatorDecision,
+  applyTargetRoot,
+  applyGateError,
+  applyGateInputFor,
+  gateSpecsForRun,
 } from "./run-apply-projection.js";
-import {
-  readFailure,
-  strategyFromParams,
-  legacyRunOutcomeFacts,
-  planProjectionFor,
-} from "./run-card-facts.js";
-import { budgetSnapshot } from "./run-budget-snapshot.js";
+import { BulkExecutor } from "./bulk-executor.js";
 import { requestGone } from "./request-liveness.js";
-import { measureSync } from "@claudexor/util";
+import { setTimeout as sleep } from "node:timers/promises";
 import { trackRequest } from "./request-timing.js";
 import { serveRunDetail } from "./run-detail-route.js";
 import { handleDeferredMessageRoute } from "./deferred-message-routes.js";
 import { handleAccountResourceRoute } from "./account-resource-routes.js";
-import { projectProcessScope } from "./run-detail-scope.js";
 import { CONTROL_STORE_IDENTITY_HEADER, ControlAccountResetRequest } from "@claudexor/schema";
-import { recoverInterruptedOutput } from "./retained-output.js";
 import { recordedExecutionRoot } from "./run-delivery-state.js";
 import * as exactPatch from "./run-exact-patch.js";
-import {
-  readTextArtifact,
-  readRawTextArtifact,
-  safeReadStructuredArtifact,
-} from "./run-artifact-read.js";
+import { readRawTextArtifact, safeReadStructuredArtifact } from "./run-artifact-read.js";
 import { controlRunResult, readDeliveryState, markRunApplyState } from "./run-delivery-state.js";
 import { timingSafeEqual } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { type IncomingMessage, type Server, type ServerResponse, createServer } from "node:http";
-import { basename, extname, join } from "node:path";
+import { join } from "node:path";
 import { revertInPlaceFromAnchor, validateApplyGate, verifyAndDeliver } from "@claudexor/delivery";
-import { lastRunEventSeq } from "@claudexor/event-log";
-import { isVanishedErrno, safeArtifactPath, safeArtifactRoot } from "./artifact-paths.js";
+import { safeArtifactRoot } from "./artifact-paths.js";
 import { TERMINAL_STATES } from "./sse-shared.js";
 import { readFilesWorkProduct } from "./files-work-product.js";
 import { appendRunAuditEvent } from "./run-audit.js";
 import { discardRunResult } from "./run-discard.js";
-import { continuationSummary } from "./run-continuation-projection.js";
 import { applyFilesResult } from "./files-apply-route.js";
 import { deliverableWorkspaceChanges } from "@claudexor/workspace";
 import { streamRunEvents } from "./run-events-stream.js";
-import { boundedArtifactText, outputReadyState, primaryOutput } from "./primary-output.js";
-
 import {
-  controlWebEvidence,
-  latestPlanProgress,
-  readRunEventsWithIntegrity,
-  timelineEvents,
-} from "./run-timeline.js";
-import { projectTurnRunCards } from "./thread-projection.js";
-import {
+  projectTurnRunCards,
   projectSession,
   projectThread,
   projectThreadList,
@@ -75,12 +55,6 @@ import * as runStart from "./run-start.js";
 import { handleRunControlRoute } from "./run-control-routes.js";
 import {
   delegatedDescendantsFromRecords,
-  paramsRecord,
-  type ControlOperatorDecisionRecord,
-  type DaemonFacadeClient,
-  type DaemonRunRecord,
-} from "./run-record.js";
-export {
   type ControlOperatorDecisionRecord,
   type DaemonFacadeClient,
   type DaemonRunRecord,
@@ -101,11 +75,8 @@ import {
 } from "./run-apply-routes.js";
 import { rerunWithFeedback } from "./decision-rerun.js";
 import { acceptRiskDecision, type RiskDecisionBody } from "./decision-accept-risk.js";
-export { normalizeRunStartRequest } from "./run-start.js";
-import { candidatesFor } from "./candidates.js";
 import { handleProjectRoute, type ProjectRouteServices } from "./project-routes.js";
 import { writeBinaryResponse } from "./binary-response.js";
-export { inlineContentDisposition } from "./binary-response.js";
 import { handleRecoveryRoute } from "./recovery-routes.js";
 import { handleJournalEventRoute } from "./journal-event-routes.js";
 import { handleDaemonStatusRoute } from "./daemon-status-routes.js";
@@ -114,12 +85,10 @@ import { handleResourceRoute, type ResourceRouteServices } from "./resource-rout
 import { handleModelRoute, type ModelRouteServices } from "./model-routes.js";
 import {
   handleArtifactServeRoute,
-  listArtifacts,
   resolveProjectRoot,
   type ResolvedThreadWorkspace,
 } from "./artifact-serve-routes.js";
-import { runExecutionRoot, runExecutionWorkspaceRoot } from "./run-execution-root.js";
-import { requiredGateSpecsFromTaskArtifact } from "./task-contract-gates.js";
+import { runExecutionWorkspaceRoot } from "./run-execution-root.js";
 import { bearerCredential } from "./authorization.js";
 import { assertOnlyQueryParams, singleQuery } from "./query.js";
 import {
@@ -128,11 +97,7 @@ import {
   parseRunApplicabilityQuery,
 } from "./catalog-query.js";
 import { lruGet, lruSet, serveRunList } from "./run-list.js";
-import { summaryFingerprint, type RunListFingerprint } from "./run-list-fingerprint.js";
-export {
-  resetRunListFingerprintProbeCountForTests,
-  runListFingerprintProbeCountForTests,
-} from "./run-list-fingerprint.js";
+import { type RunListFingerprint } from "./run-list-fingerprint.js";
 import {
   controlProblemError,
   normalizeRequestValidationError,
@@ -141,18 +106,10 @@ import {
 } from "./problem-response.js";
 import { handleSecurityRoute } from "./security-routes.js";
 import {
-  effectiveTerminalFacts,
-  expectedRunFacts,
-  projectRunFactsForDetail,
-} from "./run-facts-projection.js";
-import {
-  CouncilProjection,
   ControlAuthReadinessRefreshRequest,
   ControlAuthReadinessRefreshResponse,
   ControlProblem,
-  AccessProfile,
   ResourceAttachmentRef,
-  ControlApplyCheckRequest,
   ControlApplyRequest,
   AgentCapabilityCatalog,
   ControlHarnessListResponse,
@@ -167,10 +124,7 @@ import {
   ControlSetupJobListResponse,
   ControlRunStartInfo,
   type ControlRunStartRequest,
-  ControlReviewerPanelEntry,
-  ControlRunDetail,
   ControlRunSummary,
-  PaidBudget,
   ControlSettingsSnapshot,
   ControlSettingsUpdateRequest,
   ControlQuotaRefreshRequest,
@@ -187,7 +141,6 @@ import {
   ControlInteractionAnswerRequest,
   ControlInteractionAnswerResponse,
   type ControlPendingInteraction,
-  type ControlRouteInfo,
   type LiveMessageDelivery,
   type LiveMessageInput,
   ControlRunDecisionRequest,
@@ -198,36 +151,35 @@ import {
   ControlThreadDetail,
   DecisionRecord,
   Id,
-  ModeKind,
-  RoutingGoal,
-  ReviewFinding,
-  RunFailure,
-  RunTelemetry,
-  StructuredOutputConformance,
-  TaskContract,
-  ProtectedPathApproval,
-  type FinalVerifyRecord,
-  type RunOutcomeFacts,
-  type WorkState,
   needsDecision,
   needsOperatorAttention,
-  outcomeBanner,
-  TestCommandInvocation,
-  WorkProduct,
 } from "@claudexor/schema";
 import { resolveControlProtocol, type ControlServingMode } from "./control-protocol.js";
-import { readControlRequestBody } from "./request-body.js";
+import { RefusedBodies, readControlRequestBody } from "./request-body.js";
 import { withControlHttpTimeouts } from "./http-server-options.js";
 import {
   assertNoInlineSecretValues,
   errorCode,
-  noProjectRepoRoot,
   redactSecrets,
   safeProblemContext,
   safeProblemRequiredActions,
   sha256,
 } from "@claudexor/util";
-import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import { stringify as stringifyYaml } from "yaml";
+import { readFailure } from "./run-card-facts.js";
+import { runOutcomeFacts, winnerWorkStateFor } from "./run-projection.js";
+
+export {
+  type ControlOperatorDecisionRecord,
+  type DaemonFacadeClient,
+  type DaemonRunRecord,
+} from "./run-record.js";
+export { normalizeRunStartRequest } from "./run-start.js";
+export { inlineContentDisposition } from "./binary-response.js";
+export {
+  resetRunListFingerprintProbeCountForTests,
+  runListFingerprintProbeCountForTests,
+} from "./run-list-fingerprint.js";
 
 export interface DaemonControlApiOptions {
   token: string;
@@ -243,6 +195,8 @@ export interface DaemonControlApiOptions {
   storeId?: () => string | undefined;
   /** Body-free, positional run observations from the current durable store. */
   runObservations?: RunWaitManyHost["snapshot"];
+  /** Post-commit notices for those observations; without them waits poll. */
+  runObservationChanges?: RunWaitManyHost["subscribe"];
   threadHistoryReads?: ThreadHistoryServices;
   taskGroupRuns?: (input: TaskGroupRunsInput, signal?: AbortSignal) => Promise<TaskGroupRunsResult>;
   bus?: { subscribe(listener: (event: { run_id: string }) => void): () => void };
@@ -390,8 +344,6 @@ export interface DaemonControlApiOptions {
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
 
-const NO_PROJECT_ROOT = noProjectRepoRoot();
-
 interface ValidatedSetupEventBatch {
   events: ControlSetupJobEvent[];
 }
@@ -531,11 +483,15 @@ function originIsLoopback(origin: string | undefined): boolean {
 }
 
 export class DaemonControlApiServer {
+  private readonly bulk = new BulkExecutor();
   private server?: Server;
   private startPromise: Promise<{ host: string; port: number }> | null = null;
   private stopPromise: Promise<void> | null = null;
   private stopping = false;
+  /** Fires first in stop(): long reads end instead of holding the drain. */
+  private readonly stopSignal = new AbortController();
   private readonly sseClients = new Set<ServerResponse>();
+  private readonly refusedBodies = new RefusedBodies();
   /** Exact request-handler promises. Client disconnect never removes a handler. */
   private readonly activeHandlers = new Set<Promise<void>>();
   /** Per-thread turn submission chains (serialize head_run_id lineage updates). */
@@ -576,6 +532,8 @@ export class DaemonControlApiServer {
 
   stop(): Promise<void> {
     this.stopping = true;
+    this.stopSignal.abort();
+    this.bulk.stop();
     this.stopPromise ??= this.stopOnce();
     return this.stopPromise;
   }
@@ -583,8 +541,10 @@ export class DaemonControlApiServer {
   private async stopOnce(): Promise<void> {
     const listenerClosed = this.closeListener();
     this.closeSseClients();
-    await Promise.all([listenerClosed, this.drainActiveHandlers()]);
-    this.closeSseClients();
+    this.refusedBodies.close();
+    await this.drainActiveHandlers();
+    this.closeSseClients(); // Streams that registered while their handlers drained.
+    await listenerClosed;
   }
 
   private closeSseClients(): void {
@@ -659,6 +619,7 @@ export class DaemonControlApiServer {
     contentType = "application/json",
   ): void {
     if (res.destroyed) return;
+    this.refusedBodies.discard(res);
     if (status >= 400 && contentType === "application/json") {
       const error = controlProblemError(status, body);
       return this.problem(res, status, error, error.code, false, error.message);
@@ -679,12 +640,6 @@ export class DaemonControlApiServer {
     fallbackRetryable: boolean,
     fallbackMessage?: string,
   ): void {
-    if (status === 413) {
-      // The bounded reader leaves incomplete uploads paused so this problem
-      // reaches the client. Close after flushing; never drain an unbounded tail.
-      res.shouldKeepAlive = false;
-      res.once("finish", () => res.destroy());
-    }
     this.json(
       res,
       status,
@@ -769,10 +724,11 @@ export class DaemonControlApiServer {
       daemon: this.opts.daemon,
       services: this.opts.services,
       runObservations: this.opts.runObservations,
+      runObservationChanges: this.opts.runObservationChanges,
       taskGroupRuns: this.opts.taskGroupRuns,
       threadHistoryReads: this.opts.threadHistoryReads,
-      bus: this.opts.bus,
       pollMs: this.opts.pollMs,
+      stopping: this.stopSignal.signal,
       readBody: (request: IncomingMessage, maxBytes?: number) => this.readBody(request, maxBytes),
       json: (response: ServerResponse, status: number, body: unknown) =>
         this.json(response, status, body),
@@ -817,6 +773,7 @@ export class DaemonControlApiServer {
           requestError: (response, error, fallback) => this.requestError(response, error, fallback),
           json: (response, status, body) => this.json(response, status, body),
           respondToAcceptedJob: (response, jobId) => this.respondToAcceptedJob(response, jobId),
+          storeId: this.opts.storeId,
           validateResources: this.opts.services?.validateResources,
           preflightRunRequirements: this.opts.services?.preflightRunRequirements,
         },
@@ -902,15 +859,38 @@ export class DaemonControlApiServer {
           findRun: (id) => this.findRun(id),
           deferred: this.opts.daemon.deferredMessageProjection?.bind(this.opts.daemon),
           children: (id) => this.opts.daemon.list({ delegatedFromRunId: id }),
-          summarize: (rec) => this.summarizeRunOrDiagnostic(rec),
-          project: (rec, cursor, children) =>
-            detailFor(
-              rec,
-              this.pendingInteractionsFor(rec),
-              cursor,
-              this.validOperatorDecisionFor(rec),
-              children,
+          cursor: async (rec, signal) => {
+            if (!rec.runDir) return 0;
+            const path = join(rec.runDir, "events.jsonl");
+            // The live owner is authoritative and this lookup does no I/O.
+            // Retained/legacy fallback scanning belongs to the worker.
+            return (
+              liveRunEventSeq(path) ??
+              this.bulk.execute({ kind: "cursor", input: { path } }, signal)
+            );
+          },
+          project: (rec, cursor, children, deferred, signal) =>
+            this.bulk.execute(
+              {
+                kind: "detail",
+                input: {
+                  record: rec,
+                  cursor,
+                  pending: this.pendingInteractionsFor(rec),
+                  operator: this.operatorDecisionFor(rec),
+                  children: children.map((record) => ({
+                    record,
+                    pending: this.pendingInteractionsFor(record).length > 0,
+                  })),
+                  deferred,
+                },
+              },
+              signal,
             ),
+          serialized: (response, body) => {
+            response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+            response.end(body);
+          },
           json: (response, status, body) => this.json(response, status, body),
         },
         decodeURIComponent(runDetailMatch[1] as string),
@@ -1018,11 +998,13 @@ export class DaemonControlApiServer {
         if (requestGone(req, res)) return;
         const byRun = new Map(runs.map((r) => [r.runId ?? r.id, r]));
         const thread = detail.thread as { head_run_id?: string | null };
-        const cards = projectTurnRunCards(
+        const cards = await projectTurnRunCards(
           detail.turns as { run_id?: string | null }[],
           runs,
           (record) => this.summarizeRunOrDiagnostic(record),
+          () => !requestGone(req, res),
         );
+        if (requestGone(req, res)) return;
         const headRec = byRun.get(thread.head_run_id ?? "");
         const headNeedsHuman = headRec ? this.runNeedsAttention(headRec) : false;
         return this.json(
@@ -1106,6 +1088,7 @@ export class DaemonControlApiServer {
           findRun: (id) => this.findRun(id),
           resolveProjectRoot: (id) => resolveProjectRoot(this.opts.services?.listProjects, id),
           resolveThreadWorkspace: (id) => this.resolveThreadWorkspace(id),
+          readArtifact: (input, signal) => this.bulk.execute({ kind: "artifact", input }, signal),
           json: (response, status, body) => this.json(response, status, body),
         },
         method,
@@ -1345,6 +1328,7 @@ export class DaemonControlApiServer {
             serializeThreadMutation: (threadId, work) =>
               chainThreadMutation(this.threadTurnChains, threadId, work),
             waitForRunStart: (id) => this.waitForRunStart(id),
+            storeId: this.opts.storeId,
             appendAudit: (record, payload) =>
               appendRunAuditEvent(record, "control.applied", payload),
             json: (response, status, responseBody) => this.json(response, status, responseBody),
@@ -1970,8 +1954,8 @@ export class DaemonControlApiServer {
       last = rec;
       if (rec.runId && rec.runDir) return rec;
       if (TERMINAL_STATES.has(rec.state)) return rec;
-      if (Date.now() > deadline) return last;
-      await new Promise((r) => setTimeout(r, pollMs));
+      if (Date.now() > deadline || this.stopSignal.signal.aborted) return last; // Answer the receipt.
+      await sleep(pollMs, undefined, { signal: this.stopSignal.signal }).catch(() => {});
     }
   }
 
@@ -2181,29 +2165,17 @@ export class DaemonControlApiServer {
     { fingerprint: RunListFingerprint; summary: ControlRunSummary }
   >();
 
-  /**
-   * GET /runs is the app's main screen and used to re-read every artifact for
-   * every retained job on every poll (O(jobs x file size) sync I/O). Terminal
-   * runs change only when their artifacts change, so summaries are cached on a
-   * state+artifact-mtime fingerprint.
-   */
+  /** The summary LRU is invalidated by the worker's state+artifact fingerprint. */
   private static readonly SUMMARY_CACHE_MAX = 1_000;
 
-  private summarizeRunCached(rec: DaemonRunRecord): ControlRunSummary {
-    const hit = lruGet(this.summaryCache, rec.id);
-    const fingerprint = summaryFingerprint(rec, hit?.fingerprint);
-    if (hit && hit.fingerprint.value === fingerprint.value) return hit.summary;
-    const summary = summarizeRun(rec);
-    // QA-052: LRU-bounded eviction (oldest entry drops) instead of the old
-    // wholesale clear at the guard, so a large retained set never pays a full
-    // cache rehydration wave.
-    lruSet(
-      this.summaryCache,
-      rec.id,
-      { fingerprint, summary },
-      DaemonControlApiServer.SUMMARY_CACHE_MAX,
-    );
-    return summary;
+  private async summarizeRunCached(rec: DaemonRunRecord): Promise<ControlRunSummary> {
+    const snapshot = await this.bulk.execute({
+      kind: "summary",
+      input: { record: rec, cached: lruGet(this.summaryCache, rec.id) },
+    });
+    if ("fingerprint" in snapshot)
+      lruSet(this.summaryCache, rec.id, snapshot, DaemonControlApiServer.SUMMARY_CACHE_MAX);
+    return snapshot.summary;
   }
 
   /** Test-only observability: current summary-cache entry count. Proves QA-052
@@ -2217,8 +2189,8 @@ export class DaemonControlApiServer {
    * interactions are not part of the run artifact fingerprint, so they must
    * never be frozen into the summary cache.
    */
-  private summarizeRunLive(rec: DaemonRunRecord): ControlRunSummary {
-    const summary = this.summarizeRunCached(rec);
+  private async summarizeRunLive(rec: DaemonRunRecord): Promise<ControlRunSummary> {
+    const summary = await this.summarizeRunCached(rec);
     const waiting = this.pendingInteractionsFor(rec).length > 0;
     return summary.waitingOnUser === waiting ? summary : { ...summary, waitingOnUser: waiting };
   }
@@ -2228,29 +2200,10 @@ export class DaemonControlApiServer {
    * one unprojectable job record becomes a diagnostic row, never a 500 for
    * the whole list/thread.
    */
-  private summarizeRunOrDiagnostic(rec: DaemonRunRecord): ControlRunSummary {
-    try {
-      return measureSync("control.run_summary", () => this.summarizeRunLive(rec));
-    } catch (err) {
-      const delegatedFromRunId = Id.safeParse(paramsRecord(rec)["delegatedFromRunId"]);
-      let waitingOnUser = false;
-      try {
-        waitingOnUser = this.pendingInteractionsFor(rec).length > 0;
-      } catch {
-        // The diagnostic row remains fail-soft even when interaction state is
-        // also corrupt; false is the only safe fallback without evidence.
-      }
-      return ControlRunSummary.parse({
-        jobId: rec.id,
-        runId: rec.runId ?? rec.id,
-        ...(delegatedFromRunId.success ? { delegatedFromRunId: delegatedFromRunId.data } : {}),
-        waitingOnUser,
-        state: "failed",
-        error: redactSecrets(
-          `unprojectable job record: ${err instanceof Error ? err.message : String(err)}`,
-        ),
-      });
-    }
+  private summarizeRunOrDiagnostic(rec: DaemonRunRecord): Promise<ControlRunSummary> {
+    // Artifact corruption becomes a diagnostic summary in the worker; a worker
+    // failure remains a typed 503, never a fabricated failed run.
+    return this.summarizeRunLive(rec);
   }
 
   /**
@@ -2292,6 +2245,7 @@ export class DaemonControlApiServer {
         json: (r, code, v) => this.json(r, code, v),
         opts: this.opts as never,
         sseClients: this.sseClients,
+        readBatch: (input, signal) => this.bulk.execute({ kind: "event-replay", input }, signal),
       },
       id,
       lastEventId,
@@ -2307,388 +2261,6 @@ export class DaemonControlApiServer {
       return [];
     }
   }
-}
-
-/* ---- Thread projections (engine snake_case -> control camelCase) ---- */
-
-function projectMetadata(rec: DaemonRunRecord): {
-  kind: "project" | "none";
-  root: string | null;
-  projectName: string | null;
-  context: "off" | "auto";
-} {
-  const p = paramsRecord(rec);
-  const scope = p["scope"];
-  if (scope && typeof scope === "object" && !Array.isArray(scope)) {
-    const s = scope as Record<string, unknown>;
-    if (s["kind"] === "none")
-      return { kind: "none", root: null, projectName: null, context: "off" };
-    if (s["kind"] === "project" && typeof s["root"] === "string") {
-      return {
-        kind: "project",
-        root: s["root"],
-        projectName: basename(s["root"]),
-        context: "auto",
-      };
-    }
-  }
-  const repoRoot = runRepoRoot(rec);
-  const noProject = repoRoot === NO_PROJECT_ROOT;
-  return {
-    kind: noProject ? "none" : "project",
-    root: noProject ? null : repoRoot,
-    projectName: noProject || !repoRoot ? null : basename(repoRoot),
-    context: noProject ? "off" : "auto",
-  };
-}
-
-/** v0.9 strategy flags projected back so surfaces can tell a race from a repair loop. */
-/**
- * Honest terminal outcome, projected from final/work_product.yaml's meta (the
- * orchestrator-owned record of what the turn produced). Answers the v0.9 "is the
- * game done?" gap: plan runs report kind=plan with a null diffStat (no files
- * changed), patches report a real diffStat, and a race-adopted patch reports
- * adopted=true.
- */
-/** Project the D8 terminal outcome AXES for a run: decision.facts when present
- * (the arbitrated truth), else derived from the typed failure category + the
- * lifecycle (a decision-less plan/readonly/crash terminal). Null while the run
- * is not terminal. Lives here as the ONE control-plane projection; surfaces
- * read `outcomeFacts`, never re-derive. */
-function runOutcomeFacts(
-  rec: DaemonRunRecord,
-  decision: DecisionRecord | null,
-  failure: RunFailure | null,
-  /** D-16: the winning read-only/plan attempt's work_state (from telemetry),
-   * folded into a DECISION-LESS terminal so a needs_input/incomplete ask
-   * carries its veto axis just like an arbitrated agent run. */
-  workState: WorkState | null = null,
-): RunOutcomeFacts | null {
-  const legacy = legacyRunOutcomeFacts(rec, decision, failure, workState);
-  if (!legacy) return null;
-  return effectiveTerminalFacts(rec.runDir, legacy, decision, expectedRunFacts(rec)).outcomeFacts;
-}
-
-/** Legacy-only terminal projection retained for active/pre-RunFacts records. */
-/** D-16: the winning attempt's work_state from a run's telemetry.yaml, used to
- * fold the veto axis into a decision-less terminal's outcome facts. */
-function winnerWorkStateFor(rec: DaemonRunRecord): WorkState | null {
-  const telemetry = safeReadStructuredArtifact(rec, "final/telemetry.yaml", RunTelemetry);
-  if (!telemetry) return null;
-  const winner = telemetry.final_attempt_id
-    ? telemetry.attempts.find((a) => a.attempt_id === telemetry.final_attempt_id)
-    : undefined;
-  return winner?.outcome.work_state ?? null;
-}
-
-function summarizeRun(
-  rec: DaemonRunRecord,
-  eventsSnapshot?: Record<string, unknown>[],
-): ControlRunSummary {
-  const p = paramsRecord(rec);
-  const project = projectMetadata(rec);
-  // safeParse everywhere: one malformed job record (e.g. an old/foreign mode id)
-  // must degrade to an unknown field, never 500 the whole run list forever.
-  const parsedMode = ModeKind.safeParse(p["mode"]);
-  const parsedRoutingGoal = RoutingGoal.safeParse(p["routingGoal"]);
-  const parsedAccess = parseAccessMaybe(p["access"]);
-  const task = safeReadStructuredArtifact(rec, "context/task.yaml", TaskContract);
-  const telemetry = safeReadStructuredArtifact(rec, "final/telemetry.yaml", RunTelemetry);
-  const outputConformance = safeReadStructuredArtifact(
-    rec,
-    "final/structured_output.yaml",
-    StructuredOutputConformance,
-  );
-  // Access truth comes from engine artifacts ONLY (contract/telemetry); client
-  // params can request but never assert what was effectively enforced.
-  const requestedAccess =
-    telemetry?.requested_access ?? task?.access.requested_profile ?? parsedAccess;
-  const effectiveAccess = telemetry?.effective_access ?? task?.access.effective_profile;
-  const externalContextPolicy = telemetry?.external_context_policy ?? task?.external_context.policy;
-  const webEvidence = controlWebEvidence(telemetry, task);
-  const decision = safeReadStructuredArtifact(rec, "arbitration/decision.yaml", DecisionRecord);
-  const failure = readFailure(rec);
-  const workState = telemetry?.final_attempt_id
-    ? (telemetry.attempts.find((a) => a.attempt_id === telemetry.final_attempt_id)?.outcome
-        .work_state ?? null)
-    : null;
-  const legacyOutcome = legacyRunOutcomeFacts(rec, decision, failure, workState);
-  const terminalFacts = legacyOutcome
-    ? effectiveTerminalFacts(rec.runDir, legacyOutcome, decision, expectedRunFacts(rec))
-    : { runFacts: null, outcomeFacts: null, decision };
-  const budget = budgetSnapshot(rec, decision, eventsSnapshot);
-  const parsedReviewerPanel = Array.isArray(p["reviewerPanel"])
-    ? ControlReviewerPanelEntry.array().safeParse(p["reviewerPanel"])
-    : null;
-  const parsedProtectedPathApprovals = Array.isArray(p["protectedPathApprovals"])
-    ? ProtectedPathApproval.array().safeParse(p["protectedPathApprovals"])
-    : null;
-  const requestTests = Array.isArray(p["tests"])
-    ? TestCommandInvocation.array().safeParse(p["tests"]).data
-    : undefined;
-  const contractTests = task?.tests.commands.map(({ program, args, cwd, envAllowlist }) => ({
-    program,
-    args,
-    ...(cwd === undefined ? {} : { cwd }),
-    envAllowlist,
-  }));
-  return ControlRunSummary.parse({
-    jobId: rec.id,
-    runId: rec.runId ?? rec.id,
-    parentRunId:
-      (typeof p["parentRunId"] === "string" ? p["parentRunId"] : null) ??
-      task?.run_lineage.parent_run_id ??
-      null,
-    delegatedFromRunId:
-      (typeof p["delegatedFromRunId"] === "string" ? p["delegatedFromRunId"] : null) ??
-      task?.run_lineage.delegated_from_run_id ??
-      null,
-    delegation: telemetry?.delegation ?? null,
-    ...continuationSummary(rec, eventsSnapshot),
-    taskId: rec.taskId,
-    state: rec.state,
-    runDir: rec.runDir,
-    error: rec.error,
-    failure,
-    project,
-    executionRoot: runExecutionRoot(rec, project.root),
-    mode: parsedMode.success ? parsedMode.data : undefined,
-    strategy: strategyFromParams(p),
-    prompt:
-      rec.promptPreview ??
-      (typeof p["prompt"] === "string" ? redactPrompt(p["prompt"]) : undefined),
-    harnesses: Array.isArray(p["harnesses"])
-      ? p["harnesses"].filter((x): x is string => typeof x === "string")
-      : undefined,
-    primaryHarness: typeof p["primaryHarness"] === "string" ? p["primaryHarness"] : undefined,
-    routingGoal: parsedRoutingGoal.success ? parsedRoutingGoal.data : undefined,
-    model: typeof p["model"] === "string" ? p["model"] : undefined,
-    review: task?.review_requested ?? (typeof p["review"] === "boolean" ? p["review"] : undefined),
-    reviewerPanel: parsedReviewerPanel?.success ? parsedReviewerPanel.data : undefined,
-    protectedPathApprovals: parsedProtectedPathApprovals?.success
-      ? parsedProtectedPathApprovals.data
-      : undefined,
-    n: typeof p["n"] === "number" ? p["n"] : undefined,
-    paidBudget: PaidBudget.safeParse(p["paidBudget"]).data ?? task?.budget.paid_budget,
-    spendUsd: budget.spendUsd,
-    spendEstimated: budget.estimated,
-    // Token usage is projected straight from the engine-owned telemetry rollup —
-    // never re-derived from raw events; runs that predate it report null.
-    inputTokens: telemetry?.usage_totals.input_tokens ?? null,
-    outputTokens: telemetry?.usage_totals.output_tokens ?? null,
-    cachedInputTokens: telemetry?.usage_totals.cached_input_tokens ?? null,
-    inputTokenUsage: telemetry?.usage_totals.input_token_usage,
-    // The single engine validator's receipt, projected verbatim — surfaces
-    // never re-validate the answer (null = no structured-output contract).
-    outputConformance: outputConformance?.status ?? null,
-    authRoute: projectAuthRoute(telemetry),
-    access: effectiveAccess ?? parsedAccess,
-    requestedAccess,
-    effectiveAccess,
-    externalContextPolicy,
-    webRequired: telemetry?.web_required ?? task?.external_context.web_required,
-    webMode: telemetry?.effective_web_mode ?? task?.external_context.effective_mode,
-    webEvidence,
-    requestRequirements: telemetry?.request_requirements ?? [],
-    toolPermissionPolicy: task?.tool_permission_policy,
-    outputReadyState: outputReadyState(
-      rec,
-      parsedMode.success ? parsedMode.data : null,
-      failure,
-      terminalFacts.runFacts,
-    ),
-    toolWarningsTotal: telemetry?.tool_warnings_total ?? 0,
-    result: controlRunResult(rec),
-    outcomeFacts: terminalFacts.outcomeFacts,
-    route: controlRoute(telemetry, p),
-    // QA-034: routing rationale projected verbatim from the engine telemetry —
-    // surfaces never reconstruct the order from prose.
-    routingRationale: telemetry?.routing_rationale ?? null,
-    tests: requestTests ?? (contractTests?.length ? contractTests : undefined),
-    createdAt: rec.createdAt,
-    startedAt: rec.startedAt,
-    finishedAt: rec.finishedAt,
-  });
-}
-
-/**
- * Run-level route evidence: observed model comes ONLY from telemetry (the
- * harness stream's own disclosure); the requested model from run params.
- * `verified` is never inferred from the request alone.
- */
-function controlRoute(
-  telemetry: RunTelemetry | null,
-  p: Record<string, unknown>,
-): ControlRouteInfo | null {
-  if (!telemetry) return null;
-  const finalAttempt = telemetry.final_attempt_id
-    ? telemetry.attempts.find((a) => a.attempt_id === telemetry.final_attempt_id)
-    : undefined;
-  const observed =
-    finalAttempt?.observed_model ??
-    telemetry.attempts.find((a) => a.observed_model)?.observed_model ??
-    null;
-  const harnessId =
-    finalAttempt?.harness_id ??
-    telemetry.attempts.find((a) => a.observed_model)?.harness_id ??
-    null;
-  return {
-    // Scalar-only by design until per-candidate route evidence lands:
-    // map-only pool members show requestedModel null here, honestly.
-    requestedModel: typeof p["model"] === "string" ? p["model"] : null,
-    observedModel: observed,
-    harnessId,
-    verified: observed !== null,
-  };
-}
-
-function detailFor(
-  rec: DaemonRunRecord,
-  pendingInteractions: ControlPendingInteraction[] = [],
-  cursor?: number,
-  operator: ControlOperatorDecisionRecord | null = null,
-  children: ControlRunSummary[] = [],
-): ControlRunDetail {
-  // Snapshot fence: capture the event cursor BEFORE building any projection.
-  // The fence promise is "every event with seq <= lastSeq is reflected" — a
-  // cursor read AFTER the projections could skip an event that landed in
-  // between (the projections would not reflect it, and a client resuming from
-  // that cursor would never see it). A pre-projection cursor errs the other
-  // way: an in-between event is both reflected AND replayed, which clients
-  // absorb (event application is reconciled against the newer snapshot).
-  const lastSeq = cursor ?? (rec.runDir ? lastRunEventSeq(join(rec.runDir, "events.jsonl")) : 0);
-  const failure = readFailure(rec);
-  const decision = safeReadStructuredArtifact(rec, "arbitration/decision.yaml", DecisionRecord);
-  const operatorDecisionRaw = operator
-    ? { action: operator.action, decidedAt: operator.decidedAt }
-    : null;
-  // RunDetail perf (D15): parse events.jsonl ONCE per detail request and thread
-  // the snapshot through every event-consuming projection (timeline, budget
-  // fallback, plan progress) — before this each field re-parsed the whole log.
-  const { events, integrity } = rec.runDir
-    ? readRunEventsWithIntegrity(rec)
-    : { events: [] as Record<string, unknown>[], integrity: undefined };
-  const summary = summarizeRun(rec, events);
-  // applyEligibility is non-null exactly when the run has an applyable patch —
-  // the authoritative "something to apply" banner signal (a convergence patch
-  // may carry kind:patch with no meta.result_kind, so result.kind alone would
-  // miss it).
-  const { runFacts, outcomeFacts, applyEligibility, requiredActions } = projectRunFactsForDetail(
-    rec.runDir,
-    summary.outcomeFacts ?? null,
-    operator !== null,
-    () => applyEligibilityFor(rec, operator),
-    expectedRunFacts(rec),
-  );
-  const retentionProblem = !runFacts ? recoverInterruptedOutput(rec) : null;
-  const planProjection = planProjectionFor(rec, summary.mode);
-  const telemetry = safeReadStructuredArtifact(rec, "final/telemetry.yaml", RunTelemetry);
-  return ControlRunDetail.parse({
-    attemptExecution: telemetry?.attempts.map((attempt) => ({
-      attemptId: attempt.attempt_id,
-      harnessId: attempt.harness_id,
-      processing: attempt.processing,
-      processingCostBasis: attempt.processing_cost_basis,
-      usageCost: attempt.usage_cost,
-    })),
-    summary: {
-      ...summary,
-      outcomeFacts,
-      waitingOnUser: pendingInteractions.length > 0,
-      processScope: projectProcessScope(rec, summary.state),
-    },
-    children,
-    runFacts,
-    // Server-owned outcome headline (D18), from the single projection owner —
-    // surfaces render it verbatim above model prose, never re-derive it.
-    outcomeBanner: outcomeBanner(outcomeFacts, {
-      applyState: summary.result.applyState,
-      hasApplyableChange: applyEligibility !== null,
-    }),
-    lastSeq,
-    artifacts: rec.runDir ? listArtifacts(rec.runDir) : [],
-    primaryOutput: retentionProblem
-      ? { kind: "diagnostic", path: "events.jsonl", text: retentionProblem }
-      : primaryOutput(rec, summary.mode, failure, runFacts),
-    timeline: timelineEvents(rec, events, integrity),
-    budget: budgetSnapshot(rec, decision, events, integrity),
-    finalSummary: boundedArtifactText(rec, "final/summary.md"),
-    decision,
-    operatorDecision: operatorDecisionRaw,
-    workProduct: safeReadStructuredArtifact(rec, "final/work_product.yaml", WorkProduct),
-    // Derived apply-gate verdict (single producer: delivery's
-    // deriveApplyEligibility) — null when the run has no patch artifact.
-    planReadiness: planProjection.readiness,
-    planQuestions: planProjection.questions,
-    council: councilFor(rec, summary.mode),
-    applyEligibility,
-    reviewFindings: readReviewFindings(rec),
-    pendingInteractions,
-    // Per-candidate evidence cards: projected from the run's attempt/
-    // review artifacts; empty for single-envelope modes.
-    candidates: rec.runDir ? candidatesFor(rec.runDir, decision) : [],
-    // Live plan checklist: the winner's (else last) plan.progress items.
-    planProgress: latestPlanProgress(rec, decision?.winner ?? null, events, integrity),
-    failure,
-    // Minimal typed required-actions (GH #29) for a succeeded-but-blocked run,
-    // from the single status-projection owner: review-blocked / checks-failed /
-    // needs-decision / work_state needs_input, keyed to the same validated
-    // operator decision the needs-decision + apply gates consult — the
-    // canonical terminal actions plus legitimate post-terminal overlays.
-    requiredActions,
-  });
-}
-
-function parseAccessMaybe(value: unknown): AccessProfile | undefined {
-  if (typeof value !== "string") return undefined;
-  const parsed = AccessProfile.safeParse(value);
-  return parsed.success ? parsed.data : undefined;
-}
-
-/** Typed severity per event type — no string matching over event names. */
-function readPatch(rec: DaemonRunRecord): string | null {
-  return exactPatch.readExactRunPatch(rec, runRepoRoot(rec));
-}
-
-function applyTargetRoot(
-  target: ControlApplyCheckRequest["target"] | ControlApplyRequest["target"],
-  rec: DaemonRunRecord,
-): string | null {
-  if (target.kind === "project") return target.root;
-  return runExecutionRoot(rec, runRepoRoot(rec));
-}
-
-/** Project the run record into the delivery package's single-owner apply gate. */
-function applyGateError(
-  rec: DaemonRunRecord,
-  patch: string,
-  targetRepoRoot: string,
-  operatorDecision: ControlOperatorDecisionRecord | null,
-  finalVerify?: FinalVerifyRecord,
-): string | null {
-  return validateApplyGate({
-    ...applyGateInputFor(rec, patch, targetRepoRoot, operatorDecision),
-    ...(finalVerify ? { finalVerify } : {}),
-  });
-}
-
-/**
- * The GET /runs/:id projection of the apply gate: null when the run has no
- * patch artifact (nothing to apply); otherwise the derived verdict against
- * the run's recorded delivery target.
- */
-
-/** Readiness AND open questions of a plan run, from ONE read of the same
- * final/questions.json artifact (D17) — no plan-text re-parse, no double read. */
-/** Council membership + merge disclosure (INV-031), projected from
- * `council/membership.yaml`. Null for solo plans and non-plan runs — the plan
- * artifacts themselves are shape-identical, so this is purely additive. */
-function councilFor(
-  rec: DaemonRunRecord,
-  mode: string | null | undefined,
-): CouncilProjection | null {
-  if (mode !== "plan" || !rec.runDir) return null;
-  return safeReadStructuredArtifact(rec, "council/membership.yaml", CouncilProjection);
 }
 
 /** Compatibility projection for artifact-only CLI reads; the journal record is authority. */
@@ -2710,56 +2282,4 @@ function writeOperatorDecisionProjection(
     }),
     "utf8",
   );
-}
-
-function gateSpecsForRun(
-  rec: DaemonRunRecord,
-): NonNullable<Parameters<typeof verifyAndDeliver>[3]> {
-  let raw: string | null = null;
-  try {
-    raw = readRawTextArtifact(rec, "context/task.yaml");
-  } catch {
-    // The shared parser maps unreadable authority to the same typed refusal.
-  }
-  return requiredGateSpecsFromTaskArtifact(raw);
-}
-
-function readReviewFindings(rec: DaemonRunRecord): ReviewFinding[] {
-  if (!rec.runDir) return [];
-  let names: string[];
-  try {
-    const reviewsDir = safeArtifactPath(rec.runDir, "reviews");
-    if (!reviewsDir || !lstatSync(reviewsDir).isDirectory()) return [];
-    names = readdirSync(reviewsDir).sort();
-  } catch (err) {
-    // reviews/ vanished between resolve and read (GH #128 race class): no
-    // findings, never a 500. Non-vanish errnos stay loud.
-    if (isVanishedErrno(err)) return [];
-    throw err;
-  }
-  const out: ReviewFinding[] = [];
-  for (const name of names) {
-    const ext = extname(name);
-    if (ext !== ".yaml" && ext !== ".yml" && ext !== ".json") continue;
-    try {
-      const rel = `reviews/${name}`;
-      const raw = readTextArtifact(rec, rel);
-      if (!raw) continue;
-      const doc = ext === ".json" ? JSON.parse(raw) : parseYaml(raw);
-      const findings =
-        doc && typeof doc === "object" && !Array.isArray(doc)
-          ? (doc as Record<string, unknown>)["findings"]
-          : [];
-      if (!Array.isArray(findings)) continue;
-      for (const finding of findings) out.push(ReviewFinding.parse(finding));
-    } catch {
-      /* malformed review artifact: omit from UI projection, artifact remains fetchable for diagnostics */
-    }
-  }
-  return out;
-}
-
-function redactPrompt(prompt: string): string {
-  const redacted = redactSecrets(prompt);
-  return redacted.length > 240 ? `${redacted.slice(0, 240)}...` : redacted;
 }

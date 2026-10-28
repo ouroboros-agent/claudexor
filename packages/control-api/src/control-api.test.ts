@@ -1,20 +1,18 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   DaemonControlApiServer,
   inlineContentDisposition,
   normalizeRunStartRequest,
-  runListFingerprintProbeCountForTests,
-  resetRunListFingerprintProbeCountForTests,
   type DaemonControlApiOptions,
   type DaemonFacadeClient,
   type DaemonRunRecord,
   type ControlOperatorDecisionRecord,
 } from "./daemon-server.js";
+import { BulkExecutor } from "./bulk-executor.js";
 import { lruGet, lruSet } from "./run-list.js";
 import { producedRepoRoot, resolveProducedRoot } from "./artifact-serve-routes.js";
 import { unboundRunStartResponse } from "./run-start.js";
 import { OPERATION_CATALOG } from "./operation-catalog.js";
-import { eventsParseCountForTests, resetEventsParseCountForTests } from "./run-timeline.js";
 import {
   existsSync,
   appendFileSync,
@@ -24,9 +22,12 @@ import {
   rmSync,
   symlinkSync,
   writeFileSync,
+  utimesSync,
+  renameSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { runRetentionPass } from "./retention.js";
 import { connect } from "node:net";
 import { execFileSync } from "node:child_process";
 import { projectRuntimeDir, sha256 } from "@claudexor/util";
@@ -1068,6 +1069,94 @@ describe("DaemonControlApiServer", () => {
     });
   });
 
+  it("delivers the typed 503 to a preconnected client still uploading a large body after stop is marked", async () => {
+    const { daemon } = fakeDaemon();
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const server = new DaemonControlApiServer({ ...readyIdentity, token, daemon });
+      const { host, port } = await server.start();
+      const socket = connect({ host, port });
+      await new Promise<void>((resolve, reject) => {
+        socket.once("connect", resolve);
+        socket.once("error", reject);
+      });
+      let text = "";
+      socket.setEncoding("utf8");
+      socket.on("data", (chunk: string) => {
+        text += chunk;
+      });
+      const answered = new Promise<string>((resolve, reject) => {
+        socket.once("end", () => resolve(text));
+        socket.once("error", reject);
+      });
+      socket.on("error", () => {});
+      await new Promise<void>((resolve, reject) =>
+        socket.write(`POST /v2/runs HTTP/1.1\r\nHost: ${host}:${port}\r\n`, (error) =>
+          error ? reject(error) : resolve(),
+        ),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const stopping = server.stop();
+      const size = 32 * 1024 * 1024;
+      socket.write(
+        `Authorization: Bearer ${token}\r\nX-Claudexor-Protocol-Major: 3\r\nContent-Type: application/json\r\nContent-Length: ${size}\r\n\r\n`,
+      );
+      socket.write(Buffer.alloc(size, 0x20));
+      const raw = await answered;
+      expect(raw).toMatch(/^HTTP\/1\.1 503 /);
+      expect(JSON.parse(raw.slice(raw.indexOf("\r\n\r\n") + 4))).toMatchObject({
+        code: "daemon_stopping",
+        retryable: true,
+      });
+      await stopping;
+      socket.destroy();
+    }
+  });
+
+  // The stream's handler resumes after stop has begun. A queued job needs no replay batch, so
+  // its stream registers during the drain and stays open until stop closes it; a run with a
+  // log would need the stopped bulk executor for its first batch and answers the typed 503.
+  async function streamResumedDuringStop(state: "queued" | "running") {
+    const { daemon, record } = fakeDaemon();
+    record.state = state;
+    if (state === "running") record.runDir = reapMk(join(tmpdir(), "claudexor-quiet-run-"));
+    else delete record.runDir;
+    let entered!: () => void;
+    const looking = new Promise<void>((resolve) => (entered = resolve));
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const delayed: DaemonFacadeClient = {
+      ...daemon,
+      async list(query) {
+        entered();
+        await gate;
+        return daemon.list(query);
+      },
+    };
+    const server = new DaemonControlApiServer({ ...readyIdentity, token, daemon: delayed });
+    const { host, port } = await server.start();
+    const stream = globalThis.fetch(`http://${host}:${port}/v2/runs/${record.runId}/events`, {
+      headers: { authorization: `Bearer ${token}`, "X-Claudexor-Protocol-Major": "3" },
+    });
+    await looking;
+    const stopped = server.stop();
+    release();
+    return { response: await stream, stopped };
+  }
+
+  it("stop closes an event stream that registers while stop drains its handler", async () => {
+    const { response, stopped } = await streamResumedDuringStop("queued");
+    expect(response.status).toBe(200);
+    await response.text(); // Ends only when stop closes the stream.
+    await stopped;
+  });
+
+  it("an event stream whose first replay batch would start after stop answers the typed 503", async () => {
+    const { response, stopped } = await streamResumedDuringStop("running");
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ code: "daemon_stopping", retryable: true });
+    await stopped;
+  });
+
   it("refuses a mutation delivered on a preconnected socket after stop is marked", async () => {
     const { daemon } = fakeDaemon();
     let enqueueCalls = 0;
@@ -1373,30 +1462,38 @@ describe("DaemonControlApiServer", () => {
     });
   });
 
-  it("GET /runs fingerprint work is bounded by page size and terminal short-circuits (QA-052)", async () => {
+  it("GET /runs sends only the selected page to the bulk summary worker (QA-052)", async () => {
     const runDir = reapMk(join(tmpdir(), "claudexor-runs-fp-"));
     const terminal = Array.from({ length: 6 }, (_, i) => pagedRunRecord(i, "succeeded", runDir));
-    await withDaemonServer(pagedDaemon(terminal), async (base) => {
-      // Warm the cache, then measure a fresh page.
-      await fetchRunList(base, { limit: "2" });
-      resetRunListFingerprintProbeCountForTests();
-      const { body } = await fetchRunList(base, { limit: "2" });
-      expect(body.runs).toHaveLength(2);
-      // Only the 2 paged terminal records are fingerprinted, and each terminal
-      // fingerprint short-circuits to delivery_state + the retention tombstone
-      // + continuation sources and the kept-envelope pointer: 8 total, not
-      // 6 records x 13 paths.
-      expect(runListFingerprintProbeCountForTests()).toBe(8);
-    });
+    // Keep the real worker execution; observe the selected records at its boundary.
+    // Exact filesystem-probe costs are asserted directly in run-list-fingerprint.test.ts.
+    const execute = vi.spyOn(BulkExecutor.prototype, "execute");
+    try {
+      await withDaemonServer(pagedDaemon(terminal), async (base) => {
+        await fetchRunList(base, { limit: "2" });
+        execute.mockClear();
+        const { body } = await fetchRunList(base, { limit: "2" });
+        expect(body.runs.map((run) => run.runId)).toEqual(["run-0005", "run-0004"]);
+        expect(execute.mock.calls.map(([job]) => job.kind)).toEqual(["summary", "summary"]);
+        expect(
+          execute.mock.calls.map(([job]) =>
+            job.kind === "summary" ? job.input.record.runId : null,
+          ),
+        ).toEqual(["run-0005", "run-0004"]);
+      });
 
-    const running = [pagedRunRecord(0, "running", runDir)];
-    await withDaemonServer(pagedDaemon(running), async (base) => {
-      resetRunListFingerprintProbeCountForTests();
-      await fetchRunList(base);
-      // An active run keeps all 18 paths (events + final/* land
-      // while live), so it must NOT be short-circuited.
-      expect(runListFingerprintProbeCountForTests()).toBe(18);
-    });
+      const running = [pagedRunRecord(0, "running", runDir)];
+      await withDaemonServer(pagedDaemon(running), async (base) => {
+        execute.mockClear();
+        const { body } = await fetchRunList(base);
+        expect(body.runs.map((run) => [run.runId, run.state])).toEqual([["run-0000", "running"]]);
+        expect(execute.mock.calls.map(([job]) => job.kind)).toEqual(["summary"]);
+        const job = execute.mock.calls[0]![0];
+        expect(job.kind === "summary" && job.input.record.runId).toBe("run-0000");
+      });
+    } finally {
+      execute.mockRestore();
+    }
   });
 
   it("summary cache evicts LRU-bounded, never wholesale-clears (QA-052)", () => {
@@ -6868,6 +6965,107 @@ describe("DaemonControlApiServer", () => {
     }
   });
 
+  it("answers an accepted launch with its 202 receipt when the daemon stops before the run starts", async () => {
+    let statusRead!: () => void;
+    const polled = new Promise<void>((resolve) => (statusRead = resolve));
+    const daemon: DaemonFacadeClient = {
+      async enqueue() {
+        return { id: "job-queued", state: "queued" };
+      },
+      async status() {
+        statusRead();
+        return { id: "job-queued", state: "queued" };
+      },
+      async list() {
+        return [{ id: "job-queued", state: "queued" }];
+      },
+      async cancel() {
+        return { ok: true };
+      },
+    };
+    // Neither the poll interval nor the start deadline may delay the receipt.
+    const server = new DaemonControlApiServer({
+      ...readyIdentity,
+      token,
+      daemon,
+      pollMs: 600_000,
+      runStartTimeoutMs: 600_000,
+    });
+    const { host, port } = await server.start();
+    const started = apiFetch(`http://${host}:${port}/runs`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}` },
+      body: startAgentBody(),
+    });
+    await polled;
+    const stopped = server.stop();
+    const res = await started;
+    expect(res.status).toBe(202);
+    expect(await res.json()).toEqual({ jobId: "job-queued", state: "queued" });
+    await stopped;
+  });
+
+  it("answers an upload refused mid-body while its client is still sending, and stop closes that connection", async () => {
+    const { daemon } = fakeDaemon();
+    let received = 0;
+    const server = new DaemonControlApiServer({
+      ...readyIdentity,
+      token,
+      daemon,
+      services: {
+        writeUpload: async (_uploadId, chunks) => {
+          for await (const chunk of chunks) {
+            received += chunk.length;
+            if (received > 5)
+              throw Object.assign(new Error("upload exceeds its declared size"), {
+                status: 413,
+                code: "upload_size_exceeded",
+                retryable: false,
+              });
+          }
+          return {
+            uploadId: "upl-1",
+            state: "uploading",
+            receivedBytes: received,
+            expectedBytes: 5,
+          };
+        },
+      },
+    });
+    const { host, port } = await server.start();
+    const socket = connect({ host, port });
+    await new Promise<void>((resolve, reject) => {
+      socket.once("connect", resolve);
+      socket.once("error", reject);
+    });
+    socket.on("error", () => {}); // Stop may reset the sender it closes.
+    const closed = new Promise<void>((resolve) => socket.once("close", () => resolve()));
+    let text = "";
+    socket.setEncoding("utf8");
+    const answered = new Promise<string>((resolve) => {
+      socket.on("data", (chunk: string) => {
+        text += chunk;
+        const split = text.indexOf("\r\n\r\n");
+        if (split < 0) return;
+        const length = Number(/content-length: (\d+)/i.exec(text.slice(0, split))?.[1]);
+        if (Buffer.byteLength(text.slice(split + 4)) >= length) resolve(text);
+      });
+    });
+    socket.write(
+      `PUT /v2/uploads/upl-1/bytes HTTP/1.1\r\nHost: ${host}:${port}\r\nAuthorization: Bearer ${token}\r\nX-Claudexor-Protocol-Major: 3\r\nContent-Type: application/octet-stream\r\nContent-Length: ${20 * 1024 * 1024}\r\n\r\n`,
+    );
+    socket.write(Buffer.alloc(64 * 1024, 0x61));
+    // The typed refusal arrives although the advertised body never finishes.
+    const raw = await answered;
+    expect(raw).toMatch(/^HTTP\/1\.1 413 /);
+    expect(JSON.parse(raw.slice(raw.indexOf("\r\n\r\n") + 4))).toMatchObject({
+      code: "upload_size_exceeded",
+    });
+    expect(socket.destroyed).toBe(false);
+    await server.stop();
+    await closed;
+  });
+
   it("thread apply gates every undelivered contribution, so a later success cannot launder a blocked run (INV-113)", async () => {
     const dir = reapMk(join(tmpdir(), "claudexor-thread-gate-"));
     const blockedRunDir = join(dir, "run-blocked");
@@ -7752,7 +7950,32 @@ describe("DaemonControlApiServer", () => {
 
     it("serves the redacted copy, yet Apply and apply/check use the exact private object", async () => {
       await withAppliableProject(async (base, project, record) => {
+        const otherRuntime = reapMk(join(tmpdir(), "claudexor-cross-namespace-"));
+        const otherRuns = join(otherRuntime, "runs");
+        mkdirSync(otherRuns);
+        const movedRun = join(otherRuns, "run-d1");
+        renameSync(record.runDir!, movedRun);
+        record.runDir = movedRun;
         redactedRun(record, project);
+        const runtime = projectRuntimeDir(project);
+        const anchor = join(runtime, "anchors", "objects", `${sha256(exactPatch).slice(7)}.patch`);
+        utimesSync(anchor, new Date("2020-01-01"), new Date("2020-01-01"));
+        // The run is in the fixture's other namespace; only exact_patch_object names this anchor.
+        expect(dirname(record.runDir!)).not.toBe(join(runtime, "runs"));
+        const gc = await runRetentionPass(
+          { runsMaxAgeDays: 30, reviewsMaxAgeDays: 14, keepLastRunsPerProject: 0 },
+          { dry_run: false },
+          {
+            projects: () => [
+              { root: project, runsDir: join(runtime, "runs"), reviewsDir: null },
+              { root: dirname(record.runDir!), runsDir: dirname(record.runDir!), reviewsDir: null },
+            ],
+            records: () => [],
+            referencedRunIds: () => new Set(["run-d1"]),
+          },
+        );
+        expect(gc.holds).toEqual([]);
+        expect(existsSync(anchor)).toBe(true);
 
         const served = await apiFetch(`${base}/runs/run-d1/artifacts/final/patch.diff`, {
           headers: authed(),
@@ -9213,7 +9436,7 @@ describe("DaemonControlApiServer", () => {
     });
   });
 
-  it("parses a large events.jsonl EXACTLY ONCE per detail request (D15 perf)", async () => {
+  it("serves the complete detail DTO with a bounded timeline over large retained history", async () => {
     const { daemon, record } = fakeDaemon();
     // 10k synthetic events: before the single-snapshot fix, timeline + the
     // budget fallback + plan progress each re-read and re-parsed the whole log.
@@ -9232,15 +9455,24 @@ describe("DaemonControlApiServer", () => {
     lines.push("");
     appendFileSync(join(record.runDir as string, "events.jsonl"), lines.join("\n"));
     await withDaemonServer(daemon, async (base) => {
-      resetEventsParseCountForTests();
       const detail = await apiFetch(`${base}/runs/run-d1`, {
         headers: { authorization: `Bearer ${token}` },
       });
       expect(detail.status).toBe(200);
-      // One detail GET, one full parse of events.jsonl — no matter how many
-      // fields consume events. lastSeqInFile does a cheap byte-tail read, not a
-      // full parse, so it never counts.
-      expect(eventsParseCountForTests()).toBe(1);
+      // Projection now lives in the worker; a main-thread module counter cannot
+      // observe it. run-projection-context.test.ts pins the single parse directly.
+      const body = (await detail.json()) as {
+        summary: { runId: string };
+        timeline: { type: string; title: string }[];
+        lastSeq: number;
+      };
+      expect(body.summary.runId).toBe("run-d1");
+      expect(body.lastSeq).toBeGreaterThanOrEqual(10_000);
+      expect(body.timeline).toHaveLength(501);
+      expect(body.timeline[0]!.type).toBe("timeline.truncated");
+      expect(body.timeline.slice(1).map((row) => row.title)).toEqual(
+        Array.from({ length: 500 }, (_, i) => `event ${9500 + i}`),
+      );
     });
   });
 
@@ -10054,6 +10286,100 @@ describe("DaemonControlApiServer", () => {
       undefined,
       services,
     );
+  });
+
+  it("rerun_with_feedback keeps the source's task group and answers its receipt", async () => {
+    const { daemon, record } = fakeDaemon();
+    const group = "11111111-1111-4111-8111-111111111111";
+    const store = "22222222-2222-4222-8222-222222222222";
+    record.state = "succeeded";
+    record.params = { ...(record.params as Record<string, unknown>), taskGroupId: group };
+    writeFileSync(
+      join(record.runDir as string, "arbitration", "decision.yaml"),
+      "winner: a01\nfacts:\n  lifecycle: succeeded\n  review: blocked\n  checks: not_configured\n  noChanges: false\n  reason: review_blocked\nfinal_verify:\n  attempted: true\n  applied_cleanly: true\n  gates_passed: true\n",
+    );
+    let enqueued: Record<string, unknown> | undefined;
+    let refusedBeforeRun = false;
+    const tagged: DaemonFacadeClient = {
+      ...daemon,
+      async enqueue(params: unknown) {
+        enqueued = params as Record<string, unknown>;
+        return { id: "job-rerun", state: "queued" };
+      },
+      async status(id: string) {
+        if (id === record.id) return record;
+        return refusedBeforeRun
+          ? {
+              id: "job-rerun",
+              state: "failed",
+              error: "Git is unavailable on this execution location",
+              errorCode: "git_unavailable",
+              errorStatus: 409,
+              params: enqueued,
+            }
+          : {
+              id: "job-rerun",
+              state: "running",
+              runId: "run-rerun",
+              runDir: record.runDir,
+              params: enqueued,
+            };
+      },
+    };
+    for (const [storeId, refused] of [
+      [undefined, false],
+      [() => store, false],
+      [() => store, true],
+    ] as const) {
+      enqueued = undefined;
+      refusedBeforeRun = refused;
+      const server = new DaemonControlApiServer({
+        ...readyIdentity,
+        token,
+        daemon: tagged,
+        pollMs: 5,
+        ...(storeId ? { storeId } : {}),
+      });
+      const { host, port } = await server.start();
+      try {
+        const res = await apiFetch(`http://${host}:${port}/runs/run-d1/decision`, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${token}`,
+            "Idempotency-Key": `decision-rerun-group-${storeId ? "store" : "none"}-${refused}`,
+          },
+          body: JSON.stringify({ action: "rerun_with_feedback", feedback: "Keep the group." }),
+        });
+        const body = (await res.json()) as Record<string, unknown>;
+        if (!storeId) {
+          // Without the store identity the inherited group is refused before acceptance.
+          expect(res.status).toBe(503);
+          expect(body).toMatchObject({ code: "store_identity_unavailable", retryable: true });
+          expect(enqueued).toBeUndefined();
+          continue;
+        }
+        if (refused) {
+          // A refusal before the run binds still names the accepted job and its group.
+          expect(res.status).toBe(409);
+          expect(body).toMatchObject({
+            code: "git_unavailable",
+            context: { jobId: "job-rerun", taskGroupId: group, storeId: store },
+          });
+          continue;
+        }
+        expect(res.status).toBe(200);
+        expect(body).toMatchObject({
+          status: "requeued",
+          newRunId: "run-rerun",
+          newJobId: "job-rerun",
+          taskGroupId: group,
+          storeId: store,
+        });
+        expect(enqueued?.["taskGroupId"]).toBe(group);
+      } finally {
+        await server.stop();
+      }
+    }
   });
 
   it("POST /runs replays a durable command before mutable preflight changes", async () => {

@@ -1,6 +1,21 @@
 import { ControlQueuedRunInfo, TaskGroupReceipt } from "@claudexor/schema";
 import type { DaemonRunRecord } from "./run-record.js";
 
+/** A tagged launch is admitted only while the durable store identity it will
+ * name exists, so a missing identity refuses before anything is accepted. */
+export function requireTaskGroupStoreIdentity(
+  params: { taskGroupId?: unknown },
+  storeId?: () => string | undefined,
+): void {
+  if (params.taskGroupId === undefined) return;
+  if (TaskGroupReceipt.shape.storeId.safeParse(storeId?.()).success) return;
+  throw Object.assign(new Error("a task group launch needs the durable store identity"), {
+    code: "store_identity_unavailable",
+    status: 503,
+    retryable: true,
+  });
+}
+
 /** Membership comes only from the accepted request; embedders without store identity cannot mint it. */
 export function acceptedTaskGroupReceipt(
   rec: DaemonRunRecord,

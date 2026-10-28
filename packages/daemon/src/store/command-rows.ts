@@ -4,7 +4,7 @@ import { isNeedsDecision } from "../command-retention.js";
 import { validateCommandRecord } from "../command-store.js";
 import type { JobRecord } from "../job-record.js";
 import { BlobFiles, type BodyRef } from "./blob-files.js";
-import { requireTransaction, type SqlWriteContext } from "./mutation.js";
+import { mutationOf, requireTransaction, type SqlWriteContext } from "./mutation.js";
 import { commandKind, type CommandKind } from "./retention.js";
 
 export type CommandRow = {
@@ -35,6 +35,7 @@ export type CommandRow = {
   response_expires_at: string | null;
   request_resource_id: string | null;
   response_resource_id: string | null;
+  task_group_id: string | null;
 };
 
 export interface PreparedCommandRow {
@@ -159,6 +160,8 @@ export function prepareCommandRow(
       response_expires_at: text(response.expiresAt),
       request_resource_id: kind === "model" ? text(object(params.request).resourceId) : null,
       response_resource_id: text(object(response.ref).resourceId),
+      // Canonical membership; updates never write it, like the params digest.
+      task_group_id: kind === "product" ? (text(params.taskGroupId)?.toLowerCase() ?? null) : null,
     },
   };
 }
@@ -187,7 +190,10 @@ export function applyCommandInTx(
       .run(...columns.map((key) => row[key]));
   } else {
     const mutable = columns.filter(
-      (key) => !["id", "pid", "params_sha", "kind", "operation", "client_id"].includes(key),
+      (key) =>
+        !["id", "pid", "params_sha", "kind", "operation", "client_id", "task_group_id"].includes(
+          key,
+        ),
     );
     const result = sql
       .prepare(
@@ -196,6 +202,7 @@ export function applyCommandInTx(
       .run(...mutable.map((key) => row[key]), row.id, row.pid);
     if (Number(result.changes) !== 1) throw new Error(`no such job: ${row.id}`);
   }
+  mutationOf(sql)?.observationChanged(row.id, row.run_id);
 }
 
 export function commandRow(

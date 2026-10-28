@@ -14,6 +14,7 @@ export async function retentionProjects(
   healthyRoots: ReadonlySet<string>,
   errors: string[] = [],
   signal?: AbortSignal,
+  heldRoots = new Set<string>(),
 ): Promise<RetentionProject[]> {
   const projects: RetentionProject[] = [];
   const byHash = new Map<string, string>();
@@ -49,21 +50,27 @@ export async function retentionProjects(
     for (const entry of (await readdir(directory, { withFileTypes: true })).sort((a, b) =>
       a.name.localeCompare(b.name),
     )) {
-      if (
-        !/^[0-9a-f]{64}$/.test(entry.name) ||
-        !entry.isDirectory() ||
-        protectedHashes.has(entry.name)
-      )
-        continue;
-      signal?.throwIfAborted();
+      if (!/^[0-9a-f]{64}$/.test(entry.name)) continue;
       const runtime = join(directory, entry.name);
+      const heldRoot = byHash.get(entry.name) ?? runtime;
+      if (!entry.isDirectory() || protectedHashes.has(entry.name)) {
+        heldRoots.add(heldRoot);
+        if (!entry.isDirectory()) errors.push(`namespace ${heldRoot} kept: not a plain directory`);
+        continue;
+      }
+      signal?.throwIfAborted();
       if (references.blocked) {
+        heldRoots.add(heldRoot);
         errors.push(`namespace ${byHash.get(entry.name) ?? runtime} kept: ${references.blocked}`);
         continue;
       }
       const runsDir = join(runtime, "runs");
       const runsStat = await optionalStat(runsDir);
-      if (runsStat && !runsStat.isDirectory()) continue;
+      if (runsStat && !runsStat.isDirectory()) {
+        heldRoots.add(heldRoot);
+        errors.push(`namespace ${heldRoot} kept: runs is not a plain directory`);
+        continue;
+      }
       const root = byHash.get(entry.name);
       projects.push({
         // Without a retained root, disclose the engine namespace rather than guessing a user path.
@@ -86,10 +93,16 @@ export async function retentionProjects(
       continue;
     const runtime = projectRuntimeDir(root);
     const runtimeStat = await optionalStat(runtime);
-    if (runtimeStat && !runtimeStat.isDirectory()) continue;
+    if (runtimeStat && !runtimeStat.isDirectory()) {
+      heldRoots.add(root);
+      continue;
+    }
     const runsDir = new ArtifactStore(root).runsDir();
     const runsStat = await optionalStat(runsDir);
-    if (runsStat && !runsStat.isDirectory()) continue;
+    if (runsStat && !runsStat.isDirectory()) {
+      heldRoots.add(root);
+      continue;
+    }
     projects.push({
       root,
       runsDir,
@@ -100,10 +113,15 @@ export async function retentionProjects(
   const noProjectRuns = new ArtifactStore(noProjectRoot).runsDir();
   const noProjectRuntime = projectRuntimeDir(noProjectRoot);
   const noProjectRuntimeStat = await optionalStat(noProjectRuntime);
-  if (noProjectRuntimeStat && !noProjectRuntimeStat.isDirectory()) return projects;
+  if (noProjectRuntimeStat && !noProjectRuntimeStat.isDirectory()) {
+    heldRoots.add(noProjectRoot);
+    return projects;
+  }
   const noProjectRunsStat = await optionalStat(noProjectRuns);
+  if (noProjectRunsStat && !noProjectRunsStat.isDirectory()) heldRoots.add(noProjectRoot);
   if (
     !references.blocked &&
+    !references.protectedProjectRoots.has(noProjectRoot) &&
     (!noProjectRunsStat || noProjectRunsStat.isDirectory()) &&
     !projects.some((project) => project.runsDir === noProjectRuns)
   )

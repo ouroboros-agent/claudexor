@@ -1,5 +1,19 @@
-import { type ApplyGateInput, deriveApplyEligibility } from "@claudexor/delivery";
-import { DecisionRecord, WorkProduct, type ApplyEligibility } from "@claudexor/schema";
+import { projectionRead } from "./projection-context.js";
+import { requiredGateSpecsFromTaskArtifact } from "./task-contract-gates.js";
+import {
+  type ApplyGateInput,
+  deriveApplyEligibility,
+  validateApplyGate,
+  verifyAndDeliver,
+} from "@claudexor/delivery";
+import {
+  DecisionRecord,
+  WorkProduct,
+  type ApplyEligibility,
+  type ControlApplyCheckRequest,
+  type ControlApplyRequest,
+  type FinalVerifyRecord,
+} from "@claudexor/schema";
 import { noProjectRepoRoot } from "@claudexor/util";
 import {
   paramsRecord,
@@ -29,6 +43,12 @@ export function validRunOperatorDecision(
     : null;
 }
 export function runRepoRoot(rec: DaemonRunRecord, maxBytes?: number): string | null {
+  return projectionRead(rec.runDir ?? rec.id, `repo-root:${maxBytes ?? "all"}`, () =>
+    runRepoRootUncached(rec, maxBytes),
+  );
+}
+
+function runRepoRootUncached(rec: DaemonRunRecord, maxBytes?: number): string | null {
   const p = paramsRecord(rec);
   const scope = p["scope"];
   if (scope && typeof scope === "object" && !Array.isArray(scope)) {
@@ -122,4 +142,42 @@ export function applyEligibilityFor(
     ...applyGateInputFor(rec, patch ?? "", root, operatorDecision, maxBytes),
     exactPatchUnavailable: unavailable,
   });
+}
+
+export function readPatch(rec: DaemonRunRecord): string | null {
+  return exactPatch.readExactRunPatch(rec, runRepoRoot(rec));
+}
+
+export function applyTargetRoot(
+  target: ControlApplyCheckRequest["target"] | ControlApplyRequest["target"],
+  rec: DaemonRunRecord,
+): string | null {
+  if (target.kind === "project") return target.root;
+  return runExecutionRoot(rec, runRepoRoot(rec));
+}
+
+/** Project the run record into the delivery package's single-owner apply gate. */
+export function applyGateError(
+  rec: DaemonRunRecord,
+  patch: string,
+  targetRepoRoot: string,
+  operatorDecision: ControlOperatorDecisionRecord | null,
+  finalVerify?: FinalVerifyRecord,
+): string | null {
+  return validateApplyGate({
+    ...applyGateInputFor(rec, patch, targetRepoRoot, operatorDecision),
+    ...(finalVerify ? { finalVerify } : {}),
+  });
+}
+
+export function gateSpecsForRun(
+  rec: DaemonRunRecord,
+): NonNullable<Parameters<typeof verifyAndDeliver>[3]> {
+  let raw: string | null = null;
+  try {
+    raw = readRawTextArtifact(rec, "context/task.yaml");
+  } catch {
+    // The shared parser maps unreadable authority to the same typed refusal.
+  }
+  return requiredGateSpecsFromTaskArtifact(raw);
 }

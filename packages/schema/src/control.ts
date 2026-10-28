@@ -48,7 +48,7 @@ import { RunContinuityReceipt, RunResumable } from "./run-continuity.js";
 import { ContinueCarrierPreference, ControlRetainedEnvelope } from "./run-continuation.js";
 import { ProcessingPreference } from "./processing.js";
 import { PromptCacheTtl } from "./prompt-cache.js";
-import { TaskGroupId } from "./task-group.js";
+import { TaskGroupId, TaskGroupReceipt } from "./task-group.js";
 export { RunExecution } from "./control-run-execution.js";
 export { ControlTimelineEvent } from "./control-timeline.js";
 export const ControlReviewerPanelEntry = z
@@ -528,7 +528,7 @@ export const RunDeliveryState = z
       .string()
       .nullable()
       .default(null)
-      .describe("GC-independent revert anchor recorded at apply time; null when none."),
+      .describe("Run-owned revert anchor recorded at apply time; null when none."),
     postTurnSha: z
       .string()
       .nullable()
@@ -585,7 +585,7 @@ export const ControlRunResult = z
       .describe(
         "Tree SHA right after this turn's mutation; revert refuses if the working tree has diverged from this since.",
       ),
-    revertAnchorId: z.string().nullable().default(null).describe("GC-independent revert anchor."),
+    revertAnchorId: z.string().nullable().default(null).describe("Run-owned revert anchor."),
     /** Revert metadata is available (the turn mutated the live tree in place and
      * an external patch anchor was recorded), so a Revert affordance may be offered.
      * This is NOT a live-safe guarantee: the server re-checks tree divergence at
@@ -1068,6 +1068,10 @@ export const ControlRunDecisionResponse = z
     newRunId: Id.optional().describe(
       "New run id when the decision re-enqueues a turn (rerun_with_feedback).",
     ),
+    newJobId: Id.optional().describe(
+      "Accepted job handle of the re-enqueued work, present even before its run binds.",
+    ),
+    ...TaskGroupReceipt.partial().shape,
     message: z.string().optional().describe("Human-readable detail."),
   })
   .describe("Response to an operator run decision.");

@@ -1754,8 +1754,8 @@ persistence classifier.
 Deliberate limits. A real secret an agent wrote stays in the tree or is applied
 exactly: the agent already had a shell there, and the disclosure names the
 files. The exact object and the post-turn snapshot hold the same bytes as the
-tree; the object store has no garbage collection, so the object of an isolated
-candidate that later loses its race stays there unreferenced. Applying `final/patch.diff` outside Claudexor applies `[redacted]`; the
+tree; their lifetime follows [disk retention](#7-control-api), including unnamed
+objects from isolated candidates that later lose their race. Applying `final/patch.diff` outside Claudexor applies `[redacted]`; the
 notice says so. Directory results still fail closed on their content scan
 (their manifest has no per-file `withheld` form). A token split across two
 events is redacted per event, vendor session transcripts are outside this
@@ -2637,7 +2637,9 @@ by HTTP method and operation-catalog template, both `lifetime` (since process
 start) and `window` (the last completed loop window). SSE latency includes the
 stream's whole lifetime. Unknown URLs/methods share `OTHER <unmatched>`; raw
 URLs, query values and identifiers are never retained. At most 256 route keys
-have two fixed-capacity microsecond histograms, with two significant digits;
+retain aggregate lifetime/window histograms and the same breakdown for each
+observed outcome (served, not_found, disconnected_at_entry, disconnected or failed).
+The fixed-capacity microsecond histograms have two significant digits;
 maxima are measured directly and rounded to a microsecond. Before the first
 window, window metadata and per-route windows are null; an empty completed
 window has count zero and null latencies. The status request itself is counted
@@ -2645,8 +2647,10 @@ when its response finishes, so it appears in a subsequent read.
 The `worstSync` array in `timing` retains only the 32 longest instrumented synchronous sections
 since start (descending, later samples win ties), with operation, duration and
 timestamp. Labels cover `store.begin_immediate`, `store.commit`, `store.external_write`,
-`control.run_detail`, `control.run_summary`, and `scope.persist`; scope persistence
-measures synchronous serialization, not its asynchronous file writes. These
+`scope.persist`; `control.run_detail` and `control.run_summary` remain accepted
+so clients can parse status from engines that report those synchronous spans.
+Detail and summary report worker queue/projection wall time in `bulk`.
+Scope persistence measures synchronous serialization, not its asynchronous file writes. These
 samples may overlap and do not identify the cause of a delay. `store.commit`
 also exposes lifetime `p50_ms`/`p99_ms` using the same histogram precision.
 Older engines omit the new optional fields. The catalog still points to the
@@ -2657,8 +2661,10 @@ No memory, loop, timing or store measurements impose automatic admission thresho
 
 Retained task-group reads are composed by `sqlControlReadSources` and
 `readTaskGroupRuns`. The `taskGroupPage` method of `SqlCommandQueries` selects group membership
-before projection, using the summary expression indexes and descending
-`(created_at, id)` keysets. It selects at most `limit + 1` scalar rows from the
+before projection, through the canonical `command.task_group_id` column, its two
+partial indexes and descending `(created_at, id)` keysets. Membership ignores the
+letter case of the group UUID; answers echo the caller's spelling. It selects at
+most `limit + 1` scalar rows from the
 existing served-generation authority, without prompt, result, question-body or
 artifact hydration, a full-history traversal, or a count. Selected jobs reuse
 the body-free `readRunObservations` snapshots used by wait-many. A member's run
@@ -2668,8 +2674,24 @@ The served view hashes the set of partition name/epoch identities. A cursor
 binds that view, group, lifecycle filter, durable store and last returned key.
 An actual visibility change invalidates it; relinking the same project identity
 does not. Byte pagination advances only past returned members and refuses an
-unreturnable first member. CLI/MCP/HTTP are thin one-page projections of this
-owner. The bounded wire contract and reconnect example live in
+unreturnable first member; the page adds each member's JSON once and reserves
+the largest cursor. CLI/MCP/HTTP are thin one-page projections of this
+owner.
+
+Wait-many (`observeRunAttention`) publishes one completed pass at a time: a
+pass's facts and its attention indexes are computed together, `waitMs` bounds
+only the wait between passes, and the deadline asks for one last full pass
+instead of interrupting a read. Between the first and the last pass it re-reads
+only the handles named by the engine store's post-commit notices
+(`ObservationNotices`): command and interaction commits name their job
+and run ids after COMMIT, never for a rollback. A host without that feed is
+polled. Pruning, archive and generation changes publish no notice; the
+deadline's full pass reports a target they hide. A stopping daemon aborts the
+read and answers `503 daemon_stopping`.
+Observation tokens are SHA-256 digests of the observed facts; a digest the
+shared secret scan would flag is re-derived from the same facts with an attempt
+counter, so echoed tokens pass MCP input checks and other tokens keep their
+bytes. The bounded wire contract and reconnect example live in
 [Integrations](INTEGRATIONS.md#observing-and-directing-an-existing-run).
 The `current_served_generations`/`retained_only` qualifiers describe current
 visibility, not a permanent roster. Reads add no execution or approval authority.
@@ -2693,6 +2715,7 @@ visibility, not a permanent roster. Reads add no execution or approval authority
 - `GET /v2/harnesses`
 - `POST /v2/harnesses/:id/auth-readiness`
 - `GET /v2/harnesses/:id/models`
+- `GET /v2/maintenance/gc`
 - `POST /v2/maintenance/gc`
 - `GET /v2/maintenance/harnesses`
 - `POST /v2/maintenance/operations`
@@ -3076,8 +3099,8 @@ not retry automatically.
   inserts/prunes with no duplicates or omissions. Ordering, `state` filtering,
   and page slicing all happen on raw records BEFORE any summary is materialized,
   so per-run artifact fingerprint/projection work is bounded by page size rather
-  than total retained records. Each summary yields with `setImmediate` before
-  the next. The LRU remembers file identities for delivery, tombstone, continuation
+  than total retained records. Each cold summary and its artifact fingerprint run in the bulk executor;
+  the page awaits one summary before submitting the next. The LRU remembers file identities for delivery, tombstone, continuation
   sources, every local/ancestor retained-envelope pointer and its addressed custody
   file, plus ancestor roots/tombstones (GC can reclaim an ancestor without a
   pointer). Unchanged polls only stat that set; any dependency change rebuilds it.
@@ -3459,6 +3482,54 @@ implementation. Questions about future implementation may remain in a complete
 plan; `required_inputs` records information genuinely needed to produce the
 current assigned result. The engine never clears that list to force completion.
 
+### Observation and bulk retained reads
+
+Routine observers use `POST /v2/runs/wait-many` for lifecycle and attention,
+plus the per-run event stream for progress. Fetch pending interaction rows before
+acknowledging their observation token. A terminal lifecycle still carries the
+obligation to collect complete output. Full run detail is an addressed read for
+inspection, resnapshot or terminal collection; it is not a polling heartbeat.
+
+Each `DaemonControlApiServer` owns one lazily created bulk worker. Health,
+handshake and status alone create no thread. Detail projection, child and cold
+summary hydration, detail's exact-patch digests, artifact walks/read-redact operations,
+and finite SSE seek/replay batches execute there. Only plain request records and
+results cross the port; daemon services, the registry and database remain with
+their owners. One projection context shares event parsing, structured reads,
+budget and primary-output work across parent/children/operator validation. The
+context ends with the job. Timeline projection selects the last eligible rows
+before redaction and schema validation, with exact omitted/integrity markers;
+cash, valuation, plan and other folds still inspect the complete captured log.
+The final detail schema validation stays in the worker.
+Bounded thread-history receipts keep their explicit artifact and event byte
+allowances, partial event-count coverage and typed oversized-artifact refusals.
+The shared readers distinguish those limits and preview options in their
+request-local memo keys; a bounded receipt cannot replace a complete detail fold.
+Thread inbox/head attention uses synchronous main-thread artifact reads for
+succeeded heads, with an exact-patch digest only when an operator decision exists.
+Detail and summaries fold the complete retained log in the worker; a log the
+worker cannot hold fails that run's detail/summary and jobs queued with it with
+the typed retryable `503 bulk_worker_failed`, while the control plane stays available.
+
+The executor processes one finite job at a time. Live SSE waits and HTTP
+backpressure stay outside it; Node's HTTP response ordering preserves pipelined
+keep-alive order. Detail, artifact and SSE disconnects remove queued work and
+discard an active job's result; run lists and thread turn cards stop between summaries.
+Stop rejects queued and active reads immediately and requests worker
+termination without waiting for projection. A worker crash is a typed retryable
+`503 bulk_worker_failed`; the next requested read lazily creates its replacement.
+Interrupted-output recovery has one main-thread publication owner: the worker
+prepares bytes, and the owner atomically publishes them before detail projection
+continues. The worker writes no files. Cancellation cannot expose a partial
+retained-output artifact.
+
+Route timing retains aggregate latency plus served/not-found/disconnect/failure
+breakdowns. Bulk timing separates queue residence from worker execution wall
+time, including scheduling and any retained-output publication; it does not
+label those intervals main-thread synchronous work. CPU starvation can still
+delay every thread. No worker throughput or operating-system scheduling deadline
+is promised.
+
 ### Event streaming contract (snapshot-then-subscribe)
 
 The run-detail timeline preserves typed harness text as `textKind`
@@ -3497,16 +3568,22 @@ its global/project partition generation before live bus publication. Per-token
 LIFECYCLE after restart, never token-level progress. Failure to commit a retained
 lifecycle event fails its producer/run instead of being swallowed as a live-only
 gap; progress outside that set does not enter the SQL sink.
-`GET /v2/runs/:id` returns the snapshot together with `lastSeq` — the highest seq
-already reflected in that snapshot, read from the live writer's in-memory counter
-or, for a finished run, from the log's last line (a full scan only when that line
-cannot decide) — so a client subscribes to
-`GET /v2/runs/:id/events` with `Last-Event-ID: <lastSeq>` and applies deltas with
-no gaps and no duplicates. The per-run stream replays from the run's
-`events.jsonl` — the one complete per-run event record; the SQL event ledger
-holds only the lifecycle subset above, so it can restore a run's terminal tail
-but never rebuild the full stream — (old pre-seq fixture lines fall back to
-line-number ids) and is
+`GET /v2/runs/:id` returns `lastSeq`, a conservative event fence captured
+BEFORE pending interactions and projection reads. It does not claim an atomic
+snapshot of files and live state: later events may already be reflected in the
+response. Subscribe to `GET /v2/runs/:id/events` with `Last-Event-ID: <lastSeq>`;
+there is no gap across the fence, but replay is allowed. Consumers deduplicate
+by event identity and replace/acknowledge questions by their interaction identity.
+The live writer supplies its counter without I/O. When no live writer is
+registered, cursor lookup runs in the bulk executor, including the legacy or
+oversized last-line fallback. Never stamp a later cursor onto earlier projection bytes.
+The per-run stream replays from `events.jsonl`, the complete per-run event record;
+the SQL ledger holds only the lifecycle subset above and cannot rebuild full
+progress. Resume seeks backward to the cursor in finite byte batches, without
+parsing the retained prefix for normal monotonic seq logs. Pre-seq lines retain
+line-number ids; ambiguous legacy/mixed logs conservatively count/scan in finite
+worker jobs. UTF-8 and incomplete-line carry remain across batches. Redaction
+runs on whole events, never on arbitrary text fragments. The stream is
 push-driven by the daemon's in-process run-event bus, with a file-tail poll as
 fallback; `output.ready` is guaranteed to precede the terminal
 `run.completed|run.failed|run.blocked` event in every mode, so a client that
@@ -3766,7 +3843,29 @@ retirement rechecks directory identity and current link counts before unlink.
 It is also exposed as the schema-first control op
 `POST /v2/maintenance/gc` (dry-run first-class, typed receipt disclosing
 every deletion AND why every survivor survived); `claudexor gc` is its thin
-client. It deletes ONLY terminal, unreferenced, non-actionable trees past
+client. `GET /v2/maintenance/gc` and `claudexor gc --last` read the last durable
+non-preview pass without starting cleanup. The engine stores one summary (at most
+16 KiB) in its SQL meta after model-resource and upload-binding cleanup, including
+failures of those outer steps. Its flusher barrier completes before the pass returns,
+and shutdown drains that barrier; persistence failures propagate to the caller.
+The summary carries `outcome` (`completed`, `held`, `truncated`, `failed`), start/end
+timestamps, freed bytes, run keep counts, separate counts of held roots and vetoed native homes,
+per-class hold counts with one example and the first continuously held `since`,
+and error count/first error. A clean observed pass clears holds; previews never replace it.
+A queued pass cancelled before it enters the runner writes nothing. A pass that
+starts but obtains no inventory preserves the preceding holds, held counts and
+`since` while reporting its own failure or truncation. A truncated pass also carries
+preceding hold classes it does not report again, retaining their earliest `since`
+and the larger previous/current held counts. A pass that runs to its end records
+only the holds it observed. Only a pass with no hold,
+suppression or error reports `completed`. Permanently `not_pruned` native adapters
+and unknown native entries are informational in the native-home receipt, not holds;
+unknown entries remain untouched and counted in `kept_unknown`. `held.native_homes`
+counts vetoed homes only. Absence is `last: null`. An unreadable stored summary
+also returns `last: null` with a diagnostic shown by `gc --last`; it cannot prevent
+the next pass from replacing the record. Engines predating this read surface have no GET operation. New POST
+hold/truncation fields require `retention_report`, requested by a lockstep CLI;
+older receipts parse with zero/empty defaults. It deletes ONLY terminal, unreferenced, non-actionable trees past
 the configured age (`retention.*` in the global config: runs 30d, reviews
 14d, newest N for active registrations and archived registrations whose roots exist,
 and the built-in no-project scope): an orphaned namespace has no keep-last owner,
@@ -3794,6 +3893,35 @@ repeating the same Apply key after retention removed that patch returns 404, whi
 the durable command receipt remains reusable. This route behavior predates retention
 changes; receipt replay does not promise that an expired artifact is still available.
 An expired directory cannot become evidence again. Durable `context/continuation.json` lists are published through a private temporary file, file flush, atomic rename and directory flush. Unreadable reference errors name the file or SQL row and partition. A bad run-local work-product or custody file keeps that run; unreadable SQL or continuity owners hold the pass because their references can cross namespaces. Pending recovery holds run retirement install-wide until recovery completes.
+An archived registration with no partition owns no generation and does not hold
+its root. A dangling non-null partition id or an active registration with no
+partition still holds its root and vetoes native pruning, disclosed as
+`missing_partition` or `unbound_active_registration` with root/home counts separate
+from run survivor counts.
+
+Private revert/exact-patch anchors are run-owned. After run retirement, a pass
+collects `meta.revert_anchor_id`, `meta.exact_patch_object` and delivery-state
+`revertAnchorId` from every surviving run across all runtime namespaces. Unreadable
+metadata or any skipped/held namespace preserves every anchor that pass. An
+unnamed anchor is unlinked only beyond `runs_max_age_days`, using a fresh mtime
+check immediately before synchronous unlink. Every anchor publication, create or
+reuse, touches its mtime; unlinking a sibling does not renew its age. Patch-cache
+names are then pruned at their last link; bytes count only when the inode loses
+its last link. Empty engine containers are removed bottom-up with `rmdir`: the
+namespace, `runs/` and its `.retiring/` container, `patches/`, `anchors/objects/`,
+`anchors/`, `workspaces/` and its task containers, `lanes/` and its thread containers,
+and `threads/`. Retirement claim contents remain opaque.
+This shallow container map never descends into run content, workspace envelopes,
+thread worktrees, lane/harness homes, unknown trees, Git repositories or links.
+Tombstones remain. A container must predate the pass start by more than two seconds
+(to allow filesystem timestamp granularity); its age and identity are checked
+from the snapshot. Only an empty listing permits a removal attempt; `rmdir` supplies
+the final emptiness proof if a new entry races with that listing. Removing empty
+children does not renew a surviving container's age. Per-directory failures are
+counted while siblings continue, and cleanup yields between namespaces. The frozen
+`journal-legacy`, `journal-archived` and `resource-store/idempotency` stores remain
+untouched (INV-143).
+
 Readers see that expiration while recursive deletion of the previously
 inventoried contents runs asynchronously; no directory rename blocks admission.
 A durable intent in the parent's private `.retiring` directory binds the source
@@ -4053,24 +4181,18 @@ kept only for cold import and an independent frozen copy kept for tests.
   an older build of the same release version, which the semantic floor cannot
   tell apart — refuses the upgraded file with `store_schema_unsupported` before
   any write.
-- Schema version 3 adds two expression indexes over accepted command-summary
+- Schema version 3 added two expression indexes over accepted command-summary
   `params.taskGroupId`, ordered for group pages and group/state pages with the
-  live product, valid-JSON and guarded non-null group predicates. Untagged rows,
-  JSON null groups and non-JSON BLOB summaries remain writable and occupy neither
-  index. Building the indexes still scans existing rows, and writes still evaluate
-  their predicates. Membership is committed in the original
-  acceptance transaction, before ACK/dispatch; there is no group table, backfill
-  or retention pin. Fresh DDL and the atomic 2→3 migration have the same indexes;
-  version 1 follows 1→2→3→4→5, and reopening the current version is write-free.
-  A version-2 reader refuses the upgraded file before writing. Downgrading an
+  live product, valid-JSON and guarded non-null group predicates; untagged rows,
+  JSON null groups and non-JSON BLOB summaries stayed writable and occupied
+  neither index. The atomic 2→3 step still builds them on the way to the current
+  version, and version 6 replaces them with the membership column. Membership is
+  committed in the original acceptance transaction, before ACK/dispatch; there is
+  no group table or retention pin. Reopening the current version is write-free.
+  An older reader refuses an upgraded file before writing. Downgrading an
   upgraded store requires restoring a compatible complete backup made with all
   writers stopped; swapping only the executable is insufficient. Source and
   isolated-fixture qualification do not migrate an installed store.
-  Earlier unpublished schema-3 stores keep their broader indexes on reopen and
-  remain query-compatible with this reader; they retain the original storage cost.
-  No automatic rebuild is added. Earlier experimental binaries whose forced-index
-  queries lack the tagged predicate cannot query the narrower indexes. Do not swap
-  experimental binaries against the same store; the complete-backup rule applies.
 - Schema version 4 adds the command-adjacent `deferred_message` table and its
   active-slot, predecessor, successor and blob-reference indexes through an
   atomic 3→4 migration. Older readers refuse the upgraded file. A waiting or
@@ -4104,10 +4226,22 @@ kept only for cold import and an independent frozen copy kept for tests.
   same turn identity. The atomic 4→5 migration builds the index without rewriting
   turn, prompt, event or other domain rows; it updates only schema metadata.
   Building it scans existing turns once, and subsequent turn writes maintain it.
-  Fresh stores start at version 5; version 4 and older readers refuse them before writes.
+  Version 4 and older readers refuse the upgraded file before writes.
   Earlier versions follow the existing migration map. This introduces no history
   table, header-body copy, backfill or stream. The complete-backup downgrade rule
   above still applies, including between experimental builds of one release.
+- Schema version 6 moves task-group membership into the typed
+  `command.task_group_id` column, which holds the lower-case group UUID, so a
+  group reads the same whatever spelling its launches used. Accepted summaries
+  keep the caller's spelling and receipts echo it. The atomic 5→6 step adds the
+  column, backfills live tagged rows through the version-3 index and archived
+  ones (restoring a generation makes them live again) by a guarded scan, drops
+  both expression indexes and indexes the column for group and group/state
+  pages. The command writer fills the column in the acceptance transaction;
+  updates never change it. Fresh DDL and the migrated file have identical
+  `sqlite_master`. Older readers refuse the upgraded file, and a cursor issued
+  before the upgrade restarts with `stale_cursor`, because its view token used
+  the case-sensitive domain.
 - The flusher worker owns the power-loss barrier. Every 200 ms it fsyncs each
   directory registered since the previous pass, reads `data_version`, runs a
   PASSIVE checkpoint for space, and — whenever anything was committed since
@@ -5750,8 +5884,8 @@ shared inode before publishing its durable authoritative link. The cache path is
 advisory. A mismatching cache object is atomically replaced with fresh supplied bytes before linking a new publication; existing links to the old inode are never rewritten. Filesystems that cannot link receive independent byte-identical copies. Masked display copies
 and their different exact bytes remain separate objects. Existing plain-file
 run trees and anchors stay readable without migration. Retention removes cache
-entries only after their last run/anchor link is gone; an anchor keeps its
-existing independent lifetime.
+entries only after their last run/anchor link is gone; anchors follow the
+run-owned [retention contract](#7-control-api).
 
 `final/telemetry.yaml` (`RunTelemetry` in the schema) is the single engine-owned
 record of per-attempt web evidence (requested/effective mode, attempted,

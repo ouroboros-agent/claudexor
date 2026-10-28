@@ -1,9 +1,22 @@
 import { createHash } from "node:crypto";
 import { setImmediate as yieldToAdmission } from "node:timers/promises";
 import { RunObservationRecord, type RunWaitManySummary } from "@claudexor/schema";
+import { containsSecretLikeToken } from "@claudexor/util";
 import { digestPendingIdentities, type InteractionRegistry } from "./interactions.js";
 import type { CommandQueries, PendingIdentityDigest } from "./store-contracts.js";
 import { StoreError } from "./store/errors.js";
+
+/** Callers echo tokens through surfaces that refuse secret-like strings, so a
+ * digest the shared policy would flag is re-derived from the same facts; every
+ * other token keeps its bytes. */
+function observationToken(facts: readonly unknown[]): string {
+  for (let attempt = 0; ; attempt++) {
+    const token = createHash("sha256")
+      .update(JSON.stringify(attempt === 0 ? facts : [...facts, attempt]))
+      .digest("base64url");
+    if (attempt === 8 || !containsSecretLikeToken(token)) return token;
+  }
+}
 
 function unavailable(
   problem: "not_found" | "snapshot_unavailable" | "not_observed",
@@ -85,21 +98,17 @@ export async function readRunObservations(
       summaries[i] = unavailable("snapshot_unavailable");
       continue;
     }
-    const token = createHash("sha256")
-      .update(
-        JSON.stringify([
-          "claudexor.run-observation",
-          1,
-          storeId,
-          record.partition,
-          record.epoch,
-          record.jobId,
-          record.runId,
-          record.state,
-          pending.digest,
-        ]),
-      )
-      .digest("base64url");
+    const token = observationToken([
+      "claudexor.run-observation",
+      1,
+      storeId,
+      record.partition,
+      record.epoch,
+      record.jobId,
+      record.runId,
+      record.state,
+      pending.digest,
+    ]);
     summaries[i] = { status: record.state, pending: pending.pending, token, problem: null };
   }
   return summaries;
