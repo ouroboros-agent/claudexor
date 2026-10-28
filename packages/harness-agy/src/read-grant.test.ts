@@ -92,7 +92,7 @@ describe("agy profile read grant", () => {
     expect(read(home)).toEqual({ permissions: { allow: [AGY_READ_ANYWHERE_RULE] } });
   });
 
-  it.skipIf(process.platform === "win32")(
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
     "reports a failed write and leaves no temp file behind",
     () => {
       const home = profileHome();

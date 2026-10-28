@@ -19,8 +19,9 @@ import { redactSecrets } from "@claudexor/util";
  * A read grant changes no write confinement: plan mode still withholds edits,
  * accept-edits still asks before an edit outside the workspace, and shell
  * commands keep their own approval. The vendor evaluates Deny > Ask > Allow,
- * so a read_file deny rule or `toolPermission: "strict"` in the same file still
- * wins over this grant.
+ * so a read_file deny rule in the same file still wins, and
+ * `toolPermission: "strict"` prompts before every read even when an allow rule
+ * matches.
  */
 export const AGY_READ_ANYWHERE_RULE = "read_file(*)";
 

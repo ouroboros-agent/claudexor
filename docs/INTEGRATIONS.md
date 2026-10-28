@@ -2101,8 +2101,9 @@ documents as matching all files on the system, keeping every other key and
 rule. The agent then reads any path in every access profile, as claude and
 codex agents do; without it a headless plan-mode run auto-denies any read
 outside its workspace folder. The vendor evaluates Deny > Ask > Allow, so a
-`read_file` deny rule or `toolPermission: "strict"` in that file still wins.
-Settings the adapter cannot parse are never rewritten, and a non-full run
+`read_file` deny rule in that file still wins, and `toolPermission: "strict"`
+prompts before every read even when an allow rule matches. Settings the
+adapter cannot read, parse or write are never rewritten, and a non-full run
 reports `agy_read_grant_unavailable`. Plan mode has no approved shell path, so
 the instructions of a readonly run end with an engine note that shell commands
 are unavailable, recorded as an `agy_readonly_access_note` status. Events:
