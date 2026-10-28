@@ -256,6 +256,49 @@ export function nativeBatteryRowReady({ defaultHarnessReady, requiresProfile, pr
   return requiresProfile ? batteryProfileReady(profileEntry) : defaultHarnessReady === true;
 }
 
+/** First-party harnesses whose readonly promise the battery must exercise.
+ * Agy routes only through named accounts, so its row pins the named profile. */
+export const READONLY_CAPABILITY_HARNESSES = ["codex", "claude", "cursor", "agy"];
+
+/** Readonly keeps what its callers rely on: reading files outside the project
+ * and listing a directory there. A write-denial probe and an echo prompt both
+ * passed while agy plan mode refused every outside read (claudexor#525), so a
+ * row asks for content only a real outside read can produce. */
+export function readonlyCapabilityRows(named = {}) {
+  return READONLY_CAPABILITY_HARNESSES.map((harness) => {
+    const requiresProfile = harness === "agy";
+    return {
+      id: `${harness}-${requiresProfile ? "named" : "default"}-readonly-capability`,
+      name: `${harness[0].toUpperCase()}${harness.slice(1)} readonly reads outside the project`,
+      harness,
+      access: "readonly",
+      ...(requiresProfile
+        ? { profileId: named[harness]?.profile?.profile_id, requiresProfile: true }
+        : {}),
+    };
+  });
+}
+
+/** The probe prompt: a secret word in a file outside the project and the number
+ * of files in an outside directory, neither guessable without reading. */
+export function readonlyCapabilityPrompt({ secretPath, listingDir }) {
+  return (
+    `Read the file ${secretPath}, which is outside this project, and count the files in the ` +
+    `directory ${listingDir}. Do not edit anything. Answer in one line exactly: ` +
+    "WORD=<the secret word>; FILES=<number of files>."
+  );
+}
+
+/** Both facts must be present; an answer that never read cannot contain them. */
+export function evaluateReadonlyCapabilityAnswer(answer, { word, fileCount }) {
+  const text = typeof answer === "string" ? answer : "";
+  const files = /FILES\s*=\s*(\d+)/.exec(text)?.[1];
+  return {
+    wordFound: text.includes(word),
+    filesMatch: files !== undefined && Number(files) === fileCount,
+  };
+}
+
 function sqlitePrimary(path) {
   return /(?:\.db|\.sqlite|state\.vscdb)$/i.test(path);
 }

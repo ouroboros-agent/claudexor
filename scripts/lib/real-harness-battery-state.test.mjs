@@ -51,6 +51,10 @@ import {
   validateBatteryTaskIdentity,
   withBatteryReviewerModels,
   withExplicitBatteryModels,
+  READONLY_CAPABILITY_HARNESSES,
+  evaluateReadonlyCapabilityAnswer,
+  readonlyCapabilityPrompt,
+  readonlyCapabilityRows,
 } from "./real-harness-battery-state.mjs";
 
 const fixtureRoots = [];
@@ -1346,3 +1350,51 @@ test.each(["local_session", "subscription"])(
     });
   },
 );
+
+test("readonly capability rows cover every first-party harness, agy on its named profile", () => {
+  const unnamed = readonlyCapabilityRows();
+  expect(unnamed.map((row) => row.harness)).toEqual(READONLY_CAPABILITY_HARNESSES);
+  expect(new Set(unnamed.map((row) => row.id)).size).toBe(unnamed.length);
+  expect(unnamed.every((row) => row.access === "readonly")).toBe(true);
+  expect(unnamed.find((row) => row.harness === "agy")).toMatchObject({
+    requiresProfile: true,
+    profileId: undefined,
+  });
+  expect(unnamed.filter((row) => row.requiresProfile)).toHaveLength(1);
+  const named = readonlyCapabilityRows({ agy: { profile: { profile_id: "anton-razzhigaev" } } });
+  expect(named.find((row) => row.harness === "agy")?.profileId).toBe("anton-razzhigaev");
+});
+
+test("the readonly probe names both outside paths and the exact answer shape", () => {
+  const prompt = readonlyCapabilityPrompt({
+    secretPath: "/tmp/outside/secret.txt",
+    listingDir: "/tmp/outside/listing",
+  });
+  expect(prompt).toContain("/tmp/outside/secret.txt");
+  expect(prompt).toContain("/tmp/outside/listing");
+  expect(prompt).toContain("WORD=<the secret word>; FILES=<number of files>");
+});
+
+test("only an answer that actually read both outside facts passes", () => {
+  const facts = { word: "word-1a2b3c4d", fileCount: 4 };
+  expect(evaluateReadonlyCapabilityAnswer("WORD=word-1a2b3c4d; FILES=4", facts)).toEqual({
+    wordFound: true,
+    filesMatch: true,
+  });
+  expect(evaluateReadonlyCapabilityAnswer("OK", facts)).toEqual({
+    wordFound: false,
+    filesMatch: false,
+  });
+  expect(evaluateReadonlyCapabilityAnswer("WORD=word-1a2b3c4d; FILES=5", facts)).toEqual({
+    wordFound: true,
+    filesMatch: false,
+  });
+  expect(evaluateReadonlyCapabilityAnswer("WORD=unknown; FILES=4", facts)).toEqual({
+    wordFound: false,
+    filesMatch: true,
+  });
+  expect(evaluateReadonlyCapabilityAnswer(undefined, facts)).toEqual({
+    wordFound: false,
+    filesMatch: false,
+  });
+});
