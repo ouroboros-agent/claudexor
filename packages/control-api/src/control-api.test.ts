@@ -1069,8 +1069,8 @@ describe("DaemonControlApiServer", () => {
   });
 
   it("delivers the typed 503 to a preconnected client still uploading a large body after stop is marked", async () => {
+    const { daemon } = fakeDaemon();
     for (let attempt = 0; attempt < 3; attempt++) {
-      const { daemon } = fakeDaemon();
       const server = new DaemonControlApiServer({ ...readyIdentity, token, daemon });
       const { host, port } = await server.start();
       const socket = connect({ host, port });

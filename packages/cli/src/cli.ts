@@ -846,7 +846,6 @@ async function decisionCommand(args: ParsedArgs, json: boolean): Promise<number>
         `decision ${action} on ${runId}: ${accepted ? "accepted" : "rejected"} [${String(data["status"] ?? "?")}]`,
       );
       if (typeof data["newRunId"] === "string") print(`  new run: ${data["newRunId"]}`);
-      else if (typeof data["newJobId"] === "string") print(`  new job: ${data["newJobId"]}`);
       if (typeof data["message"] === "string") print(`  ${data["message"]}`);
     }
     return data["accepted"] === true ? 0 : 1;

@@ -152,10 +152,9 @@ describe.skipIf(!sqlite)("thread-history schema v5", () => {
         ),
       );
       // Version 6 adds the membership column and rebuilds both group indexes on it.
+      const replaced = new Set(["command", "command_task_group", "command_task_group_state"]);
       const added = new Set([
-        "command",
-        "command_task_group",
-        "command_task_group_state",
+        ...replaced,
         ...(version < 5 ? ["turn_plan_answer"] : []),
         ...(version === 3
           ? [
@@ -168,7 +167,12 @@ describe.skipIf(!sqlite)("thread-history schema v5", () => {
             ]
           : []),
       ]);
-      expect(schema(db).filter((row) => !added.has(row.name as string))).toEqual(previousSchema);
+      expect(schema(db).filter((row) => !added.has(row.name as string))).toEqual(
+        previousSchema.filter((row) => !replaced.has(row.name as string)),
+      );
+      expect(
+        (db.prepare("PRAGMA table_info(command)").all() as { name: string }[]).at(-1)?.name,
+      ).toBe("task_group_id");
       assertIndex(db);
       const fresh = connect();
       ensureSchema(fresh);

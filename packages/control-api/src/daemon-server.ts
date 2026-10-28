@@ -592,8 +592,7 @@ export class DaemonControlApiServer {
     this.closeSseClients();
     this.refusedBodies.close();
     await this.drainActiveHandlers();
-    // A stream whose lookup finished while draining registered after the first close.
-    this.closeSseClients();
+    this.closeSseClients(); // Streams that registered while their handlers drained.
     await listenerClosed;
   }
 
