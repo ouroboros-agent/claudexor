@@ -1068,6 +1068,80 @@ describe("DaemonControlApiServer", () => {
     });
   });
 
+  it("delivers the typed 503 to a preconnected client still uploading a large body after stop is marked", async () => {
+    const { daemon } = fakeDaemon();
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const server = new DaemonControlApiServer({ ...readyIdentity, token, daemon });
+      const { host, port } = await server.start();
+      const socket = connect({ host, port });
+      await new Promise<void>((resolve, reject) => {
+        socket.once("connect", resolve);
+        socket.once("error", reject);
+      });
+      let text = "";
+      socket.setEncoding("utf8");
+      socket.on("data", (chunk: string) => {
+        text += chunk;
+      });
+      const answered = new Promise<string>((resolve, reject) => {
+        socket.once("end", () => resolve(text));
+        socket.once("error", reject);
+      });
+      socket.on("error", () => {});
+      await new Promise<void>((resolve, reject) =>
+        socket.write(`POST /v2/runs HTTP/1.1\r\nHost: ${host}:${port}\r\n`, (error) =>
+          error ? reject(error) : resolve(),
+        ),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const stopping = server.stop();
+      const size = 32 * 1024 * 1024;
+      socket.write(
+        `Authorization: Bearer ${token}\r\nX-Claudexor-Protocol-Major: 3\r\nContent-Type: application/json\r\nContent-Length: ${size}\r\n\r\n`,
+      );
+      socket.write(Buffer.alloc(size, 0x20));
+      const raw = await answered;
+      expect(raw).toMatch(/^HTTP\/1\.1 503 /);
+      expect(JSON.parse(raw.slice(raw.indexOf("\r\n\r\n") + 4))).toMatchObject({
+        code: "daemon_stopping",
+        retryable: true,
+      });
+      await stopping;
+      socket.destroy();
+    }
+  });
+
+  it("stop closes an event stream that registers while stop drains its handler", async () => {
+    const { daemon, record } = fakeDaemon();
+    // A live run with no events yet keeps its stream open until stop closes it.
+    record.state = "running";
+    record.runDir = reapMk(join(tmpdir(), "claudexor-quiet-run-"));
+    let entered!: () => void;
+    const looking = new Promise<void>((resolve) => (entered = resolve));
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const delayed: DaemonFacadeClient = {
+      ...daemon,
+      async list(query) {
+        entered();
+        await gate;
+        return daemon.list(query);
+      },
+    };
+    const server = new DaemonControlApiServer({ ...readyIdentity, token, daemon: delayed });
+    const { host, port } = await server.start();
+    const stream = globalThis.fetch(`http://${host}:${port}/v2/runs/${record.runId}/events`, {
+      headers: { authorization: `Bearer ${token}`, "X-Claudexor-Protocol-Major": "3" },
+    });
+    await looking;
+    const stopped = server.stop();
+    release();
+    const response = await stream;
+    expect(response.status).toBe(200);
+    await response.text(); // Ends only when stop closes the stream.
+    await stopped;
+  });
+
   it("refuses a mutation delivered on a preconnected socket after stop is marked", async () => {
     const { daemon } = fakeDaemon();
     let enqueueCalls = 0;
@@ -6868,6 +6942,107 @@ describe("DaemonControlApiServer", () => {
     }
   });
 
+  it("answers an accepted launch with its 202 receipt when the daemon stops before the run starts", async () => {
+    let statusRead!: () => void;
+    const polled = new Promise<void>((resolve) => (statusRead = resolve));
+    const daemon: DaemonFacadeClient = {
+      async enqueue() {
+        return { id: "job-queued", state: "queued" };
+      },
+      async status() {
+        statusRead();
+        return { id: "job-queued", state: "queued" };
+      },
+      async list() {
+        return [{ id: "job-queued", state: "queued" }];
+      },
+      async cancel() {
+        return { ok: true };
+      },
+    };
+    // Neither the poll interval nor the start deadline may delay the receipt.
+    const server = new DaemonControlApiServer({
+      ...readyIdentity,
+      token,
+      daemon,
+      pollMs: 600_000,
+      runStartTimeoutMs: 600_000,
+    });
+    const { host, port } = await server.start();
+    const started = apiFetch(`http://${host}:${port}/runs`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}` },
+      body: startAgentBody(),
+    });
+    await polled;
+    const stopped = server.stop();
+    const res = await started;
+    expect(res.status).toBe(202);
+    expect(await res.json()).toEqual({ jobId: "job-queued", state: "queued" });
+    await stopped;
+  });
+
+  it("answers an upload refused mid-body while its client is still sending, and stop closes that connection", async () => {
+    const { daemon } = fakeDaemon();
+    let received = 0;
+    const server = new DaemonControlApiServer({
+      ...readyIdentity,
+      token,
+      daemon,
+      services: {
+        writeUpload: async (_uploadId, chunks) => {
+          for await (const chunk of chunks) {
+            received += chunk.length;
+            if (received > 5)
+              throw Object.assign(new Error("upload exceeds its declared size"), {
+                status: 413,
+                code: "upload_size_exceeded",
+                retryable: false,
+              });
+          }
+          return {
+            uploadId: "upl-1",
+            state: "uploading",
+            receivedBytes: received,
+            expectedBytes: 5,
+          };
+        },
+      },
+    });
+    const { host, port } = await server.start();
+    const socket = connect({ host, port });
+    await new Promise<void>((resolve, reject) => {
+      socket.once("connect", resolve);
+      socket.once("error", reject);
+    });
+    socket.on("error", () => {}); // Stop may reset the sender it closes.
+    const closed = new Promise<void>((resolve) => socket.once("close", () => resolve()));
+    let text = "";
+    socket.setEncoding("utf8");
+    const answered = new Promise<string>((resolve) => {
+      socket.on("data", (chunk: string) => {
+        text += chunk;
+        const split = text.indexOf("\r\n\r\n");
+        if (split < 0) return;
+        const length = Number(/content-length: (\d+)/i.exec(text.slice(0, split))?.[1]);
+        if (Buffer.byteLength(text.slice(split + 4)) >= length) resolve(text);
+      });
+    });
+    socket.write(
+      `PUT /v2/uploads/upl-1/bytes HTTP/1.1\r\nHost: ${host}:${port}\r\nAuthorization: Bearer ${token}\r\nX-Claudexor-Protocol-Major: 3\r\nContent-Type: application/octet-stream\r\nContent-Length: ${20 * 1024 * 1024}\r\n\r\n`,
+    );
+    socket.write(Buffer.alloc(64 * 1024, 0x61));
+    // The typed refusal arrives although the advertised body never finishes.
+    const raw = await answered;
+    expect(raw).toMatch(/^HTTP\/1\.1 413 /);
+    expect(JSON.parse(raw.slice(raw.indexOf("\r\n\r\n") + 4))).toMatchObject({
+      code: "upload_size_exceeded",
+    });
+    expect(socket.destroyed).toBe(false);
+    await server.stop();
+    await closed;
+  });
+
   it("thread apply gates every undelivered contribution, so a later success cannot launder a blocked run (INV-113)", async () => {
     const dir = reapMk(join(tmpdir(), "claudexor-thread-gate-"));
     const blockedRunDir = join(dir, "run-blocked");
@@ -10054,6 +10229,100 @@ describe("DaemonControlApiServer", () => {
       undefined,
       services,
     );
+  });
+
+  it("rerun_with_feedback keeps the source's task group and answers its receipt", async () => {
+    const { daemon, record } = fakeDaemon();
+    const group = "11111111-1111-4111-8111-111111111111";
+    const store = "22222222-2222-4222-8222-222222222222";
+    record.state = "succeeded";
+    record.params = { ...(record.params as Record<string, unknown>), taskGroupId: group };
+    writeFileSync(
+      join(record.runDir as string, "arbitration", "decision.yaml"),
+      "winner: a01\nfacts:\n  lifecycle: succeeded\n  review: blocked\n  checks: not_configured\n  noChanges: false\n  reason: review_blocked\nfinal_verify:\n  attempted: true\n  applied_cleanly: true\n  gates_passed: true\n",
+    );
+    let enqueued: Record<string, unknown> | undefined;
+    let refusedBeforeRun = false;
+    const tagged: DaemonFacadeClient = {
+      ...daemon,
+      async enqueue(params: unknown) {
+        enqueued = params as Record<string, unknown>;
+        return { id: "job-rerun", state: "queued" };
+      },
+      async status(id: string) {
+        if (id === record.id) return record;
+        return refusedBeforeRun
+          ? {
+              id: "job-rerun",
+              state: "failed",
+              error: "Git is unavailable on this execution location",
+              errorCode: "git_unavailable",
+              errorStatus: 409,
+              params: enqueued,
+            }
+          : {
+              id: "job-rerun",
+              state: "running",
+              runId: "run-rerun",
+              runDir: record.runDir,
+              params: enqueued,
+            };
+      },
+    };
+    for (const [storeId, refused] of [
+      [undefined, false],
+      [() => store, false],
+      [() => store, true],
+    ] as const) {
+      enqueued = undefined;
+      refusedBeforeRun = refused;
+      const server = new DaemonControlApiServer({
+        ...readyIdentity,
+        token,
+        daemon: tagged,
+        pollMs: 5,
+        ...(storeId ? { storeId } : {}),
+      });
+      const { host, port } = await server.start();
+      try {
+        const res = await apiFetch(`http://${host}:${port}/runs/run-d1/decision`, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${token}`,
+            "Idempotency-Key": `decision-rerun-group-${storeId ? "store" : "none"}-${refused}`,
+          },
+          body: JSON.stringify({ action: "rerun_with_feedback", feedback: "Keep the group." }),
+        });
+        const body = (await res.json()) as Record<string, unknown>;
+        if (!storeId) {
+          // Without the store identity the inherited group is refused before acceptance.
+          expect(res.status).toBe(503);
+          expect(body).toMatchObject({ code: "store_identity_unavailable", retryable: true });
+          expect(enqueued).toBeUndefined();
+          continue;
+        }
+        if (refused) {
+          // A refusal before the run binds still names the accepted job and its group.
+          expect(res.status).toBe(409);
+          expect(body).toMatchObject({
+            code: "git_unavailable",
+            context: { jobId: "job-rerun", taskGroupId: group, storeId: store },
+          });
+          continue;
+        }
+        expect(res.status).toBe(200);
+        expect(body).toMatchObject({
+          status: "requeued",
+          newRunId: "run-rerun",
+          newJobId: "job-rerun",
+          taskGroupId: group,
+          storeId: store,
+        });
+        expect(enqueued?.["taskGroupId"]).toBe(group);
+      } finally {
+        await server.stop();
+      }
+    }
   });
 
   it("POST /runs replays a durable command before mutable preflight changes", async () => {

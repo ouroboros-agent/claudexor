@@ -87,10 +87,16 @@ describe("RunWaitManyInput", () => {
     `${"A".repeat(42)}/`,
     `${"A".repeat(42)}é`,
     `${"A".repeat(42)}\n`,
-    null,
     43,
   ])("rejects malformed seen tokens: %j", (seen) => {
     expect(RunWaitManyInput.safeParse({ targets: [{ runId: "a", seen }] }).success).toBe(false);
+  });
+
+  it("accepts a null seen, the echo of a problem row's token", () => {
+    expect(RunWaitManyInput.parse({ targets: [{ runId: "a", seen: null }], waitMs: 0 })).toEqual({
+      targets: [{ runId: "a", seen: null }],
+      waitMs: 0,
+    });
   });
 
   it("accepts every base64url character without padding or trimming tokens", () => {

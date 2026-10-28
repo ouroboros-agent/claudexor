@@ -59,7 +59,6 @@ describe("runsWaitQuery: one bounded read of existing durable handles", () => {
     { targets: [{ runId: "r", seen: "A".repeat(42) }] },
     { targets: [{ runId: "r", seen: `${"A".repeat(42)}=` }] },
     { targets: [{ runId: "r", seen: `${"A".repeat(42)}é` }] },
-    { targets: [{ runId: "r", seen: null }] },
     { targets: [{ runId: "r", afterSeq: 1 }] },
     { targets: [{ runId: "r" }], afterSeq: 1 },
     { targets: [{ runId: "r" }], waitMs: -1 },
@@ -72,6 +71,12 @@ describe("runsWaitQuery: one bounded read of existing durable handles", () => {
     await expect(runsWaitQuery(input)).rejects.toBeDefined();
     expect(daemon.connectDaemonIfRunning).not.toHaveBeenCalled();
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("forwards a null seen that acknowledges a problem row", async () => {
+    const input = { targets: [{ runId: "r", seen: null }], waitMs: 0 };
+    expect(await runsWaitQuery(input)).toEqual(result());
+    expect(JSON.parse(String(fetch.mock.calls[0]![1]?.body))).toEqual(input);
   });
 
   it("rejects aggregate JSON bytes before discovery, even with valid individual IDs", async () => {
@@ -290,6 +295,8 @@ describe("runsWaitQuery: one bounded read of existing durable handles", () => {
       runsWaitQuery({ targets: [{ runId: "r" }, { runId: "r" }] }),
     ).rejects.toMatchObject({
       code: "invalid_service_response",
+      // A malformed answer stays malformed on retry.
+      retryable: false,
     });
     expect(fetch).toHaveBeenCalledOnce();
     expect(daemon.connectDaemonIfRunning).toHaveBeenCalledOnce();

@@ -83,7 +83,9 @@ export async function handleResourceRoute(
       decodeURIComponent(uploadBytesMatch[1] as string),
     );
     if (!uploadId.ok) return true;
-    const result = await routeValue(ctx, res, 500, () => service(uploadId.value, req));
+    // Stopping early leaves the rest for the response writer to discard.
+    const body = req.iterator({ destroyOnReturn: false });
+    const result = await routeValue(ctx, res, 500, () => service(uploadId.value, body));
     if (!result.ok) return true;
     return serviceResponse(ctx, res, "writeUpload", () =>
       ctx.json(res, 200, ControlUploadStatus.parse(result.value)),

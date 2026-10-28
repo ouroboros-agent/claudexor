@@ -1,16 +1,10 @@
-import { ControlProblem, TaskGroupRunsInput, TaskGroupRunsResult } from "@claudexor/schema";
-import { flagStr, requiredStringFlagError, type ParsedArgs } from "./args.js";
-import { CliError, controlProblemError, renderCliFailure, usageError } from "./cli-error.js";
+import { TaskGroupRunsInput, TaskGroupRunsResult } from "@claudexor/schema";
+import { decimalFlag, flagStr, requiredStringFlagError, type ParsedArgs } from "./args.js";
+import { renderCliFailure, usageError } from "./cli-error.js";
 import { printJson } from "./cli-io.js";
-import { controlApiFetch } from "./live.js";
 import { daemonUnavailableError } from "./mcp-daemon-unavailable.js";
 import { connectForObservation } from "./mcp-run-wait.js";
-
-const invalidResponse = () =>
-  new CliError("operational", "daemon returned an invalid retained task group page", {
-    code: "invalid_service_response",
-    retryable: false,
-  });
+import { invalidServiceResponse, readObservationJson } from "./observation-read.js";
 
 /** One supporting existing-daemon GET; never follows cursors or starts work. */
 export async function taskGroupRunsQuery(
@@ -28,68 +22,34 @@ export async function taskGroupRunsQuery(
   const connection = await connectForObservation(signal);
   if (!connection) throw daemonUnavailableError(false, "task group observation does not start one");
   signal?.throwIfAborted();
-  const controller = new AbortController();
-  const abort = () => controller.abort(signal?.reason);
-  signal?.addEventListener("abort", abort, { once: true });
-  if (signal?.aborted) abort();
-  const timer = setTimeout(
-    () =>
-      controller.abort(
-        new CliError("operational", "task group HTTP read timed out", {
-          code: "run_observation_timeout",
-          retryable: true,
-        }),
-      ),
-    5000,
-  );
   const query = new URLSearchParams({ limit: String(input.limit) });
   for (const key of ["state", "cursor", "expectedStoreId"] as const) {
     const value = input[key];
     if (value !== undefined) query.set(key, value);
   }
-  try {
-    const response = await controlApiFetch(
-      connection.addr,
-      `/task-groups/${encodeURIComponent(input.taskGroupId)}/runs?${query}`,
-      {
-        method: "GET",
-        signal: controller.signal,
+  const body = await readObservationJson(
+    connection.addr,
+    `/task-groups/${encodeURIComponent(input.taskGroupId)}/runs?${query}`,
+    {
+      method: "GET",
+      timeoutMs: 5_000,
+      label: "task group read",
+      unsupported: {
+        code: "task_group_runs_unavailable",
+        message: "use a daemon supporting retained task group reads",
       },
-    );
-    const body: unknown = await response.json().catch(() => {
-      controller.signal.throwIfAborted();
-      if (response.ok) throw invalidResponse();
-      return null;
-    });
-    controller.signal.throwIfAborted();
-    if (!response.ok) {
-      const problem = ControlProblem.safeParse(body);
-      throw controlProblemError(
-        response.status,
-        problem.success
-          ? problem.data
-          : {
-              code: "task_group_runs_unavailable",
-              message: "use a daemon supporting retained task group reads",
-              retryable: false,
-            },
-        `task group read failed (HTTP ${response.status})`,
-      );
-    }
-    const parsed = TaskGroupRunsResult.safeParse(body);
-    if (
-      !parsed.success ||
-      parsed.data.taskGroupId !== input.taskGroupId ||
-      parsed.data.members.length > input.limit ||
-      (input.expectedStoreId !== undefined && parsed.data.storeId !== input.expectedStoreId)
-    )
-      throw invalidResponse();
-    return parsed.data;
-  } finally {
-    clearTimeout(timer);
-    signal?.removeEventListener("abort", abort);
-    controller.abort();
-  }
+    },
+    signal,
+  );
+  const parsed = TaskGroupRunsResult.safeParse(body);
+  if (
+    !parsed.success ||
+    parsed.data.taskGroupId !== input.taskGroupId ||
+    parsed.data.members.length > input.limit ||
+    (input.expectedStoreId !== undefined && parsed.data.storeId !== input.expectedStoreId)
+  )
+    throw invalidServiceResponse("daemon returned an invalid retained task group page");
+  return parsed.data;
 }
 
 export async function taskGroupRunsCommand(args: ParsedArgs, json: boolean): Promise<number> {
@@ -102,11 +62,9 @@ export async function taskGroupRunsCommand(args: ParsedArgs, json: boolean): Pro
           "usage: claudexor task-group-runs <uuid> [--limit N] [--state S] [--cursor C] [--expected-store-id ID] --json",
         { code: "invalid_argument" },
       );
-    const limit = flagStr(args, "limit");
-    if (limit !== undefined && !/^[0-9]+$/.test(limit))
-      throw usageError("--limit must be an integer from 1 to 200", { code: "invalid_argument" });
+    const limit = decimalFlag(args, "limit", "--limit must be an integer from 1 to 200");
     const input: Record<string, unknown> = { taskGroupId: args._[1] };
-    if (limit !== undefined) input["limit"] = Number(limit);
+    if (limit !== undefined) input["limit"] = limit;
     for (const [flag, key] of [
       ["state", "state"],
       ["cursor", "cursor"],
