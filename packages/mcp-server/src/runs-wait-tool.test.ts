@@ -53,7 +53,13 @@ describe("claudexor_runs_wait", () => {
   it("dispatches __runs_wait with omitted wait, normalized handles and the host signal", async () => {
     const runner = vi.fn(async () => body);
     const signal = new AbortController().signal;
-    const args = { targets: [{ runId: " job-a " }, { runId: "run-a", seen: TOKEN }] };
+    // A null seen acknowledges the problem row it echoes.
+    const args = {
+      targets: [
+        { runId: " job-a ", seen: null },
+        { runId: "run-a", seen: TOKEN },
+      ],
+    };
     expect(await tool(runner).handler(args, { signal })).toEqual({
       text: JSON.stringify(body),
       structured: body,
@@ -61,7 +67,10 @@ describe("claudexor_runs_wait", () => {
     expect(runner).toHaveBeenCalledExactlyOnceWith(
       {
         mode: "__runs_wait",
-        targets: [{ runId: "job-a" }, { runId: "run-a", seen: TOKEN }],
+        targets: [
+          { runId: "job-a", seen: null },
+          { runId: "run-a", seen: TOKEN },
+        ],
       },
       { signal },
     );
@@ -102,7 +111,6 @@ describe("claudexor_runs_wait", () => {
     { targets: [{ runId: "x".repeat(257) }] },
     { targets: [{ runId: "r", seen: "A".repeat(42) }] },
     { targets: [{ runId: "r", seen: `${"A".repeat(42)}+` }] },
-    { targets: [{ runId: "r", seen: null }] },
     { targets: [{ runId: "r", afterSeq: 1 }] },
     { targets: [{ runId: "r" }], afterSeq: 1 },
     { targets: [{ runId: "r" }], waitMs: -1 },

@@ -1,6 +1,13 @@
 import { getEventListeners } from "node:events";
-import { request, type ClientRequest, type IncomingHttpHeaders } from "node:http";
-import { setImmediate as nextTurn } from "node:timers/promises";
+import {
+  Agent,
+  request,
+  type ClientRequest,
+  type IncomingHttpHeaders,
+  type Server,
+} from "node:http";
+import { connect, type Socket } from "node:net";
+import { setImmediate as nextTurn, setTimeout as sleep } from "node:timers/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ControlOperationCatalog,
@@ -14,6 +21,8 @@ import { digestPendingIdentities } from "../../daemon/src/interactions.js";
 import { readRunObservations } from "../../daemon/src/run-observation.js";
 import { StoreBusyError } from "../../daemon/src/store/errors.js";
 import { DaemonControlApiServer, type DaemonControlApiOptions } from "./daemon-server.js";
+import { RefusedBodies } from "./request-body.js";
+import type { RunObservationListener } from "./run-wait-many.js";
 
 const fixtureCleanups: Array<() => Promise<void>> = [];
 const clients = new Set<ClientRequest>();
@@ -60,7 +69,7 @@ afterEach(async () => {
 async function fixture(observationAvailable = true, pollMs = 1000) {
   const records = new Map<string, RunObservationRecord>();
   const questions = new Map<string, string[] | Error>();
-  const listeners = new Set<(event: { run_id: string }) => void>();
+  const listeners = new Set<RunObservationListener>();
   const firstRead = deferred<void>();
   const signals: AbortSignal[] = [];
   const forbidden = {
@@ -127,7 +136,7 @@ async function fixture(observationAvailable = true, pollMs = 1000) {
     firstRead.resolve();
     return rows;
   });
-  const subscribe = vi.fn((listener: (event: { run_id: string }) => void) => {
+  const subscribe = vi.fn((listener: RunObservationListener) => {
     listeners.add(listener);
     return () => {
       listeners.delete(listener);
@@ -138,8 +147,8 @@ async function fixture(observationAvailable = true, pollMs = 1000) {
     pollMs,
     daemon: { list, status, ...forbidden },
     services: forbidden,
-    bus: { subscribe },
     runObservations: observationAvailable ? snapshot : undefined,
+    runObservationChanges: subscribe,
   };
   const server = new DaemonControlApiServer(options);
   const { host, port } = await server.start();
@@ -158,8 +167,9 @@ async function fixture(observationAvailable = true, pollMs = 1000) {
       createdAt: "2026-10-22T00:00:00.000Z",
     });
   }
-  function wake(runId: string) {
-    for (const listener of listeners) listener({ run_id: runId });
+  /** The store's post-commit notice for a job names the job and its run. */
+  function wake(jobId: string) {
+    for (const listener of listeners) listener(new Set([jobId, `run-${jobId}`]));
   }
   function raw(
     body?: string | Buffer,
@@ -231,6 +241,26 @@ async function write(client: ClientRequest, bytes: Buffer) {
   );
 }
 
+/** One request through `agent`: its status and whether it reused a socket. It
+ * settles once the request has also finished sending, so the socket is free. */
+function agentSend(agent: Agent, url: string, method: string, body?: Buffer) {
+  return new Promise<{ status: number; reused: boolean }>((resolve, reject) => {
+    const client = request(url, {
+      method,
+      headers: { ...headers, ...(body ? { "content-length": String(body.length) } : {}) },
+      agent,
+    });
+    let status = 0;
+    client.on("error", reject);
+    client.on("response", (response) => {
+      status = response.statusCode!;
+      response.resume();
+    });
+    client.on("close", () => resolve({ status, reused: client.reusedSocket }));
+    client.end(body);
+  });
+}
+
 function paddedBody(size: number) {
   const json = JSON.stringify({ targets: [{ runId: "a" }], waitMs: 0 });
   return Buffer.concat([Buffer.from(json), Buffer.alloc(size - Buffer.byteLength(json), 0x20)]);
@@ -255,7 +285,7 @@ describe("POST /v2/runs/wait-many over real HTTP", () => {
     expect(f.signals[0]!.aborted).toBe(false);
     expect(f.listeners.size).toBe(1);
     f.questions.set("run-a", ["question-a"]);
-    f.wake("run-a");
+    f.wake("a");
     const response = await bounded(pending.done);
     expect(response.status).toBe(200);
     expect(RunWaitManyResult.parse(JSON.parse(response.body))).toEqual({
@@ -371,43 +401,61 @@ describe("POST /v2/runs/wait-many over real HTTP", () => {
     expect(readSignal?.aborted).toBe(true);
     expect(getEventListeners(readSignal!, "abort")).toHaveLength(0);
     const calls = f.snapshot.mock.calls.length;
-    f.wake("run-a");
+    f.wake("a");
     await nextTurn();
     expect(f.snapshot).toHaveBeenCalledTimes(calls);
     await bounded(f.server.stop()); // A detached read/handler would keep stop pending.
   });
 
-  it("bounds an in-flight snapshot by the observer deadline and settles its read before replying", async () => {
+  it("lets the observer deadline wait for a started read and answers that read's facts", async () => {
     const f = await fixture();
-    let active = 0;
+    f.seed("a");
+    const entered = deferred<void>();
+    const release = deferred<void>();
     let readSignal: AbortSignal | undefined;
-    f.snapshot.mockImplementationOnce(async (_ids, signal) => {
+    f.snapshot.mockImplementationOnce(async (ids, signal) => {
       readSignal = signal;
-      active++;
-      try {
-        await new Promise<void>((resolve) => {
-          if (signal?.aborted) return resolve();
-          signal?.addEventListener("abort", () => resolve(), { once: true });
-        });
-        return [{ status: null, pending: null, token: null, problem: "not_observed" as const }];
-      } finally {
-        active--;
-      }
+      entered.resolve();
+      await release.promise;
+      return f.read(ids, signal);
     });
-    const response = await bounded(
-      f.raw(JSON.stringify({ targets: [{ runId: "a" }], waitMs: 30 })).done,
-    );
+    const pending = f.raw(JSON.stringify({ targets: [{ runId: "a" }], waitMs: 30 }));
+    let answered = false;
+    void pending.done.then(() => {
+      answered = true;
+    });
+    await bounded(entered.promise);
+    await sleep(80);
+    expect(answered).toBe(false);
+    release.resolve();
+    const response = await bounded(pending.done);
     expect(response.status).toBe(200);
     expect(RunWaitManyResult.parse(JSON.parse(response.body))).toEqual({
       wakeReason: "timeout",
       attention: [],
-      summaries: [{ status: null, pending: null, token: null, problem: "not_observed" }],
+      summaries: await f.read(["a"]),
     });
-    expect(active).toBe(0);
-    expect(readSignal?.aborted).toBe(true);
+    expect(f.snapshot).toHaveBeenCalledOnce();
+    expect(readSignal?.aborted).toBe(false);
     expect(f.listeners.size).toBe(0);
     expect(getEventListeners(readSignal!, "abort")).toHaveLength(0);
-    await bounded(f.server.stop());
+  });
+
+  it("answers a wait that a stopping daemon interrupts with a retryable 503", async () => {
+    const f = await fixture();
+    f.seed("a");
+    const pending = f.raw(JSON.stringify({ targets: [{ runId: "a" }], waitMs: 1000 }));
+    await bounded(f.firstRead.promise);
+    await nextTurn();
+    const stopped = f.server.stop();
+    const response = await bounded(pending.done);
+    expect(response.status).toBe(503);
+    expect(ControlProblem.parse(JSON.parse(response.body))).toMatchObject({
+      code: "daemon_stopping",
+      retryable: true,
+    });
+    await bounded(stopped);
+    expect(f.listeners.size).toBe(0);
   });
 
   it.each([
@@ -469,7 +517,10 @@ describe("POST /v2/runs/wait-many over real HTTP", () => {
     expect(result.summaries).toHaveLength(1000);
     expect(result.summaries[999]).toMatchObject({ status: "succeeded", problem: null });
     expect(f.snapshot).toHaveBeenCalledOnce();
-    expect(f.snapshot.mock.calls[0]![0]).toEqual(targets.map((target) => target.runId));
+    // Repeated handles share one read.
+    expect(f.snapshot.mock.calls[0]![0]).toEqual([
+      ...new Set(targets.map((target) => target.runId)),
+    ]);
     expect(f.subscribe).toHaveBeenCalledOnce();
     expect(f.listeners.size).toBe(0);
 
@@ -520,6 +571,113 @@ describe("POST /v2/runs/wait-many over real HTTP", () => {
       await bounded(Promise.allSettled([upload]));
     },
   );
+
+  it("keeps a keep-alive connection after refusing a large JSON body, so the next request reuses it", async () => {
+    const f = await fixture();
+    f.seed("a", "succeeded");
+    const agent = new Agent({ keepAlive: true, maxSockets: 1 });
+    const send = (body: Buffer) => agentSend(agent, `${f.base}/v2/runs/wait-many`, "POST", body);
+    try {
+      expect((await bounded(send(paddedBody(3 * 1024 * 1024)))).status).toBe(413);
+      const next = await bounded(
+        send(Buffer.from(JSON.stringify({ targets: [{ runId: "a" }], waitMs: 0 }))),
+      );
+      expect(next).toEqual({ status: 200, reused: true });
+    } finally {
+      agent.destroy();
+    }
+  });
+
+  it("leaves no socket listener behind across many requests on one keep-alive connection", async () => {
+    const f = await fixture();
+    f.seed("a", "succeeded");
+    let serverSocket: Socket | undefined;
+    (Reflect.get(f.server, "server") as Server).once("connection", (socket: Socket) => {
+      serverSocket = socket;
+    });
+    const agent = new Agent({ keepAlive: true, maxSockets: 1 });
+    const wait = Buffer.from(JSON.stringify({ targets: [{ runId: "a" }], waitMs: 0 }));
+    try {
+      expect(
+        (await bounded(agentSend(agent, `${f.base}/v2/runs/wait-many`, "POST", wait))).status,
+      ).toBe(200);
+      const baseline = serverSocket!.listenerCount("close");
+      for (let round = 0; round < 12; round++) {
+        const refused = paddedBody(RUN_WAIT_MANY_REQUEST_BYTES + 1);
+        expect(
+          await bounded(agentSend(agent, `${f.base}/v2/runs/wait-many`, "POST", refused)),
+        ).toEqual({ status: 413, reused: true });
+        expect(await bounded(agentSend(agent, `${f.base}/healthz`, "GET"))).toEqual({
+          status: 200,
+          reused: true,
+        });
+      }
+      expect(serverSocket!.listenerCount("close")).toBe(baseline);
+    } finally {
+      agent.destroy();
+    }
+  });
+
+  it("answers pipelined requests in order before closing a connection whose refused body is unfinished at stop", async () => {
+    const f = await fixture();
+    f.seed("job");
+    const refused = deferred<void>();
+    const discard = RefusedBodies.prototype.discard;
+    vi.spyOn(RefusedBodies.prototype, "discard").mockImplementation(function (
+      this: RefusedBodies,
+      res,
+    ) {
+      discard.call(this, res);
+      if (!res.req.complete) refused.resolve();
+    });
+    const { hostname, port } = new URL(f.base);
+    const socket = connect({ host: hostname, port: Number(port) });
+    socket.on("error", () => {});
+    let text = "";
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk: string) => {
+      text += chunk;
+    });
+    const ended = new Promise<string>((resolve) => socket.once("end", () => resolve(text)));
+    const head = (length: number) =>
+      `POST /v2/runs/wait-many HTTP/1.1\r\nHost: ${hostname}:${port}\r\nAuthorization: ${headers.authorization}\r\nX-Claudexor-Protocol-Major: 3\r\nContent-Type: application/json\r\nContent-Length: ${length}\r\n\r\n`;
+    const wait = JSON.stringify({ targets: [{ runId: "job" }], waitMs: 50_000 });
+    socket.write(head(Buffer.byteLength(wait)) + wait);
+    await bounded(f.firstRead.promise);
+    // Pipelined behind the open wait: a body the route refuses, left unfinished.
+    socket.write(head(16 * 1024 * 1024));
+    socket.write(Buffer.alloc(3 * 1024 * 1024, 0x20));
+    await bounded(refused.promise);
+    const stopped = f.server.stop();
+    const raw = await bounded(ended);
+    expect(raw.indexOf("HTTP/1.1 503 ")).toBe(0);
+    expect(raw.indexOf("HTTP/1.1 413 ")).toBeGreaterThan(0);
+    expect(raw).toContain('"code":"daemon_stopping"');
+    await bounded(stopped);
+    socket.destroy();
+  });
+
+  it("answers 503 when stop aborts a read that rejects on abort", async () => {
+    const f = await fixture();
+    const entered = deferred<void>();
+    f.snapshot.mockImplementationOnce(
+      (_ids, signal) =>
+        new Promise<never>((_resolve, reject) => {
+          entered.resolve();
+          signal!.addEventListener("abort", () => reject(signal!.reason), { once: true });
+        }),
+    );
+    const pending = f.raw(JSON.stringify({ targets: [{ runId: "a" }], waitMs: 1000 }));
+    await bounded(entered.promise);
+    const stopped = f.server.stop();
+    const response = await bounded(pending.done);
+    expect(response.status).toBe(503);
+    expect(ControlProblem.parse(JSON.parse(response.body))).toMatchObject({
+      code: "daemon_stopping",
+      retryable: true,
+    });
+    await bounded(stopped);
+  });
 
   it("retains the existing shared-reader 10MiB default for old callers", async () => {
     const f = await fixture();

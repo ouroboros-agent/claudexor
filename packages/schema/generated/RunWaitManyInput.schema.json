@@ -15,10 +15,17 @@
                 "maxLength": 256
               },
               "seen": {
-                "type": "string",
-                "minLength": 43,
-                "maxLength": 43,
-                "pattern": "^[A-Za-z0-9_-]{43}$"
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 43,
+                    "maxLength": 43,
+                    "pattern": "^[A-Za-z0-9_-]{43}$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [

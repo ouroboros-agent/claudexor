@@ -1,28 +1,40 @@
-import { setImmediate as yieldToAdmission } from "node:timers/promises";
 import {
-  RunWaitManyInput,
   RunWaitManyResult,
   isTerminalLifecycle,
+  type RunWaitManyInput,
   type RunWaitManySummary,
 } from "@claudexor/schema";
 
+/** Committed changes of observation inputs (job and run ids). A host that
+ * cannot name them calls the listener without an argument: re-read everything. */
+export type RunObservationListener = (changed?: ReadonlySet<string>) => void;
+
 export interface RunWaitManyHost {
   snapshot(ids: readonly string[], signal?: AbortSignal): Promise<RunWaitManySummary[]>;
-  subscribe?(listener: (event: { run_id: string }) => void): () => void;
+  /** Post-commit notices for observation inputs. A host without them is polled. */
+  subscribe?(listener: RunObservationListener): () => void;
   pollMs?: number;
 }
 
-/** One observation, never a worker operation. Notifications invalidate the current
- * pass; they carry no attention facts or chronological cross-run ordering. */
-export async function waitForRunAttention(
-  input: unknown,
+/**
+ * One observation, never a worker operation. Every call publishes at least one
+ * completed pass with its attention indexes.
+ * `waitMs` bounds the wait between passes, never a pass: the deadline wakes a
+ * last full pass instead of interrupting one. Only `signal` aborts a read.
+ * Between the first and the last pass, a notice re-reads only the handles it
+ * names.
+ */
+export async function observeRunAttention(
+  { targets, waitMs }: RunWaitManyInput,
   host: RunWaitManyHost,
   signal?: AbortSignal,
 ): Promise<RunWaitManyResult> {
-  // All callers, including future non-HTTP projections, share schema admission.
-  const { targets, waitMs } = RunWaitManyInput.parse(input);
-  const ids = targets.map((target) => target.runId);
-  let summaries: RunWaitManySummary[] = targets.map(() => ({
+  // Duplicate handles share one read and keep their own positions.
+  const positions = new Map<string, number[]>();
+  targets.forEach(({ runId }, index) =>
+    positions.set(runId, [...(positions.get(runId) ?? []), index]),
+  );
+  const summaries: RunWaitManySummary[] = targets.map(() => ({
     status: null,
     pending: null,
     token: null,
@@ -33,97 +45,92 @@ export async function waitForRunAttention(
     RunWaitManyResult.parse({ wakeReason, attention, summaries });
   if (signal?.aborted) return result("aborted");
 
-  const reads = new AbortController();
-  let timedOut = false;
-  let dirty = true;
+  let timedOut = waitMs === 0;
+  let full = true;
+  const dirty = new Set<string>();
   let closed = false;
   let notify: (() => void) | undefined;
-  let unsubscribe: (() => void) | undefined;
-  let deadline: ReturnType<typeof setTimeout> | undefined;
-  let poll: ReturnType<typeof setInterval> | undefined;
   const wake = () => {
-    if (closed) return;
-    dirty = true;
-    notify?.();
+    if (!closed) notify?.();
   };
-  const abort = () => {
-    reads.abort();
+  const changed: RunObservationListener = (keys) => {
+    if (!keys) full = true;
+    else for (const key of keys) if (positions.has(key)) dirty.add(key);
+    if (full || dirty.size > 0) wake();
+  };
+  const everything = () => {
+    full = true;
     wake();
   };
-  signal?.addEventListener("abort", abort, { once: true });
+  signal?.addEventListener("abort", wake, { once: true });
+  const deadline =
+    waitMs > 0
+      ? setTimeout(() => {
+          timedOut = true;
+          everything();
+        }, waitMs)
+      : undefined;
+  let unsubscribe: (() => void) | undefined;
+  let poll: ReturnType<typeof setInterval> | undefined;
   try {
-    // No alias filter: a queued job can bind to an unknown run ID. The compact
-    // snapshot owns address resolution, and unrelated progress cannot be attention.
-    unsubscribe = host.subscribe?.(wake);
-    if (waitMs > 0) {
-      deadline = setTimeout(() => {
-        timedOut = true;
-        abort();
-      }, waitMs);
-      // One timer only sets the dirty latch, even while a snapshot is pending.
-      poll = setInterval(wake, host.pollMs ?? 250);
-    }
+    // Subscribe before the first read so a commit during it is not lost.
+    if (host.subscribe) unsubscribe = host.subscribe(changed);
+    else if (waitMs > 0) poll = setInterval(everything, host.pollMs ?? 250);
     while (true) {
-      if (signal?.aborted) return result("aborted");
-      if (timedOut) return result("timeout");
-      dirty = false;
+      // This pass claims the current notices; later ones wait for the next.
+      const wasFull = full;
+      const handles = full ? [...positions.keys()] : [...dirty];
+      full = false;
+      dirty.clear();
       let rows: RunWaitManySummary[];
       try {
-        // Await the active read itself on every exit. Abort/deadline signal its
-        // cooperative work rather than racing and detaching an unresolved task.
-        rows = await host.snapshot(ids, reads.signal);
+        rows = await host.snapshot(handles, signal);
       } catch (error) {
+        // A read that rejects because the caller aborted is the abort itself.
         if (signal?.aborted) return result("aborted");
-        if (timedOut) return result("timeout");
         throw error;
       }
-      if (rows.length !== targets.length)
+      // An aborted pass is incomplete, so it publishes nothing.
+      if (signal?.aborted) return result("aborted");
+      if (rows.length !== handles.length)
         throw Object.assign(new Error("run observation returned an incomplete summary batch"), {
           code: "invalid_service_response",
           status: 500,
         });
-      if (signal?.aborted) {
-        // The source preserves completed positions and explicitly marks unread
-        // ones not_observed; never replace them with inferred lifecycle facts.
-        summaries = rows;
-        return result("aborted");
-      }
-      // An interrupted deadline pass cannot replace the last completed pass.
-      if (timedOut) return result("timeout");
-      summaries = rows;
+      rows.forEach((row, index) => {
+        for (const position of positions.get(handles[index]!)!) summaries[position] = row;
+      });
+      // A completed pass and its attention are published together.
       const attention: number[] = [];
       let problems = false;
-      for (let index = 0; index < summaries.length; index++) {
-        if (index > 0 && index % 64 === 0) await yieldToAdmission();
-        if (signal?.aborted) return result("aborted");
-        if (timedOut) return result("timeout");
-        const row = summaries[index]!;
-        if (row.problem !== null) {
-          problems = true;
-          continue;
-        }
-        if ((row.pending || isTerminalLifecycle(row.status)) && targets[index]!.seen !== row.token)
+      summaries.forEach((row, index) => {
+        const seen = targets[index]!.seen;
+        // Echoing a problem row's null token acknowledges that problem.
+        if (row.problem !== null) problems ||= seen !== null;
+        else if ((row.pending || isTerminalLifecycle(row.status)) && seen !== row.token)
           attention.push(index);
-      }
+      });
       if (attention.length) return result("attention", attention);
       if (problems) return result("problems");
-      if (waitMs === 0) return result("timeout");
-      if (dirty) continue;
-      await new Promise<void>((resolve) => {
-        notify = resolve;
-        // Recheck after installing the waiter: no notification may be lost
-        // between the completed pass and the next sleep.
-        if (dirty || reads.signal.aborted) resolve();
-      });
+      // The answer after the deadline rests on a full pass, so a write that was
+      // never noticed still shows.
+      if (timedOut && wasFull) return result("timeout");
+      if (!full && dirty.size === 0)
+        await new Promise<void>((resolve) => {
+          notify = resolve;
+          // Recheck after installing the waiter: no notice may be lost between
+          // the completed pass and the sleep.
+          if (full || dirty.size > 0 || signal?.aborted) resolve();
+        });
       notify = undefined;
+      if (signal?.aborted) return result("aborted");
     }
   } finally {
     closed = true;
     clearTimeout(deadline);
     clearInterval(poll);
-    signal?.removeEventListener("abort", abort);
+    signal?.removeEventListener("abort", wake);
     notify = undefined;
-    reads.abort();
     unsubscribe?.();
   }
 }

@@ -48,7 +48,7 @@ import { RunContinuityReceipt, RunResumable } from "./run-continuity.js";
 import { ContinueCarrierPreference, ControlRetainedEnvelope } from "./run-continuation.js";
 import { ProcessingPreference } from "./processing.js";
 import { PromptCacheTtl } from "./prompt-cache.js";
-import { TaskGroupId } from "./task-group.js";
+import { TaskGroupId, TaskGroupReceipt } from "./task-group.js";
 export { RunExecution } from "./control-run-execution.js";
 export { ControlTimelineEvent } from "./control-timeline.js";
 export const ControlReviewerPanelEntry = z
@@ -1068,6 +1068,10 @@ export const ControlRunDecisionResponse = z
     newRunId: Id.optional().describe(
       "New run id when the decision re-enqueues a turn (rerun_with_feedback).",
     ),
+    newJobId: Id.optional().describe(
+      "Accepted job handle of the re-enqueued work, present even before its run binds.",
+    ),
+    ...TaskGroupReceipt.partial().shape,
     message: z.string().optional().describe("Human-readable detail."),
   })
   .describe("Response to an operator run decision.");

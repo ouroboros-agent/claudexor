@@ -5,9 +5,10 @@ import { RunObservationRecord, RunWaitManySummary } from "./run-observation.js";
 import { TaskGroupId } from "./task-group.js";
 
 export const TASK_GROUP_RUNS_RESULT_BYTES = 131_072;
+export const TASK_GROUP_CURSOR_CHARS = 2048;
 const storeId = ControlHandshakeResponse.shape.storeId.unwrap();
 const viewToken = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
-const cursorString = z.string().max(2048);
+const cursorString = z.string().max(TASK_GROUP_CURSOR_CHARS);
 
 export const TaskGroupRunsInput = z
   .object({
@@ -90,11 +91,15 @@ export function encodeTaskGroupCursor(value: TaskGroupCursor): string {
   const parsed = TaskGroupCursor.safeParse(value);
   if (!parsed.success) throw invalidCursor();
   const encoded = Buffer.from(JSON.stringify(parsed.data), "utf8").toString("base64url");
-  if (encoded.length > 2048) throw invalidCursor();
+  if (encoded.length > TASK_GROUP_CURSOR_CHARS) throw invalidCursor();
   return encoded;
 }
 export function decodeTaskGroupCursor(raw: string): TaskGroupCursor {
-  if (typeof raw !== "string" || raw.length > 2048 || !/^[A-Za-z0-9_-]+$/.test(raw))
+  if (
+    typeof raw !== "string" ||
+    raw.length > TASK_GROUP_CURSOR_CHARS ||
+    !/^[A-Za-z0-9_-]+$/.test(raw)
+  )
     throw invalidCursor();
   try {
     const bytes = Buffer.from(raw, "base64url");

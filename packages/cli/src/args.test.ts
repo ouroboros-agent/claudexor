@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  decimalFlag,
   flagBool,
   flagStr,
   flagStringList,
@@ -155,5 +156,17 @@ describe("boolean flags never eat positionals", () => {
     const a = parseArgs(["run", "--json=false", "task"]);
     expect(flagBool(a, "json")).toBe(false);
     expect(a._).toEqual(["run", "task"]);
+  });
+
+  it("reads a decimal flag strictly and refuses other number spellings as usage errors", () => {
+    const read = (value: string) =>
+      decimalFlag(parseArgs(["runs", "--limit", value]), "limit", "usage");
+    expect(read("0")).toBe(0);
+    expect(read("200")).toBe(200);
+    expect(decimalFlag(parseArgs(["runs"]), "limit", "usage")).toBeUndefined();
+    for (const value of ["", "-1", "+5", "1.5", "1e3", "0x10", "05", " 5", "Infinity"])
+      expect(() => read(value)).toThrow(
+        expect.objectContaining({ category: "usage", code: "invalid_argument" }),
+      );
   });
 });

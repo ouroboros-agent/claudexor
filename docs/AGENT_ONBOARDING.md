@@ -232,7 +232,10 @@ Every mutating result carries a `runId`. The decision tree:
    receipt says which.
 5. Lost the handle? `claudexor inspect <runId>`, `claudexor follow <runId>`,
    or the MCP durable tools `claudexor_runs` / `claudexor_run_status` /
-   `claudexor_run_result` / `claudexor_apply_check`.
+   `claudexor_run_result` / `claudexor_apply_check`. Launched them under a saved
+   `taskGroupId`? `claudexor_task_group_runs` (CLI `task-group-runs`) returns the
+   accepted job handles from the group and saved store id alone; then watch them
+   together with `claudexor_runs_wait`.
 
 ## When to ask the human
 
