@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { RunFailure, RunTelemetry, SCHEMA_VERSION, TaskContract } from "@claudexor/schema";
 import { projectBulkJob } from "./bulk-worker.js";
-import { ROUTE_HEALTH_ARTIFACT_MAX_BYTES } from "./route-health-facts.js";
+import { ROUTE_HEALTH_ARTIFACT_MAX_BYTES, type RouteHealthFacts } from "./route-health-facts.js";
 import type { DaemonRunRecord } from "./run-record.js";
 import { eventsParseCountForTests, resetEventsParseCountForTests } from "./run-timeline.js";
 
@@ -90,8 +90,12 @@ function runWith(files: Record<string, string>, error?: string): DaemonRunRecord
   };
 }
 
+/** The worker job exactly as the bulk executor runs it. */
 const routeFacts = (record: DaemonRunRecord) =>
-  projectBulkJob({ kind: "route-facts", input: { record } }, async () => null);
+  projectBulkJob(
+    { kind: "route-facts", input: { record } },
+    async () => null,
+  ) as Promise<RouteHealthFacts>;
 
 /** Two thousand journal lines: the summarizer parses them all, route facts none. */
 const journal = Array.from({ length: 2_000 }, (_, i) =>
