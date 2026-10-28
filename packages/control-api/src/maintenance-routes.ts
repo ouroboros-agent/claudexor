@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import {
   ControlGcReceipt,
   ControlGcRequest,
+  ControlGcLastResponse,
   ControlHarnessMaintenanceCreateRequest,
   ControlHarnessMaintenanceInventory,
   ControlHarnessMaintenanceOperation,
@@ -16,6 +17,7 @@ import { routeValue, serviceResponse } from "./route-stages.js";
 export interface MaintenanceRouteServices {
   /** One retention pass over engine-owned runtime artifacts (W3.6). */
   runRetention(request: ControlGcRequest): Promise<ControlGcReceipt>;
+  lastRetention(): Promise<ControlGcLastResponse>;
   /** Harness maintenance (harness-maintenance-service.ts): read-only facts. */
   maintenanceInventory(input: {
     harnessIds?: string[];
@@ -39,6 +41,15 @@ export interface MaintenanceRouteContext {
 
 /** The maintenance route family's catalog entries, kept beside the routes. */
 export const MAINTENANCE_OPERATION_DRAFTS: OperationDraft[] = [
+  {
+    method: "GET",
+    path: "/v2/maintenance/gc",
+    mutability: "read_only",
+    requestSchema: null,
+    responseSchema: "ControlGcLastResponse",
+    responseKind: "json",
+    summary: "Read the durable last retention pass; never starts cleanup.",
+  },
   {
     method: "POST",
     path: "/v2/maintenance/gc",
@@ -118,6 +129,14 @@ export async function handleMaintenanceRoute(
   res: ServerResponse,
 ): Promise<boolean> {
   const services = ctx.services;
+  if (method === "GET" && path === "/maintenance/gc") {
+    if (!services?.lastRetention) return false;
+    const value = await routeValue(ctx, res, 500, () => services.lastRetention!());
+    if (!value.ok) return true;
+    return serviceResponse(ctx, res, "lastRetention", () =>
+      ctx.json(res, 200, ControlGcLastResponse.parse(value.value)),
+    );
+  }
   if (method === "POST" && path === "/maintenance/gc") {
     const service = services?.runRetention;
     if (!service) return false;
@@ -127,9 +146,14 @@ export async function handleMaintenanceRoute(
     if (!request.ok) return true;
     const receipt = await routeValue(ctx, res, 500, () => service(request.value));
     if (!receipt.ok) return true;
-    return serviceResponse(ctx, res, "runRetention", () =>
-      ctx.json(res, 200, ControlGcReceipt.parse(receipt.value)),
-    );
+    return serviceResponse(ctx, res, "runRetention", () => {
+      const parsed = ControlGcReceipt.parse(receipt.value);
+      if (request.value.retention_report) ctx.json(res, 200, parsed);
+      else {
+        const { held: _held, holds: _holds, truncated: _truncated, ...legacy } = parsed;
+        ctx.json(res, 200, legacy);
+      }
+    });
   }
   if (method === "GET" && path === "/maintenance/harnesses") {
     if (!services?.maintenanceInventory) return false;

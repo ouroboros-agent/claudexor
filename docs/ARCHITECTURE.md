@@ -1754,8 +1754,8 @@ persistence classifier.
 Deliberate limits. A real secret an agent wrote stays in the tree or is applied
 exactly: the agent already had a shell there, and the disclosure names the
 files. The exact object and the post-turn snapshot hold the same bytes as the
-tree; the object store has no garbage collection, so the object of an isolated
-candidate that later loses its race stays there unreferenced. Applying `final/patch.diff` outside Claudexor applies `[redacted]`; the
+tree; their lifetime follows [disk retention](#7-control-api), including unnamed
+objects from isolated candidates that later lose their race. Applying `final/patch.diff` outside Claudexor applies `[redacted]`; the
 notice says so. Directory results still fail closed on their content scan
 (their manifest has no per-file `withheld` form). A token split across two
 events is redacted per event, vendor session transcripts are outside this
@@ -2715,6 +2715,7 @@ visibility, not a permanent roster. Reads add no execution or approval authority
 - `GET /v2/harnesses`
 - `POST /v2/harnesses/:id/auth-readiness`
 - `GET /v2/harnesses/:id/models`
+- `GET /v2/maintenance/gc`
 - `POST /v2/maintenance/gc`
 - `GET /v2/maintenance/harnesses`
 - `POST /v2/maintenance/operations`
@@ -3829,7 +3830,29 @@ retirement rechecks directory identity and current link counts before unlink.
 It is also exposed as the schema-first control op
 `POST /v2/maintenance/gc` (dry-run first-class, typed receipt disclosing
 every deletion AND why every survivor survived); `claudexor gc` is its thin
-client. It deletes ONLY terminal, unreferenced, non-actionable trees past
+client. `GET /v2/maintenance/gc` and `claudexor gc --last` read the last durable
+non-preview pass without starting cleanup. The engine stores one summary (at most
+16 KiB) in its SQL meta after model-resource and upload-binding cleanup, including
+failures of those outer steps. Its flusher barrier completes before the pass returns,
+and shutdown drains that barrier; persistence failures propagate to the caller.
+The summary carries `outcome` (`completed`, `held`, `truncated`, `failed`), start/end
+timestamps, freed bytes, run keep counts, separate counts of held roots and vetoed native homes,
+per-class hold counts with one example and the first continuously held `since`,
+and error count/first error. A clean observed pass clears holds; previews never replace it.
+A queued pass cancelled before it enters the runner writes nothing. A pass that
+starts but obtains no inventory preserves the preceding holds, held counts and
+`since` while reporting its own failure or truncation. A truncated pass also carries
+preceding hold classes it does not report again, retaining their earliest `since`
+and the larger previous/current held counts. A pass that runs to its end records
+only the holds it observed. Only a pass with no hold,
+suppression or error reports `completed`. Permanently `not_pruned` native adapters
+and unknown native entries are informational in the native-home receipt, not holds;
+unknown entries remain untouched and counted in `kept_unknown`. `held.native_homes`
+counts vetoed homes only. Absence is `last: null`. An unreadable stored summary
+also returns `last: null` with a diagnostic shown by `gc --last`; it cannot prevent
+the next pass from replacing the record. Engines predating this read surface have no GET operation. New POST
+hold/truncation fields require `retention_report`, requested by a lockstep CLI;
+older receipts parse with zero/empty defaults. It deletes ONLY terminal, unreferenced, non-actionable trees past
 the configured age (`retention.*` in the global config: runs 30d, reviews
 14d, newest N for active registrations and archived registrations whose roots exist,
 and the built-in no-project scope): an orphaned namespace has no keep-last owner,
@@ -3857,6 +3880,35 @@ repeating the same Apply key after retention removed that patch returns 404, whi
 the durable command receipt remains reusable. This route behavior predates retention
 changes; receipt replay does not promise that an expired artifact is still available.
 An expired directory cannot become evidence again. Durable `context/continuation.json` lists are published through a private temporary file, file flush, atomic rename and directory flush. Unreadable reference errors name the file or SQL row and partition. A bad run-local work-product or custody file keeps that run; unreadable SQL or continuity owners hold the pass because their references can cross namespaces. Pending recovery holds run retirement install-wide until recovery completes.
+An archived registration with no partition owns no generation and does not hold
+its root. A dangling non-null partition id or an active registration with no
+partition still holds its root and vetoes native pruning, disclosed as
+`missing_partition` or `unbound_active_registration` with root/home counts separate
+from run survivor counts.
+
+Private revert/exact-patch anchors are run-owned. After run retirement, a pass
+collects `meta.revert_anchor_id`, `meta.exact_patch_object` and delivery-state
+`revertAnchorId` from every surviving run across all runtime namespaces. Unreadable
+metadata or any skipped/held namespace preserves every anchor that pass. An
+unnamed anchor is unlinked only beyond `runs_max_age_days`, using a fresh mtime
+check immediately before synchronous unlink. Every anchor publication, create or
+reuse, touches its mtime; unlinking a sibling does not renew its age. Patch-cache
+names are then pruned at their last link; bytes count only when the inode loses
+its last link. Empty engine containers are removed bottom-up with `rmdir`: the
+namespace, `runs/` and its `.retiring/` container, `patches/`, `anchors/objects/`,
+`anchors/`, `workspaces/` and its task containers, `lanes/` and its thread containers,
+and `threads/`. Retirement claim contents remain opaque.
+This shallow container map never descends into run content, workspace envelopes,
+thread worktrees, lane/harness homes, unknown trees, Git repositories or links.
+Tombstones remain. A container must predate the pass start by more than two seconds
+(to allow filesystem timestamp granularity); its age and identity are checked
+from the snapshot. Only an empty listing permits a removal attempt; `rmdir` supplies
+the final emptiness proof if a new entry races with that listing. Removing empty
+children does not renew a surviving container's age. Per-directory failures are
+counted while siblings continue, and cleanup yields between namespaces. The frozen
+`journal-legacy`, `journal-archived` and `resource-store/idempotency` stores remain
+untouched (INV-143).
+
 Readers see that expiration while recursive deletion of the previously
 inventoried contents runs asynchronously; no directory rename blocks admission.
 A durable intent in the parent's private `.retiring` directory binds the source
@@ -5819,8 +5871,8 @@ shared inode before publishing its durable authoritative link. The cache path is
 advisory. A mismatching cache object is atomically replaced with fresh supplied bytes before linking a new publication; existing links to the old inode are never rewritten. Filesystems that cannot link receive independent byte-identical copies. Masked display copies
 and their different exact bytes remain separate objects. Existing plain-file
 run trees and anchors stay readable without migration. Retention removes cache
-entries only after their last run/anchor link is gone; an anchor keeps its
-existing independent lifetime.
+entries only after their last run/anchor link is gone; anchors follow the
+run-owned [retention contract](#7-control-api).
 
 `final/telemetry.yaml` (`RunTelemetry` in the schema) is the single engine-owned
 record of per-attempt web evidence (requested/effective mode, attempted,

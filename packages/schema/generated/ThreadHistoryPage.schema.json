@@ -518,7 +518,7 @@
                                 "null"
                               ],
                               "default": null,
-                              "description": "GC-independent revert anchor."
+                              "description": "Run-owned revert anchor."
                             },
                             "revertable": {
                               "type": "boolean",

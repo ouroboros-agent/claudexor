@@ -22,9 +22,12 @@ import {
   rmSync,
   symlinkSync,
   writeFileSync,
+  utimesSync,
+  renameSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { runRetentionPass } from "./retention.js";
 import { connect } from "node:net";
 import { execFileSync } from "node:child_process";
 import { projectRuntimeDir, sha256 } from "@claudexor/util";
@@ -7947,7 +7950,32 @@ describe("DaemonControlApiServer", () => {
 
     it("serves the redacted copy, yet Apply and apply/check use the exact private object", async () => {
       await withAppliableProject(async (base, project, record) => {
+        const otherRuntime = reapMk(join(tmpdir(), "claudexor-cross-namespace-"));
+        const otherRuns = join(otherRuntime, "runs");
+        mkdirSync(otherRuns);
+        const movedRun = join(otherRuns, "run-d1");
+        renameSync(record.runDir!, movedRun);
+        record.runDir = movedRun;
         redactedRun(record, project);
+        const runtime = projectRuntimeDir(project);
+        const anchor = join(runtime, "anchors", "objects", `${sha256(exactPatch).slice(7)}.patch`);
+        utimesSync(anchor, new Date("2020-01-01"), new Date("2020-01-01"));
+        // The run is in the fixture's other namespace; only exact_patch_object names this anchor.
+        expect(dirname(record.runDir!)).not.toBe(join(runtime, "runs"));
+        const gc = await runRetentionPass(
+          { runsMaxAgeDays: 30, reviewsMaxAgeDays: 14, keepLastRunsPerProject: 0 },
+          { dry_run: false },
+          {
+            projects: () => [
+              { root: project, runsDir: join(runtime, "runs"), reviewsDir: null },
+              { root: dirname(record.runDir!), runsDir: dirname(record.runDir!), reviewsDir: null },
+            ],
+            records: () => [],
+            referencedRunIds: () => new Set(["run-d1"]),
+          },
+        );
+        expect(gc.holds).toEqual([]);
+        expect(existsSync(anchor)).toBe(true);
 
         const served = await apiFetch(`${base}/runs/run-d1/artifacts/final/patch.diff`, {
           headers: authed(),
