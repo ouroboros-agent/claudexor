@@ -101,7 +101,10 @@ export function evidenceLevel(i: RunEventsIntegrity): ControlEvidenceIntegrity {
  * preserves the historical array-only shape for callers that do not disclose
  * integrity.
  */
-export function readRunEventsWithIntegrity(rec: RunDirCarrier): RunEventsRead {
+export function readRunEventsWithIntegrity(
+  rec: RunDirCarrier,
+  maxBytes = EVENTS_READ_TAIL_BYTES,
+): RunEventsRead {
   const integrity: RunEventsIntegrity = { ...COMPLETE_INTEGRITY };
   if (!rec.runDir) return { events: [], integrity };
   const path = safeArtifactPath(rec.runDir, "events.jsonl");
@@ -130,12 +133,12 @@ export function readRunEventsWithIntegrity(rec: RunDirCarrier): RunEventsRead {
     const st = lstatSync(path);
     if (st.isSymbolicLink() || st.isDirectory())
       return { events: [], integrity: { ...integrity, unreadable: true } };
-    if (st.size > EVENTS_READ_TAIL_BYTES) {
+    if (st.size > maxBytes) {
       // Bounded tail: read only the final window; drop the first (partial) line.
       const fd = openSync(path, "r");
       try {
-        const buf = Buffer.allocUnsafe(EVENTS_READ_TAIL_BYTES);
-        const read = readSync(fd, buf, 0, EVENTS_READ_TAIL_BYTES, st.size - EVENTS_READ_TAIL_BYTES);
+        const buf = Buffer.allocUnsafe(maxBytes);
+        const read = readSync(fd, buf, 0, maxBytes, st.size - maxBytes);
         raw = buf.toString("utf8", 0, read);
       } finally {
         closeSync(fd);
@@ -271,11 +274,20 @@ export function timelineEvents(
   events?: Record<string, unknown>[],
   integrity?: RunEventsIntegrity,
 ): ControlTimelineEvent[] {
+  // Select the displayed window BEFORE projecting: redaction and row
+  // validation cost per row, so omitted rows are only counted, never projected.
+  // Buffered harness frames are retained evidence, never rows. The caller's
+  // snapshot is left whole for the budget and plan projections.
+  const displayable = (events ?? readRunEvents(rec)).filter(
+    (ev) =>
+      String(ev["type"] ?? "event") !== "harness.event" ||
+      eventPayload(eventPayload(ev))["buffered"] !== true,
+  );
+  const omitted = Math.max(0, displayable.length - TIMELINE_EVENTS_MAX);
   const out: ControlTimelineEvent[] = [];
-  for (const ev of events ?? readRunEvents(rec)) {
+  for (const ev of displayable.slice(omitted)) {
     const payload = eventPayload(ev);
     const type = String(ev["type"] ?? "event");
-    if (type === "harness.event" && eventPayload(payload)["buffered"] === true) continue;
     const textKind =
       type === "harness.event" &&
       (payload["type"] === "thinking" || payload["type"] === "message") &&
@@ -357,11 +369,8 @@ export function timelineEvents(
     );
   }
   // Bounded projection with an EXPLICIT truncation marker — no silent truncation.
-  let rows = out;
-  if (out.length > TIMELINE_EVENTS_MAX) {
-    const omitted = out.length - TIMELINE_EVENTS_MAX;
-    rows = out.slice(-TIMELINE_EVENTS_MAX);
-    rows.unshift(
+  if (omitted > 0) {
+    out.unshift(
       ControlTimelineEvent.parse({
         type: "timeline.truncated",
         title: `${omitted} earlier event(s) omitted from this projection`,
@@ -376,8 +385,8 @@ export function timelineEvents(
   // itself so a partial timeline can never read as clean (QA-074). Prepended
   // last so it sits at the very top, most prominent.
   const marker = incompletenessMarker(integrity);
-  if (marker) rows.unshift(marker);
-  return rows;
+  if (marker) out.unshift(marker);
+  return out;
 }
 
 /**

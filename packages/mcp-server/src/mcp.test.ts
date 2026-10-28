@@ -222,7 +222,7 @@ describe("Claudexor MCP server (SDK v2)", () => {
     },
   );
 
-  it("negotiates the client's 2025-06-18 era, lists 39 tools, and answers PING during a slow call", async () => {
+  it("negotiates the client's 2025-06-18 era, lists 41 tools, and answers PING during a slow call", async () => {
     const tools = defaultClaudexorTools(async (p) => {
       if (p.mode === "agent") {
         await sleep(500);
@@ -260,7 +260,7 @@ describe("Claudexor MCP server (SDK v2)", () => {
     expect(init?.result?.protocolVersion).toBe("2025-06-18");
     expect(init?.result?.serverInfo?.name).toBe("claudexor");
     const listedTools = w.responses.find((r) => r.id === 2)?.result?.tools;
-    expect(listedTools).toHaveLength(39);
+    expect(listedTools).toHaveLength(41);
     expect(listedTools.map((tool: { name: string }) => tool.name)).toEqual(
       expect.arrayContaining([
         "claudexor_store_identity",
@@ -277,6 +277,8 @@ describe("Claudexor MCP server (SDK v2)", () => {
         "claudexor_run_wait",
         "claudexor_runs_wait",
         "claudexor_task_group_runs",
+        "claudexor_thread_history",
+        "claudexor_thread_prompt",
         "claudexor_run_event_read",
         "claudexor_run_continue",
         "claudexor_next_message",

@@ -103,5 +103,7 @@ export * from "./store-status.js";
 export * from "./account-resources.js";
 export * from "./account-routing-evidence.js";
 export * from "./host-binding.js";
+
+export * from "./thread-history.js";
 export * from "./deferred-message.js";
 export * from "./captured-run-start.js";

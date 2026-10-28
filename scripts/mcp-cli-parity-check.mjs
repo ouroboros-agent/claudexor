@@ -404,10 +404,52 @@ for (const [field, { flag, type }] of Object.entries(TASK_GROUP_TOOL_FLAGS)) {
   for (const command of cliRegistry.CLI_COMMANDS)
     if (
       command.id !== "task-group-runs" &&
+      !(command.id === "thread" && ["limit", "cursor", "expected-store-id"].includes(flag)) &&
       !(STORE_BOUND_IMPORT_FLAGS.includes(flag) && command.id === "upload-import") &&
       command.flags.includes(flag)
     )
       failures.push(`Task group read flag '--${flag}' leaked into '${command.id}'`);
+}
+
+const HISTORY_TOOL_FLAGS = {
+  limit: "limit",
+  cursor: "cursor",
+  beforeTurnId: "before",
+  afterTurnId: "after",
+  aroundTurnId: "around",
+  expectedStoreId: "expected-store-id",
+};
+const PROMPT_TOOL_FLAGS = {
+  offset: "offset",
+  maxBytes: "max-bytes",
+  expectedStoreId: "expected-store-id",
+};
+const threadCommand = cliRegistry.CLI_COMMANDS.find((command) => command.id === "thread");
+for (const [toolName, verb, mapping] of [
+  ["claudexor_thread_history", "history", HISTORY_TOOL_FLAGS],
+  ["claudexor_thread_prompt", "prompt", PROMPT_TOOL_FLAGS],
+]) {
+  const tool = tools.find((tool) => tool.name === toolName);
+  if (threadCommand?.mutability !== "read" || !tool?.inputSchema.properties?.threadId)
+    failures.push(`${toolName} lacks a read-only CLI equivalent`);
+  const fields = Object.keys(tool?.inputSchema.properties ?? {}).filter(
+    (field) => !["threadId", "turnId"].includes(field),
+  );
+  if (fields.sort().join() !== Object.keys(mapping).sort().join())
+    failures.push(`${toolName} selector fields drifted`);
+  for (const [field, flag] of Object.entries(mapping)) {
+    if (!cliValueFlags.includes(flag) || !threadCommand?.subcommandFlags?.[verb]?.includes(flag))
+      failures.push(`${toolName}.${field} lacks --${flag}`);
+  }
+  if (
+    !threadCommand?.positionalPatterns.some(
+      (pattern) =>
+        pattern.prefix?.[0] === verb &&
+        pattern.min === (verb === "history" ? 2 : 3) &&
+        pattern.max === pattern.min,
+    )
+  )
+    failures.push(`${toolName} positional identity drifted`);
 }
 
 // Keyed import: the store identity read and the one-call import have exact CLI spellings.
@@ -448,6 +490,8 @@ const mappedCliFlags = new Set(
 for (const flag of cliValueFlags) {
   if (
     mappedCliFlags.has(flag) ||
+    Object.values(HISTORY_TOOL_FLAGS).includes(flag) ||
+    Object.values(PROMPT_TOOL_FLAGS).includes(flag) ||
     Object.values(ACCOUNT_TOOL_FLAGS).includes(flag) ||
     Object.values(RUN_OBSERVATION_TOOL_FLAGS).includes(flag) ||
     Object.values(TASK_GROUP_TOOL_FLAGS).some((mapping) => mapping.flag === flag)

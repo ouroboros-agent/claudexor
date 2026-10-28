@@ -1,3 +1,4 @@
+import { threadHistoryQuery } from "./thread-history.js";
 import { accountResourceQuery } from "./account-resource-query.js";
 import {
   ControlProblem,
@@ -71,6 +72,10 @@ export interface McpSurfaceRunnerOptions {
 export function mcpSurfaceRunner(options: McpSurfaceRunnerOptions = {}) {
   return async (p: any, hooks?: SurfaceRunnerHooks) => {
     const beltContext = Boolean(options.delegationParentRunId);
+    if (p?.mode === "__thread_history" || p?.mode === "__thread_prompt") {
+      const { mode, ...input } = p;
+      return threadHistoryQuery(input, mode === "__thread_prompt", beltContext, hooks?.signal);
+    }
     if (typeof p?.mode === "string" && p.mode.startsWith("__upload_")) {
       const { mode, ...input } = p;
       return uploadQuery(mode.slice("__upload_".length), input, beltContext, hooks?.signal);
