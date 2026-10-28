@@ -1070,7 +1070,10 @@ operational setup miss leaves the vendor's config-file fallback available.
 The implementation creates the DB first under a neutral bootstrap filename
 and adopts the canonical name, avoiding Apple's user search-list side effect
 for a direct `create-keychain .../login.keychain-db` call. It never bridges the
-host Keychain or copies credential bytes.
+host Keychain or copies credential bytes. Before every agy child the adapter
+also ensures the profile's vendor `settings.json` allows `read_file(*)`, so
+reads outside the workspace are not auto-denied in headless runs
+([INTEGRATIONS](INTEGRATIONS.md)).
 Linux keeps the config-file/HOME route.
 On Windows the credential is an OS-user-scoped vendor Keychain item: the named
 HOME scopes mutable vendor state without claiming an independent Google

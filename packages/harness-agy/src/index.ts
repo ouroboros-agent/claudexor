@@ -37,6 +37,7 @@ import {
 import { AGY_VENDOR_CLI_VERSION } from "./vendor-cli-version.js";
 import { listAgyModels } from "./models.js";
 import { applyAgyRunProcessing, prepareAgyProcessing } from "./processing.js";
+import { agyReadonlyAccessNote, ensureAgyReadGrant } from "./read-grant.js";
 // The package publishes only what other packages consume. The profile probe,
 // the route resolver and the stream parser are reached through the adapter
 // this file returns, so re-exporting them would be a dead public surface.
@@ -53,6 +54,14 @@ export {
  * plan mode answered read-only prompts and withheld a requested write;
  * accept-edits wrote into the workspace; --dangerously-skip-permissions wrote
  * and ran commands. Owner decision Л-7 admits full access explicitly.
+ *
+ * Those proofs read only inside the workspace. Real readonly callers also read
+ * outside it, and in a headless run plan mode auto-denies such reads and every
+ * shell command: on 2026-10-28, 62 of 123 managed readonly runs (agy 1.3.4)
+ * ended without an answer that way. The profile read grant (read-grant.ts,
+ * live-proven on 1.3.4) restores reading anywhere; commands stay unavailable in
+ * plan mode, and the readonly instructions say so instead of letting a refused
+ * command end the turn.
  */
 function accessArgs(access: AccessProfile): string[] {
   switch (access) {
@@ -454,8 +463,7 @@ async function* runAgy(
   prepareProfileKeychain: (home: string, platform?: NodeJS.Platform) => void,
   listModels: (spec: HarnessModelSpec) => Promise<HarnessModel[]>,
 ): AsyncIterable<HarnessEvent> {
-  const input = promptWithInstructions(spec);
-  if (!input) {
+  if (!promptWithInstructions(spec)) {
     yield {
       type: "error",
       session_id: spec.session_id,
@@ -505,6 +513,34 @@ async function* runAgy(
     }
     // The vendor probe/run remains the final transport authority.
   }
+
+  const readGrant = ensureAgyReadGrant(route.home);
+  // Full access auto-approves every read, so only the other profiles can lose one.
+  if (readGrant.state === "unavailable" && spec.access !== "full")
+    yield {
+      type: "status",
+      session_id: spec.session_id,
+      ts: nowIso(),
+      text: `agy may refuse reads outside the workspace without asking: ${readGrant.reason}`,
+      payload: { code: "agy_read_grant_unavailable" },
+    };
+  const note = spec.access === "readonly" ? agyReadonlyAccessNote(readGrant) : null;
+  if (note)
+    yield {
+      type: "status",
+      session_id: spec.session_id,
+      ts: nowIso(),
+      text: "agy readonly: the engine appended its access note to the instructions",
+      payload: { code: "agy_readonly_access_note", note },
+    };
+  const input = promptWithInstructions(
+    note
+      ? {
+          prompt: spec.prompt,
+          instructions: [spec.instructions?.trim(), note].filter(Boolean).join("\n\n"),
+        }
+      : spec,
+  );
 
   // AGY 1.1.13 selects print mode from piped stdin only without a print/prompt flag.
   const args = ["--output-format", "stream-json"];

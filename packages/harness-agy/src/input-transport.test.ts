@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HarnessRunSpec, type CredentialProfile, type HarnessEvent } from "@claudexor/schema";
 import type { CliRunLoopOptions, SpawnOptions } from "@claudexor/core";
 import { claudexorOwnedRoot } from "@claudexor/util";
 import { createAgyAdapter } from "./index.js";
+import { agySettingsPath } from "./read-grant.js";
 
 const observed = vi.hoisted(() => ({
   options: [] as CliRunLoopOptions[],
@@ -49,7 +50,11 @@ afterEach(() => {
   observed.captures.length = 0;
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
-function spec(prompt: string, instructions?: string): HarnessRunSpec {
+function spec(
+  prompt: string,
+  instructions?: string,
+  access: HarnessRunSpec["access"] = "full",
+): HarnessRunSpec {
   const parent = join(claudexorOwnedRoot(), "profiles");
   mkdirSync(parent, { recursive: true });
   const root = mkdtempSync(join(parent, "agy-input-"));
@@ -70,7 +75,7 @@ function spec(prompt: string, instructions?: string): HarnessRunSpec {
     cwd: root,
     prompt,
     instructions,
-    access: "full",
+    access,
     model_hint: "gemini-fixture",
     resume_session_id: "previous-conversation",
     credential_profile: profile,
@@ -129,6 +134,55 @@ describe("AGY native raw stdin selection", () => {
       expect(events.some((event) => event.type === "error")).toBe(false);
     },
   );
+
+  it("grants reads anywhere and tells a readonly child that commands are unavailable", async () => {
+    const input = spec("Review the attached screenshot.", "caller instructions", "readonly");
+    const events = await collect(input);
+    const options = observed.options[0]!;
+    expect(
+      options.args.slice(options.args.indexOf("--mode"), options.args.indexOf("--mode") + 2),
+    ).toEqual(["--mode", "plan"]);
+    expect(options.args).not.toContain("--dangerously-skip-permissions");
+    const settingsPath = agySettingsPath(input.credential_profile!.isolation_locator!);
+    expect(JSON.parse(readFileSync(settingsPath, "utf8"))).toEqual({
+      permissions: { allow: ["read_file(*)"] },
+    });
+    expect(options.input).toMatch(
+      /^\[SYSTEM INSTRUCTIONS\]\ncaller instructions\n\nENGINE NOTE \(read-only Antigravity run\): Your file tools may read any file or folder on this machine, inside or outside the workspace\. Shell commands are unavailable in this mode: .+\n\[END SYSTEM INSTRUCTIONS\]\n\nReview the attached screenshot\.$/,
+    );
+    const codes = events.map((event) => event.payload?.["code"]);
+    expect(codes).toContain("agy_readonly_access_note");
+    expect(codes).not.toContain("agy_read_grant_unavailable");
+  });
+
+  it("discloses a missing read grant instead of rewriting foreign settings", async () => {
+    const input = spec("Review.", undefined, "readonly");
+    const settingsPath = agySettingsPath(input.credential_profile!.isolation_locator!);
+    mkdirSync(dirname(settingsPath), { recursive: true });
+    writeFileSync(settingsPath, "{ not json");
+    const events = await collect(input);
+    expect(readFileSync(settingsPath, "utf8")).toBe("{ not json");
+    expect(events).toContainEqual(
+      expect.objectContaining({ type: "status", payload: { code: "agy_read_grant_unavailable" } }),
+    );
+    expect(observed.options[0]!.input).toContain(
+      "A read outside the workspace folder may be refused without asking.",
+    );
+  });
+
+  it("keeps full-access input and events free of readonly disclosures", async () => {
+    const input = spec("Fix it.", "caller instructions", "full");
+    const settingsPath = agySettingsPath(input.credential_profile!.isolation_locator!);
+    mkdirSync(dirname(settingsPath), { recursive: true });
+    writeFileSync(settingsPath, "{ not json");
+    const events = await collect(input);
+    expect(observed.options[0]!.input).toBe(
+      "[SYSTEM INSTRUCTIONS]\ncaller instructions\n[END SYSTEM INSTRUCTIONS]\n\nFix it.",
+    );
+    const codes = events.map((event) => event.payload?.["code"]);
+    expect(codes).not.toContain("agy_read_grant_unavailable");
+    expect(codes).not.toContain("agy_readonly_access_note");
+  });
 
   it("refuses only actual empty input before spawn, while instructions alone remain usable", async () => {
     const empty = await collect(spec(""));
