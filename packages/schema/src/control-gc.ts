@@ -89,7 +89,6 @@ export const GcHoldClass = z.enum([
   "anchor_references_unreadable",
   "references_changed",
   "native_home_veto",
-  "native_home_unsupported",
   "cleanup_suppressed",
 ]);
 export type GcHoldClass = z.infer<typeof GcHoldClass>;
@@ -111,7 +110,9 @@ export const GcHeldCounts = z
       .int()
       .nonnegative()
       .default(0)
-      .describe("Vetoed native homes only; permanently unsupported adapters are informational."),
+      .describe(
+        "Vetoed native homes only; unsupported adapters and unknown native entries are informational.",
+      ),
   })
   .strict()
   .describe("Held project roots and vetoed native homes, separate from run counts.");
@@ -132,7 +133,7 @@ export const GcLastPass = z
           since: z.string(),
         }),
       )
-      .max(9),
+      .max(GcHoldClass.options.length),
     errors: z
       .object({
         count: z.number().int().nonnegative(),
@@ -175,7 +176,11 @@ export const GcNativeHomeReport = z
     freed_bytes: z.number().int().nonnegative(),
     kept_referenced: z.number().int().nonnegative(),
     kept_recent: z.number().int().nonnegative(),
-    kept_unknown: z.number().int().nonnegative(),
+    kept_unknown: z
+      .number()
+      .int()
+      .nonnegative()
+      .describe("Unknown native entries preserved without a hold; informational only."),
     truncated: z.boolean(),
   })
   .strict();

@@ -203,6 +203,34 @@ it("a cancelled queued pass never starts or overwrites the pass that ran", async
     errors: { count: 0, first: null },
   });
 });
+it("carries every absent hold class and conservative counts only while truncated", async () => {
+  const { sql } = await fixture();
+  const previous = receipt();
+  previous.held = { roots: 2, native_homes: 3 };
+  previous.holds = GcHoldClass.options.map((kind) => ({ class: kind, count: 1, example: kind }));
+  await recordLastRetention(async () => previous, sql.store)({ dry_run: false });
+  const first = readLastRetention(sql.store)!;
+  const partial = receipt();
+  partial.truncated = true;
+  partial.held = { roots: 1, native_homes: 1 };
+  partial.holds = [{ class: "missing_partition", count: 4, example: "observed this pass" }];
+  await recordLastRetention(async () => partial, sql.store)({ dry_run: false });
+  const expected = first.holds.map((hold) =>
+    hold.class === "missing_partition" ? { ...hold, ...partial.holds[0] } : hold,
+  );
+  expect(readLastRetention(sql.store)).toMatchObject({
+    outcome: "truncated",
+    held: first.held,
+    holds: expected,
+  });
+  partial.truncated = false;
+  await recordLastRetention(async () => partial, sql.store)({ dry_run: false });
+  expect(readLastRetention(sql.store)).toMatchObject({
+    outcome: "held",
+    held: partial.held,
+    holds: [expected[0]],
+  });
+});
 it.each(["cancel-inventory", "throw-before-inventory"])(
   "carries previous holds and since when %s yields no inventory",
   async (kind) => {

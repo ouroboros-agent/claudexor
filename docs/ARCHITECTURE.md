@@ -3538,9 +3538,13 @@ per-class hold counts with one example and the first continuously held `since`,
 and error count/first error. A clean observed pass clears holds; previews never replace it.
 A queued pass cancelled before it enters the runner writes nothing. A pass that
 starts but obtains no inventory preserves the preceding holds, held counts and
-`since` while reporting its own failure or truncation. Only a pass with no hold,
+`since` while reporting its own failure or truncation. A truncated pass also carries
+preceding hold classes it did not observe again, retaining their earliest `since`
+and the larger previous/current held counts. A pass that runs to its end records
+only the holds it observed. Only a pass with no hold,
 suppression or error reports `completed`. Permanently `not_pruned` native adapters
-are informational entries in the native-home receipt, not holds; `held.native_homes`
+and unknown native entries are informational in the native-home receipt, not holds;
+unknown entries remain untouched and counted in `kept_unknown`. `held.native_homes`
 counts vetoed homes only. Absence is `last: null`. An unreadable stored summary
 also returns `last: null` with a diagnostic shown by `gc --last`; it cannot prevent
 the next pass from replacing the record. Engines predating this read surface have no GET operation. New POST
@@ -3588,13 +3592,15 @@ check immediately before synchronous unlink. Every anchor publication, create or
 reuse, touches its mtime; unlinking a sibling does not renew its age. Patch-cache
 names are then pruned at their last link; bytes count only when the inode loses
 its last link. Empty engine containers are removed bottom-up with `rmdir`: the
-namespace, `runs/`, `patches/`, `anchors/objects/`, `anchors/`, `workspaces/` and
-its task containers, `lanes/` and its thread containers, `threads/` and `.retiring/`.
+namespace, `runs/` and its `.retiring/` container, `patches/`, `anchors/objects/`,
+`anchors/`, `workspaces/` and its task containers, `lanes/` and its thread containers,
+and `threads/`. Retirement claim contents remain opaque.
 This shallow container map never descends into run content, workspace envelopes,
 thread worktrees, lane/harness homes, unknown trees, Git repositories or links.
 Tombstones remain. A container must predate the pass start by more than two seconds
 (to allow filesystem timestamp granularity); its age and identity are checked
-from the snapshot and `rmdir` supplies the final emptiness proof. Removing empty
+from the snapshot. Only an empty listing permits a removal attempt; `rmdir` supplies
+the final emptiness proof if a new entry races with that listing. Removing empty
 children does not renew a surviving container's age. Per-directory failures are
 counted while siblings continue, and cleanup yields between namespaces. The frozen
 `journal-legacy`, `journal-archived` and `resource-store/idempotency` stores remain

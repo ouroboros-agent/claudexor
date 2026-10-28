@@ -77,7 +77,7 @@
                       "type": "integer",
                       "minimum": 0,
                       "default": 0,
-                      "description": "Vetoed native homes only; permanently unsupported adapters are informational."
+                      "description": "Vetoed native homes only; unsupported adapters and unknown native entries are informational."
                     }
                   },
                   "additionalProperties": false,
@@ -98,7 +98,6 @@
                           "anchor_references_unreadable",
                           "references_changed",
                           "native_home_veto",
-                          "native_home_unsupported",
                           "cleanup_suppressed"
                         ]
                       },
@@ -122,7 +121,7 @@
                     ],
                     "additionalProperties": false
                   },
-                  "maxItems": 9
+                  "maxItems": 8
                 },
                 "errors": {
                   "type": "object",

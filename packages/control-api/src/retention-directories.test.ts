@@ -31,13 +31,12 @@ async function fixture() {
   cleanup.push(root);
   const runtime = join(root, "runtime");
   for (const name of [
-    "runs",
+    "runs/.retiring",
     "anchors/objects",
     "workspaces/task",
     "patches",
     "lanes/thread",
     "threads",
-    ".retiring",
   ])
     fs.mkdirSync(join(runtime, name), { recursive: true });
   age(runtime);
@@ -103,12 +102,70 @@ it("keeps unknown trees, run content, envelope bases and thread payloads", async
     "workspaces/task/a01/tree/empty",
     "workspaces/task/a01/home/.codex",
     "threads/live/tree/empty",
-    ".retiring/intent",
+    "runs/.retiring/claim/empty",
   ];
   for (const path of payloads) fs.mkdirSync(join(runtime, path), { recursive: true });
   age(runtime);
   pruneEmptyRuntimeDirectories(runtime, Date.now(), () => {});
   for (const path of payloads) expect(fs.existsSync(join(runtime, path))).toBe(true);
+});
+it("reaps runs/.retiring on an aged second pass after real run retirement", async () => {
+  const { root, runtime } = await fixture();
+  // The producer, rather than the skeleton fixture, must create this container.
+  fs.rmdirSync(join(runtime, "runs/.retiring"));
+  const runRoot = join(runtime, "runs/run-old");
+  fs.mkdirSync(runRoot);
+  fs.writeFileSync(join(runRoot, "payload.txt"), "retire this payload");
+  age(runtime);
+  const retire = () =>
+    runRetentionPass(
+      { runsMaxAgeDays: 30, reviewsMaxAgeDays: 14, keepLastRunsPerProject: 0 },
+      { dry_run: false },
+      {
+        projects: () => [{ root, runsDir: join(runtime, "runs"), reviewsDir: null }],
+        records: () => [
+          { runId: "run-old", state: "succeeded", finishedAt: "2020-01-01T00:00:00.000Z" },
+        ],
+        referencedRunIds: () => new Set(),
+      },
+    );
+  const first = await retire();
+  expect(first.errors).toEqual([]);
+  expect(first.deleted_runs.map((run) => run.run_id)).toEqual(["run-old"]);
+  const holding = join(runtime, "runs/.retiring");
+  expect(fs.readdirSync(holding)).toEqual([]);
+  expect(fs.existsSync(join(runtime, ".retiring"))).toBe(false);
+  age(runtime);
+  expect((await retire()).errors).toEqual([]);
+  expect(fs.existsSync(holding)).toBe(false);
+  expect(fs.existsSync(join(runRoot, "tombstone.yaml"))).toBe(true);
+});
+it("never attempts rmdir for a listed nonempty container, even after removing its sibling", async () => {
+  const { runtime } = await fixture();
+  const occupied = join(runtime, "lanes/thread");
+  const file = join(occupied, "owner");
+  const sibling = join(runtime, "lanes/empty");
+  fs.writeFileSync(file, "keep");
+  fs.mkdirSync(sibling);
+  age(runtime);
+  await pass(runtime);
+  expect(fs.existsSync(file)).toBe(true);
+  expect(fs.existsSync(sibling)).toBe(false);
+  for (const path of [occupied, join(runtime, "lanes"), runtime])
+    expect(fs.rmdirSync).not.toHaveBeenCalledWith(path);
+});
+it("keeps ENOTEMPTY handling when a file arrives after an empty listing", async () => {
+  const { runtime, actual } = await fixture();
+  const target = join(runtime, "patches");
+  const file = join(target, "late.patch");
+  vi.mocked(fs.rmdirSync).mockImplementation((path) => {
+    if (path === target) fs.writeFileSync(file, "published during removal");
+    actual.rmdirSync(path);
+  });
+  const receipt = await pass(runtime);
+  expect(receipt.errors).toEqual([]);
+  expect(fs.existsSync(file)).toBe(true);
+  expect(fs.existsSync(join(runtime, "lanes"))).toBe(false);
 });
 it.each([".git", "bare"])(
   "never enters a Git repository at a container boundary: %s",

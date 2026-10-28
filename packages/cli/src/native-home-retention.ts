@@ -181,11 +181,6 @@ export function createNativeHomeRetention(deps: {
             Object.assign(report, pruned, { status: "checked", reason: lifetime.preserves });
             if (vetoed)
               hold("native_home_veto", `${report.home}: ownership or setup changed during pruning`);
-            else if (pruned.kept_unknown > 0)
-              hold(
-                "native_home_unsupported",
-                `${report.home}: ${pruned.kept_unknown} unrecognized native files kept`,
-              );
             remaining -= pruned.deleted_files.length;
             result.freedBytes += pruned.freed_bytes;
             result.errors.push(...pruned.errors);

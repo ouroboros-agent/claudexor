@@ -40,10 +40,16 @@ function summarize(
     else holds.set(hold.class, { ...hold });
   }
   const errors = [...(receipt?.errors ?? []), ...(failed ? [String(failure)] : [])];
-  const held = (inventoryObserved ? receipt?.held : previous?.held) ?? {
-    roots: 0,
-    native_homes: 0,
+  const held = {
+    ...((inventoryObserved ? receipt?.held : previous?.held) ?? { roots: 0, native_homes: 0 }),
   };
+  // A partial pass cannot prove that a hold evaluated later has cleared.
+  if (cancelled || receipt?.truncated) {
+    for (const hold of previous?.holds ?? [])
+      if (!holds.has(hold.class)) holds.set(hold.class, { ...hold });
+    held.roots = Math.max(held.roots, previous?.held.roots ?? 0);
+    held.native_homes = Math.max(held.native_homes, previous?.held.native_homes ?? 0);
+  }
   return GcLastPass.parse({
     outcome: cancelled
       ? "truncated"
