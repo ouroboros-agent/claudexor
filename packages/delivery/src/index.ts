@@ -48,7 +48,7 @@ async function withRepositoryMutationLease<T>(
   }
 }
 
-/** GC-independent in-place revert from the external immutable anchor. */
+/** Run-owned in-place revert from the external immutable anchor. */
 export async function revertInPlaceFromAnchor(repo: string, anchorId: string) {
   return withRepositoryMutationLease(repo, () =>
     revertWorkingTreePatch(repo, readRevertAnchor(repo, anchorId)),

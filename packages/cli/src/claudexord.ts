@@ -190,7 +190,7 @@ export async function main(): Promise<void> {
       Object.assign(
         services,
         product,
-        executors.models.routes,
+        executors.controlRoutes,
         accountResetServices(
           { current: () => value.commands.current() },
           { current: () => value.quota },

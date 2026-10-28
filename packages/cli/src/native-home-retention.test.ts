@@ -12,12 +12,13 @@ import { dirname, join } from "node:path";
 import { setImmediate as yieldToAdmission } from "node:timers/promises";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { CredentialProfile, SessionCapsule, RunResumable } from "@claudexor/schema";
-import { createCodexAdapter } from "@claudexor/harness-codex";
+import { createCodexAdapter, defaultNativeCodexHome } from "@claudexor/harness-codex";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import { sqlFixture } from "../../daemon/src/store/test-support/sql-fixture.js";
 import { createNativeHomeRetention } from "./native-home-retention.js";
 import { createRetentionRunner } from "./retention-service.js";
 import { buildRegistry } from "./registry.js";
+import { recordLastRetention, readLastRetention } from "./retention-last-pass.js";
 let root: string;
 let before: string | undefined;
 let sql: Awaited<ReturnType<typeof sqlFixture>>;
@@ -114,6 +115,21 @@ function native(duringProfileScan?: () => void) {
     registry: () => new Map([["codex", adapter]]),
     profiles: () => [profile()],
   });
+}
+function recordedNative(
+  nativeHomes = createNativeHomeRetention({ threads: sql.graph.threads, isBusy: () => false }),
+) {
+  return recordLastRetention(
+    createRetentionRunner({
+      projects: () => sql.graph.projects,
+      threads: sql.graph.threads,
+      daemonJobs: () => [],
+      purgeThread: async () => {},
+      hasPurgeLeftovers: () => false,
+      nativeHomes,
+    }),
+    sql.store,
+  );
 }
 it("protects archived SQL sessions, retained run capsules and resumable pins, and prunes an idle disabled home", async () => {
   const repo = join(root, "repo");
@@ -270,6 +286,144 @@ it("declares unsupported vendor contracts instead of guessing database ownership
       reason: expect.stringMatching(/contract|expiry/),
     });
   }
+});
+
+it("completes with zero holds using the production default native registry and no projects", async () => {
+  // The real default Codex home follows this fixture's CLAUDEXOR_CONFIG_DIR.
+  const home = defaultNativeCodexHome();
+  expect(home.startsWith(root + "/")).toBe(true);
+  mkdirSync(home, { recursive: true });
+  const run = recordedNative();
+  const receipt = await run({ dry_run: false, native_home_report: true });
+  expect(
+    receipt.native_homes?.filter((home) => home.status === "not_pruned").length,
+  ).toBeGreaterThan(0);
+  expect(receipt.holds).toEqual([]);
+  expect(receipt.held).toEqual({ roots: 0, native_homes: 0 });
+  expect(readLastRetention(sql.store)).toMatchObject({
+    outcome: "completed",
+    holds: [],
+    held: { roots: 0, native_homes: 0 },
+  });
+});
+
+it("keeps foreign Codex entries informational across repeated passes", async () => {
+  const sessions = join(defaultNativeCodexHome(), "sessions");
+  expect(sessions.startsWith(root + "/")).toBe(true);
+  mkdirSync(sessions, { recursive: true });
+  const foreign = join(sessions, ".DS_Store");
+  writeFileSync(foreign, "foreign metadata");
+  utimesSync(foreign, old, old);
+  const run = recordedNative();
+  for (let pass = 0; pass < 2; pass++) {
+    const receipt = await run({ dry_run: false, native_home_report: true });
+    expect(receipt.native_homes?.find((home) => home.harness_id === "codex")).toMatchObject({
+      status: "checked",
+      kept_unknown: 1,
+      deleted_files: [],
+      errors: [],
+    });
+    expect(receipt.holds).toEqual([]);
+    expect(receipt.held).toEqual({ roots: 0, native_homes: 0 });
+    expect(readLastRetention(sql.store)).toMatchObject({
+      outcome: "completed",
+      holds: [],
+      held: { roots: 0, native_homes: 0 },
+    });
+    expect(existsSync(foreign)).toBe(true);
+  }
+});
+
+it("preserves native hold history when cancelled as native evaluation starts", async () => {
+  const repo = join(root, "repo");
+  mkdirSync(repo);
+  const project = sql.graph.projects.register({
+    root: repo,
+    clientId: "test",
+    idempotencyKey: "p",
+  }).project;
+  const binding = sql.store
+    .prepare("SELECT current_pid FROM project WHERE id=?")
+    .get(project.id) as { current_pid: number };
+  sql.store.transaction(() =>
+    sql.store.prepare("UPDATE project SET current_pid=999999 WHERE id=?").run(project.id),
+  );
+  const nativeHomes = createNativeHomeRetention({
+    threads: sql.graph.threads,
+    isBusy: () => false,
+  });
+  let cancel = false;
+  let drain: Promise<void> | undefined;
+  const run: ReturnType<typeof recordedNative> = recordedNative(async (request) => {
+    if (cancel) drain = run.cancel!();
+    return nativeHomes(request);
+  });
+  await run({ dry_run: false });
+  const first = readLastRetention(sql.store)!;
+  expect(first.held).toEqual({ roots: 1, native_homes: 1 });
+  expect(first.holds.map((hold) => hold.class).sort()).toEqual([
+    "missing_partition",
+    "native_home_veto",
+  ]);
+  cancel = true;
+  const interrupted = await run({ dry_run: false, native_home_report: true });
+  await drain;
+  expect(interrupted.truncated).toBe(true);
+  expect(interrupted.native_homes).toEqual([]);
+  expect(interrupted.holds.map((hold) => hold.class)).toEqual(["missing_partition"]);
+  expect(readLastRetention(sql.store)).toMatchObject({
+    outcome: "truncated",
+    holds: first.holds,
+    held: first.held,
+  });
+  cancel = false;
+  await run({ dry_run: false });
+  expect(readLastRetention(sql.store)?.holds).toEqual(first.holds);
+  sql.store.transaction(() =>
+    sql.store
+      .prepare("UPDATE project SET current_pid=? WHERE id=?")
+      .run(binding.current_pid, project.id),
+  );
+  await run({ dry_run: false });
+  expect(readLastRetention(sql.store)).toMatchObject({
+    outcome: "completed",
+    holds: [],
+    held: { roots: 0, native_homes: 0 },
+  });
+});
+
+it("counts only vetoed homes while retaining informational unknown-file counts", async () => {
+  const adapter = createCodexAdapter();
+  adapter.nativeHomeLifetime = {
+    status: "managed",
+    home: () => join(root, "native"),
+    preserves: "fixture",
+    prune: async () => ({
+      deleted_files: [],
+      errors: [],
+      freed_bytes: 0,
+      kept_referenced: 0,
+      kept_recent: 0,
+      kept_unknown: 1,
+      truncated: false,
+    }),
+  };
+  const run = createNativeHomeRetention({
+    threads: sql.graph.threads,
+    isBusy: () => busy,
+    registry: () => new Map([["codex", adapter]]),
+    profiles: () => [],
+  });
+  const unknown = await run(request());
+  expect(unknown.heldHomes).toBe(0);
+  expect(unknown.holds).toEqual([]);
+  expect(unknown.reports[0]?.kept_unknown).toBe(1);
+  busy = true;
+  const vetoed = await run(request());
+  expect(vetoed.heldHomes).toBe(1);
+  expect(vetoed.holds).toEqual([
+    { class: "native_home_veto", count: 1, example: expect.any(String) },
+  ]);
 });
 
 it("prunes under unrelated thread metadata writes and unbound queued work", async () => {

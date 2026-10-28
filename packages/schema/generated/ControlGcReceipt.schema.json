@@ -116,6 +116,64 @@
           "additionalProperties": false,
           "description": "Why every surviving candidate survived."
         },
+        "held": {
+          "type": "object",
+          "properties": {
+            "roots": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            },
+            "native_homes": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "description": "Vetoed native homes only; unsupported adapters and unknown native entries are informational."
+            }
+          },
+          "additionalProperties": false,
+          "description": "Held project roots and vetoed native homes, separate from run counts.",
+          "default": {}
+        },
+        "holds": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "class": {
+                "type": "string",
+                "enum": [
+                  "missing_partition",
+                  "unbound_active_registration",
+                  "recovery_pending",
+                  "namespace_unreadable",
+                  "anchor_references_unreadable",
+                  "references_changed",
+                  "native_home_veto",
+                  "cleanup_suppressed"
+                ]
+              },
+              "count": {
+                "type": "integer",
+                "exclusiveMinimum": 0
+              },
+              "example": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "class",
+              "count",
+              "example"
+            ],
+            "additionalProperties": false
+          },
+          "default": []
+        },
+        "truncated": {
+          "type": "boolean",
+          "default": false
+        },
         "deleted_reviews": {
           "type": "array",
           "items": {
@@ -215,7 +273,8 @@
               },
               "kept_unknown": {
                 "type": "integer",
-                "minimum": 0
+                "minimum": 0,
+                "description": "Unknown native entries preserved without a hold; informational only."
               },
               "truncated": {
                 "type": "boolean"

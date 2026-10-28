@@ -9,12 +9,18 @@ import type { ControlGcReceipt } from "@claudexor/schema";
 /** Request flags sent only to a daemon of the same engine version. */
 export const GC_LOCKSTEP_REPORTS = {
   data_root_report: true,
+  retention_report: true,
   trash_purge_report: true,
   native_home_report: true,
 } as const;
 
 export function gcReceiptNotes(receipt: ControlGcReceipt, ownedRoot: string): string[] {
   const notes: string[] = [];
+  notes.push(
+    `held roots=${receipt.held.roots} native_homes=${receipt.held.native_homes}; truncated=${receipt.truncated}`,
+  );
+  for (const hold of receipt.holds)
+    notes.push(`hold ${hold.class}: ${hold.count}; ${hold.example}`);
   // Advisory disclosure of foreign top-level data-root entries (never
   // deleted; absent on old daemons or a failed scan — errors carry the why).
   const foreign = receipt.data_root_unrecognized;
