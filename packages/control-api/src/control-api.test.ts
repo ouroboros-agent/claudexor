@@ -1109,11 +1109,14 @@ describe("DaemonControlApiServer", () => {
     }
   });
 
-  it("stop closes an event stream that registers while stop drains its handler", async () => {
+  // The stream's handler resumes after stop has begun. A queued job needs no replay batch, so
+  // its stream registers during the drain and stays open until stop closes it; a run with a
+  // log would need the stopped bulk executor for its first batch and answers the typed 503.
+  async function streamResumedDuringStop(state: "queued" | "running") {
     const { daemon, record } = fakeDaemon();
-    // A live run with no events yet keeps its stream open until stop closes it.
-    record.state = "running";
-    record.runDir = reapMk(join(tmpdir(), "claudexor-quiet-run-"));
+    record.state = state;
+    if (state === "running") record.runDir = reapMk(join(tmpdir(), "claudexor-quiet-run-"));
+    else delete record.runDir;
     let entered!: () => void;
     const looking = new Promise<void>((resolve) => (entered = resolve));
     let release!: () => void;
@@ -1134,9 +1137,20 @@ describe("DaemonControlApiServer", () => {
     await looking;
     const stopped = server.stop();
     release();
-    const response = await stream;
+    return { response: await stream, stopped };
+  }
+
+  it("stop closes an event stream that registers while stop drains its handler", async () => {
+    const { response, stopped } = await streamResumedDuringStop("queued");
     expect(response.status).toBe(200);
     await response.text(); // Ends only when stop closes the stream.
+    await stopped;
+  });
+
+  it("an event stream whose first replay batch would start after stop answers the typed 503", async () => {
+    const { response, stopped } = await streamResumedDuringStop("running");
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ code: "daemon_stopping", retryable: true });
     await stopped;
   });
 
