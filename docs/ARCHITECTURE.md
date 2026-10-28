@@ -3479,7 +3479,10 @@ Rows without a key stay separate, and equal text or equal native ids never
 imply identity. `textFinal` marks the typed final-answer row; it carries a key
 only when the adapter proved the link, so Claude's terminal `result` is a
 separate unkeyed final. The `harness.event` run event carries the same facts as
-top-level `speech` and `final`.
+top-level `speech` and `final`. These additive fields are compatible with
+consumers that tolerate unknown properties; older generated JSON schemas with
+`additionalProperties: false` reject them. Consumers using pinned strict
+validators must update their schemas before reading the new fields.
 
 Every `RunEvent` carries a monotonic per-run `seq` stamped by the engine's
 EventLog at emit time (control-api audit appends continue the same sequence).
