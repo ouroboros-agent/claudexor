@@ -361,28 +361,12 @@ if [ "${CLAUDEXOR_NO_ENGINE_BUNDLE:-0}" != "1" ]; then
 
   # Boot smoke: the bundled daemon must actually START (a load-time crash in
   # the bundle shipped in v1.0.0 and survived every gate because nothing
-  # executed the bundle). Scratch HOME so the smoke never touches real state.
+  # executed the bundle). The helper gives the exact packaged Node and entry an
+  # empty environment with a scratch HOME, watches the root derived from that
+  # HOME, and reaps the daemon before deleting it.
   echo "==> Bundle boot smoke"
-  # Darwin limits Unix-domain socket paths to roughly 100 bytes. Keep the
-  # disposable HOME short so this smoke tests daemon boot, not mktemp's long
-  # /private/var/folders spelling.
-  SMOKE_HOME="$(cd "$(mktemp -d /tmp/claudexor-smoke.XXXXXX)" && pwd -P)"
-  ( HOME="$SMOKE_HOME" "$APP/Contents/Resources/node" "$ENGINE_JS" >/dev/null 2>"$SMOKE_HOME/smoke.err" & echo $! > "$SMOKE_HOME/pid" )
-  SMOKE_OK=0
-  for _ in $(seq 1 20); do
-    if [ -f "$SMOKE_HOME/.claudexor/v3/daemon/control-api.json" ]; then SMOKE_OK=1; break; fi
-    if ! kill -0 "$(cat "$SMOKE_HOME/pid")" 2>/dev/null; then break; fi
-    sleep 0.5
-  done
-  kill "$(cat "$SMOKE_HOME/pid")" 2>/dev/null || true
-  if [ "$SMOKE_OK" != "1" ]; then
-    echo "ERROR: bundled claudexord failed to boot; stderr:" >&2
-    cat "$SMOKE_HOME/smoke.err" >&2
-    rm -rf "$SMOKE_HOME"
-    exit 1
-  fi
-  rm -rf "$SMOKE_HOME"
-  echo "    bundled daemon boots (control-api discovery written)"
+  bash "$HERE/boot-smoke.sh" "$APP/Contents/Resources/node" "$ENGINE_JS"
+  echo "    bundled daemon publishes control-api discovery from a scrubbed scratch root"
   # D-2 integration proof (release-wave critical): the runtime-update closure
   # must be producible from THIS exact packaged app layout — the CI candidate
   # previously discovered a forbidden native addon only at release time.

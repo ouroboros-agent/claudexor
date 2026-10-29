@@ -1858,7 +1858,12 @@ fails, the run still writes inspectable failure artifacts
 Ask also tracks normalized tool lifecycle. `tool_result.is_error === true`
 preserves redacted detail in the event payload and blocks a green verified claim
 unless verified recovery exists, but a produced deliverable can still be terminal
-success with warnings. Optional web denial/error is warning evidence and does
+success with warnings. A command result's optional `command_outcome` is separate
+from its tool-call `status`: when it does not report an observed exit (the
+command was moved to a background shell, its timeout elapsed, or the outcome is
+unknown), the result is not a finished command, never recovers an earlier
+failure, and is not itself a tool error, so it neither discards nor downgrades a
+delivered answer. Optional web denial/error is warning evidence and does
 not trigger route fallback or terminal failure; a read-only route is judged on
 its answer and the ordinary harness/contract axes.
 
@@ -3555,20 +3560,33 @@ handshake and status alone create no thread. Detail projection, child and cold
 summary hydration, detail's exact-patch digests, artifact walks/read-redact operations,
 and finite SSE seek/replay batches execute there. Only plain request records and
 results cross the port; daemon services, the registry and database remain with
-their owners. One projection context shares event parsing, structured reads,
+their owners. One projection context shares event facts, structured reads,
 budget and primary-output work across parent/children/operator validation. The
-context ends with the job. Timeline projection selects the last eligible rows
-before redaction and schema validation, with exact omitted/integrity markers;
-cash, valuation, plan and other folds still inspect the complete captured log.
-The final detail schema validation stays in the worker.
+context ends with the job. Detail and summaries consume one fold of the complete
+`events.jsonl`: integrity counts, the last eligible timeline rows with their
+total, the last `plan.progress` overall and per attempt, continuity receipts and
+the budget accumulators. Each owner folds events in file order. Inside the
+worker each run keeps its prefix between jobs: at most 32 runs, 64 MiB by
+retention accounting and 8 MiB per run, not an exact heap cap. Reuse checks the
+run directory, device, inode, newline-aligned offset and start/end guard bytes.
+It assumes the append-only writer; a middle-only in-place rewrite can go
+undetected. Identity changes, shortening below the offset or changed guards
+refold from byte 0, as do eviction and oversized state. An unterminated record
+counts for that answer only. Decision, telemetry, answer, reviews, task contract,
+artifacts and live fields stay fresh per request; no complete raw log is kept.
+Per-run SSE replay, bounded thread history, interrupted-output preparation and
+continuation-ancestry recovery retain their separate direct reads.
+Timeline projection validates and redacts only the
+selected rows, with exact omitted/integrity markers. The final detail schema
+validation stays in the worker.
 Bounded thread-history receipts keep their explicit artifact and event byte
 allowances, partial event-count coverage and typed oversized-artifact refusals.
 The shared readers distinguish those limits and preview options in their
 request-local memo keys; a bounded receipt cannot replace a complete detail fold.
 Thread inbox/head attention uses synchronous main-thread artifact reads for
 succeeded heads, with an exact-patch digest only when an operator decision exists.
-Detail and summaries fold the complete retained log in the worker; a log the
-worker cannot hold fails that run's detail/summary and jobs queued with it with
+Detail and summaries fold the complete retained log in the worker; a fold the
+worker cannot complete fails that run's detail/summary and jobs queued with it with
 the typed retryable `503 bulk_worker_failed`, while the control plane stays available.
 
 The executor processes one finite job at a time. Live SSE waits and HTTP
@@ -5840,7 +5858,9 @@ existing thread packet. Retained assistant evidence spans all accepted tries;
 identity-mismatched tries contribute no assistant output, and their stream stops
 at the mismatch. The evidence index pairs tool results by try and tool-use id,
 includes pending edit calls, filters steering by attempt, and preserves full
-evidence paths and tool counts when prose is truncated. Only begun continued tries settle with a
+evidence paths and tool counts when prose is truncated. A paired result whose
+`command_outcome` reports no observed exit is listed as unconfirmed with that
+state, never as completed. Only begun continued tries settle with a
 `run.continuity` receipt (try index, carrier, cause, from/to profiles, memory
 full/partial/unknown, instructions as_sent/vendor_snapshot, re-ingested
 tokens, this try's observed model and mismatch, identity check, input
@@ -5929,7 +5949,8 @@ tool-error rollups are projections of the engine-owned
 that predate that artifact report `available: false` instead of recomputed
 guesses. Timeline projections include tool name, target/domain/path, error
 summary, severity, harness, attempt, and raw event reference, and are capped
-with an explicit truncation marker.
+with an explicit truncation marker. A tool row whose `command_outcome` does not
+report an observed exit is a warning, decided by that typed fact.
 
 ## 8. Artifact Layout
 
@@ -6456,6 +6477,15 @@ both global/run SSE streams use that owning client. The unified sidebar stores
 only location-tagged thread summaries with a last-sync timestamp under
 `~/Library/Application Support/Claudexor/` (directory mode `0700`; metadata
 files mode `0600`); transcripts and artifacts are fetched after reconnect.
+Only the app entry (`ClaudexorApp`) composes this storage and the app's other
+saved state, through `AppPersistence`: the Kit stores under Application
+Support, resolved again for every load and save; the standard user defaults for
+appearance, the current project and its recents; unresolved account-reset
+requests; the `CLAUDEXOR_DEBUG_APPEARANCE` and `CLAUDEXOR_PROJECT_ROOT` launch
+fallbacks; and the `~/.ssh/config` scan. Launch restore assigns through the
+same writers, so it saves the restored appearance, project and recents again,
+and an applied launch fallback becomes the saved value. Any other `AppModel`,
+including every test model, starts empty and keeps all of this in memory.
 
 Remote project browsing uses the home-contained directory endpoint, which
 lists only visible (non-hidden) directories and refuses to descend into dot

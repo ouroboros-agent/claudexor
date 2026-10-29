@@ -1815,6 +1815,14 @@ The same projection distinguishes deadline exhaustion from user cancellation:
 a terminal `cancelled` lifecycle with `wall_clock_exceeded` returns ACP
 `refusal`, while an explicit ACP/session Stop returns `cancelled`.
 
+Tool activity streams as `tool_call` (`in_progress`) followed by one
+`tool_call_update`. The update is `completed` only for a result that is not an
+error and does not report an unconfirmed command. An error is `failed`, and so
+is a command that was moved to a background shell, timed out, or has an unknown
+outcome: ACP v1 has no other terminal status short of success, and no later
+update will arrive for that call. Such an update carries the state as text
+content and the typed facts at `_meta.claudexor.commandOutcome`.
+
 `session/load` replays the conversation on reopen by fetching one run detail
 per turn. That fan-out is bounded to the most recent 50 turns: an older thread
 replays only its tail, and the omitted count is disclosed as a leading
@@ -2180,7 +2188,18 @@ the complete flush; `thinking`/`reasoning` → `thinking`; variant-keyed
 `tool_call` objects (`shellToolCall`, `writeToolCall`, …) → `tool_call` on
 `started`, `tool_result` (+ `file_change`) on `completed`/`failed`, nothing
 on `updated`; a native `{failure:{exitCode|error}}` result is an ERROR even
-when the outer subtype says completed. On successful terminal `result`, the
+when the outer subtype says completed, and so is a shell `spawnError`. A shell
+result also carries typed `command_outcome` facts beside its tool-call status:
+an observed exit with its exit code and signal; `timed_out` for `timeout` or a
+`failure` aborted by its timeout; `backgrounded` for a `success` that carries a
+background shell handle (`shellId`, `backgroundReason` or result-level
+`isBackground`), whose protobuf-default `exitCode: 0` is not an exit; and
+`unknown` for an ok result in an unrecognized shape. Such an unconfirmed result
+keeps tool status `ok`, names its state in the event text, and keeps its
+complete redacted native result as `payload.native_result` of the durable
+`harness.event`. These shapes follow the `agent.v1` shell protocol of
+cursor-agent 2026.08.11; no timeout or background frame has been recorded live.
+On successful terminal `result`, the
 adapter finalizes the LAST complete assistant flush
 (`final_source: assistant_message`) rather than Cursor's concatenated `result`
 string; it falls back to `result` only when no complete assistant frame exists.

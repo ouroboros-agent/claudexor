@@ -347,6 +347,12 @@ Tests and local smokes must never touch real user state:
 - Isolate global config, the daemon (token/socket/jobs/logs), trust files, and
   run artifacts by pointing `CLAUDEXOR_CONFIG_DIR` at a temp dir; isolate host
   plugin files by pointing `HOME` at a temp dir.
+- A smoke that starts a packaged entry gives it an empty environment (`env -i`)
+  plus only the variables it needs, and observes the root derived from those
+  same values. A scratch `HOME` alone does not isolate a child that still
+  inherits `CLAUDEXOR_CONFIG_DIR`, `CLAUDEXOR_DAEMON_SOCK`,
+  `CLAUDEXOR_NO_CONTROL_API`, `NODE_OPTIONS` or provider keys. A smoke that
+  starts a daemon stops and reaps that exact child before deleting its root.
 - Managed secrets always use the daemon-owned v2 0600 file store, so a
   disposable `CLAUDEXOR_CONFIG_DIR` fully contains test secret I/O. The public
   CLI cannot select a storage backend.
@@ -361,6 +367,23 @@ Tests and local smokes must never touch real user state:
   signal, and timer dependencies and use temp roots only. They checksum the
   legacy registry before/after, exercise PID reuse and symlink/path fences, and
   never open Terminal or write `~/.claudexor`.
+- macOS app tests construct `AppModel` without persistence. Such a model starts
+  empty, keeps remote connections, the offline remote thread list, preferences
+  and reset recovery in memory, and reads none of `CLAUDEXOR_DEBUG_APPEARANCE`,
+  `CLAUDEXOR_PROJECT_ROOT` or `~/.ssh/config`; only `ClaudexorApp` passes the
+  user's `AppPersistence`. A persistence test injects temporary Kit stores or
+  closure-backed preferences. `HOME` does not move Foundation's home directory,
+  so a test of the default locations re-executes itself through
+  `isolatedRuntimeConsumer` (fresh `HOME` and `CFFIXED_USER_HOME`) and proves
+  each path resolves inside that home before writing there. Launch restore
+  saves the preferences it applies, so that test only reads the real user
+  defaults and gives the app's composition a recording preference writer; a
+  fresh `HOME` or `CFFIXED_USER_HOME` is not relied on to keep a write out of
+  the developer's defaults domain. Unchanged decoy bytes prove no write; a
+  model that stays empty beside loadable decoys proves no read. Rescan, New SSH
+  Host and adding a connection still use the real `~/.ssh/config`, and a test
+  that reaches the default daemon discovery or launcher still needs
+  `isolatedRuntimeConsumer`.
 - The `fake-*` harnesses are the offline, keyless, deterministic fixtures
   (`--harness fake-success`, etc.); they are only selectable by explicit id and
   never enter automatic or reviewer pools. `fake-implement` additionally writes

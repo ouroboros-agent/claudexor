@@ -5,7 +5,8 @@
  * adapter cannot move, the mind asked for a re-brief), the successor is a
  * FRESH vendor session re-grounded by an EVIDENCE INDEX: the original work
  * order, admitted steering (live messages) with their delivery status, the
- * retained assistant output, a tool-call index (name, completed / unresolved),
+ * retained assistant output, a tool-call index (name, completed / unconfirmed
+ * command / unresolved),
  * the diff stat and absolute paths to the predecessor's event log and attempt
  * artifacts readable from the new environment. Bounded inline with honest
  * truncation (`summarized` is true also when a single section was cut). No
@@ -16,7 +17,7 @@
  * continuation keep that packet; the evidence index serves in-run packet hops
  * and `continueFrom`.
  */
-import type { ResumableCause } from "@claudexor/schema";
+import { commandOutcomeLabel, type ResumableCause } from "@claudexor/schema";
 
 /** Admitted steering message of the predecessor (POST /v2/runs/:id/messages). */
 export interface EvidenceSteering {
@@ -45,6 +46,8 @@ export interface EvidenceToolCall {
   target: string | null;
   /** False when the call never saw its result (cut off). */
   resolved: boolean;
+  /** The result's stored `command_outcome` (#450), when it reported one. */
+  commandOutcome?: unknown;
 }
 
 /** Fully-resolved inputs of the pure builder (the collector reads them from the run dir). */
@@ -201,5 +204,13 @@ export function buildEvidenceIndex(input: EvidenceIndexInput): EvidenceIndex {
 
 function toolRow(call: EvidenceToolCall): string {
   const target = call.target ? ` — ${call.target.replace(/\s+/g, " ").slice(0, 160)}` : "";
-  return `- ${call.name}${target} (${call.resolved ? "completed" : "unresolved: no result recorded"})`;
+  // A recorded result whose command was moved to the background, timed out or
+  // ended unknown is not a completed command (#450).
+  const unconfirmed = call.resolved ? commandOutcomeLabel(call.commandOutcome) : null;
+  const state = unconfirmed
+    ? `unconfirmed: ${unconfirmed}`
+    : call.resolved
+      ? "completed"
+      : "unresolved: no result recorded";
+  return `- ${call.name}${target} (${state})`;
 }
