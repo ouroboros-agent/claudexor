@@ -58,6 +58,9 @@ interface Scenario {
   models?: (profileId: string | null) => Promise<HarnessModel[]>;
   /** Extra Orchestrator dependencies (e.g. a Delegate drain authority). */
   deps?: Partial<ConstructorParameters<typeof Orchestrator>[0]>;
+  /** Runs inside each asynchronous credential readiness probe (e.g. time
+   * passing or a new quota observation landing while readiness is checked). */
+  onProbe?: (profileId: string) => void | Promise<void>;
 }
 
 export const RESET = "2026-10-06T21:00:00.000Z";
@@ -165,6 +168,7 @@ export async function run(scenario: Scenario) {
       });
     },
     async probeCredentialProfile(profile) {
+      await scenario.onProbe?.(profile.profile_id);
       return {
         profile_id: profile.profile_id,
         harness_id: "fake",

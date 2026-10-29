@@ -763,7 +763,7 @@ describe("default-subject auto-balance (INV-135 owner scope)", () => {
       attemptId: "a01",
       policy,
       registry: [a],
-      snapshots: [],
+      quotaSnapshots: () => [],
       probeReadyProfiles: async () => ready("a"),
       markers: { sawAgentProgress: false, fileChanges: 0 },
       sawTypedLimit: true,
@@ -805,7 +805,7 @@ describe("default-subject auto-balance (INV-135 owner scope)", () => {
       attemptId: "a01",
       policy,
       registry: [a],
-      snapshots: [],
+      quotaSnapshots: () => [],
       probeReadyProfiles: async () => {
         probed += 1;
         return ready("a");
@@ -1091,7 +1091,7 @@ describe("A7 differential probe wiring in rotateSpecOnTypedLimit", () => {
     attemptId: "a01",
     policy,
     registry: [a, b],
-    snapshots: [],
+    quotaSnapshots: () => [],
     markers: { sawAgentProgress: false, fileChanges: 0 },
     sawTypedLimit: true,
     sawRetryable: true,
@@ -1193,7 +1193,7 @@ describe("A7 differential probe wiring in rotateSpecOnTypedLimit", () => {
         ...base,
         sawTypedLimit: false,
         sawRetryable: false,
-        snapshots: [current, sibling],
+        quotaSnapshots: () => [current, sibling],
         probeReadyProfiles: async () => ready("a", "b"),
         triedProfiles: new Set<string>(),
       });
