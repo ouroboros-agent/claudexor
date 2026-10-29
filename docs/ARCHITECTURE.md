@@ -3552,20 +3552,33 @@ handshake and status alone create no thread. Detail projection, child and cold
 summary hydration, detail's exact-patch digests, artifact walks/read-redact operations,
 and finite SSE seek/replay batches execute there. Only plain request records and
 results cross the port; daemon services, the registry and database remain with
-their owners. One projection context shares event parsing, structured reads,
+their owners. One projection context shares event facts, structured reads,
 budget and primary-output work across parent/children/operator validation. The
-context ends with the job. Timeline projection selects the last eligible rows
-before redaction and schema validation, with exact omitted/integrity markers;
-cash, valuation, plan and other folds still inspect the complete captured log.
-The final detail schema validation stays in the worker.
+context ends with the job. Detail and summaries consume one fold of the complete
+`events.jsonl`: integrity counts, the last eligible timeline rows with their
+total, the last `plan.progress` overall and per attempt, continuity receipts and
+the budget accumulators. Each owner folds events in file order. Inside the
+worker each run keeps its prefix between jobs: at most 32 runs, 64 MiB by
+retention accounting and 8 MiB per run, not an exact heap cap. Reuse checks the
+run directory, device, inode, newline-aligned offset and start/end guard bytes.
+It assumes the append-only writer; a middle-only in-place rewrite can go
+undetected. Identity changes, shortening below the offset or changed guards
+refold from byte 0, as do eviction and oversized state. An unterminated record
+counts for that answer only. Decision, telemetry, answer, reviews, task contract,
+artifacts and live fields stay fresh per request; no complete raw log is kept.
+Per-run SSE replay, bounded thread history, interrupted-output preparation and
+continuation-ancestry recovery retain their separate direct reads.
+Timeline projection validates and redacts only the
+selected rows, with exact omitted/integrity markers. The final detail schema
+validation stays in the worker.
 Bounded thread-history receipts keep their explicit artifact and event byte
 allowances, partial event-count coverage and typed oversized-artifact refusals.
 The shared readers distinguish those limits and preview options in their
 request-local memo keys; a bounded receipt cannot replace a complete detail fold.
 Thread inbox/head attention uses synchronous main-thread artifact reads for
 succeeded heads, with an exact-patch digest only when an operator decision exists.
-Detail and summaries fold the complete retained log in the worker; a log the
-worker cannot hold fails that run's detail/summary and jobs queued with it with
+Detail and summaries fold the complete retained log in the worker; a fold the
+worker cannot complete fails that run's detail/summary and jobs queued with it with
 the typed retryable `503 bulk_worker_failed`, while the control plane stays available.
 
 The executor processes one finite job at a time. Live SSE waits and HTTP
