@@ -429,7 +429,11 @@ export async function rotateSpecOnTypedLimit(args: {
   attemptId: string;
   policy: ProfilePolicy;
   registry: readonly CredentialProfile[];
-  snapshots: readonly QuotaSnapshot[];
+  /** The quota authority's current projection (#457). Read once per eligible
+   * decision, after both probes, so a reset or replacement recorded while the
+   * try ran or readiness was probed is seen; selection, the
+   * `rotation_exhausted` event and the typed terminal share that one value. */
+  quotaSnapshots: () => readonly QuotaSnapshot[];
   /** Fresh candidate-readiness probe (readyProfileIdsForRotation); called at
    * most once, and only for an eligible try under a `rotate` policy. */
   probeReadyProfiles: () => Promise<ReadonlySet<string>>;
@@ -512,6 +516,7 @@ export async function rotateSpecOnTypedLimit(args: {
       RouteCredentialUnusablePayload.parse({ ...subjectUnusable, attempt_id: args.attemptId }),
     );
   }
+  const snapshots = args.quotaSnapshots();
   const rotation = planReactiveRotation({
     currentProfile: current,
     defaultRouteWasVendorNative: args.defaultRouteWasVendorNative,
@@ -519,7 +524,7 @@ export async function rotateSpecOnTypedLimit(args: {
     attemptId: args.attemptId,
     policy: args.policy,
     registry: args.registry,
-    snapshots: args.snapshots,
+    snapshots,
     readyProfileIds,
     triedProfiles: args.triedProfiles,
     evidence,
@@ -540,7 +545,7 @@ export async function rotateSpecOnTypedLimit(args: {
       harnessId: args.harnessId,
       policy: args.policy,
       registry: args.registry,
-      snapshots: args.snapshots,
+      snapshots,
       readyProfileIds,
       excluded: args.triedProfiles,
       unusable: args.liveUnusable,
@@ -551,13 +556,7 @@ export async function rotateSpecOnTypedLimit(args: {
     // managed-api-key default that shares subject_id=null.
     const subjectBlock =
       current === null
-        ? profileQuotaBlock(
-            args.snapshots,
-            args.harnessId,
-            null,
-            "local_session",
-            args.spec.model_hint,
-          )
+        ? profileQuotaBlock(snapshots, args.harnessId, null, "local_session", args.spec.model_hint)
         : null;
     const subjectLimit =
       subjectBlock ??

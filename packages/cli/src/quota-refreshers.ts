@@ -23,10 +23,12 @@ export interface QuotaRefresherRegistration {
 
 /** The daemon's top-level refreshers and the source each owns. Schema traits
  * independently declare which sources must appear here; the parity test keeps
- * composition, vocabulary, and pacing-lane assignment in lockstep. Only the
- * claude OAuth source reads the cycle kind (an explicit foreground refresh
- * re-presents a token it remembers as rejected); the others take no options
- * from the cycle. */
+ * composition, vocabulary, and pacing-lane assignment in lockstep. Every
+ * account-polling source receives the cycle (exact target, due-subject and
+ * poll-floor controls) and the diagnostic sink; the claude OAuth source also
+ * reads the cycle kind (an explicit foreground refresh re-presents a token it
+ * remembers as rejected). The local statusline spool answers only untargeted
+ * cycles. */
 export const QUOTA_REFRESHER_REGISTRATIONS = [
   {
     source: "codex_app_server",
@@ -46,7 +48,12 @@ export const QUOTA_REFRESHER_REGISTRATIONS = [
     refresh: (cycle?: QuotaRefreshCycle, diagnostic?: QuotaDiagnosticSink) =>
       refreshClaudeOauthUsageQuota(diagnostic ? { diagnostic } : {}, cycle),
   },
-  { source: "agy_command_usage", vendor: "agy", refresh: () => refreshAgyQuota() },
+  {
+    source: "agy_command_usage",
+    vendor: "agy",
+    refresh: (cycle?: QuotaRefreshCycle, diagnostic?: QuotaDiagnosticSink) =>
+      refreshAgyQuota(diagnostic ? { diagnostic } : {}, cycle),
+  },
   {
     source: "cursor_dashboard",
     vendor: "cursor",

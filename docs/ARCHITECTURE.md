@@ -1528,7 +1528,14 @@ that legitimately flows as mid-stream `message` events (the claude
 org-disabled incident shape) can never suppress failover on any adapter.
 Credentials never change inside a running spawn; a
 rotation INTO a spent or still-cooling profile is refused by the same
-headroom-plus-cooldown check. When no
+headroom-plus-cooldown check. A reactive decision reads the quota registry's
+current projection once, after its readiness and current-subject probes, and
+uses that one value for selection, the exhaustion event and the typed terminal
+(#457): a reset, replacement or clock-aged window recorded after the attempt
+began is seen, while a stale but live spent window still blocks. Because
+read-time aging marks a whole snapshot stale once any window resets, a weekly
+reserve below 100% on the same snapshot is not enforced until the next poll;
+that freshness rule is unchanged here. When no
 target survives (all spent/excluded/wrong-kind), the engine emits typed
 `route.profile.rotation_exhausted` with each rejected profile's reason and
 headroom or cooldown evidence (with its earliest known release instant); the
@@ -3721,6 +3728,23 @@ live-only stream. `thread.entities_upserted` is state in tables, not a streamed
 event. Model/account-reset event copies expire after 30 days; their command
 receipts remain retained independently.
 
+Each connection replays and tails its partition in bounded keyset pages owned by
+the store: at most 256 rows and 1 MiB of stored payload per page, sized from the
+inline row length or a referenced body's recorded size before any body is read.
+An event above that budget is a page by itself and is sent whole, so one
+connection holds at most one page or that one event; no event is dropped or
+shortened. A walk reads through the head its first page captured, and the 250 ms
+poll starts the next walk. One page read is in flight per connection, the next
+frame waits for the socket to drain, a ping is never written into an undrained
+socket, and a departed client or daemon stop ends the walk before another read.
+Every page checks its position and head against the generation serving now, so
+a replaced or retired generation closes the stream even when no event was
+delivered yet. Resuming a replaced generation's cursor receives 409 `resnapshot`;
+a removed project's partition keeps its existing 404 `journal_partition_not_found`.
+Reading, digest checks, parsing and redaction of a page run on the
+store owner's thread, because the bulk worker holds no database connection;
+that work is bounded by one page or one oversized event.
+
 The global partition additionally carries `thread.head.updated` — a
 content-free invalidation ping `{thread_id, project_id, revision}` emitted on
 every thread mutation from any surface (create, rename, archive, turn-add,
@@ -4790,10 +4814,31 @@ Control API apply gate reads that authority; the mirrored
 `arbitration/operator_decision.yaml` remains a compatibility projection for
 artifact readers. `accept_clean_patch` delivers through `verifyAndDeliver` and
 `rerun_with_feedback` enqueues a follow-up run. A mutated patch invalidates the
-override. UI must not fake local accept/unblock state. The CLI resolves a run from
-any cwd (project store, user Ask store, or — only when a daemon is already running —
-the daemon registry); read-only lookups (`inspect`/`apply`) never auto-start a
-daemon, while acting paths (`agent`/`best-of`/`create`, `decision`) do.
+override. UI must not fake local accept/unblock state.
+
+The CLI resolves a run for `inspect` from any cwd: the project store, the user Ask
+store, then the run registry of an already-running daemon. Read-only lookups
+(`inspect` and the MCP status, inspect and result tools) never auto-start a daemon,
+so a typo'd id cannot launch one; `apply` is server-owned delivery and starts it
+like the acting paths (`agent`/`best-of`/`create`, `decision`). A local retained run
+is shown while the daemon is down, and its files say nothing about whether it is
+still running. Only the run registry's own 404 from a running daemon (the
+run-detail route's `http_404` problem) reports `no such run` (`run_not_found`).
+Other recognized outcomes keep typed codes: `invalid_argument` for a malformed id;
+`daemon_unavailable` when no daemon is reachable (runs from other projects were not
+checked) or the connection drops before the whole answer arrives; the daemon's own
+problem code for any other error answer, including another 404;
+`invalid_service_response` for an invalid success body or a recorded run directory
+that is not an absolute `runs/<id>` path of a run store; `run_not_materialized` with
+the state for a known run without a run directory; and `run_artifacts_unavailable`
+with the state and recorded path when that directory is missing or unreadable. An
+error answer that is not a control problem (for example a non-daemon 404 page) has
+no `code` and names only its HTTP status. The lookup validates only the detail
+fields it uses (`summary.state`, `summary.runDir`), so additive same-major fields
+elsewhere do not fail it, and a known problem keeps its recovery fields when it
+carries extra ones; a run state this CLI does not know is still
+`invalid_service_response`. The CLI reads exactly the recorded directory, so a job
+id the daemon knows resolves to its run.
 
 A successful run can be applied when its requested review passed or its frozen
 `review_requested` is explicitly false and its review result is `not_run`.
@@ -4827,7 +4872,10 @@ Deterministic-first: the verifier spends no model tokens. Cross-family verificat
 reviewer family's route proof to be OBSERVED, not an argv echo: claude reports
 its model in the stream, and codex (whose `--json` stream omits the model)
 recovers the model it actually ran from its own session rollout transcript
-(`observed_model_source: "transcript"`). An unobserved reviewer stays
+(`observed_model_source: "transcript"`), taken only from the `turn_context` of
+the turn the app-server stream started (`native_turn_id`), so on a resumed
+session an earlier turn's model never stands in and a later goal turn's record
+does not displace it. An unobserved reviewer stays
 `accepted_model_arg` and does not satisfy the cross-family gate. For `ungated` /
 `review_not_run` outcomes without a recorded opt-out, the apply gate states the real path forward (add a gate
 or obtain a verified review) — the risk override applies only to `blocked` runs.
@@ -5337,7 +5385,11 @@ that tick. A subject's poll rate-limit floor is never bypassed. An absence-only
 lane keeps the pure ladder, and a lane whose last satisfied subject disappears
 continues at its earned rung. Every refresher learns whether the cycle is an
 explicit foreground refresh or a paced background poll, so a source may
-re-present on request a credential it otherwise leaves alone. A typed
+re-present on request a credential it otherwise leaves alone. Account-polling
+sources, agy included, also apply the cycle's exact target, due-subject
+selection and subject floors before spawning a vendor read. Agy has no typed
+rate-limit outcome yet (#240): its non-auth poll failures stay `refresh_failed`
+and arm no floor. A typed
 `rate_limited` poll absence arms a subject-and-route floor in the same
 pacer/store. A bare 429 has unknown vendor bucket scope: policy holds the
 observed subject and known token-identical aliases while unrelated accounts
@@ -5761,7 +5813,9 @@ A DONE tool without output is diagnostic, not successful read evidence. After pr
 unpinned `rotate` route hops to the next eligible account and the next try
 carries the work — `native_moved` when the adapter's `continuity` located the
 session and moved it into the target store (claude: `<sid>.jsonl` + `<sid>/`
-sidecars; codex: every rollout part). The capsule's holder is the source, even
+sidecars; codex: every rollout part, copied without following a link; a linked
+part is still located and its move fails with a reason; two spellings of one
+home are the same store and the move copies nothing). The capsule's holder is the source, even
 if another account's packet try failed before starting. A move copies and
 verifies all parts, then the engine writes the target capsule and invokes the
 adapter's retirement callback; a failed move removes its destination copies.
@@ -6834,8 +6888,12 @@ code touching one of these areas must honor it or change it explicitly here.
   profile, operation id, time, cause, known currentness and native binary/child
   facts are non-secret metadata. A physical Claude usage HTTP attempt, a skipped
   token, and a Codex native RPC are different observations; an RPC does not imply
-  one HTTP request. Native refresh receipts describe observed expiry and child
-  outcome, not an inferred writer or reconstructed historical credential loss.
+  one HTTP request. An Agy `poll` receipt records one account's quota read
+  (its `/quota` and `/model` print commands) or why it was skipped, not a count
+  of vendor requests; a read's started and terminal receipts share one operation
+  id, and each skip has its own. Native refresh receipts describe observed
+  expiry and child outcome, not an inferred writer or reconstructed historical
+  credential loss.
   Retry-After and existing foreground/background polling rules are unchanged.
 - The `verify` intent is reserved: the shipped FinalVerifier is
   deterministic-only (fresh-tree apply + gates, no model), so no engine path

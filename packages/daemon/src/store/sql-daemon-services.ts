@@ -8,7 +8,7 @@ import type { QuotaSubjectUniverse } from "../quota-registry.js";
 import { BlobFiles } from "./blob-files.js";
 import { SqlCommandPruner } from "./command-prune.js";
 import type { SqlEventLedger } from "./event-store.js";
-import { readJournalEvents } from "./cursors.js";
+import { readJournalEventPage, type JournalEventPageRequest } from "./cursors.js";
 import { isServedPid } from "./generations.js";
 import { SqlInteractionStore } from "./interactions.js";
 import { MaintenanceController, type MaintenanceControllerOptions } from "./maintenance.js";
@@ -109,8 +109,8 @@ export function createSqlDaemonServices(store: EngineStore, options: SqlDaemonSe
      * drains setup and changes the registry generation. Publish both owners
      * together only after the new quota projection validates. */
     rebindGlobal,
-    journalEvents: (partition: string, afterCursor?: string) =>
-      readJournalEvents(store, partition, afterCursor, blobs),
+    journalEvents: (partition: string, request?: JournalEventPageRequest) =>
+      readJournalEventPage(store, partition, request, blobs),
     async recoverAfterStartup() {
       const effects = await obligations.completeOpen();
       // Only generations with unfinished work need recovery. No reconstruction

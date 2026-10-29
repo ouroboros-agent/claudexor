@@ -1,4 +1,5 @@
 import { sqlFixture } from "./store/test-support/sql-fixture.js";
+import { readJournalEvents } from "../dist/store/cursors.js";
 import type { ProjectThreadPort } from "./store-contracts.js";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -31,6 +32,13 @@ afterEach(async () => {
 });
 
 const stores: Array<Awaited<ReturnType<typeof sqlFixture>>> = [];
+
+/** Whole retained histories, read through the same bounded pages the SSE replays. */
+const journal = (
+  graph: Awaited<ReturnType<typeof sqlFixture>>["graph"],
+  name: string,
+  cursor?: string,
+) => readJournalEvents(graph.store, name, cursor, graph.blobs);
 async function fixture() {
   const root = realpathSync(reapMk(join(tmpdir(), "claudexor-project-partitions-")));
   roots.push(root);
@@ -181,7 +189,7 @@ describe("SqlCommandRouter", () => {
       new Error(`provider rejected ${token} ${"diagnostic ".repeat(1_000)}`),
     );
 
-    const durable = JSON.stringify(f.graph.journalEvents("global"));
+    const durable = JSON.stringify(journal(f.graph, "global"));
     const projected = f.partitions.findById(delivery.id)?.get(delivery.id)?.error;
     expect(durable).not.toContain(token);
     expect(projected).not.toContain(token);
@@ -266,9 +274,9 @@ describe("SqlCommandRouter", () => {
         payload: { mode: "agent" },
       },
     );
-    expect(
-      f.graph.journalEvents(`project:${a.id}`).some((event) => event.type === "run.event"),
-    ).toBe(true);
+    expect(journal(f.graph, `project:${a.id}`).some((event) => event.type === "run.event")).toBe(
+      true,
+    );
     const decisionRequest = { runId: "run-a", action: "accept_risk" };
     const decisionIdempotency = {
       key: "decision-1",
@@ -340,12 +348,10 @@ describe("SqlCommandRouter", () => {
       ),
     ).toEqual(recordedDecision.record);
     expect(
-      restarted.graph
-        .journalEvents(`project:${a.id}`)
-        .some(
-          (event) =>
-            event.type === "run.event" && (event.payload as { run_id?: string }).run_id === "run-a",
-        ),
+      journal(restarted.graph, `project:${a.id}`).some(
+        (event) =>
+          event.type === "run.event" && (event.payload as { run_id?: string }).run_id === "run-a",
+      ),
     ).toBe(true);
     await restarted.close();
   });
@@ -458,20 +464,20 @@ describe("SqlCommandRouter", () => {
     const projectId = f.projects.findByRoot(realpathSync(project))!.id;
 
     const globalPings = () =>
-      f.graph.journalEvents("global").filter((event) => event.type === "thread.head.updated");
+      journal(f.graph, "global").filter((event) => event.type === "thread.head.updated");
     // R5: entity bodies live in their owning rows; only the head ping is streamed.
     expect(
-      f.graph
-        .journalEvents(`project:${projectId}`)
-        .some((event) => event.type === "thread.entities_upserted"),
+      journal(f.graph, `project:${projectId}`).some(
+        (event) => event.type === "thread.entities_upserted",
+      ),
     ).toBe(false);
     expect(f.sql.store.prepare("SELECT pid FROM thread WHERE id=?").get(thread.id)).toEqual({
       pid: f.projects.partition(projectId)!.pid,
     });
     expect(
-      f.graph
-        .journalEvents(`project:${projectId}`)
-        .some((event) => event.type === "thread.head.updated"),
+      journal(f.graph, `project:${projectId}`).some(
+        (event) => event.type === "thread.head.updated",
+      ),
     ).toBe(false);
     expect(globalPings().map((event) => event.payload)).toEqual([
       { thread_id: thread.id, project_id: projectId, revision: 1 },
@@ -681,8 +687,7 @@ describe("SqlCommandRouter", () => {
         payload: { lifecycle: "succeeded" },
       }),
     ).toThrow("terminal events require the command terminal transaction");
-    const journaled = f.graph
-      .journalEvents("global")
+    const journaled = journal(f.graph, "global")
       .filter((event) => event.type === "run.event")
       .map((event) => event.payload as { type: string; payload: Record<string, unknown> });
     expect(journaled.map((event) => event.type)).toEqual(["run.created", "output.ready"]);

@@ -957,14 +957,16 @@ jobs:
             # A just-started daemon refuses replacement stop with a retryable code until it can
             # read its own records (runtime_activity_unknown) or while work is active
             # (runtime_replacement_busy). Retry only those refusals, within a bounded window.
+            # An empty or non-JSON answer is reported with the stop command's exit code.
             $stopDeadline = [DateTime]::UtcNow.AddSeconds(30)
             while ($true) {
               $stopText = (& node $entry --stop $env:VERSION $env:PREPARED_SHA | Out-String)
               $stopExit = $LASTEXITCODE
-              try { $stop = $stopText | ConvertFrom-Json } catch { throw "assembled daemon stop answered no JSON: $stopText" }
+              if ([string]::IsNullOrWhiteSpace($stopText)) { throw "assembled daemon stop answered nothing (exit $stopExit)" }
+              try { $stop = $stopText | ConvertFrom-Json } catch { throw "assembled daemon stop answered no JSON (exit $stopExit): $stopText" }
               if ($stopExit -eq 0 -and $stop.stopped) { break }
               if (-not $stop.retryable -or [DateTime]::UtcNow -ge $stopDeadline) {
-                throw "assembled daemon graceful stop failed: $($stopText.Trim())"
+                throw "assembled daemon graceful stop failed (exit $stopExit): $($stopText.Trim())"
               }
               Start-Sleep -Milliseconds 500
             }

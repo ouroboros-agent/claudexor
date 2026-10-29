@@ -143,6 +143,65 @@ Release stays draft until all publication checks pass, rejects differing
 same-name assets, and becomes public as the final mutation. Published releases
 are never edited. Versions still use changesets and the fixed lockstep group.
 
+A publish run can stop after npm accepted some of its packages, for example when
+npm had not yet exposed the last one by the end of its exposure wait. What that
+run sent can then be checked read-only:
+
+```bash
+node scripts/publish-npm-release.mjs --reconcile selection.json
+```
+
+The selection names the release identity and the versions to read:
+
+```json
+{
+  "registry": "https://registry.npmjs.org/",
+  "repository": "razzant/claudexor",
+  "workflowPath": ".github/workflows/release.yml",
+  "version": "<version>",
+  "ref": "refs/tags/v<version>",
+  "candidateSha": "<full candidate commit SHA>",
+  "packages": [
+    { "name": "@claudexor/cli", "prior": "accepted", "integrity": "sha512-<base64>" },
+    { "name": "@claudexor/policy", "prior": "uncertain" }
+  ]
+}
+```
+
+`prior` records what the stopped run showed: `accepted` when npm acknowledged the
+publish, `uncertain` when the outcome is unknown. It changes only the wording of
+the report; the registry decides every result. Each selected version must be
+exposed, be npm's `latest`, and carry signed npm provenance from this
+repository's release workflow, tag and candidate commit. When `integrity` gives
+the original tarball's sha512 integrity, the published bytes must be exactly
+those; without it the result is the narrower same-source provenance claim, and no
+tarball is packed to stand in for the original. The registry signatures of the
+selected versions and their dependencies are audited last. Every npm command
+passes the selected registry both as the default and for the `@claudexor` scope,
+because npm looks up a scoped package through its scope's registry first and a
+command-line value outranks every npmrc; dependencies under other scopes that
+the audit installs still follow the local npm configuration.
+
+The selected versions share one ten-minute exposure window, and no read, whether
+`npm view` or an attestation request, starts after it closes. Each of those reads
+is stopped after one minute, so waiting ends at most a minute after the window;
+each of the two audit commands is stopped after ten minutes, so a run that
+reaches the audit takes at most about 31 minutes. The command exits 0 only when
+every selected version verified and the audit passed. A version npm still does
+not expose is reported as unresolved, never as published or unsent. Reconciling
+again later is safe because the command never packs, publishes or moves a
+dist-tag. A selection with an unknown or misspelled field is refused before any
+registry read.
+
+Reconciliation does not find out which packages a stopped run sent, decide that
+an omitted or unexposed package was never sent, or publish what is missing. A
+publish run cannot establish the first two either, since it treats every version
+npm does not expose as unpublished; it can publish the remaining packages, which
+reconciliation never does. Reconciliation also cannot stop an ordinary
+re-dispatch: a publish run started while an accepted version is still not
+exposed sends another publish request for it. Because npm versions are
+immutable, that request cannot replace the accepted bytes, but it is still sent.
+
 The `publish` mode carries the OWNER-SIGNED runtime-update manifest (D-2),
 transported as a base64 workflow-dispatch input. The candidate run builds the
 engine-runtime closure and an UNSIGNED `runtime-manifest.json`; on a trusted
@@ -194,7 +253,13 @@ expected materialized bytes and an escaping-link refusal. A Windows claim also
 requires a native extract/exact-Node probe/isolated handshake/graceful-stop
 smoke; feature support must not be inferred from portable extraction alone,
 and local Windows harness installation uses the declared native or Node npm
-entrypoint for Codex and Claude. The Windows CI lane must prove managed and
+entrypoint for Codex and Claude. The release smoke retries only retryable stop
+refusals, for at most 30 seconds, and reports an empty, non-JSON or refused stop
+answer with the stop command's exit code;
+`scripts/lib/release-windows-stop.test.mjs` runs that exact loop from the
+workflow under pwsh with a fake `node` and daemon, checks the 30-second window
+against the loop's virtual pauses plus measured elapsed time, and fails on
+GitHub Actions when pwsh is missing. The Windows CI lane must prove managed and
 ordinary npm-prefix launch and the selected exact vendor version before a release claims
 that platform path; a newer default Codex install is not release-tested native
 app-server compatibility merely because its package/version proof passed. Other installer recipes retain their typed platform bounds;
@@ -314,6 +379,16 @@ Tests and local smokes must never touch real user state:
   Known absence and repeated disposal succeed; uncertain cleanup retains the
   root with `canary-cleanup.json`. This is normal teardown, not a guarantee
   against a runner killed before its cleanup executes.
+- The Windows agy print/ConPTY acceptance reports a failed or timed-out run
+  as the worker's error message (or, without one, the console host's stderr)
+  followed by typed facts: its stage, the in-app runner's exit, allowlisted
+  receipt, input and state facts recorded before the worker's checks and
+  cleanup, and every recorded process not proven gone with its role; a probe
+  that cannot decide stays unknown. The typed facts never carry raw vendor
+  output, OAuth URLs or one-shot input. A cleanup failure is appended to the
+  run's own failure instead of replacing it. Portable controls drive the
+  worker's in-app outcome check with real exited children and the real receipt
+  decoder.
 - Council regression fixtures exercise actual planner transports and final
   artifacts: retained unverified drafts, original failures, merge selection and
   terminal RunFacts must agree. Check solo/draft/merge prompt guidance through
@@ -338,10 +413,12 @@ Tests and local smokes must never touch real user state:
   reads; it preserves raw status windows and stops only its own daemon PIDs.
   Base and candidate must share the installed lockfile. See the
   [2026-10-20 comparison](benchmarks/daemon-sync-20261020.md).
-- Read-only run lookups (`inspect`, `apply`) connect to an already-running daemon
-  but never auto-start one (a typo'd run id reports `no such run`); only acting
-  paths (`agent`/`best-of`/`create`, `decision`) auto-start it. `daemon start` blocks
-  until the daemon is actually ready, so a follow-up `status`/run can't race it.
+- Read-only run lookups (`inspect`, the MCP status/inspect/result tools) attach
+  only to an already-running daemon and never auto-start one, so a typo'd run id
+  cannot launch a background daemon; delivery and acting paths (`apply`,
+  `agent`/`best-of`/`create`, `decision`) auto-start it. Lookup outcomes are listed
+  in [ARCHITECTURE](ARCHITECTURE.md#interactive-runs-waiting_on_user). `daemon start`
+  blocks until the daemon is actually ready, so a follow-up `status`/run can't race it.
 - Real-harness dogfood lives in `scripts/real-harness-battery.mjs`. Its default
   scratch mode runs disposable repos under `~/.claudexor/dogfood`, with an
   isolated config root. It asserts engine-owned artifacts, quarantines repeated

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { readFileSync, readdirSync } from "node:fs";
+import { jobSection, stepBody } from "./lib/workflow-sections.mjs";
 
 // Generic hygiene (SHA-pinned action refs, no GitHub-expression injection into
 // shell) is enforced across EVERY workflow, not just ci.yml/release.yml (audit
@@ -482,7 +483,58 @@ for (const [label, mutated] of [
     errors.push(`release-workflow-check self-test: failed to reject ${label}`);
   }
 }
-for (const [label, mutated] of [
+// The stop retry must live in the stop step itself: moving it into any
+// neighboring step, named or not, leaves the step without it.
+const assembledStopRetry = [
+  "              if (-not $stop.retryable -or [DateTime]::UtcNow -ge $stopDeadline) {",
+  '                throw "assembled daemon graceful stop failed (exit $stopExit): $($stopText.Trim())"',
+  "              }",
+  "              Start-Sleep -Milliseconds 500\n",
+].join("\n");
+const assembledStopWithoutRetry = release.replace(
+  assembledStopRetry,
+  '              throw "assembled daemon graceful stop failed (exit $stopExit): $($stopText.Trim())"\n',
+);
+const retryText = "$stop.retryable until $stopDeadline, Start-Sleep, then WaitForExit(15000)";
+const withNeighborStep = (step) => {
+  const mutated = assembledStopWithoutRetry.replace(
+    "\n\n  remote-linux-ssh-smoke:\n",
+    `\n${step}\n  remote-linux-ssh-smoke:\n`,
+  );
+  // A lost insertion point must not pass as a plain removal.
+  return mutated === assembledStopWithoutRetry ? release : mutated;
+};
+const assembledStopRetryFinding =
+  "assembled Windows stop must retry the retryable refusals of a just-started daemon";
+for (const [label, mutated, expectedFinding] of [
+  ["assembled stop without its retry", assembledStopWithoutRetry, assembledStopRetryFinding],
+  [
+    "assembled stop retry in a neighboring named step",
+    withNeighborStep(
+      `      - name: Describe the stop retry\n        shell: pwsh\n        run: |\n          # ${retryText}\n`,
+    ),
+    assembledStopRetryFinding,
+  ],
+  [
+    "assembled stop retry in a neighboring unnamed run step",
+    withNeighborStep(`      - run: |\n          # ${retryText}\n`),
+    assembledStopRetryFinding,
+  ],
+  [
+    "assembled stop retry in a neighboring uses step",
+    withNeighborStep(
+      `      - uses: actions/github-script@${"0".repeat(40)}\n        with:\n          script: console.log("${retryText}")\n`,
+    ),
+    assembledStopRetryFinding,
+  ],
+  [
+    "renamed assembled stop step",
+    release.replace(
+      "      - name: Probe, handshake and gracefully stop the assembled daemon closure\n",
+      "      - name: Probe and stop the assembled daemon\n",
+    ),
+    assembledStopRetryFinding,
+  ],
   [
     "missing Windows authority job",
     release.replace("  windows-conpty-authority:\n", "  renamed-conpty-authority:\n"),
@@ -551,7 +603,12 @@ for (const [label, mutated] of [
     ),
   ],
 ]) {
-  if (mutated === release || windowsConptyCustodyFindings(mutated).length === 0) {
+  const findings = mutated === release ? [] : windowsConptyCustodyFindings(mutated);
+  if (
+    findings.length === 0 ||
+    (expectedFinding !== undefined &&
+      !findings.some((finding) => finding.includes(expectedFinding)))
+  ) {
     errors.push(`release-workflow-check self-test: failed to reject ${label}`);
   }
 }
@@ -591,6 +648,10 @@ for (const [label, mutated] of [
   [
     "deleted Windows agy print acceptance",
     ci.replace("          packages/harness-agy/src/win32-print-acceptance.test.ts\n", ""),
+  ],
+  [
+    "deleted release stop-loop consumer test",
+    ci.replace("          scripts/lib/release-windows-stop.test.mjs\n", ""),
   ],
   [
     "deleted portable platform-auth declaration test",
@@ -1004,14 +1065,6 @@ function exactCandidateAppPromotionErrors(job) {
   return findings;
 }
 
-/** Like jobBody, but pure: usable on mutated workflow copies in self-tests. */
-function jobSection(workflow, name) {
-  const start = workflow.indexOf(`  ${name}:\n`);
-  if (start < 0) return "";
-  const next = workflow.slice(start + 2).search(/^  [a-z0-9-]+:\n/m);
-  return next < 0 ? workflow.slice(start) : workflow.slice(start, start + 2 + next);
-}
-
 function windowsPrLegFindings(workflow) {
   const findings = [];
   const windows = jobSection(workflow, "windows-test");
@@ -1048,6 +1101,14 @@ function windowsPrLegFindings(workflow) {
     /packages\/harness-agy\/src\/win32-print-acceptance\.test\.ts/,
   );
   requirePattern(
+    "Windows PR legs must execute the release smoke's daemon stop loop under pwsh",
+    /^\s+scripts\/lib\/release-windows-stop\.test\.mjs$/m,
+    stepBody(
+      windows,
+      "Test (platform auth, agy print, ConPTY, setup transport, SQL recovery, CLI exit)",
+    ),
+  );
+  requirePattern(
     "Windows PR legs must run portable platform-auth declaration and consumer tests",
     /platform-auth-policy\.test\.ts[\s\S]*?capabilities\.test\.ts[\s\S]*?harness-agy\/src\/conformance\.test\.ts[\s\S]*?setup-login-capability\.test\.ts/,
   );
@@ -1080,6 +1141,10 @@ function windowsConptyCustodyFindings(workflow) {
   const authority = jobSection(workflow, "windows-conpty-authority");
   const packageMacos = jobSection(workflow, "package-macos");
   const assembledSmoke = jobSection(workflow, "windows-conpty-candidate-smoke");
+  const assembledStop = stepBody(
+    assembledSmoke,
+    "Probe, handshake and gracefully stop the assembled daemon closure",
+  );
   const publishNpm = jobSection(workflow, "publish-npm");
   const npmSmoke = jobSection(workflow, "npm-smoke");
   const requirePattern = (label, pattern, scope) => {
@@ -1164,12 +1229,12 @@ function windowsConptyCustodyFindings(workflow) {
   requirePattern(
     "assembled Windows daemon must pass probe, protocol handshake, and identity-bound stop",
     /--probe[\s\S]*?\/v2\/handshake[\s\S]*?--stop \$env:VERSION \$env:PREPARED_SHA[\s\S]*?WaitForExit\(15000\)/,
-    assembledSmoke,
+    assembledStop,
   );
   requirePattern(
     "assembled Windows stop must retry the retryable refusals of a just-started daemon",
     /--stop \$env:VERSION \$env:PREPARED_SHA[\s\S]*?\$stop\.retryable[\s\S]*?\$stopDeadline[\s\S]*?Start-Sleep[\s\S]*?WaitForExit\(15000\)/,
-    assembledSmoke,
+    assembledStop,
   );
   requirePattern(
     "npm publication must be gated by the assembled Windows smoke",
@@ -1294,15 +1359,6 @@ function remoteSmokeGateFindings(workflow) {
     }
   }
   return findings;
-}
-
-function stepBody(job, name) {
-  const marker = `      - name: ${name}\n`;
-  const start = job.indexOf(marker);
-  if (start < 0) return "";
-  const rest = job.slice(start + marker.length);
-  const next = rest.search(/^      - name: /m);
-  return next < 0 ? job.slice(start) : job.slice(start, start + marker.length + next);
 }
 
 function replaceLastOccurrence(text, needle, replacement) {
