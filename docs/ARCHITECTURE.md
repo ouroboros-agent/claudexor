@@ -1858,7 +1858,12 @@ fails, the run still writes inspectable failure artifacts
 Ask also tracks normalized tool lifecycle. `tool_result.is_error === true`
 preserves redacted detail in the event payload and blocks a green verified claim
 unless verified recovery exists, but a produced deliverable can still be terminal
-success with warnings. Optional web denial/error is warning evidence and does
+success with warnings. A command result's optional `command_outcome` is separate
+from its tool-call `status`: when it does not report an observed exit (the
+command was moved to a background shell, its timeout elapsed, or the outcome is
+unknown), the result is not a finished command, never recovers an earlier
+failure, and is not itself a tool error, so it neither discards nor downgrades a
+delivered answer. Optional web denial/error is warning evidence and does
 not trigger route fallback or terminal failure; a read-only route is judged on
 its answer and the ordinary harness/contract axes.
 
@@ -5850,7 +5855,9 @@ existing thread packet. Retained assistant evidence spans all accepted tries;
 identity-mismatched tries contribute no assistant output, and their stream stops
 at the mismatch. The evidence index pairs tool results by try and tool-use id,
 includes pending edit calls, filters steering by attempt, and preserves full
-evidence paths and tool counts when prose is truncated. Only begun continued tries settle with a
+evidence paths and tool counts when prose is truncated. A paired result whose
+`command_outcome` reports no observed exit is listed as unconfirmed with that
+state, never as completed. Only begun continued tries settle with a
 `run.continuity` receipt (try index, carrier, cause, from/to profiles, memory
 full/partial/unknown, instructions as_sent/vendor_snapshot, re-ingested
 tokens, this try's observed model and mismatch, identity check, input
@@ -5939,7 +5946,8 @@ tool-error rollups are projections of the engine-owned
 that predate that artifact report `available: false` instead of recomputed
 guesses. Timeline projections include tool name, target/domain/path, error
 summary, severity, harness, attempt, and raw event reference, and are capped
-with an explicit truncation marker.
+with an explicit truncation marker. A tool row whose `command_outcome` does not
+report an observed exit is a warning, decided by that typed fact.
 
 ## 8. Artifact Layout
 

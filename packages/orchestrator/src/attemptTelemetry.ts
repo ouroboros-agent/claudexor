@@ -12,6 +12,7 @@ import type {
   ToolKind,
   WorkState,
 } from "@claudexor/schema";
+import { commandOutcomeUnconfirmed } from "@claudexor/schema";
 import {
   attemptUsageCostSummary,
   newAttemptUsageCost,
@@ -465,11 +466,11 @@ export function observeAttemptTelemetry(t: AttemptTelemetry, ev: HarnessEvent): 
     }
     return;
   }
-  // status === "ok": recovery needs the same tool + kind + target, plus the same
-  // non-null use id when both sides have one. A missing id retains the legacy
-  // tuple key for adapters and synthetic telemetry that cannot correlate calls.
+  // status === "ok": recovery needs the same tool + kind + target, the same non-null
+  // use id when both sides have one (else the legacy tuple key), and an observed
+  // command end: a background handoff or elapsed timeout proves nothing (#450).
   const resultToolUseId = tool.use_id ?? null;
-  for (const err of t.toolErrors) {
+  for (const err of commandOutcomeUnconfirmed(tool.command_outcome) ? [] : t.toolErrors) {
     // INV-043: a later identical-looking invocation cannot launder an earlier
     // error when both vendor records prove different invocation ids.
     if (
