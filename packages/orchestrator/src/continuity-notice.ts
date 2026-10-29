@@ -71,17 +71,20 @@ export function evidenceIndexPointer(
   return `${prior} Its evidence index is at: ${path} — read it before continuing. The same index follows:\n\n${inlineMarkdown}`;
 }
 
-/** The packet carrier's prompt: original prompt (constraints included) + notice + evidence index. */
+/** The packet carrier's prompt: original prompt (constraints included) + notice + evidence
+ * index; a route that cannot read files also gets the complete work order the index cuts. */
 export function packetContinuationPrompt(input: {
   originalPrompt: string;
   notice: string;
   evidencePath: string;
   evidenceMarkdown: string;
   completed?: boolean;
+  workOrder?: string | null;
 }): string {
   return [
     input.originalPrompt,
     input.notice,
+    ...(input.workOrder ? [`The complete work order:\n\n${input.workOrder}`] : []),
     evidenceIndexPointer(input.evidencePath, input.evidenceMarkdown, input.completed),
   ].join("\n\n");
 }

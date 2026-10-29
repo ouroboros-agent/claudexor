@@ -44,8 +44,10 @@ import {
   reviewerProfileResolver,
 } from "./orchestrator-credentials.js";
 import type { InRunContinuity } from "./inrun-continuity.js";
+import type { InRunContinuityDeps } from "./inrun-continuity-types.js";
 import {
   continuityWorkspace,
+  carryingAttempts,
   resumableOf,
   resumableTerminal,
   type ContinuityTerminalFacts,
@@ -2523,6 +2525,8 @@ export class Orchestrator {
         workOrder: prompt,
         firstPrompt: spec.prompt,
         poolEvidence,
+        later: continuationPointer ? "checkpoint" : undefined, // repair/synthesis never re-plan
+        explicitModel: modelHint !== undefined,
       }),
       { spec, continuation: runInput?.continuation, store, telemetry },
     ));
@@ -2953,14 +2957,12 @@ export class Orchestrator {
     paths: RunPaths,
     runInput: RunInput | undefined,
     log: EventLog | undefined,
-    lane: {
+    lane: Pick<InRunContinuityDeps, "workOrder" | "firstPrompt" | "later" | "explicitModel"> & {
       envelope: WorkspaceEnvelope | null;
       harnessHome: ScopedHarnessHome | null;
-      workOrder: string;
-      firstPrompt: string;
       poolEvidence?: PoolAttemptEvidence;
     },
-  ): ConstructorParameters<typeof InRunContinuity>[0] {
+  ): InRunContinuityDeps {
     const repoRoot = contract.repo.root;
     const cwd = lane.envelope?.worktree_path ?? (runInput ? this.execRootOf(runInput) : repoRoot);
     return {
@@ -2973,6 +2975,8 @@ export class Orchestrator {
       workspace: continuityWorkspace(lane.envelope, cwd),
       workOrder: lane.workOrder,
       firstPrompt: lane.firstPrompt,
+      later: lane.later,
+      explicitModel: lane.explicitModel,
       registry: this.config(repoRoot)?.global.credential_profiles ?? [],
       policy: this.credentials.profilePolicy(repoRoot, adapter.id),
       quotaSnapshots: () => this.deps.quotaSnapshots?.() ?? [],
@@ -6455,11 +6459,8 @@ export class Orchestrator {
       onLaunch?: () => void,
     ): Promise<{ status: "launched" } | { status: "budget_denied"; reason: string }> => {
       const adapter = routed.adapter;
-      const attemptId = continuationPointer
-        ? `a${String(idx + 1).padStart(2, "0")}-cont`
-        : modelOverride
-          ? `a${String(idx + 1).padStart(2, "0")}-fb`
-          : `a${String(idx + 1).padStart(2, "0")}`;
+      const suffix = continuationPointer ? "-cont" : modelOverride ? "-fb" : "";
+      const attemptId = `a${String(idx + 1).padStart(2, "0")}${suffix}`;
       const budgetSignalState = { quotaPressureDisclosed: false };
       const lease = ledger.reserve({
         taskId,
@@ -6712,6 +6713,8 @@ export class Orchestrator {
           workOrder: input.prompt,
           firstPrompt: spec.prompt,
           poolEvidence: tried,
+          later: continuationPointer ? "checkpoint" : "fallback",
+          explicitModel: modelOverride !== undefined,
         }),
         { spec, continuation: input.continuation, store, telemetry },
       ));
@@ -7180,6 +7183,7 @@ export class Orchestrator {
       harnessId: a.harnessId,
       status: a.status,
     }));
+    const carried = () => (opts.deepScan ? attempts : carryingAttempts(attempts, paths.root));
     const cancelledTerminal = () =>
       cancelledResult(
         log,
@@ -7203,7 +7207,7 @@ export class Orchestrator {
         input.signal,
         store,
         undefined,
-        resumableOf(attempts, "cancelled"),
+        resumableOf(carried(), "cancelled"),
         attempts,
       );
     if (input.signal?.aborted) return cancelledTerminal();
@@ -7398,7 +7402,7 @@ export class Orchestrator {
         phase: "executor",
         pool_attempts: reportPool,
         failure_ref: "final/failure.yaml",
-        ...resumableTerminal(store, paths, attempts, true),
+        ...resumableTerminal(store, paths, carried(), true),
       });
     } else if (workVetoed) {
       log.emit("run.blocked", {
@@ -7406,14 +7410,14 @@ export class Orchestrator {
         facts: terminalFacts,
         reason: terminalFacts.reason,
         pool_attempts: reportPool,
-        ...resumableTerminal(store, paths, attempts, true),
+        ...resumableTerminal(store, paths, carried(), true),
       });
     } else {
       log.emit("run.completed", {
         lifecycle: terminalFacts.lifecycle,
         facts: terminalFacts,
         reason: terminalFacts.reason,
-        ...resumableTerminal(store, paths, attempts),
+        ...resumableTerminal(store, paths, carried()),
       });
     }
 

@@ -1065,9 +1065,11 @@ describe("continueFrom through an unadopted head", () => {
       }
       expect(c.result.lifecycle, c.result.summary).toBe("succeeded");
       expect(f.spawns.at(-1)).toMatchObject({ resume: "sid-A", cwd: held.envelope.worktree_path });
+      // #411(d): the receipt names the actual source; the preflight head left no
+      // carrier, so the source is its ancestor, while `continueFrom` keeps the head.
       expect(c.receipts[0]).toMatchObject({
         carrier: "native",
-        from: { runId: b.result.runId },
+        from: { runId: middle === "preflight" ? a.result.runId : b.result.runId },
         workspace: "same_root",
       });
       expect(f.spawns.at(-1)!.prompt).not.toContain("different working tree");

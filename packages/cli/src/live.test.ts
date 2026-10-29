@@ -268,6 +268,21 @@ describe("claudexor follow", () => {
         },
       }),
     ).toBe("route pool degraded: 2/3 lanes (dropped cursor)");
+
+    expect(
+      formatRunEventLine({
+        type: "workspace.settlement_failed",
+        payload: {
+          attempt_id: "a01",
+          envelope_id: "env-1",
+          root: "/kept/tree",
+          stage: "retain",
+          cause: "EACCES: permission denied",
+        },
+      }),
+    ).toBe(
+      "[a01] WARNING: workspace settlement failed (retain): EACCES: permission denied; the run outcome stands and the tree may remain at /kept/tree",
+    );
   });
 
   it("resumes after a mid-stream drop via Last-Event-ID and exits 0 on the terminal", async () => {

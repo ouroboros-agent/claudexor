@@ -1,5 +1,6 @@
 import { InputTokenUsage, WorkReport, type HarnessEvent, type ToolRef } from "@claudexor/schema";
 import { nowIso, redactSecrets } from "@claudexor/util";
+import { codexFileChangeEvents } from "./file-change.js";
 import { applyCodexRateLimit, applyCodexTransient, codexReconnectStatus } from "./retry-signals.js";
 
 type Json = any;
@@ -285,16 +286,7 @@ export function parseCodexEvent(
           },
         ];
       case "file_change":
-        if (updated) return [];
-        return [
-          {
-            type: "file_change",
-            session_id: sessionId,
-            ts,
-            tool: fileToolRef(item),
-            payload: { path: item.path, status: item.status ?? type, item_id: item.id },
-          },
-        ];
+        return updated ? [] : codexFileChangeEvents(item, "started", sessionId, ts);
       default:
         return null;
     }
@@ -322,18 +314,8 @@ export function parseCodexEvent(
       }
       case "reasoning":
         return [{ type: "thinking", session_id: sessionId, ts, text: String(item.text ?? "") }];
-      case "file_change": {
-        const path = item.path ?? (Array.isArray(item.changes) ? item.changes[0]?.path : undefined);
-        return [
-          {
-            type: "file_change",
-            session_id: sessionId,
-            ts,
-            tool: fileToolRef(item),
-            payload: { path, item },
-          },
-        ];
-      }
+      case "file_change":
+        return codexFileChangeEvents(item, "completed", sessionId, ts);
       case "command_execution": {
         const failed =
           item.status === "failed" ||
@@ -549,15 +531,6 @@ function webSearchQuery(item: Json): string | undefined {
     }
   }
   return undefined;
-}
-
-function fileToolRef(item: Json): ToolRef {
-  return {
-    name: "apply_patch",
-    kind: "file",
-    use_id: stringOrUndef(item.id),
-    target: boundedTarget(item.path),
-  };
 }
 
 function commandFailureSummary(item: Json): string {

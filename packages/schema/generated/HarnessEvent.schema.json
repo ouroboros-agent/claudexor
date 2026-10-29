@@ -555,6 +555,14 @@
               ],
               "description": "Outcome of the tool use; required on tool_result events (a missing status is never treated as ok)."
             },
+            "phase": {
+              "type": "string",
+              "enum": [
+                "started",
+                "completed"
+              ],
+              "description": "Native lifecycle frame of a file_change (started or completed); absent when the adapter does not type it. Completion is not success: the outcome stays in status."
+            },
             "error_summary": {
               "type": "string",
               "description": "Redacted, bounded error detail for status=error results."

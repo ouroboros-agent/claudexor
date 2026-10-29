@@ -8,19 +8,21 @@
  * terminal) with the CURRENT workspace overlaid: the envelope a run keeps
  * (custody `retained`) or, once a successor adopted it or the run was
  * discarded, none. A run the daemon found running at its restart never reached
- * an engine terminal: its block is derived here from the durable session
- * capsule and custody record (cause `host_restart`), so it can be continued.
+ * an engine terminal: its block is derived here from the session the
+ * successor's planner would resume (`continuationCarrier`) and the custody
+ * record (cause `host_restart`), so it can be continued.
  */
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { readRunEvents } from "@claudexor/event-log";
 import {
   RunContinuityReceipt,
   RunResumable,
-  SessionCapsule,
   type ControlRunSummary,
+  type RunEvent,
 } from "@claudexor/schema";
 import {
+  continuationCarrier,
   readContinuationSources,
   retainedEnvelopeInChain,
   retainedEnvelopeOfRun,
@@ -28,27 +30,6 @@ import {
 import { safeReadStructuredArtifact } from "./run-artifact-read.js";
 import { paramsRecord, type DaemonRunRecord } from "./run-record.js";
 import { TERMINAL_STATES } from "./sse-shared.js";
-
-/** Per-attempt capsule file the engine writes when a native session starts (orchestrator `session-capsule.ts`). */
-const SESSION_CAPSULE_FILE = "session-capsule.json";
-
-function newestCapsule(runDir: string): SessionCapsule | null {
-  const attemptsDir = join(runDir, "attempts");
-  if (!existsSync(attemptsDir)) return null;
-  let newest: SessionCapsule | null = null;
-  for (const attempt of readdirSync(attemptsDir)) {
-    try {
-      const parsed = SessionCapsule.safeParse(
-        JSON.parse(readFileSync(join(attemptsDir, attempt, SESSION_CAPSULE_FILE), "utf8")),
-      );
-      if (parsed.success && (parsed.data.mtimeMs ?? 0) >= (newest?.mtimeMs ?? 0))
-        newest = parsed.data;
-    } catch {
-      // No capsule in this attempt (or a torn one): nothing to resume there.
-    }
-  }
-  return newest;
-}
 
 function inPlaceRoot(params: Record<string, unknown>): string | null {
   const execution = params["execution"] as Record<string, unknown> | undefined;
@@ -103,14 +84,21 @@ export function continuationSummary(
     ? { kind: "retained_envelope" as const, root: available.envelope.worktree_path }
     : null;
   let written = safeReadStructuredArtifact(rec, "final/resumable.yaml", RunResumable);
-  let capsule = newestCapsule(rec.runDir);
+  // The session a successor would resume, by the planner's own rule, read only
+  // for a derived block: a caller's raw events serve as the snapshot; folded
+  // detail facts carry none, so the log is read only when no terminal record
+  // decides (never mtime order).
+  const runDir = rec.runDir;
+  const snapshot = Array.isArray(events) ? (events as readonly RunEvent[]) : undefined;
+  const ownCarrier = () => continuationCarrier(runDir, snapshot)?.capsule ?? null;
+  let capsule = written || rec.state === "succeeded" ? null : ownCarrier();
   let inherited = false;
   let inheritedState: string | null = null;
   if (!written && !capsule && rec.state !== "succeeded") {
     for (const source of sources) {
       const ancestor = { ...source, id: source.runId };
       written = safeReadStructuredArtifact(ancestor, "final/resumable.yaml", RunResumable);
-      capsule = newestCapsule(source.runDir);
+      capsule = continuationCarrier(source.runDir)?.capsule ?? null;
       inherited =
         !!written ||
         !!capsule ||
@@ -139,6 +127,7 @@ export function continuationSummary(
   const restarted =
     rec.state === "interrupted" && !existsSync(join(rec.runDir, "final", "run_facts.yaml"));
   if (!restarted && !kept && !inherited) return { ...base, resumable: null, retainedEnvelope };
+  if (rec.state === "succeeded") capsule = ownCarrier();
   const root = inPlaceRoot(params);
   return {
     ...base,

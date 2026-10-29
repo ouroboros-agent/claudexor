@@ -111,6 +111,40 @@ describe("parseAgyEvent", () => {
     )!;
     expect(done[0]).toMatchObject({ type: "tool_result", tool: { status: "ok" } });
     expect(done[1]).toMatchObject({ type: "file_change", payload: { path: "/w/a.txt" } });
+    // Without a recorded step index nothing invents an invocation id.
+    expect(active[0]?.tool).not.toHaveProperty("use_id");
+  });
+
+  it("keys a step's call, result and write companion by its recorded step index (#410)", () => {
+    const step = (state: string, output?: string) =>
+      parseAgyEvent(
+        {
+          event: "step_update",
+          step_update: {
+            step_index: 12,
+            state,
+            step_type: "tool",
+            tool_info: {
+              name: "write_to_file",
+              parameters: { TargetFile: "/w/a.txt" },
+              ...(output ? { output } : {}),
+            },
+          },
+        },
+        SID,
+      )!;
+    expect(step("ACTIVE")[0]?.tool).toMatchObject({ use_id: "step-12", target: "/w/a.txt" });
+    const [result, change] = step("DONE", "ok");
+    expect(result?.tool).toMatchObject({ use_id: "step-12", status: "ok" });
+    // The companion is the same completed step, with its target; completion is typed.
+    expect(change?.tool).toEqual({
+      name: "write_to_file",
+      kind: "file",
+      use_id: "step-12",
+      target: "/w/a.txt",
+      phase: "completed",
+      status: "ok",
+    });
   });
 
   it("maps a tool_info error to a typed error tool result", () => {
