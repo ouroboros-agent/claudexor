@@ -6,9 +6,10 @@ import type {
   ToolKind,
   ToolRef,
 } from "@claudexor/schema";
-import { InputTokenUsage } from "@claudexor/schema";
+import { commandOutcomeLabel, InputTokenUsage } from "@claudexor/schema";
 import { nowIso, redactSecrets } from "@claudexor/util";
 import { applyCursorVendorLimit } from "./retry-signals.js";
+import { classifyCursorToolResult } from "./tool-result.js";
 
 type Json = any;
 
@@ -296,29 +297,9 @@ function parseCursorEventStateful(
     const origin = callId ? state.pending.get(callId) : undefined;
     if (callId) state.pending.delete(callId);
     const result = inner?.result ?? obj.result;
-    const rejected = Boolean(
-      result && typeof result === "object" && "rejected" in result && result.rejected,
-    );
-    const permissionDenied = Boolean(
-      result &&
-      typeof result === "object" &&
-      "permissionDenied" in result &&
-      result.permissionDenied,
-    );
-    const nativeFailure =
-      result &&
-      typeof result === "object" &&
-      "failure" in result &&
-      result.failure &&
-      typeof result.failure === "object" &&
-      ("exitCode" in result.failure || "error" in result.failure);
-    const failed =
-      subtype === "failed" ||
-      nativeFailure ||
-      (result && typeof result === "object" && "error" in result && result.error);
+    // Denial/failure status plus, for the shell, the command outcome (#450).
+    const { status, facts, payload } = classifyCursorToolResult(subtype, variant, result);
     const detail = resultSummary(result);
-    const status: ToolRef["status"] =
-      rejected || permissionDenied ? "denied" : failed ? "error" : "ok";
     const kind = origin?.kind ?? toolKindFor(variant);
     // Plan mode is READ-ONLY exploration: a read/search that misses (a probed
     // path that does not exist) is speculative negative information, never a
@@ -354,15 +335,20 @@ function parseCursorEventStateful(
       status,
       error_summary: status === "error" ? detail || "tool call failed" : undefined,
       content_summary: detail || undefined,
+      ...facts,
     };
+    const outcomeLabel = commandOutcomeLabel(tool.command_outcome);
     const events: HarnessEvent[] = [
       {
         type: "tool_result",
         session_id: sessionId,
         ts,
         text:
-          status !== "ok" ? `tool_result: ${status}${detail ? `: ${detail}` : ""}` : "tool_result",
+          status !== "ok"
+            ? `tool_result: ${status}${detail ? `: ${detail}` : ""}`
+            : `tool_result${outcomeLabel ? `: ${outcomeLabel}` : ""}`,
         tool,
+        ...(payload ? { payload } : {}),
       },
     ];
     // cursor's `createPlan` is the plan-mode DELIVERABLE tool. Its authored plan

@@ -17,6 +17,7 @@ import {
 import { runControlsFromMeta, validateRunControls } from "./validate.js";
 import { terminalAuth, type AcpAuthOptions } from "./auth.js";
 import { attachmentInputs } from "./attachments.js";
+import { toolResultUpdate } from "./tool-update.js";
 
 export const ACP_PROTOCOL_VERSION = acp.PROTOCOL_VERSION;
 
@@ -321,11 +322,7 @@ export class AcpServer {
       if (!id) return;
       await client.notify(acp.methods.client.session.update, {
         sessionId,
-        update: {
-          sessionUpdate: "tool_call_update",
-          toolCallId: id,
-          status: tool["status"] === "error" ? "failed" : "completed",
-        },
+        update: toolResultUpdate(id, tool),
       });
     }
   }
