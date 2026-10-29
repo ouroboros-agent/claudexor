@@ -1,4 +1,4 @@
-import { cursorAccessArgs } from "./profile.js";
+import { cursorAccessArgs, cursorSpawnPinFacts } from "./profile.js";
 import {
   cursorProcessingMethods,
   applyCursorRunProcessing,
@@ -20,7 +20,6 @@ import {
 import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
 import {
   abortSignalFromSpec,
-  credentialProfileUnpinned,
   HarnessUnavailableError,
   promptWithInstructions,
   providerScrubEnv,
@@ -33,7 +32,6 @@ export { parseCursorModelList } from "./parse.js";
 import {
   cursorObservationAuthenticated,
   cursorObservationError,
-  probeCursorNativeAuth,
   selectCursorAuthRoute,
   shouldDiscloseCursorAutoApiRoute,
   shouldSmokeCursorApiKey,
@@ -42,6 +40,7 @@ import {
 } from "./auth.js";
 import { probeCursorDoctorForAccounts } from "./doctor.js";
 import { coordinatedCursorNativeAuth, cursorFileStoreEnv } from "./status-cache.js";
+import type { CursorStatusRead } from "./status-cache.js";
 export { clearCursorStatusCache } from "./status-cache.js";
 import {
   cursorChildHome,
@@ -138,7 +137,7 @@ function cursorApiKey(env?: Record<string, string | null | undefined>): string |
 type CursorApiSmokeCacheEntry = { result: CursorApiSmokeResult; expiresAtMs: number };
 type CursorRuntimeDeps = {
   detectVersion: typeof detectCursorVersion;
-  nativeAuthOk: typeof probeCursorNativeAuth;
+  nativeAuthOk: CursorStatusRead;
   cursorApiKey: typeof cursorApiKey;
   listCursorModels: CursorModelLister;
   smokeIsolatedApiKey: typeof smokeIsolatedApiKey;
@@ -354,8 +353,8 @@ export function createCursorAdapter(deps: Partial<CursorRuntimeDeps> = {}): Harn
       return runCursor(spec, runtime);
     },
 
-    async probeCredentialProfile(profile, abortSignal) {
-      return probeCursorCredentialProfile(profile, runtime, abortSignal);
+    async probeCredentialProfile(profile, abortSignal, options) {
+      return probeCursorCredentialProfile(profile, runtime, abortSignal, options);
     },
 
     async probeCredentialAccount(profile, abortSignal) {
@@ -396,7 +395,7 @@ async function* runCursor(
     ({ cursorApiKey, ...input }) =>
       resolveCursorAuthRoute(cursorApiKey ? { ...deps, cursorApiKey } : deps, input),
     abortSignalFromSpec(spec),
-    { admitLastPositive: credentialProfileUnpinned(spec) }, // #363: the engine's pin fact
+    cursorSpawnPinFacts(spec), // #363/#532: the engine's pin facts
   );
   if ("refusal" in resolved) {
     yield { type: "error", session_id: spec.session_id, ts: nowIso(), error: resolved.refusal };

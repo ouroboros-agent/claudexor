@@ -13,14 +13,15 @@ import {
   ControlQuotaFreshnessResponse,
   emptyResourceFacet,
   type AccountResourceObservation,
+  type AccountResourceTarget,
   type AccountTarget,
   type QuotaAbsence,
   type QuotaSnapshot,
 } from "@claudexor/schema";
 
-export const resourceKey = (target: AccountTarget) =>
+export const resourceKey = (target: AccountResourceTarget) =>
   JSON.stringify([target.harness, target.profile_id]);
-export function emptyResources(target: AccountTarget): AccountResourceSnapshot {
+export function emptyResources(target: AccountResourceTarget): AccountResourceSnapshot {
   return {
     target,
     balances: emptyResourceFacet(),
@@ -30,12 +31,16 @@ export function emptyResources(target: AccountTarget): AccountResourceSnapshot {
   };
 }
 /** Merge independently observed facets. A failed read preserves the successful
- * observation, including its original source and clock. */
+ * observation, including its original source and clock. A row read with
+ * another API key starts empty: one key's figures never stand for another's. */
 export function mergeResources(
   prior: AccountResourceSnapshot | undefined,
   update: AccountResourceObservation,
 ): AccountResourceSnapshot {
-  const result = structuredClone(prior ?? emptyResources(update.target));
+  const sameKey = prior?.credential_fingerprint === update.credential_fingerprint;
+  const result = structuredClone(sameKey && prior ? prior : emptyResources(update.target));
+  if (update.credential_fingerprint !== undefined)
+    result.credential_fingerprint = update.credential_fingerprint;
   for (const key of ACCOUNT_RESOURCE_FACETS) {
     const next = update[key];
     if (!next) continue;

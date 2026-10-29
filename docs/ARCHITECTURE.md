@@ -192,7 +192,8 @@ at every wire boundary.
   router with loop detection.
 - `packages/policy`: typed risk classification, protected-path/human-approval
   rules, workspace path guard.
-- `packages/context`: scope atlas + lazy ContextPack for read-only modes.
+- `packages/context`: scope atlas, the lazy ContextPack for read-only modes and the
+  window-sized raw-api `RawContextPacket`.
 - `packages/config`: layered config loading (global, project, user-level trust).
 - `packages/secrets`: v2 file-only 0600 secret store and secret resolution.
 - `packages/delivery`: patch check/apply/commit/branch/PR delivery, copied-file
@@ -483,12 +484,22 @@ never route.
 
 Harness availability is determined by discovery + route-specific readiness +
 capabilities: `available` alone is not enough. A genuinely profile-less/default
-route must be doctor-`ok`; an exact account row may instead admit its harness
+route joins the Auto pool only while doctor-`ok`; an explicitly selected one may
+also be `degraded` and then runs only the intents its doctor still enables, with
+its reasons disclosed. Harness status carries both answers: `routableIntents` is
+Auto eligibility and `enabledIntents` is explicit-selection eligibility, so a
+surface offering an explicit choice reads `enabledIntents` (#133). An exact
+account row may instead admit its harness
 after that selected profile passes readiness, quota, and model preflight, even
 when the default store is unavailable. Either route must expose the selected
 mode's intent (`explain` for Ask, `audit` for Ask's `--deep-scan` sweep,
 `implement` for Agent/repair paths, `plan`, etc.) and support read-only when the
-mode requires it. Surfaces keep aggregate/default doctor evidence distinct from
+mode requires it. Answering needs no file access, so `explain` does not depend
+on `read_files`: a route that cannot read files (raw API) answers Ask without a
+project, while a project-scoped Ask on it refuses before dispatch as
+`cannot read project files: ask without a project or choose a harness that
+reads files`, because the Ask prompt carries a path atlas, never file contents.
+`audit` still requires `read_files`. Surfaces keep aggregate/default doctor evidence distinct from
 exact-profile evidence and routing gates on the identity actually selected.
 
 Attachment and Browser request admission (requests with neither skip it) uses
@@ -502,7 +513,14 @@ thread's durable account binding), and omission inherits it. Admission checks
 static facts only. Missing, disabled or wrong-harness pins and unavailable lanes
 refuse with 400 `harness_unavailable`, including an empty Auto candidate pool.
 Every explicit-pool lane must accept each mandatory attachment; Auto may drop
-incompatible lanes. Remaining lanes with ambiguous platform bindings refuse with
+incompatible lanes. A model's catalog input modalities never join this harness
+admission, as for the model-operation catalogs below (#435): a raw-api request
+sends an attached image unchanged, and when a successful catalog lists the
+selected model's modalities without `image` the run says so once and the
+provider decides; missing, empty or malformed metadata is unknown and says
+nothing. That catalog is the per-spawn gate's own read when it made one (an
+explicit model or a raw packet); its failure stays unknown and nothing reads
+the catalog again. Remaining lanes with ambiguous platform bindings refuse with
 409 `credential_profile_ambiguous`; Browser needs one effective remaining lane
 under its access and web declarations. One bounded asymmetry remains: Browser-only
 Auto on Windows can reject ambiguous AGY rows that execution would have dropped
@@ -840,14 +858,79 @@ skip-at-zero-cost contract whatever the harness declares. The residual is
 disclosed rather than guessed at: a vendor CLI refusing a forwarded model
 surfaces as an untyped error carrying the vendor's text, and a mistyped model
 on an advisory harness costs one spawn.
+Every gate reads a live list through core `readModelCatalog`. A producer that
+can tell a failed read from an empty catalog (raw-api, through `modelCatalog`)
+answers a complete catalog or a typed failure: `no_credential`, `auth_rejected`
+(HTTP 401/403), `http_status`, `network`, `timeout`, `malformed` (one invalid
+row, or a `total_count` that is not a count or is smaller than the rows
+carried) or `incomplete` (a `links.next` page, or a `total_count` larger than
+the rows carried). OpenRouter answers its full list when neither `offset` nor
+`limit` is sent, which is how raw-api asks. A partial body never becomes a
+smaller catalog, and the read uses the credential identity `run()` would use
+for the selected profile or environment. A successful empty catalog refuses an
+explicit model like any miss, without account or auth advice. A failed read is
+no list at all and never reports a model absent. On an authoritative harness
+(raw-api) it splits by cause (owner decision 2026-10-29 «А», INV-104): a
+missing key or a rejected one (`no_credential`, `auth_rejected`) refuses the
+explicit model at every gate with code `model_catalog_unavailable` (run
+preflight and the per-spawn gate raise `ModelCatalogUnavailableError`, category
+`auth`, not retryable; a per-spawn refusal sends nothing and the attempt keeps
+it as its typed failure, never a crashed harness; the settings write answers
+409 with the listing problem's `retryable` verdict and `context` (`cause`,
+`httpStatus`); the explicit reviewer panel refuses after its one retry; doctor
+readiness fails the configured-model row and the capability catalog reports the
+configured model invalid). Every other failure (`http_status`, `network`,
+`timeout`, `malformed`, `incomplete`) admits the explicit model unverified: it
+is sent byte-identical on the same key and every consumer says once that it
+could not be verified (the settings read-back `notes`, the readiness detail,
+the per-spawn status event, the explicit reviewer panel's `review.preflight`
+event). The per-spawn gate never lets such a failure erase what the run already
+read: the route keeps its most recent successful typed read with the profile and
+the key it was read under, and a later failed read under the same profile (or
+the engine default) and the same key is answered by that read, its presence,
+absences and rows, so a known window still sizes the request and an unlisted
+model is still refused; its status event names the failure and the earlier
+read's time. The key is the read's own non-secret fingerprint of the key it sent
+at that endpoint (the `apiKeyFingerprint` that also binds key observations), so a
+stored secret or key variable replaced mid-run under the same profile id is
+another credential, and a read that names no key lends nothing. No other
+account's read is borrowed, nothing is read again for it, and it lives only as
+long as the run's route. Account or key advice appears only for
+`no_credential` and `auth_rejected`. An advisory harness's failed read forwards
+the model with the failure named, as its declaration forwards any miss. A
+fail-soft `models()` answer keeps the meaning each consumer already gives its
+`[]`.
+Request-time routing variants are a harness declaration, never inferred from a
+model name: `model_routing_variants` lists suffixes the provider accepts on a
+listed id, each with its billing effect. Only the OpenRouter instance declares
+them: `:nitro` and `:floor` may bill a service-tier rate and `:exacto` bills the
+listed price, per OpenRouter's public model-variants documentation (read
+2026-10-28 and 2026-10-29). That documentation lets suffixes combine in any
+order, with at most one catalog variant and any number of routing variants, so
+every declared routing segment after the base id is removed to find the row
+whose presence and metadata apply (`m:free:nitro` and `m:nitro:free` both need
+`m:free` itself listed). The request carries the original id byte-identical
+and the admission note names the variant and its billing effect. Undeclared
+suffixes stay admitted only by exact membership. `model_refused_variants`
+declares suffixes refused in any position whatever a list says or whether it
+could be read: the OpenRouter instance refuses `:online`, which runs provider
+web search outside the route's `web_policy: none`, so a failed read cannot
+forward it. Generic compatible endpoints declare neither list. The listing
+response carries the declared routing variants as `routingVariants`, so a
+surface finds a variant id's listed row from the same answer (#146).
 Thread ask/plan readiness and inventory use the same durable lane HOME as the
 eventual spawn, while non-thread read-only runs retain disposable state.
 `/harnesses/:id/models` reports
 the truth source honestly (`source: api|manifest|none` — a producer that
-answered only hint rows reports `manifest`; rows may carry `origin` and
-`resolved_model` — with the manifest's `verifiedAgainst` CLI-version freshness
-note), and the model-hints-freshness gate warns when the installed vendor CLI
-drifts from the verified version.
+answered only hint rows reports `manifest`; a failed live read keeps `source:
+api` with no rows and a `problem` (`model_catalog_unavailable`, typed
+`context.cause`), which the capability catalog's model summary repeats (its
+`claudexor capabilities` text line prints the failed read, not a count) and an
+account row keeps on its availability row; rows may carry `origin`,
+`resolved_model` and the catalog's declared `input_modalities` and
+`max_output_tokens` — with the manifest's `verifiedAgainst` CLI-version
+freshness note), and the model-hints-freshness gate warns when the installed
+vendor CLI drifts from the verified version.
 Candidate diffs additionally pass a typed policy gate: protected-path changes
 and critical-risk diffs escalate as `NEEDS_HUMAN` findings. An accepted
 escalation blocks the run only when it belongs to the WINNING candidate
@@ -1010,9 +1093,23 @@ vendor gave it as `last_verified_at`. Age uses a suspend-inclusive monotonic
 clock; Linux uptime's possible one-second quantization is conservatively
 bounded, so an observation can expire less than two seconds early. Wall time
 only stamps the observation; clock steps neither extend nor expire it.
-A probe with no recognized answer whose ten-second budget expires before
-observed native exit or caller cancellation reports
-`did not answer within 10s (…); login state unknown`, which is
+Each caller's wait is its own (#532). An ordinary caller (unpinned admission,
+pool and rotation readiness, model inventory, Accounts and doctor) decides
+after ten seconds. Run admission probes under the run's cancellation, and only
+an explicit pin's probe also carries the pin fact: it and the pin's spawn-time
+route check keep waiting for the same child until it answers, the run is
+cancelled, or 120 seconds pass. An explicit reviewer seat's account preflight
+does the same under the run's or the diff review's cancellation.
+The child belongs to the coordinator, is bounded by that pinned wait, and is
+stopped as soon as no caller still waits for it; one caller's cancellation ends
+only its own wait. It is spawned without the run scope marker of the caller
+that started it, so that run's terminal settlement never ends a child another
+run still waits for; the host's own markers stay on it, and an engine that dies
+leaves it to that custody, like a status child started outside any run. A stopped child can still finish after a newer read of the
+store has answered, so only its logged-out answer is kept. A wait that ends
+with no recognized answer reports
+`did not answer within 10s; login state unknown` (120s for a pin; an unshared
+child reports its own `did not answer within 10s (…)`), which is
 `unknown + not_run`, never a logout and never a pass — a caller's
 cancellation or a kill from outside is a plain unknown, not a timeout. Its stale path serves the other side of routing (the INV-135
 #363 amendment): only such a timeout, while the store's last positive answer is
@@ -1020,10 +1117,12 @@ under five minutes old, projects that answer as `stale: true` with
 `stale_basis: last_positive_after_timeout`, its `stale_age_ms`, a detail naming
 the answer's instant, and no `last_verified_at` or identity. That basis admits
 UNPINNED choices only — a bound row, the pool, rotation and `next_up` — never
-an explicit pin (a pin whose probe timed out is still refused), while the
-generic grace above still serves only a selected route. A logged-out answer
+an explicit pin: a pin that waited out its bound refuses as `Cursor did not
+confirm sign-in within 120s`, with no stale basis, while the generic grace
+above still serves only a selected route. A logged-out answer
 from the store drops its positive, as do Claudexor-handled credential
-mutations (including an in-flight probe), and while a Claudexor-managed
+mutations, which also stop an in-flight child and answer its waiters unknown
+at once (a pin waiting through one refuses), and while a Claudexor-managed
 Cursor login's credential-mutation window is open (see the profile-login
 note under [Design constraints](#design-constraints)) the coordinator
 answers live and neither reuses, retains nor leans on any positive; any
@@ -1031,13 +1130,16 @@ other unknown answer never consults it, and no file in the row HOME is read
 as a substitute. The
 adapter's spawn-time route check applies the same split. The engine stamps
 each spec whose row was an unpinned choice (a bound row, the pool, rotation, an
-unpinned or automatic reviewer seat) with that row's id in `spec.extra`; the
-adapter never infers it from profile fields. Only a stamped row starts on a
-stale positive, after yielding an `[auth] … using the last positive status
-answer …` status event (`auth_status_stale`; never answer text). An explicit
-pin, or any unstamped spec, whose spawn-time probe times out refuses as
-`login state is unknown`, naming the last positive as unpinned-only, and every
-other unconfirmed row refuses the same way rather than with login advice. A
+unpinned or automatic reviewer seat) with that row's id in `spec.extra`, and
+each spec whose row is an explicit pin (of the run or of a reviewer seat) with
+a pin stamp; the adapter never infers either from profile fields. Only an
+unpinned stamp starts on a stale positive, after yielding an `[auth] … using
+the last positive status answer …` status event (`auth_status_stale`; never
+answer text). A pin stamp waits at spawn as its admission does and refuses as
+`Cursor did not confirm sign-in within 120s` when no answer comes. An unstamped
+spec, such as the continuity summary pass, keeps the ordinary ten-second
+decision without leaning on a last positive, and every other unconfirmed row
+refuses as `login state is unknown` rather than with login advice. A
 model-inventory read, which launches nothing, may still read on it. The
 Accounts catalog projection remains stricter for a named account: it reports
 unknown status and does not offer catalog reading on stale evidence. This
@@ -1177,6 +1279,40 @@ ones without inventing an error; retaining any unread offer keeps the single fac
 clock stale. Coverage is not a public snapshot field. The event ledger stores the merged
 complete row and replay installs it, while legacy partial rows still merge as deltas.
 
+An API key's own spending limit is a resource source of the same owner. `openrouter_key`
+reads OpenRouter's documented key read (`/key` under its API base) for each key a request can send now: the
+instance's default key (its key variable, else its own managed secret slot) and each
+enabled registered `api_key` row of that harness, resolved by the adapter's request-key
+owner. The default key is the unregistered API-key route: its row's target has
+`profile_id: null` and it is never an account row. Every API-key row carries
+`credential_fingerprint`, a domain-separated truncated SHA-256 of endpoint and key. A
+read whose key changed while it ran is dropped, an observation for another key never
+merges into the previous key's facets, and publication withholds a stored row whose
+fingerprint no longer matches the key a request would send: a replaced key reads as not
+yet read, a removed key has no row. The app counts, per account, the changes of its
+binding (its row's key, or whether it has a row): committed quota snapshots that change
+it, and the app's own acknowledged writes of that account's credential (a stored default
+key; a profile enabled, disabled or removed), which count even when the readback that
+would show them fails. A quota read that omits resources (the legacy projection, read
+when capability negotiation fails) is no evidence about them: the shown rows stay and no
+binding changes, while an observed empty list removes the rows. An exact refresh or reset
+reply read with another key, or one that
+adds or drops the account's row, stands only if that count is unchanged since the request
+began, even when the binding came back: a late reply for a replaced or removed key cannot
+bring its figures back, a refresh begun after the app's write can install the new key,
+and another account's commit or write, a failed write, or a display read that admitted
+nothing never outranks it. Changes made outside the app are seen only when committed.
+The spending row keeps
+`capped` (false is the provider's explicit absence of a per-key cap, never unknown, zero
+or unlimited money),
+the provider's decimal `limit` and `remaining`, and `used` for its UTC `window`: the
+provider's `key_limit` budget spend when that budget has the cap's cadence, otherwise
+the window's usage counter unless BYOK spend also counts toward the cap. `resets_at`
+comes only from that budget's reported instant. The source runs only in explicit full
+or exact refreshes: it adds no quota subject, absence, poll demand or routing input, and
+a failed read stays on the facet. Only clients that negotiate `includeApiKeys` receive
+these rows (wire contract: INTEGRATIONS).
+
 `POST /v2/account-resets` is a direct control operation backed by the command store,
 independent of inference queue capacity. Its required Idempotency-Key binds the exact
 request, canonical native account fingerprint, selected grant/program and native request
@@ -1308,7 +1444,10 @@ limit observed after that failure is again the last word). A provider block outr
 whatever the threshold. A multi-candidate terminal keeps the basis only when
 every candidate shares it, and a window, usage or threshold only where all
 agree; its reset stays the latest. Authentication and billing refusals keep their own
-channels; `next_up` names a pool stopped only by saved reserves. (2) An unpinned THREAD turn stays
+channels; `next_up` names a pool stopped only by saved reserves. A pinned Cursor
+row waits for its own status answer under the run's cancellation instead of
+deciding at the ordinary probe budget (see [Auth And Secrets](#5-auth-and-secrets)).
+(2) An unpinned THREAD turn stays
 on its durable bound account, which the daemon derives from the thread's own lane
 evidence (latest live session, else lane checkpoint, per harness) and hands to
 the run as `threadAccountBindings`; a binding whose row became
@@ -2011,6 +2150,62 @@ the root, such as an absolute `/tmp/...` host path, does not enter the project
 patch automatically and is not by itself proof of delivered project work.
 Capture neither refuses nor redirects such a write; the access profile decides
 whether the harness may make it.
+
+A `git_patch_envelope` producer (raw-api) cannot read the tree, so its envelope
+is projected into one hash-bound `RawContextPacket`, built at dispatch so it
+describes that exact request: each try (a retry or an account hop included)
+sizes its own packet, and a patch is accepted only against the packet its own
+try sent. A convergence round (`attempts`, `untilClean`) asks such a producer
+for the run's candidate intent, as one agent attempt does, never `repair`,
+which it does not play: the round gets the same packet and patch protocol. Only
+a round that starts from the clean base tree can apply its patch (a raw patch
+materializes only into a clean isolated tree), so a later round after an
+applied patch is refused `raw_patch_requires_isolation`. The project's
+`context` config binds it:
+`mandatory_files` are delivered complete, exempt from the ordinary 256 KiB
+per-file and budget omissions, and a mandatory path that is missing, unreadable,
+sensitive or absent from the bound base tree refuses the attempt before any
+request (`raw_context_mandatory_unavailable`); `include`/`exclude` select the
+optional files. The request's capacity comes from the one catalog read the
+per-spawn model gate makes under that try's credential, the same read that
+admits an explicit model, and the request sends the key that read checked: a
+key replaced while the packet is prepared is first read, and sent, by the next
+spawn. The adapter derives the capacity from those rows without
+reading again: the window of the requested model's row (a
+declared routing variant resolves to its listed row; no model hint means the
+adapter default), an output allowance (the row's `max_output_tokens`, else
+16 384 tokens, never more than half the window; no `max_tokens` is sent), and the
+framing outside the packet (instructions, user text, patch protocol, attachments
+as sent, about 1 600 tokens per image). With a known window the whole rendered
+request is sized to it: optional files are dropped deterministically from the end
+of path order and listed in `omissions`, and mandatory content that still cannot
+fit refuses before any POST (`raw_context_exceeds_window`, naming the files,
+their estimated sizes and the window). An unknown window keeps the 200 000-token
+selection ceiling on optional file contents, labelled `assumed_ceiling` in the
+packet's `budget` record and never a model fact; mandatory files are still sent
+whole. A window is unknown only when that read has no row or field for the
+model, or failed with no earlier successful read under the same profile and key
+in this run (see [Routing](#4-routing): a failed read answered by such an
+earlier read keeps its window; a missing or rejected key refuses before any
+packet is built). A refusal at dispatch does not send that try's request and is
+the attempt's typed failure, never a crashed harness. Every figure is a
+ceil(characters / 4) estimate, never a tokenizer count;
+the `budget` record and one status event per spawn disclose it, and the adapter
+re-checks the final rendering against a known window before sending. The same
+facts are typed for surfaces, never read from the sentences: that status event
+carries `raw_context` (the request's estimate beside the packet's `budget`),
+the attempt keeps the last try's as `raw_context` in telemetry, and the run
+summary projects the final attempt's as `rawContext`. The adapter emits that
+event just before its POST, so `raw_context` describes the request as prepared;
+it does not prove the provider received it (a connection that never opens still
+leaves it), and no surface calls it sent. An over-window refusal's
+failure record carries `rawContextShortfall` (the window, the packet with every
+optional file omitted, the framing, the output allowance and every mandatory
+file's estimate, largest first; the parts sum past the window) with its typed
+next actions, while `safeMessage` keeps the complete sentence. A patch
+answer cut at the provider's output limit (`finish_reason: length`) that is not a
+complete proposal is the typed `raw_patch_truncated` refusal carrying that cause;
+a cut text answer stays the answer and says it may be incomplete.
 
 Git admission follows the semantic run shape, not a blanket mode rule.
 `GET /v2/run-applicability` (with the absolute `repoRoot` query) returns the
@@ -7179,7 +7374,13 @@ code touching one of these areas must honor it or change it explicitly here.
   profile probe even when aggregate/default doctor is unavailable. A degraded
   raw default route (key present but unproven by isolated smoke) is refused even
   when the user names it — reviewer verdicts must ride proven routes, unlike
-  candidates where explicit selection admits degraded.
+  candidates where explicit selection admits degraded. A profiled raw-API
+  reviewer is admitted that way (as the automatic panel's profiled choice is),
+  and its request sends the key the panel's catalog read checked, but a route
+  that cannot read files gets the review prompt's evidence and patch paths with
+  the patch summary (statistics and changed paths), not the evidence or the
+  diff contents, so its verdict is not grounded in them. Delivering that
+  material to such reviewers is #137, open.
 - A credential profile cannot bootstrap a raw-API instance whose own key is
   absent: raw-API discovery is key-gated (an instance without its configured
   key is not a route, so no manifest exists for the profile probe to

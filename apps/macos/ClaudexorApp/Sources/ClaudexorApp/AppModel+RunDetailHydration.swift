@@ -132,6 +132,9 @@ extension AppModel {
             let failure = detail.failure ?? detail.summary.failure
             task.engineError = failure?.safeMessage ?? detail.summary.error
             task.failureCategory = failure?.category
+            task.failureCode = failure?.code
+            task.failureRecord = failure
+            task.rawContext = detail.summary.rawContext
             task.runDir = detail.summary.runDir ?? failure?.runDir ?? task.runDir
             task.outputReadyState = detail.summary.outputReadyState
             task.pendingInteractions = detail.pendingInteractions

@@ -4,22 +4,11 @@ import {
   type CredentialExecutionObserverFactory,
   admitPreparedProcessing,
   stampCredentialProfileSelection,
-  type HarnessAdapter,
-  type PreparedHarnessProcessing,
   harnessHostFactsEnv,
 } from "@claudexor/core";
 import { prepareReviewerRunSpec, recordPreparedEffort } from "./reviewerPreparation.js";
 import { preflightEvidence, type DiffEvidence, writeDiffEvidence } from "@claudexor/context";
-import type {
-  AuthPreference,
-  CredentialProfile,
-  EffortHint,
-  HarnessEvent,
-  ProviderFamily,
-  ReviewFinding,
-  RouteProof,
-  ProcessingPreference,
-} from "@claudexor/schema";
+import type { HarnessEvent, ProviderFamily, ReviewFinding, RouteProof } from "@claudexor/schema";
 import { HarnessRunSpec, ReviewFinding as ReviewFindingSchema } from "@claudexor/schema";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
@@ -63,9 +52,14 @@ import type {
   ReviewCandidateResult,
   ReviewerOutput,
   ReviewerProgressEvent,
+  ReviewerSpec,
   ReviewerWorkspace,
 } from "./reviewRuntimeTypes.js";
-export type { ReviewCandidateResult, ReviewerProgressEvent } from "./reviewRuntimeTypes.js";
+export type {
+  ReviewCandidateResult,
+  ReviewerProgressEvent,
+  ReviewerSpec,
+} from "./reviewRuntimeTypes.js";
 import { reviewerAuthMode, reviewerAuthSwitchFromEvent } from "./reviewRuntimeTypes.js";
 import { ReviewerCostKnowledge } from "./reviewerCostKnowledge.js";
 import { ReviewerSpendAccumulator, type PartialReviewerSpend } from "./reviewerSpendAccumulator.js";
@@ -82,21 +76,6 @@ import {
   updateReviewerMetadata,
   writeParseError,
 } from "./reviewerArtifacts.js";
-
-export interface ReviewerSpec {
-  adapter: HarnessAdapter;
-  providerFamily: ProviderFamily;
-  requestedModel?: string | null;
-  requestedEffort?: EffortHint | null;
-  processingPreference?: ProcessingPreference;
-  processing?: PreparedHarnessProcessing;
-  processingAllowPaid?: boolean;
-  promptCacheTtl?: HarnessRunSpec["prompt_cache_ttl"];
-  authPreference?: AuthPreference | null;
-  /** Exact resolved profile (null = pool/default); `profilePinned: false` = the pool chose it. */
-  credentialProfile?: CredentialProfile | null;
-  profilePinned?: boolean;
-}
 
 export interface ReviewCandidateInput {
   candidateLabel: string;
@@ -772,7 +751,7 @@ async function collectReviewerOutput(
 
   const consumeOnce = async (nativeTry: number): Promise<ReviewerOutput> => {
     if (isCancelled()) throw new Error("Reviewer cancelled before dispatch");
-    const prepared = await prepareReviewerRunSpec(reviewer.adapter, runSpec);
+    const prepared = await prepareReviewerRunSpec(reviewer.adapter, runSpec, reviewer.catalog);
     runSpec = prepared.spec;
     recordPreparedEffort(artifact, runSpec.session_id, prepared.effort, ignoredSettings, runSpec);
     if (isCancelled()) throw new Error("Reviewer cancelled before dispatch");

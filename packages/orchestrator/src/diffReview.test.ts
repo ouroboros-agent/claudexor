@@ -138,7 +138,7 @@ function fixture(): {
 
 function deps(): DiffReviewDeps {
   return {
-    resolveReviewers: async (_root, _preference, onIgnoredSetting) => {
+    resolveReviewers: async (_run, onIgnoredSetting) => {
       onIgnoredSetting?.("reviewer family 'cursor' skipped: inventory unavailable");
       return [reviewer()];
     },
@@ -267,5 +267,27 @@ describe("frozen diff review", () => {
       /artifacts directory already exists/,
     );
     expect(readFileSync(sentinel, "utf8")).toBe("keep me\n");
+  });
+});
+
+describe("diff review reviewer resolution (#532)", () => {
+  it("resolves the panel under the review's own cancellation", async () => {
+    const review = new AbortController();
+    const seen: Array<AbortSignal | undefined> = [];
+    const deps: DiffReviewDeps = {
+      resolveReviewers: async (run) => {
+        seen.push(run.signal);
+        return [];
+      },
+      reviewScoped: () => {
+        throw new Error("no reviewer may run without a panel");
+      },
+      execRootOf: (root) => root,
+      envInheritance: () => "clean",
+    };
+    await expect(
+      runDiffReview({ repoRoot: "/repo", diff: "+ a line\n", signal: review.signal }, deps),
+    ).rejects.toThrow("no eligible reviewers");
+    expect(seen).toEqual([review.signal]);
   });
 });

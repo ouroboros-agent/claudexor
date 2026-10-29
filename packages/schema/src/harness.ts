@@ -22,11 +22,12 @@ import { Attachment, AttachmentInputClass } from "./attachment.js";
 import {
   ImplementationTransport,
   RawContextPacket,
+  RawContextReceipt,
   RawGitPatchEnvelope,
   RawPatchRefusalCode,
 } from "./raw.js";
 import { HarnessAccountUsageFields } from "./harness-quota.js";
-import { ObservedModelEventFields } from "./harness-model.js";
+import { ModelInventoryCapabilityFields, ObservedModelEventFields } from "./harness-model.js";
 import { HarnessSpeechEventFields } from "./harness-speech.js";
 import { RateLimitSignal } from "./rate-limit.js";
 import {
@@ -243,27 +244,7 @@ export const HarnessCapabilities = z
       .describe(
         "Vendor CLI version the effort ladders were last verified against; null = never verified / not applicable.",
       ),
-    model_inventory_routes: z
-      .array(z.enum(["local_session", "api_key"]))
-      .min(1)
-      .optional()
-      .describe(
-        "Credential routes supported by the adapter's live models() producer; omitted preserves all-route support. Other routes use manifest known_models, never another account's live inventory.",
-      ),
-    /**
-     * What this harness's model lists prove (INV-104) — the live `models()`
-     * answer and the manifest `known_models` hints alike. A list always proves
-     * PRESENCE; this says whether an absence from it is proof too. `authoritative`
-     * (the default when omitted) keeps the strict gate: a model the list lacks is
-     * refused. `advisory` means the harness cannot enumerate what its runtime
-     * accepts, so the gate forwards the explicit model byte-identical and discloses it.
-     */
-    model_inventory_absence: z
-      .enum(["authoritative", "advisory"])
-      .optional()
-      .describe(
-        "Whether an absence from this harness's model lists (the live models() answer and the manifest known_models alike) proves a model is ABSENT; omitted = authoritative (an unlisted model is refused). advisory = absence is not proof, so an explicit model is forwarded to the vendor and disclosed instead of refused.",
-      ),
+    ...ModelInventoryCapabilityFields,
     /**
      * Known model ids/aliases this harness accepts — the manifest-declared model
      * truth source when no live `models()` producer applies to the credential route.
@@ -760,6 +741,9 @@ export const HarnessEvent = z
     ),
     refusal_code: RawPatchRefusalCode.optional().describe(
       "Typed refusal code for a rejected raw patch contract.",
+    ),
+    raw_context: RawContextReceipt.optional().describe(
+      "Set on the status event that discloses, just before the POST, how a raw-api request was sized (#147).",
     ),
     permission_denial: HarnessPermissionDenial.optional(),
     usage: z

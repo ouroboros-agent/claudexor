@@ -1255,12 +1255,12 @@ describe("raw-api terminal provider completions", () => {
       const messageEvents = await collect(
         createRawApiAdapter().run(runSpec("explain", `${finishReason}-message`)),
       );
-      expect(messageEvents.map((event) => event.type)).toEqual([
-        "started",
-        "message",
-        "usage",
-        "completed",
-      ]);
+      // A cut answer stays an answer (#144) and says it was cut (#147).
+      expect(messageEvents.map((event) => event.type)).toEqual(
+        finishReason === "length"
+          ? ["started", "message", "status", "usage", "completed"]
+          : ["started", "message", "usage", "completed"],
+      );
 
       vi.stubGlobal(
         "fetch",
@@ -1287,7 +1287,16 @@ describe("raw-api terminal provider completions", () => {
       ),
     );
 
-    expect(events.map((event) => event.type)).toEqual(["started", "message", "usage", "completed"]);
+    expect(events.map((event) => event.type)).toEqual([
+      "started",
+      "message",
+      "status",
+      "usage",
+      "completed",
+    ]);
+    expect(events.find((event) => event.type === "status")?.payload).toEqual({
+      finish_reason: "length",
+    });
     expect(events.some((event) => event.type === "error")).toBe(false);
     expect(events.find((event) => event.type === "usage")?.usage).toStrictEqual({
       input_tokens: 7,

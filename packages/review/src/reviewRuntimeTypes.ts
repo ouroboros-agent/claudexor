@@ -1,9 +1,18 @@
+import type {
+  HarnessAdapter,
+  ModelCatalogObservation,
+  PreparedHarnessProcessing,
+} from "@claudexor/core";
 import {
   FallbackReason,
+  type AuthPreference,
+  type CredentialProfile,
   type CredentialRoute,
   type CostKnowledge,
   type EffortHint,
   type HarnessEvent,
+  type HarnessRunSpec,
+  type ProcessingPreference,
   type ProviderFamily,
   type ReviewFinding,
   type RouteProof,
@@ -32,6 +41,25 @@ export function reviewerAuthSwitchFromEvent(ev: HarnessEvent): {
       typeof ev.payload?.["to_auth_mode"] === "string" ? ev.payload["to_auth_mode"] : "unknown",
     reason: reason.success ? reason.data : "auth_unavailable",
   };
+}
+
+export interface ReviewerSpec {
+  adapter: HarnessAdapter;
+  providerFamily: ProviderFamily;
+  requestedModel?: string | null;
+  requestedEffort?: EffortHint | null;
+  processingPreference?: ProcessingPreference;
+  processing?: PreparedHarnessProcessing;
+  processingAllowPaid?: boolean;
+  promptCacheTtl?: HarnessRunSpec["prompt_cache_ttl"];
+  authPreference?: AuthPreference | null;
+  /** Exact resolved profile (null = pool/default); `profilePinned: false` = the pool chose it. */
+  credentialProfile?: CredentialProfile | null;
+  profilePinned?: boolean;
+  /** The typed catalog read that admitted `requestedModel` for this credential
+   * (the explicit panel's): the review request sends the key that read checked
+   * (#393 x #147). Absent when no typed read admitted it. */
+  catalog?: ModelCatalogObservation;
 }
 
 export interface ReviewerOutput {

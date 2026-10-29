@@ -31,13 +31,18 @@ enum TurnPresentation {
 
     /// The ONE loud chip, driven by the honest v3 axes: a pending question, a
     /// review gate awaiting your decision, or a failure-shaped terminal (named
-    /// by its typed reason when present). Quiet states return nil.
+    /// by its typed reason when present). Quiet states return nil. `refusal` =
+    /// the chip of a request the engine refused before sending (typed
+    /// `RunFailure.code`, see `RunFacts.refusal`): the generic failed reason
+    /// would misname it.
     static func attention(
-        phase: RunPhase, reason: String?, reviewNeedsDecision: Bool, waitingOnUser: Bool
+        phase: RunPhase, reason: String?, reviewNeedsDecision: Bool, waitingOnUser: Bool,
+        refusal: String? = nil
     ) -> Attention? {
         if waitingOnUser { return Attention(text: "Needs your answer", tone: .warning) }
         if reviewNeedsDecision { return Attention(text: "Needs you", tone: .warning) }
         if phase.isFailureShaped {
+            if let refusal { return Attention(text: refusal, tone: .failure) }
             return Attention(text: RunReasonLabel.label(reason) ?? phase.label, tone: .failure)
         }
         return nil

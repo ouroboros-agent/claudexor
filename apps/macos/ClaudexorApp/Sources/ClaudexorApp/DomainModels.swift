@@ -476,33 +476,6 @@ struct Candidate: Identifiable, Hashable {
     var removed: Int = 0
 }
 
-// MARK: - Diff
-
-enum DiffLineKind { case context, add, remove, hunk }
-
-struct DiffLine: Identifiable, Hashable {
-    let id = UUID()
-    var kind: DiffLineKind
-    var text: String
-    var oldNo: Int?
-    var newNo: Int?
-}
-
-struct DiffHunk: Identifiable, Hashable {
-    let id = UUID()
-    var header: String
-    var lines: [DiffLine]
-}
-
-struct DiffFile: Identifiable, Hashable {
-    let id = UUID()
-    var path: String
-    var added: Int
-    var removed: Int
-    var hunks: [DiffHunk]
-    var accepted: Bool = true
-}
-
 // MARK: - Task (a run)
 struct TaskRun: Identifiable, Hashable {
     let id: String
@@ -575,6 +548,13 @@ struct TaskRun: Identifiable, Hashable {
     var authRoute: RunAuthRoute?
     /// Typed failure category from the run's failure record (W18 failure card).
     var failureCategory: String?
+    /// Machine-readable failure sub-code (`RunFailure.code`), e.g. a request the
+    /// engine refused before sending (#147/#393). Never parsed from the message.
+    var failureCode: String?
+    /// The typed failure record itself: refusal sizes, next actions, earlier tries.
+    var failureRecord: RunFailureInfo?
+    /// Size of the raw-api request the final attempt last prepared (#147); nil otherwise.
+    var rawContext: RawContextReceiptInfo?
     /// Live harness questions awaiting the user (waiting_on_user).
     var pendingInteractions: [PendingInteraction] = []
     var waitingOnUser: Bool = false

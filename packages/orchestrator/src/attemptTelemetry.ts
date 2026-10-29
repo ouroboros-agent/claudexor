@@ -7,6 +7,7 @@ import type {
   HarnessEvent,
   HarnessRequestRefusal,
   InputTokenUsage,
+  RawContextReceipt,
   RequestRequirementResolution,
   TaskContract,
   ToolKind,
@@ -97,6 +98,9 @@ export interface AttemptTelemetry
   extends ProcessingTelemetry, PromptCacheTelemetry, ObservedModelTelemetry {
   requestRefusal?: HarnessRequestRefusal;
   effortResolution?: EffortResolution;
+  /** #147: the size of the last raw-api request a try prepared, receipted just
+   * before its POST (one per try; the last wins). */
+  rawContext?: RawContextReceipt;
   requestRequirements: RequestRequirementResolution[];
   toolErrors: ToolErrorRecord[];
   /** tool_result events without a status field: never silently treated as ok. */
@@ -238,24 +242,6 @@ function foldInputTokenUsage(
   };
 }
 
-/** QA-024: the injected server’s typed startup failure cannot become silent success. */
-function observeBeltStartup(t: AttemptTelemetry, ev: HarnessEvent): void {
-  const payload = (ev as { payload?: Record<string, unknown> }).payload;
-  const servers = payload?.["mcp_servers"];
-  if (!Array.isArray(servers)) return;
-  for (const raw of servers) {
-    if (!raw || typeof raw !== "object") continue;
-    const entry = raw as { name?: unknown; status?: unknown };
-    if (entry.name !== t.delegationBelt.serverName) continue;
-    const status = typeof entry.status === "string" ? entry.status.toLowerCase() : "";
-    if (status === "failed" || status === "error") t.delegationBelt.failed = true;
-    else if (status === "connected" || status === "ready" || status === "ok") {
-      t.delegationBelt.ready = true;
-    }
-    return;
-  }
-}
-
 /** QA-040: generic MCP kind is insufficient; match the engine-armed namespace. */
 function matchesBrowser(t: AttemptTelemetry, tool: { name: string; target?: string }): boolean {
   const server = t.browser.serverName;
@@ -287,12 +273,13 @@ export function observeAttemptTelemetry(t: AttemptTelemetry, ev: HarnessEvent): 
   observeProcessing(t, ev);
   observePromptCacheTtl(t, ev);
   if (ev.effort_resolution) t.effortResolution = ev.effort_resolution;
+  if (ev.raw_context) t.rawContext = ev.raw_context;
   marks.observeAttemptOutputMarkers(t.outputMarkers, ev);
   // Delegation belt readiness (QA-024): normalized startup/error events carry
   // typed MCP server statuses. Read THAT server's status as first-class truth;
   // a failed belt must never launder into a native-subagent success.
   if (t.delegationBelt.requested && Array.isArray(ev.payload?.["mcp_servers"])) {
-    observeBeltStartup(t, ev);
+    belt.observeBeltStartup(t, ev);
   }
   // Exact adapter-neutral evidence distinguishes the belt from a native subagent;
   // recovery uses matching ids when both exist, else legacy tool+kind+target.
@@ -674,6 +661,7 @@ export function attemptTelemetryRecord(
     usage_cost: attemptUsageCostSummary(t.usageCost),
     effort_resolution: t.effortResolution,
     request_refusal: t.requestRefusal,
+    raw_context: t.rawContext,
     processing: t.processing,
     processing_cost_basis: t.processingCostBasis,
     prompt_cache_ttl: t.promptCacheTtl,

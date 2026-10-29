@@ -703,16 +703,32 @@ invariant or operator decision before proceeding.
   Negotiated requested-model admission tells callers they may attempt the model,
   not that it was listed or generation-proven; wait/readiness readers use the same
   declaration. Raw-api and opencode stay authoritative by declaration, not by
-  proof of completeness.
-  Residuals, disclosed: the explicit reviewer panel forwards without the
-  run-event disclosure (its spawn does not pass the per-spawn gate); on the CLI
+  proof of completeness. A failed live read is no list: it neither admits a model
+  nor proves it absent. On an authoritative harness, when the catalog is
+  temporarily unavailable or unusable (no answer, a timeout, another HTTP status,
+  a malformed or partial answer), an EXPLICIT model is forwarded byte-identical on
+  the same key with a visible note that it could not be verified, and the provider
+  accepts or refuses it; a missing or rejected credential (HTTP 401/403), a
+  harness-declared refused variant (OpenRouter `:online`), known limits and a
+  prohibited route still refuse, and a successfully read absence stays a refusal.
+  A failed read never erases a successful read of the same credential identity
+  earlier in the same run: that read's presence, absences and window still
+  answer, disclosed as such. No other account, key or model is substituted, and
+  a forwarded attempt is not promised to be free (owner decision 2026-10-29
+  «А»).
+  Residuals, disclosed: the explicit reviewer panel discloses an unverified
+  model on its review-preflight event rather than the per-spawn run event (its
+  spawn does not pass the per-spawn gate); on the CLI
   run path a vendor model refusal arrives as an untyped error carrying the
   vendor's text; a mistyped explicit model on an advisory harness costs one
   spawn, and bounded account failover may spend one start per account before a
   typed account-independent stop exists. verify: canaries
   `[INV-104:model-truth-refusal]`, `[INV-104:models-manifest-fallback]`,
-  `[INV-104:settings-write-strict]`, `[INV-104:settings-write-advisory]`;
-  settings-service tests; modelGovernance preflight tests;
+  `[INV-104:settings-write-strict]`, `[INV-104:settings-write-advisory]`,
+  `[INV-104:models-catalog-unavailable]`, `[INV-104:models-catalog-key-rejected]`;
+  settings-service tests; modelGovernance preflight and per-spawn tests;
+  `packages/orchestrator/src/catalog-key-identity.test.ts`;
+  `packages/cli/src/raw-api-context.integration.test.ts`;
   `packages/core/src/model.test.ts`; `packages/cli/src/model-truth.test.ts`;
   `packages/orchestrator/src/reviewerPanel.test.ts`;
   `packages/harness-codex/src/astra.test.ts`. Operator decisions 2026-09-21

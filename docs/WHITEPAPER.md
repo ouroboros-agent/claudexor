@@ -164,7 +164,9 @@ balances, spending facts and reset offers. An explicit reset is a durable direct
 command outside inference capacity: its original account binding and request key
 survive response loss, while provider effect and subsequent readback remain
 separate. GUI, CLI and MCP consume the same contract; the existence of a balance
-or reset never creates an automatic spending strategy.
+or reset never creates an automatic spending strategy. An API key's own spending
+limit is read the same way, bound to the key a request would send, and is never
+presented as the account's balance.
 
 A saved login and a vendor accepting that credential are different facts.
 Observations from ordinary work should improve the same account view and selection

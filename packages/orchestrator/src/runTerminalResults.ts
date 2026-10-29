@@ -14,6 +14,7 @@ import {
   type PoolAttemptFailure,
   HarnessRequestRefusal,
   QuotaRefusal,
+  RawContextShortfall,
 } from "@claudexor/schema";
 import { redactSecrets } from "@claudexor/util";
 import { poolFailure, redactVendorFailure } from "./pool-attempt-evidence.js";
@@ -45,6 +46,8 @@ export function writeFailure(
      * null/omitted when no vendor-typed evidence exists. Opaque evidence. */
     vendorFailure?: VendorFailureEvidence | null;
     requestRefusal?: HarnessRequestRefusal;
+    /** Typed sizes behind `raw_context_exceeds_window` (#147). */
+    rawContextShortfall?: RawContextShortfall;
     captureFailure?: RunFailure["captureFailure"];
     /** Every failed try with its own account, in order (empty = none). */
     poolAttempts?: readonly PoolAttemptFailure[];
@@ -75,6 +78,7 @@ export function writeFailure(
     runDir: failure.runDir ?? paths.root,
     resetsAt: failure.resetsAt ?? null,
     ...(failure.requestRefusal ? { requestRefusal: failure.requestRefusal } : {}),
+    ...(failure.rawContextShortfall ? { rawContextShortfall: failure.rawContextShortfall } : {}),
     ...(failure.captureFailure ? { captureFailure: failure.captureFailure } : {}),
     ...(failure.quotaRefusal ? { quotaRefusal: failure.quotaRefusal } : {}),
     // Vendor text was redacted at event ingress; redact again like safeMessage (INV-062).
@@ -108,7 +112,13 @@ export function writeFailure(
                   "Check the vendor's own configuration for a per-model API key or managed policy that replaces session login; Claudexor does not read or change it",
                   "Retry once the vendor reports session login, or choose another model or account",
                 ]
-              : (failure.nextActions ?? [])),
+              : failure.code === "raw_context_exceeds_window"
+                ? [
+                    "Choose a model with a larger context window",
+                    "Reduce context.mandatory_files in the project's .claudexor/config.yaml",
+                    "Or use a harness that reads project files itself",
+                  ]
+                : (failure.nextActions ?? [])),
         ...(failure.captureFailure ? (failure.nextActions ?? []) : []),
       ]),
     ],
@@ -119,6 +129,7 @@ export function writeFailure(
 export interface DeclaredFailure {
   requestRefusal?: HarnessRequestRefusal;
   quotaRefusal?: QuotaRefusal;
+  rawContextShortfall?: RawContextShortfall;
   category?: RunFailure["category"];
   code: RunFailureCode | null;
   resetsAt: string | null;
@@ -157,6 +168,7 @@ export function declaredFailure(err: unknown): DeclaredFailure {
   const resetsAt = RunFailure.shape.resetsAt.safeParse(record["resetsAt"]);
   const refusal = HarnessRequestRefusal.safeParse(record["requestRefusal"]);
   const quota = QuotaRefusal.safeParse(record["quotaRefusal"]);
+  const shortfall = RawContextShortfall.safeParse(record["rawContextShortfall"]);
   return {
     ...(typeof record["category"] === "string" && category.success
       ? { category: category.data }
@@ -165,6 +177,7 @@ export function declaredFailure(err: unknown): DeclaredFailure {
     resetsAt: resetsAt.success ? resetsAt.data : null,
     ...(refusal.success ? { requestRefusal: refusal.data } : {}),
     ...(quota.success ? { quotaRefusal: quota.data } : {}),
+    ...(shortfall.success ? { rawContextShortfall: shortfall.data } : {}),
   };
 }
 
@@ -355,6 +368,7 @@ export function failTerminally(
     resetsAt: declared.resetsAt,
     requestRefusal: declared.requestRefusal,
     quotaRefusal: declared.quotaRefusal,
+    rawContextShortfall: declared.rawContextShortfall,
     poolAttempts,
     nextActions: [
       ...(budget?.nextActions ?? failureMeta.nextActions ?? ["Open diagnostics", "Retry the run"]),

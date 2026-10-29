@@ -49,8 +49,7 @@ export interface DiffReviewResult {
 
 export interface DiffReviewDeps {
   resolveReviewers: (
-    repoRoot: string,
-    authPreference?: AuthPreference,
+    run: Pick<DiffReviewInput, "repoRoot" | "authPreference" | "signal">,
     onIgnoredSetting?: (detail: string) => void,
   ) => Promise<ReviewerSpec[]>;
   reviewScoped: (
@@ -91,7 +90,7 @@ export async function runDiffReview(
     }
   }
   const ignoredSettings: string[] = [];
-  const reviewers = await deps.resolveReviewers(input.repoRoot, input.authPreference, (detail) => {
+  const reviewers = await deps.resolveReviewers(input, (detail) => {
     if (!ignoredSettings.includes(detail)) ignoredSettings.push(detail);
     input.onReviewerEvent?.({ type: "review.preflight", ignored_settings: [detail] });
   });
