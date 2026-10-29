@@ -211,6 +211,12 @@ export const RunContinuityReceipt = z
     modelMismatch: z.boolean().nullable(),
     identityCheck: ContinuityIdentityCheck,
     inputDelivery: ContinuityInputDelivery,
+    sourceRetirement: z
+      .enum(["retired", "not_confirmed"])
+      .optional()
+      .describe(
+        "After a native_moved carrier published the new holder: retired (the adapter removed the source copy) or not_confirmed (removal failed, possibly part-way). Absent = no move retired a source for this try.",
+      ),
   })
   .strict()
   .describe("Receipt of one continued try: carrier, cause, accounts, memory, model attestation.");

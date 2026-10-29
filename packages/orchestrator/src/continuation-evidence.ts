@@ -30,7 +30,14 @@ export interface EvidenceSteering {
 export interface EvidenceIndexSources {
   runDir: string;
   attemptId: string;
+  /** Serial attempts of this run whose evidence the source carries, in order
+   * (default: `attemptId`); each keeps its own tool-result pairing boundary. */
+  attemptIds?: readonly string[];
   workOrder: string;
+  /** The complete chain work order file (`context/work-order.md`), when one exists. */
+  workOrderPath?: string | null;
+  /** The prompt carries the whole work order itself (a route that cannot read files). */
+  workOrderInPrompt?: boolean;
   steering: EvidenceSteering[];
   /** Earlier runs, oldest first; each keeps its own tool-result pairing boundary. */
   predecessors?: readonly PredecessorEvidenceSource[];
@@ -44,10 +51,16 @@ export type PredecessorEvidenceSource = Omit<EvidenceIndexSources, "predecessors
 export interface EvidenceToolCall {
   name: string;
   target: string | null;
-  /** False when the call never saw its result (cut off). */
+  /** True only when a result or a typed completion was recorded for it. */
   resolved: boolean;
+  /** A recorded non-ok outcome of that result or completion (completed is not success). */
+  outcome?: "error" | "cancelled" | "denied";
   /** The result's stored `command_outcome` (#450), when it reported one. */
   commandOutcome?: unknown;
+  /** An untyped edit frame repeated: the repeat may be its completion or another start. */
+  unconfirmed?: true;
+  /** The attempt that recorded it, when the evidence spans several attempts of one run. */
+  attempt?: string;
 }
 
 /** Fully-resolved inputs of the pure builder (the collector reads them from the run dir). */
@@ -55,6 +68,8 @@ export interface EvidenceIndexInput {
   cause: ResumableCause;
   completed?: boolean;
   workOrder: string;
+  workOrderPath?: string | null;
+  workOrderInPrompt?: boolean;
   steering: EvidenceSteering[];
   /** The retained assistant output (`final/retained-output.md` or the attempt's answer), "" when none. */
   retainedOutput: string;
@@ -128,6 +143,10 @@ export function buildEvidenceIndex(input: EvidenceIndexInput): EvidenceIndex {
     return b.text;
   };
   const unresolved = input.toolCalls.filter((call) => !call.resolved);
+  const unconfirmed = unresolved.filter((call) => call.unconfirmed).length;
+  const workOrder = input.workOrder.trim();
+  const shownWorkOrder = bound(workOrder, EVIDENCE_SECTION_BUDGET_BYTES);
+  summarized ||= shownWorkOrder.cut;
   const parts: string[] = [
     input.completed
       ? "# Evidence index of the previous work"
@@ -139,7 +158,12 @@ export function buildEvidenceIndex(input: EvidenceIndexInput): EvidenceIndex {
     "",
     "## Original work order",
     "",
-    section(input.workOrder) || "(empty)",
+    shownWorkOrder.text || "(empty)",
+    ...(shownWorkOrder.cut
+      ? [
+          `[Work order truncated to the ${EVIDENCE_SECTION_BUDGET_BYTES}-byte section budget; the whole work order is ${bytes(workOrder)} bytes.${input.workOrderInPrompt ? " It is given in full above." : input.workOrderPath ? ` It is complete in the file ${input.workOrderPath}.` : ""}]`,
+        ]
+      : []),
     "",
   ];
   if (input.steering.length > 0) {
@@ -160,7 +184,7 @@ export function buildEvidenceIndex(input: EvidenceIndexInput): EvidenceIndex {
   } else if (input.toolCalls.length > EVIDENCE_TOOL_ROWS) {
     summarized = true;
     parts.push(
-      `${input.toolCalls.length} tool calls recorded, ${unresolved.length} without a recorded result (cut off). The last ${EVIDENCE_TOOL_ROWS} follow:`,
+      `${input.toolCalls.length} tool calls recorded, ${unresolved.length - unconfirmed} without a recorded result (cut off)${unconfirmed ? `, ${unconfirmed} with completion not confirmed` : ""}. The last ${EVIDENCE_TOOL_ROWS} follow:`,
       "",
       ...input.toolCalls.slice(-EVIDENCE_TOOL_ROWS).map(toolRow),
     );
@@ -169,13 +193,14 @@ export function buildEvidenceIndex(input: EvidenceIndexInput): EvidenceIndex {
   }
   parts.push("", "## Changed files", "");
   parts.push(input.diffStat && input.diffStat.trim() ? section(input.diffStat) : "(no diff stat)");
-  const refs = [input.artifacts, ...(input.predecessorArtifacts ?? [])]
-    .flatMap((artifacts) => [
+  const refs = [
+    input.workOrderPath ? `- Complete work order: ${input.workOrderPath}` : null,
+    ...[input.artifacts, ...(input.predecessorArtifacts ?? [])].flatMap((artifacts) => [
       artifacts.eventsLog && `- Event log: ${artifacts.eventsLog}`,
       artifacts.attemptDir && `- Attempt artifacts: ${artifacts.attemptDir}`,
       artifacts.patch && `- Patch so far: ${artifacts.patch}`,
-    ])
-    .filter((line): line is string => typeof line === "string");
+    ]),
+  ].filter((line): line is string => typeof line === "string");
   const footer = [
     "",
     "",
@@ -183,7 +208,7 @@ export function buildEvidenceIndex(input: EvidenceIndexInput): EvidenceIndex {
     "",
     refs.length ? section(refs.join("\n")) : "(no artifact paths available)",
     "",
-    `Tool calls: ${input.toolCalls.length}; unresolved: ${unresolved.length}.`,
+    `Tool calls: ${input.toolCalls.length}; unresolved: ${unresolved.length}${unconfirmed ? ` (completion not confirmed: ${unconfirmed})` : ""}.`,
     "",
   ].join("\n");
   const prose = parts
@@ -202,6 +227,57 @@ export function buildEvidenceIndex(input: EvidenceIndexInput): EvidenceIndex {
   };
 }
 
+/**
+ * The complete work order a route that cannot read files must receive inline
+ * (`git_patch_envelope`: its process reads no path), set only when the index
+ * would cut it and the prompt does not already carry it. Every other route
+ * keeps the bounded section plus the file.
+ */
+export function readlessWorkOrder(
+  route: { implementationTransport?: string } | undefined,
+  workOrder: string,
+  prompt: string,
+): string | null {
+  const whole = workOrder.trim();
+  return route?.implementationTransport === "git_patch_envelope" &&
+    bytes(whole) > EVIDENCE_SECTION_BUDGET_BYTES &&
+    !prompt.includes(whole)
+    ? whole
+    : null;
+}
+
+/** Recorded work of the previous run's other processes that a resumed native session never received. */
+export interface UncoveredWork {
+  /** Steering delivered only to those processes. */
+  steering: string[];
+  retainedOutput: string;
+  toolCalls: EvidenceToolCall[];
+  eventsLog: string | null;
+}
+
+/** Pure: the bounded, labelled evidence a native resume adds for work outside its session ("" when none). */
+export function uncoveredWorkSection(work: UncoveredWork): string {
+  if (!work.steering.length && !work.retainedOutput.trim() && !work.toolCalls.length) return "";
+  const section = (text: string) => bound(text.trim(), EVIDENCE_SECTION_BUDGET_BYTES).text;
+  const parts = [
+    "Other processes of the previous run recorded the work below after or apart from the session you are resuming. It is not part of the resumed session's history: reconcile it against the workspace; do not replay it blindly.",
+  ];
+  if (work.steering.length)
+    parts.push(
+      `Messages delivered to them:\n\n${work.steering.map((text, i) => `### Message ${i + 1}\n\n${section(text)}`).join("\n\n")}`,
+    );
+  if (work.retainedOutput.trim()) parts.push(`Their output:\n\n${section(work.retainedOutput)}`);
+  if (work.toolCalls.length) {
+    const shown = work.toolCalls.slice(-EVIDENCE_TOOL_ROWS);
+    parts.push(
+      `Their tool calls${shown.length < work.toolCalls.length ? ` (the last ${shown.length} of ${work.toolCalls.length})` : ""}:\n\n${shown.map(toolRow).join("\n")}`,
+    );
+  }
+  // The record's path survives any cut of the prose above it.
+  const footer = work.eventsLog ? `\n\nFull record: ${work.eventsLog}` : "";
+  return bound(parts.join("\n\n"), EVIDENCE_TOTAL_BUDGET_BYTES - bytes(footer)).text + footer;
+}
+
 function toolRow(call: EvidenceToolCall): string {
   const target = call.target ? ` — ${call.target.replace(/\s+/g, " ").slice(0, 160)}` : "";
   // A recorded result whose command was moved to the background, timed out or
@@ -210,7 +286,9 @@ function toolRow(call: EvidenceToolCall): string {
   const state = unconfirmed
     ? `unconfirmed: ${unconfirmed}`
     : call.resolved
-      ? "completed"
-      : "unresolved: no result recorded";
-  return `- ${call.name}${target} (${state})`;
+      ? `completed${call.outcome ? `: ${call.outcome}` : ""}`
+      : call.unconfirmed
+        ? "completion not confirmed"
+        : "unresolved: no result recorded";
+  return `- ${call.name}${target} (${state})${call.attempt ? ` · attempt ${call.attempt}` : ""}`;
 }

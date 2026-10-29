@@ -186,10 +186,12 @@ describe("Cursor command outcomes through the durable event log (#450)", () => {
       "- shell — sleep 120 (unconfirmed: Timed out after 30s · exit status unknown)",
     );
     expect(packet).toContain("- shell — pnpm build (unconfirmed: Timed out · exit status unknown)");
-    // Negative: observed exits and results without command facts read as before.
+    // Negative: observed exits and results without command facts read as before;
+    // a failed result keeps its ordinary error status beside completion (#410).
     expect(packet).toContain("- shell — ls (completed)");
-    expect(packet).toContain("- shell — pnpm test (completed)");
-    expect(packet).toContain("- shell — missing-tool --version (completed)");
+    expect(packet).toContain("- shell — pnpm test (completed: error)");
+    expect(packet).toContain("- shell — missing-tool --version (completed: error)");
+    expect(packet).not.toContain("pnpm test (unconfirmed");
     expect(packet).not.toContain("find /repo -name '*.log' (completed)");
     expect(packet).toContain("Tool calls: 7; unresolved: 0.");
   });

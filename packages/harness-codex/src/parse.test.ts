@@ -222,6 +222,47 @@ describe("parseCodexEvent", () => {
     expect(finals[0]?.payload?.["final_source"]).toBe("last_agent_message");
   });
 
+  it("types exec file edits per changes[] path with the native lifecycle and outcome (#410)", () => {
+    const edits = [
+      {
+        type: "item.started",
+        item: {
+          id: "p1",
+          type: "file_change",
+          changes: [{ path: "a.ts" }, { path: "b.ts" }],
+          status: "in_progress",
+        },
+      },
+      {
+        type: "item.completed",
+        item: {
+          id: "p1",
+          type: "file_change",
+          changes: [{ path: "a.ts" }, { path: "b.ts" }],
+          status: "failed",
+        },
+      },
+    ].flatMap((frame) => parseCodexEvent(frame, "s1", {}) ?? []);
+    for (const e of edits) expect(() => HarnessEvent.parse(e)).not.toThrow();
+    expect(
+      edits.map((e) => [e.payload?.["path"], e.tool?.target, e.tool?.phase, e.tool?.status]),
+    ).toEqual([
+      ["a.ts", "a.ts", "started", undefined],
+      ["b.ts", "b.ts", "started", undefined],
+      ["a.ts", "a.ts", "completed", "error"],
+      ["b.ts", "b.ts", "completed", "error"],
+    ]);
+    expect(edits.every((e) => e.tool?.use_id === "p1")).toBe(true);
+    // A single named path (the synthetic fixture's shape) is one event, never re-enumerated.
+    expect(
+      parseCodexEvent(
+        { type: "item.completed", item: { id: "i2", type: "file_change", path: "src/a.ts" } },
+        "s1",
+        {},
+      ),
+    ).toMatchObject([{ type: "file_change", tool: { target: "src/a.ts", phase: "completed" } }]);
+  });
+
   it("does not fabricate a final message when a turn produced no agent message", () => {
     const state = {};
     const events = [
