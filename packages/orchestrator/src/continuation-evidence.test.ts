@@ -351,3 +351,80 @@ describe("evidence review regressions", () => {
     ]);
   });
 });
+
+// #450: a command result that reports a background handoff, an elapsed
+// timeout or an unknown outcome carries a recorded result, yet the command did
+// not finish; the packet must never list it as completed.
+describe("command outcomes in the evidence index (#450)", () => {
+  const call = (id: string, target: string) => ({
+    type: "tool_call",
+    session_id: "s1",
+    tool: { name: "shell", kind: "command", use_id: id, target },
+  });
+  const result = (id: string, extra: Record<string, unknown> = {}) => ({
+    type: "tool_result",
+    session_id: "s1",
+    tool: { name: "shell", kind: "command", use_id: id, status: "ok", ...extra },
+  });
+  const handoff = {
+    state: "backgrounded",
+    background_reason: "timeout",
+    timeout_ms: 30000,
+    shell_id: "3",
+    pid: 4242,
+  };
+
+  it("forwards the stored result's command facts onto its call", () => {
+    const calls = toolCallIndex([
+      call("bg", "find /workspace -name '*.log'"),
+      result("bg", { command_outcome: handoff }),
+      call("ls", "ls"),
+      result("ls", { exit_code: 0, command_outcome: { state: "exited" } }),
+      call("legacy", "pnpm test"),
+      result("legacy"),
+    ]);
+    expect(calls).toEqual([
+      {
+        name: "shell",
+        target: "find /workspace -name '*.log'",
+        resolved: true,
+        commandOutcome: handoff,
+      },
+      { name: "shell", target: "ls", resolved: true, commandOutcome: { state: "exited" } },
+      { name: "shell", target: "pnpm test", resolved: true },
+    ]);
+    expect(calls[2]).not.toHaveProperty("commandOutcome");
+  });
+
+  it("labels unconfirmed commands and keeps exits, legacy and cut-off calls as before", () => {
+    const md = buildEvidenceIndex(
+      input({
+        toolCalls: [
+          { name: "shell", target: "find /workspace", resolved: true, commandOutcome: handoff },
+          {
+            name: "shell",
+            target: "sleep 120",
+            resolved: true,
+            commandOutcome: { state: "timed_out", timeout_ms: 30000 },
+          },
+          { name: "shell", target: "x", resolved: true, commandOutcome: { state: "suspended" } },
+          { name: "shell", target: "ls", resolved: true, commandOutcome: { state: "exited" } },
+          { name: "shell", target: "pnpm test", resolved: true },
+          { name: "shell", target: "pnpm build", resolved: false },
+        ],
+      }),
+    ).markdown;
+    expect(md).toContain(
+      "- shell — find /workspace (unconfirmed: Moved to background after 30s · still running · shell 3 · pid 4242)",
+    );
+    expect(md).toContain(
+      "- shell — sleep 120 (unconfirmed: Timed out after 30s · exit status unknown)",
+    );
+    expect(md).toContain("- shell — x (unconfirmed: Command outcome not reported)");
+    expect(md).toContain("- shell — ls (completed)");
+    expect(md).toContain("- shell — pnpm test (completed)");
+    expect(md).toContain("- shell — pnpm build (unresolved: no result recorded)");
+    expect(md).not.toContain("find /workspace (completed)");
+    expect(md).toContain("Tool calls: 6; unresolved: 1.");
+  });
+});

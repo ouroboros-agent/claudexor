@@ -92,7 +92,12 @@ export function toolCallIndex(events: readonly Row[]): EvidenceToolCall[] {
         (entry) => !entry.call.resolved && entry.session === ev["session_id"],
       );
       const matched = id === null ? open.slice(0, 1) : open.filter((entry) => entry.id === id);
-      if (matched.length === 1) matched[0]!.call.resolved = true;
+      if (matched.length === 1) {
+        matched[0]!.call.resolved = true;
+        // #450: the result's command facts travel with its call to the packet row.
+        if (tool?.["command_outcome"] !== undefined)
+          matched[0]!.call.commandOutcome = tool["command_outcome"];
+      }
     }
   }
   return calls.map((entry) => entry.call);

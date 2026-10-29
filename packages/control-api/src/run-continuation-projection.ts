@@ -63,19 +63,27 @@ type Continuation = Pick<
   "continueFrom" | "resumable" | "retainedEnvelope" | "continuity"
 >;
 
-/** The chain facts of one run; `events` (run detail) adds the per-try receipts. */
+/** One `run.continuity` event's typed per-try receipt, else null. */
+export function continuityReceiptOf(event: Record<string, unknown>): RunContinuityReceipt | null {
+  if (event["type"] !== "run.continuity") return null;
+  const payload = event["payload"] as Record<string, unknown> | undefined;
+  const receipt = RunContinuityReceipt.safeParse(payload?.["receipt"]);
+  return receipt.success ? receipt.data : null;
+}
+
+/** The chain facts of one run; run detail adds the per-try receipts, from its
+ * events or already folded from them. */
 export function continuationSummary(
   rec: DaemonRunRecord,
-  events?: readonly Record<string, unknown>[],
+  events?: readonly Record<string, unknown>[] | { continuity: RunContinuityReceipt[] },
 ): Continuation {
   const params = paramsRecord(rec);
   const continueFrom = typeof params["continueFrom"] === "string" ? params["continueFrom"] : null;
-  const continuity = events?.flatMap((event) => {
-    if (event["type"] !== "run.continuity") return [];
-    const payload = event["payload"] as Record<string, unknown> | undefined;
-    const receipt = RunContinuityReceipt.safeParse(payload?.["receipt"]);
-    return receipt.success ? [receipt.data] : [];
-  });
+  const continuity = !events
+    ? undefined
+    : "continuity" in events
+      ? events.continuity
+      : events.flatMap((event) => continuityReceiptOf(event) ?? []);
   const base = { continueFrom, ...(continuity ? { continuity } : {}) };
   if (!rec.runDir || !TERMINAL_STATES.has(rec.state)) {
     return { ...base, resumable: null, retainedEnvelope: null };

@@ -677,4 +677,80 @@ describe("AcpServer official SDK projection", () => {
     expect(aborted).toBe(true);
     expect(abortReason).toBe("user_cancelled");
   });
+
+  // #450: ACP v1 has two terminal tool statuses, completed ("completed
+  // successfully") and failed. A command still running in a background shell,
+  // timed out, or in an unknown state must not read as completed, and must
+  // still get a terminal update: no later frame for that call will arrive.
+  it("closes unconfirmed command results as failed with their typed state, never completed", async () => {
+    const shell = (useId: string, extra: Record<string, unknown>) => ({
+      type: "harness.event",
+      payload: {
+        type: "tool_result",
+        tool: { name: "shell", kind: "command", use_id: useId, target: "run", ...extra },
+      },
+    });
+    const handoff = {
+      state: "backgrounded",
+      background_reason: "timeout",
+      timeout_ms: 30000,
+      shell_id: "3",
+      pid: 4242,
+    };
+    const updates = await withClient(
+      async (_params, hooks) => {
+        for (const id of ["bg", "timeout", "unknown", "exit0", "legacy", "failed"]) {
+          hooks?.onEvent?.({
+            type: "harness.event",
+            payload: { type: "tool_call", tool: { name: "shell", kind: "command", use_id: id } },
+          });
+        }
+        hooks?.onEvent?.(shell("bg", { status: "ok", command_outcome: handoff }));
+        hooks?.onEvent?.(
+          shell("timeout", {
+            status: "ok",
+            command_outcome: { state: "timed_out", timeout_ms: 30000 },
+          }),
+        );
+        hooks?.onEvent?.(shell("unknown", { status: "ok", command_outcome: { state: "unknown" } }));
+        hooks?.onEvent?.(
+          shell("exit0", { status: "ok", exit_code: 0, command_outcome: { state: "exited" } }),
+        );
+        hooks?.onEvent?.(shell("legacy", { status: "ok" }));
+        hooks?.onEvent?.(shell("failed", { status: "error", exit_code: 1 }));
+        return { summary: "done", status: "succeeded" };
+      },
+      async (agent, received) => {
+        await agent.request(acp.methods.agent.session.prompt, {
+          sessionId: "tool-session",
+          prompt: [{ type: "text", text: "work" }],
+        });
+        return received;
+      },
+    );
+    const results = new Map(
+      updates
+        .map((note) => note.update)
+        .filter((update) => update.sessionUpdate === "tool_call_update")
+        .map((update) => [update.toolCallId, update] as const),
+    );
+    expect(results.get("bg")?.status).toBe("failed");
+    expect(JSON.stringify(results.get("bg")?.content)).toContain(
+      "Moved to background after 30s · still running · shell 3 · pid 4242",
+    );
+    expect(results.get("bg")?._meta).toEqual({ claudexor: { commandOutcome: handoff } });
+    expect(results.get("timeout")?.status).toBe("failed");
+    expect(JSON.stringify(results.get("timeout")?.content)).toContain(
+      "Timed out after 30s · exit status unknown",
+    );
+    expect(results.get("unknown")?.status).toBe("failed");
+    expect(JSON.stringify(results.get("unknown")?.content)).toContain(
+      "Command outcome not reported",
+    );
+    expect(results.get("exit0")).toMatchObject({ status: "completed" });
+    expect(results.get("exit0")?.content).toBeUndefined();
+    expect(results.get("legacy")?.status).toBe("completed");
+    expect(results.get("failed")?.status).toBe("failed");
+    expect(results.get("failed")?.content).toBeUndefined();
+  });
 });
