@@ -1290,7 +1290,25 @@ per-harness EFFECTIVE account is resolved by the owner-locked order (INV-135):
 (1) an explicit per-run/per-thread pin (`credentialProfileId`) is STRICT: an
 unknown/disabled/harness-mismatched id is a typed refusal before spawn, a fresh
 exhausted quota window refuses typed (`subscription_window_exhausted` with its
-reset time), and a pin never silently rotates. (2) An unpinned THREAD turn stays
+reset time), and a pin never silently rotates. A saved `headroom_threshold`
+below 1 also binds a pin (owner decision, 29 October 2026). The refusal keeps
+the same code and states its basis in `failure.yaml` `quotaRefusal.basis`, the
+problem context `refusal_basis` and the `route.profile.headroom_exceeded`
+event `basis`: `owner_reserve` when usage reached the saved reserve while the
+provider still reports quota left, `provider_window` for a provider-reported
+spent window, and `provider_cooldown` for a provider rate-limit cooldown or a
+typed limit observed on the pinned try (Agent, ordinary Ask, `--attempts`
+convergence and Plan, before or after progress; Plan ends that try typed without
+a retry or continuation, and only when its stream itself failed while the limit
+was still the last word: agent work after the limit means the vendor retry
+recovered, and context exhaustion, an empty plan, a work_report contract
+failure, a typed request refusal, the adapter's later typed non-429 API failure
+such as an HTTP 401, a thrown terminal or cancellation keep their own cause; a
+limit observed after that failure is again the last word). A provider block outranks the reserve
+whatever the threshold. A multi-candidate terminal keeps the basis only when
+every candidate shares it, and a window, usage or threshold only where all
+agree; its reset stays the latest. Authentication and billing refusals keep their own
+channels; `next_up` names a pool stopped only by saved reserves. (2) An unpinned THREAD turn stays
 on its durable bound account, which the daemon derives from the thread's own lane
 evidence (latest live session, else lane checkpoint, per harness) and hands to
 the run as `threadAccountBindings`; a binding whose row became
@@ -1532,10 +1550,25 @@ headroom-plus-cooldown check. A reactive decision reads the quota registry's
 current projection once, after its readiness and current-subject probes, and
 uses that one value for selection, the exhaustion event and the typed terminal
 (#457): a reset, replacement or clock-aged window recorded after the attempt
-began is seen, while a stale but live spent window still blocks. Because
-read-time aging marks a whole snapshot stale once any window resets, a weekly
-reserve below 100% on the same snapshot is not enforced until the next poll;
-that freshness rule is unchanged here. When no
+began is seen, while a stale but live spent window still blocks. Run admission
+reads the registry's admission projection (`readAdmission`), which ages a
+snapshot only by its own label, the five-minute observation TTL and an account
+reset cutoff. Headroom readers then judge each window at their decision
+instant (`quotaWindowFreshness`): an elapsed short window is neither a breach
+nor headroom, and a weekly reserve observed in the same read still binds until
+that read's TTL ends. Nothing becomes fresher than its observation and an
+expired window is not new free quota. Accounts `next_up` (the passive read and
+the atomic snapshot, whose admission read comes from the same refresh cycle as
+its response and cursor) and model-operation account selection use the same
+admission projection, so `next_up` never names a row run admission refuses; the
+quota display, the Accounts cards and refresh demand keep aggregate freshness.
+A refusal's window, usage and recheck time describe its controlling evidence: a
+provider block's own window and release when one decides, else the breaching
+window, which is a provider-spent (100%) window whenever one breaches. Usage
+observed on a different window is omitted rather than attached. Within one
+snapshot a block names the window that owns its earliest release, with that
+window's kind. The release is a recheck instant, not a promise that the whole
+account is ready then. When no
 target survives (all spent/excluded/wrong-kind), the engine emits typed
 `route.profile.rotation_exhausted` with each rejected profile's reason and
 headroom or cooldown evidence (with its earliest known release instant); the
@@ -5311,6 +5344,27 @@ generation until its reset or a newer matching full window. Image admission uses
 image scope; Agent/text admission, run pressure and Accounts summaries stay text,
 while raw image windows remain visible and labelled. AGY declares Gemini and
 Claude/GPT prefixes once: new family IDs inherit limits, unknown families no group.
+An unrecognized AGY group's windows are not constraints: the probe's redacted
+diagnostic receipt records their id, group, usage and reset, and a reading with
+only such groups is a typed `refresh_failed` absence, never an empty fresh
+snapshot that would read as available. Claude families (`claudeQuotaFamilyScope`, schema-owned)
+scope the OAuth `weekly_scoped` limits, native `seven_day_<family>` windows and
+typed family rejections (whose `rate_limit.applies_to_model_prefixes` reaches
+the reactive cooldown and budget observations) as `[family]` plus the
+`claude-<family>-` prefix, so a new full id of a known family binds while another
+family, `best` or a bare default run does not. An unnamed or multi-word OAuth
+scope is diagnostic, reported with its id, usage and reset in the redacted
+refresh receipt even when no known window made a snapshot, never account-wide.
+Records written by older engines are restored in this representation at replay
+(`withCurrentQuotaScopes`): a Claude alias list ending in `best` becomes the
+family scope with its usage, reset and cooldown intact, and an unscoped AGY group
+or unnamed OAuth scope is dropped. A full OAuth/AGY reading left with no window
+keeps its identity, so it still supersedes older readings of its source, but is
+restored with `freshness: unknown`: it neither reads as a fresh observation nor
+satisfies refresh demand, and its `available` availability only means no known
+window blocks. Journal bytes and every other source, window,
+route, subject and request kind are unchanged, and a newer observation of the
+same window replaces the restored one.
 Display, budget, routing, pacing and profile headroom share applicability; a spent
 Fable window cannot cool Opus. Each recognised Codex window retains usage, duration,
 reset, provenance and freshness. The global event ledger is authority. Elapsed
@@ -5320,7 +5374,9 @@ vendor-authenticated credential evidence, primary harness whose absence demands
 refresh, top-level refresher production, and full-inventory versus incremental
 replacement. Refresh demand is per enabled credential subject. Display/routing use
 current-time freshness: without an earlier reset, fresh through exactly five minutes,
-stale only afterwards.
+stale only afterwards. Display ages the whole snapshot at its first reset; run
+admission, model-operation selection and `next_up` apply the same rule per
+window at the decision (see #457 above).
 Passive consumers can request `GET /v2/quota` with `view=constraint_freshness`
 directly; discovering the GET quota operation's `view` enum in `/v2/operations`
 is optional and must not block a passive read. The 3.24 engine

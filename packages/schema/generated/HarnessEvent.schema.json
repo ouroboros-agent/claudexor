@@ -1178,7 +1178,14 @@
                   "type": "null"
                 }
               ],
-              "description": "Canonical model ids/aliases this rejection applies to; omitted/null means every model."
+              "description": "Canonical model ids/aliases this rejection applies to; omitted/null (with no prefixes) means every model."
+            },
+            "applies_to_model_prefixes": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/HarnessEvent/properties/credential_profile_id"
+              },
+              "description": "Producer-declared model-family prefixes this rejection also applies to, as on QuotaConstraint."
             },
             "resets_at": {
               "type": [

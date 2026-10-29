@@ -280,6 +280,66 @@ async function fixture(
 }
 
 describe("production model service composition", () => {
+  it("model operations and catalog selection judge each window at the decision (#457)", async () => {
+    const f = await fixture();
+    f.cfg.harnesses.codex = GlobalConfig.parse({
+      harnesses: {
+        codex: {
+          profile_policy: {
+            limit_action: "rotate",
+            rotation_eligible: [],
+            headroom_threshold: 0.9,
+          },
+        },
+      },
+    }).harnesses.codex!;
+    // A three-minute-old reading: the short window reset a minute ago, the
+    // weekly window is current at 95% against the 90% reserve.
+    const at = (ms: number) => new Date(Date.now() + ms).toISOString();
+    f.quota.upsert({
+      subject: {
+        harness: "codex",
+        credential_route: "vendor_native",
+        plan_label: null,
+        subject_id: "a",
+      },
+      source: "codex_app_server",
+      observed_at: at(-3 * 60_000),
+      freshness: "fresh",
+      constraints: [
+        {
+          id: "codex:primary",
+          label: "5h",
+          used_ratio: 1,
+          window_seconds: 18_000,
+          resets_at: at(-60_000),
+          cooldown_until: null,
+        },
+        {
+          id: "codex:secondary",
+          label: "weekly",
+          used_ratio: 0.95,
+          window_seconds: 604_800,
+          resets_at: at(3 * 86_400_000),
+          cooldown_until: null,
+        },
+      ],
+    });
+    // Display keeps aggregate aging; selection does not lose the weekly reserve.
+    expect(f.quota.read().snapshots[0]?.freshness).toBe("stale");
+    const pinned = await f.run({ mode: "pin", profileId: "a" });
+    expect(pinned.problem).toMatchObject({
+      code: "subscription_window_exhausted",
+      context: { refusal_basis: "owner_reserve", constraint_id: "codex:secondary" },
+    });
+    expect(pinned.dispatch.state).toBe("not_started");
+    expect((await f.run()).dispatch.route?.credentialProfileId).toBe("b");
+    expect((await f.services.routes.modelCatalog("codex")).credentialProfileId).toBe("b");
+    expect(f.invoke.mock.calls.every(([, context]) => context.profile.profile_id === "b")).toBe(
+      true,
+    );
+  });
+
   it.each(["model_unavailable", "model_capability_refused"])(
     "retains a dispatched %s with explicit model_not_found at model scope",
     async (code) => {
@@ -735,22 +795,23 @@ describe("production model service composition", () => {
     f.catalogModels.a = [];
     f.failures.a = "subscription_window_exhausted";
     await f.run({ mode: "pin", profileId: "a" });
-    const readQuota = f.quota.read.bind(f.quota);
-    vi.spyOn(f.quota, "read").mockImplementation(() => {
-      const state = readQuota();
-      return {
-        ...state,
-        snapshots: state.snapshots.map((row) => ({
-          ...row,
-          constraints: row.constraints.map((constraint) => ({
-            ...constraint,
-            applies_to_models: ["test-model"],
-            applies_to_model_prefixes: [],
-            applies_to_unspecified_model: false,
-          })),
+    // Display and admission reads see the same model-scoped windows.
+    const scoped = <T extends { snapshots: QuotaSnapshot[] }>(state: T): T => ({
+      ...state,
+      snapshots: state.snapshots.map((row) => ({
+        ...row,
+        constraints: row.constraints.map((constraint) => ({
+          ...constraint,
+          applies_to_models: ["test-model"],
+          applies_to_model_prefixes: [],
+          applies_to_unspecified_model: false,
         })),
-      };
+      })),
     });
+    const readQuota = f.quota.read.bind(f.quota);
+    const readAdmission = f.quota.readAdmission.bind(f.quota);
+    vi.spyOn(f.quota, "read").mockImplementation(() => scoped(readQuota()));
+    vi.spyOn(f.quota, "readAdmission").mockImplementation(() => scoped(readAdmission()));
     const other = await f.services.routes.modelCatalog("codex", "a", "other-model", true);
     expect(other.admission?.requestedModel).toBe("other-model");
     const blocked = await f.run({ mode: "pin", profileId: "a" });

@@ -30,6 +30,7 @@ import { fetchClaudeOauthUsage } from "./claude-oauth-fetch.js";
 import { readAccountsMigrationFile } from "./accounts-unified-migration.js";
 import {
   emitQuotaDiagnostic,
+  unknownQuotaScopeReason,
   type QuotaDiagnosticSink,
   type QuotaRefreshDiagnostic,
 } from "./quota-refresh-diagnostics.js";
@@ -482,17 +483,21 @@ export async function refreshClaudeOauthUsageQuota(
         );
       }
 
+      const unknown: string[] = [];
       const snapshot = parseClaudeOauthUsage(
         usage,
         candidate.subjectId,
         credential.subscriptionType,
         requestStartedAt,
+        (window) => unknown.push(unknownQuotaScopeReason(window)),
       );
+      // An unnamed scoped limit stays observed evidence here, never an
+      // account-wide window, including when no known window made a snapshot.
       report(candidate.subjectId, {
         stage: "usage_http",
         outcome: snapshot ? "succeeded" : "failed",
         httpStatus,
-        reason: snapshot ? "windows_observed" : "no_parseable_windows",
+        reason: [snapshot ? "windows_observed" : "no_parseable_windows", ...unknown].join("; "),
       });
       if (snapshot) snapshots.push(snapshot);
       else
@@ -503,7 +508,9 @@ export async function refreshClaudeOauthUsageQuota(
           claudeOauthAbsence(
             candidate.subjectId,
             "refresh_failed",
-            "oauth/usage returned HTTP 200 without parseable quota windows",
+            unknown.length > 0
+              ? "oauth/usage returned HTTP 200 with only windows of unknown model scope (not account-wide limits)"
+              : "oauth/usage returned HTTP 200 without parseable quota windows",
             now(),
           ),
         );

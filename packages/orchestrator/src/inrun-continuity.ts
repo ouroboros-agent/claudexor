@@ -54,7 +54,7 @@ import {
   type PreProgressRefusalSubject,
 } from "./pre-progress-refusal.js";
 import { PoolAttemptEvidence, withRotationAttempts } from "./pool-attempt-evidence.js";
-import { quotaRefusalWithScope } from "./quota-refusal-scope.js";
+import { pinnedTypedLimit, quotaRefusalWithScope } from "./quota-refusal-scope.js";
 
 const TYPED_REFUSALS = new Set(["auth_failed", "capability_refused", "config_error"]);
 
@@ -398,15 +398,11 @@ export class InRunContinuity {
       return {
         kind: "terminal",
         error: quotaRefusalWithScope(
-          Object.assign(
-            new Error(
-              `credential profile "${facts.runSpec.credential_profile?.profile_id ?? "default"}" (${this.deps.adapter.id}) hit a typed vendor limit after progress and a pinned account never rotates${this.limit?.resetsAt ? `; resets ${this.limit.resetsAt}` : ""}`,
-            ),
-            {
-              code: "subscription_window_exhausted",
-              category: "harness_unavailable",
-              resetsAt: this.limit?.resetsAt ?? null,
-            },
+          pinnedTypedLimit(
+            facts.runSpec.credential_profile?.profile_id ?? "default",
+            this.deps.adapter.id,
+            this.limit,
+            true,
           ),
           {
             harness: this.deps.adapter.id,
@@ -498,7 +494,8 @@ export class InRunContinuity {
       ...this.deps.rotationObservations(runSpec, facts.newTransients, facts.refusal),
       triedProfiles: this.triedProfiles,
       ...inRunRotationArgs(facts, forceEligible),
-      lastLimit: facts.lastLimit,
+      // This try's own limit (with the window it named) when it saw one.
+      lastLimit: this.limit ?? facts.lastLimit,
       // An in-run exhaustion names each account's own failed tries (settled first).
       emit: ((type, payload) =>
         this.deps.emit(

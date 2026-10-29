@@ -13,6 +13,7 @@ import {
   type VendorFailureEvidence,
   type PoolAttemptFailure,
   HarnessRequestRefusal,
+  QuotaRefusal,
 } from "@claudexor/schema";
 import { redactSecrets } from "@claudexor/util";
 import { poolFailure, redactVendorFailure } from "./pool-attempt-evidence.js";
@@ -47,6 +48,8 @@ export function writeFailure(
     captureFailure?: RunFailure["captureFailure"];
     /** Every failed try with its own account, in order (empty = none). */
     poolAttempts?: readonly PoolAttemptFailure[];
+    /** Typed basis of a quota-admission refusal (#318); omitted otherwise. */
+    quotaRefusal?: QuotaRefusal;
     nextActions?: string[];
   },
 ): void {
@@ -73,6 +76,7 @@ export function writeFailure(
     resetsAt: failure.resetsAt ?? null,
     ...(failure.requestRefusal ? { requestRefusal: failure.requestRefusal } : {}),
     ...(failure.captureFailure ? { captureFailure: failure.captureFailure } : {}),
+    ...(failure.quotaRefusal ? { quotaRefusal: failure.quotaRefusal } : {}),
     // Vendor text was redacted at event ingress; redact again like safeMessage (INV-062).
     vendorFailure: vendor && redactVendorFailure(vendor),
     poolAttempts: (failure.poolAttempts ?? []).map((row) => ({
@@ -83,6 +87,11 @@ export function writeFailure(
     })),
     nextActions: [
       ...new Set([
+        ...(failure.quotaRefusal?.basis === "owner_reserve"
+          ? [
+              "The account reached your saved quota reserve (headroom_threshold), not a provider limit; wait for the reset, choose another account, or change the reserve in Settings",
+            ]
+          : []),
         ...(failure.code === "input_too_large"
           ? [
               "Fit the input to the reported transport limit or supply source references",
@@ -109,6 +118,7 @@ export function writeFailure(
 /** The typed provenance an error declared about its own terminal. */
 export interface DeclaredFailure {
   requestRefusal?: HarnessRequestRefusal;
+  quotaRefusal?: QuotaRefusal;
   category?: RunFailure["category"];
   code: RunFailureCode | null;
   resetsAt: string | null;
@@ -146,6 +156,7 @@ export function declaredFailure(err: unknown): DeclaredFailure {
   const category = RunFailure.shape.category.safeParse(record["category"]);
   const resetsAt = RunFailure.shape.resetsAt.safeParse(record["resetsAt"]);
   const refusal = HarnessRequestRefusal.safeParse(record["requestRefusal"]);
+  const quota = QuotaRefusal.safeParse(record["quotaRefusal"]);
   return {
     ...(typeof record["category"] === "string" && category.success
       ? { category: category.data }
@@ -153,6 +164,7 @@ export function declaredFailure(err: unknown): DeclaredFailure {
     code: code.success ? code.data : null,
     resetsAt: resetsAt.success ? resetsAt.data : null,
     ...(refusal.success ? { requestRefusal: refusal.data } : {}),
+    ...(quota.success ? { quotaRefusal: quota.data } : {}),
   };
 }
 
@@ -342,6 +354,7 @@ export function failTerminally(
     runDir: paths.root,
     resetsAt: declared.resetsAt,
     requestRefusal: declared.requestRefusal,
+    quotaRefusal: declared.quotaRefusal,
     poolAttempts,
     nextActions: [
       ...(budget?.nextActions ?? failureMeta.nextActions ?? ["Open diagnostics", "Retry the run"]),

@@ -658,51 +658,39 @@ describe("QuotaRegistry", () => {
     const manager = await sqlFixture(root);
     const slot = new QuotaRegistry(manager.graph.globalEvents, [], undefined, undefined);
     slot.recoverAfterStartup();
-    for (const [constraintId, aliases] of [
-      ["seven_day_opus", ["opus", "claude-opus-5", "best"]],
-      ["seven_day_sonnet", ["sonnet", "claude-sonnet-5", "best"]],
-    ] as const) {
+    for (const family of ["opus", "sonnet"] as const) {
       slot.ingest("claude", {
         type: "status",
-        session_id: `session-${constraintId}`,
+        session_id: `session-${family}`,
         ts: new Date().toISOString(),
         credential_route: "vendor_native",
         rate_limit: {
-          constraint_id: constraintId,
-          applies_to_models: aliases,
+          constraint_id: `seven_day_${family}`,
+          applies_to_models: [family],
+          applies_to_model_prefixes: [`claude-${family}-`],
           resets_at: null,
           retry_delay_ms: 30_000,
         },
       });
     }
-    expect(slot.read().snapshots[0]?.constraints).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          id: "cooldown:seven_day_opus",
-          applies_to_models: ["opus", "claude-opus-5", "best"],
-        }),
-        expect.objectContaining({
-          id: "cooldown:seven_day_sonnet",
-          applies_to_models: ["sonnet", "claude-sonnet-5", "best"],
-        }),
-      ]),
-    );
+    const familyCooldowns = expect.arrayContaining([
+      expect.objectContaining({
+        id: "cooldown:seven_day_opus",
+        applies_to_models: ["opus"],
+        applies_to_model_prefixes: ["claude-opus-"],
+      }),
+      expect.objectContaining({
+        id: "cooldown:seven_day_sonnet",
+        applies_to_models: ["sonnet"],
+        applies_to_model_prefixes: ["claude-sonnet-"],
+      }),
+    ]);
+    expect(slot.read().snapshots[0]?.constraints).toEqual(familyCooldowns);
     await manager.close();
     const restarted = await sqlFixture(root);
     const restartedSlot = new QuotaRegistry(restarted.graph.globalEvents, [], undefined, undefined);
     restartedSlot.recoverAfterStartup();
-    expect(restartedSlot.read().snapshots[0]?.constraints).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          id: "cooldown:seven_day_opus",
-          applies_to_models: ["opus", "claude-opus-5", "best"],
-        }),
-        expect.objectContaining({
-          id: "cooldown:seven_day_sonnet",
-          applies_to_models: ["sonnet", "claude-sonnet-5", "best"],
-        }),
-      ]),
-    );
+    expect(restartedSlot.read().snapshots[0]?.constraints).toEqual(familyCooldowns);
     await restarted.close();
     rmSync(root, { recursive: true, force: true });
   });
@@ -773,9 +761,11 @@ describe("QuotaRegistry", () => {
 
     const replay = new DurableJournal({ rootDir: root, partition: "global" });
     const recovered = new QuotaRegistry(replay, [], now);
+    // The retired alias list is restored as the current family scope (#394).
     expect(recovered.read().snapshots[0]?.constraints[0]).toMatchObject({
       id: "weekly_scoped:Fable 5",
-      applies_to_models: ["fable", "claude-fable-5", "best"],
+      applies_to_models: ["fable"],
+      applies_to_model_prefixes: ["claude-fable-"],
     });
     replay.close();
     rmSync(root, { recursive: true, force: true });

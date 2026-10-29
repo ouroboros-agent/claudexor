@@ -46,6 +46,7 @@ export * from "./workproduct.js";
 export * from "./budget.js";
 export * from "./quota.js";
 export * from "./quota-read.js";
+export * from "./quota-scope.js";
 export * from "./rate-limit.js";
 export * from "./route.js";
 export * from "./decision.js";

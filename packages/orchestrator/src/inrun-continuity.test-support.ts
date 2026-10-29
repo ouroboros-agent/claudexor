@@ -40,12 +40,14 @@ type Script = (
 ) => Generator<HarnessEvent>;
 
 interface Scenario {
-  mode: "agent" | "ask";
+  mode: "agent" | "ask" | "plan";
   profiles: string[];
   script: Script;
   continuity?: HarnessContinuityCapability | null;
   pinned?: string;
   limitAction?: "rotate" | "fail" | "ask";
+  /** The saved quota reserve (`profile_policy.headroom_threshold`; default 1). */
+  headroomThreshold?: number;
   maxRetries?: number;
   /** The run's requested model; null = none (the harness default). */
   model?: string | null;
@@ -127,7 +129,16 @@ export async function run(scenario: Scenario) {
         },
       },
       credential_profiles: scenario.registryProfiles?.(profiles) ?? profiles,
-      harnesses: { fake: { profile_policy: { limit_action: scenario.limitAction ?? "rotate" } } },
+      harnesses: {
+        fake: {
+          profile_policy: {
+            limit_action: scenario.limitAction ?? "rotate",
+            ...(scenario.headroomThreshold
+              ? { headroom_threshold: scenario.headroomThreshold }
+              : {}),
+          },
+        },
+      },
     }),
   );
   const spawns: Spawn[] = [];
@@ -161,7 +172,7 @@ export async function run(scenario: Scenario) {
       return ConformanceReport.parse({
         harness_id: "fake",
         status: "ok",
-        enabled_intents: ["implement", "repair", "explain", "audit"],
+        enabled_intents: ["implement", "repair", "explain", "audit", "plan"],
         auth_sources: [
           { source: "native_session", availability: "available", verification: "passed" },
         ],

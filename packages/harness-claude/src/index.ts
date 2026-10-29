@@ -37,7 +37,7 @@ import {
   CLAUDE_KNOWN_MODELS,
   CLAUDE_KNOWN_MODELS_VERIFIED_AGAINST,
 } from "./capability-profile.js";
-export { CLAUDE_MANAGED_LOGIN, claudeQuotaModelAliases } from "./capability-profile.js";
+export { CLAUDE_MANAGED_LOGIN } from "./capability-profile.js";
 import { claudeInstallation, claudeMissingDetail } from "./doctor-remedy.js";
 import { claudeDoctor } from "./doctor.js";
 import { claudeNativeEnv, defaultNativeClaudeConfigDir } from "./native-home.js";

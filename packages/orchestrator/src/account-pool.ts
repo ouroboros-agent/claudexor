@@ -1,4 +1,9 @@
-import { quotaConstraintAppliesToRequestKind, type QuotaRequestKind } from "@claudexor/schema";
+import {
+  quotaConstraintAppliesToRequestKind,
+  quotaWindowFreshness,
+  type QuotaRefusalBasis,
+  type QuotaRequestKind,
+} from "@claudexor/schema";
 import type {
   CredentialProfile,
   ModelSubstitutionObservation,
@@ -9,6 +14,7 @@ import { quotaConstraintAppliesToModel } from "@claudexor/budget";
 import { profileQuotaBlock } from "./credential-cooldown.js";
 import { limitSubjectRoute, profileHeadroomBreach } from "./credential-profile-rotation.js";
 import { liveRefusalMarks } from "./pre-progress-refusal.js";
+import { quotaRefusalBasis, quotaRefusalResetsAt } from "./quota-refusal-scope.js";
 
 /**
  * Quota-aware ACCOUNT POOL of the unified account model (INV-135 rewrite,
@@ -49,7 +55,7 @@ import { liveRefusalMarks } from "./pre-progress-refusal.js";
 export type PoolQuotaVerdict =
   | { kind: "fresh_headroom"; headroom: number }
   | { kind: "unknown" }
-  | { kind: "exhausted"; resets_at: string | null };
+  | { kind: "exhausted"; resets_at: string | null; basis: QuotaRefusalBasis };
 
 export interface PoolCandidate {
   profile: CredentialProfile;
@@ -77,20 +83,22 @@ export function accountPoolRows(
 }
 
 /** Worst-window FRESH model-applicable headroom for one subject, or null when
- * no fresh applicable evidence exists (unknown/stale — D3: display-only). */
+ * no fresh applicable evidence exists (unknown/stale — D3: display-only). Each
+ * window's freshness is judged at the decision instant (#457). */
 function freshModelHeadroom(
   snapshots: readonly QuotaSnapshot[],
   harnessId: string,
   profileId: string,
   model: string | null | undefined,
-  requestKind?: QuotaRequestKind,
+  requestKind: QuotaRequestKind | undefined,
+  now: number,
 ): number | null {
   let worst: number | null = null;
   for (const snapshot of snapshots) {
-    if (snapshot.freshness !== "fresh") continue;
     if (snapshot.subject.harness !== harnessId) continue;
     if ((snapshot.subject.subject_id ?? null) !== profileId) continue;
     for (const constraint of snapshot.constraints) {
+      if (quotaWindowFreshness(snapshot, constraint, now) !== "fresh") continue;
       if (!quotaConstraintAppliesToRequestKind(constraint, requestKind)) continue;
       if (!quotaConstraintAppliesToModel(constraint, model)) continue;
       if (constraint.used_ratio === null) continue;
@@ -141,20 +149,15 @@ export function rankAccountPool(args: {
       args.headroomThreshold,
       args.model,
       args.requestKind,
+      now,
     );
-    if (breach) {
-      candidates.push({
-        profile,
-        verdict: { kind: "exhausted", resets_at: breach.resets_at },
-      });
-      continue;
-    }
     // A4 cooldown reader: a row under an OBSERVED live block (reactive
     // vendor-limit cooldown or spent window, stale-but-live included) ranks
     // exhausted with its earliest known release instant — selecting it would
     // burn an attempt to rediscover the limit the registry already holds. The
     // block is read route-scoped (the row's own credential kind), so an
-    // api-key sibling's window can never cool a subscription row.
+    // api-key sibling's window can never cool a subscription row. Its basis
+    // separates the owner's reserve from provider exhaustion (#318).
     const block = profileQuotaBlock(
       args.snapshots,
       args.harnessId,
@@ -164,10 +167,15 @@ export function rankAccountPool(args: {
       undefined,
       args.requestKind,
     );
-    if (block) {
+    const refusal = quotaRefusalBasis(breach, block);
+    if (refusal) {
       candidates.push({
         profile,
-        verdict: { kind: "exhausted", resets_at: block.resets_at },
+        verdict: {
+          kind: "exhausted",
+          resets_at: quotaRefusalResetsAt(breach, block),
+          basis: refusal.basis,
+        },
       });
       continue;
     }
@@ -177,6 +185,7 @@ export function rankAccountPool(args: {
       profile.profile_id,
       args.model,
       args.requestKind,
+      now,
     );
     candidates.push({
       profile,
@@ -232,6 +241,8 @@ export type PoolSelection =
       outcome: "exhausted" | "empty";
       /** Earliest known window reset among exhausted rows, when any. */
       resets_at: string | null;
+      /** Every exhausted row stopped only at the owner's saved reserve. */
+      reserveOnly?: boolean;
     };
 
 /** Select the unpinned-run account from the pool (or report why not). */
@@ -241,11 +252,14 @@ export function selectFromAccountPool(args: Parameters<typeof rankAccountPool>[0
   if (selectable) return { outcome: "selected", candidate: selectable };
   if (ranked.length === 0) return { outcome: "empty", resets_at: null };
   let resetsAt: string | null = null;
+  let reserveOnly = true;
   for (const candidate of ranked) {
-    if (candidate.verdict.kind !== "exhausted" || candidate.verdict.resets_at === null) continue;
+    if (candidate.verdict.kind !== "exhausted") continue;
+    if (candidate.verdict.basis !== "owner_reserve") reserveOnly = false;
+    if (candidate.verdict.resets_at === null) continue;
     if (resetsAt === null || candidate.verdict.resets_at < resetsAt) {
       resetsAt = candidate.verdict.resets_at;
     }
   }
-  return { outcome: "exhausted", resets_at: resetsAt };
+  return { outcome: "exhausted", resets_at: resetsAt, reserveOnly };
 }
