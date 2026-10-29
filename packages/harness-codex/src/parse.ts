@@ -1,6 +1,7 @@
 import { InputTokenUsage, WorkReport, type HarnessEvent, type ToolRef } from "@claudexor/schema";
 import { nowIso, redactSecrets } from "@claudexor/util";
 import { applyCodexRateLimit, applyCodexTransient, codexReconnectStatus } from "./retry-signals.js";
+import { mcpToolOutcome, summarizeCodexOutput } from "./tool-output.js";
 
 type Json = any;
 
@@ -358,20 +359,14 @@ export function parseCodexEvent(
         ];
       }
       case "mcp_tool_call": {
-        const failed = item.status === "failed";
+        const outcome = mcpToolOutcome(item);
         return [
           {
             type: "tool_result",
             session_id: sessionId,
             ts,
-            text: failed ? "tool_result: error" : "tool_result",
-            tool: {
-              ...mcpToolRef(item),
-              status: failed ? "error" : "ok",
-              error_summary: failed
-                ? summarizeCodexOutput(item.error ?? item.result) || "mcp tool call failed"
-                : undefined,
-            },
+            text: outcome.status === "error" ? "tool_result: error" : "tool_result",
+            tool: { ...mcpToolRef(item), ...outcome },
             payload: {
               server: item.server,
               tool: item.tool,
@@ -564,11 +559,6 @@ function commandFailureSummary(item: Json): string {
   return typeof item.exit_code === "number"
     ? `command exited with code ${item.exit_code}`
     : "command execution failed";
-}
-
-function summarizeCodexOutput(value: unknown): string {
-  if (typeof value !== "string" || !value.trim()) return "";
-  return redactSecrets(value).trim().replace(/\s+/g, " ").slice(0, 1000);
 }
 
 function boundedTarget(value: unknown): string | undefined {

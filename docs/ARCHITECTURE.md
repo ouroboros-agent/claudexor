@@ -1967,9 +1967,12 @@ workspace work; they are never ignored or silently redirected.
 Envelope semantics are strict. Project runs execute under
 `~/.claudexor/v3/projects/<project-sha256>/workspaces/<task>/<attempt>/tree`, and
 the harness `cwd` is the envelope worktree. Proven work product is the git diff in that worktree, a
-declared run artifact, or an explicitly verified host side-effect. Absolute
-`/tmp/...` writes are host side effects and are not project diffs; project tmp
-requests default to `tmp/...` inside the project/envelope or to run artifacts.
+declared run artifact, or the text answer. Capture reads only the physical execution root, whatever
+its spelling: a project under `/tmp` is captured normally, while a write outside
+the root, such as an absolute `/tmp/...` host path, does not enter the project
+patch automatically and is not by itself proof of delivered project work.
+Capture neither refuses nor redirects such a write; the access profile decides
+whether the harness may make it.
 
 Git admission follows the semantic run shape, not a blanket mode rule.
 `GET /v2/run-applicability` (with the absolute `repoRoot` query) returns the
@@ -6187,9 +6190,12 @@ macOS UI/UX SSOT. This section keeps only the engine-facing facts.
   spoof it). A successful browser navigation records
   `web.verification: verified` plus a typed
   `browser: {attempted, satisfied, failed, unused}` receipt; a failed browser
-  call remains attributable warning evidence. The separate explicit Browser
-  capability preflight is unchanged and still refuses a pool with no effective
-  Browser lane before a harness starts.
+  call remains attributable warning evidence. Claude and Codex keep the
+  browser's returned text (page URL, title, snapshot) with its line breaks as
+  the result's bounded, redacted `content_summary`, so the journal shows which
+  page was read. The
+  separate explicit Browser capability preflight is unchanged and still refuses
+  a pool with no effective Browser lane before a harness starts.
   An armed-but-unused browser (generic `web_search` satisfied instead) is
   disclosed as an unused-browser flag on that receipt — disclosure only, never a
   run failure.

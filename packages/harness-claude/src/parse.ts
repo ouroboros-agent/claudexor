@@ -8,6 +8,7 @@ import {
   claudeTerminalContextEvent,
 } from "./context-signals.js";
 import { requiredMcpStartupReceipts } from "./required-mcp.js";
+import { summarizeToolResultContent } from "./tool-output.js";
 import { claudeApiRetryEvents, claudeEntitlementEvents } from "./retry-signals.js";
 import {
   claudeCompletion,
@@ -396,7 +397,9 @@ function parseClaudeEventStateful(
           target: origin?.target,
           status,
           error_summary: status === "error" ? detail || "tool result marked error" : undefined,
-          content_summary: detail || undefined,
+          content_summary:
+            (origin?.kind === "mcp" ? summarizeToolResultContent(block.content, true) : detail) ||
+            undefined,
           // QA-042: claude WebSearch/WebFetch return TYPED content with an
           // is_error flag, so a successful web result is a VERIFIED retrieval
           // (content present), not dispatch-only — unlike codex, which cannot
@@ -553,30 +556,6 @@ function toolTarget(name: string, input: Record<string, unknown>): string | unde
   ];
   const found = candidates.find((v) => typeof v === "string" && v.trim().length > 0);
   return found ? redactSecrets(`${name}: ${String(found)}`).slice(0, 500) : undefined;
-}
-
-function summarizeToolResultContent(content: unknown): string {
-  if (typeof content === "string")
-    return redactSecrets(content).trim().replace(/\s+/g, " ").slice(0, 1000);
-  if (Array.isArray(content)) {
-    const parts = content
-      .map((item) => {
-        if (typeof item === "string") return item;
-        if (!item || typeof item !== "object" || Array.isArray(item)) return "";
-        const rec = item as Record<string, unknown>;
-        return typeof rec["text"] === "string"
-          ? rec["text"]
-          : typeof rec["content"] === "string"
-            ? rec["content"]
-            : "";
-      })
-      .filter(Boolean);
-    return redactSecrets(parts.join(" ")).trim().replace(/\s+/g, " ").slice(0, 1000);
-  }
-  if (content && typeof content === "object") {
-    return redactSecrets(JSON.stringify(content)).slice(0, 1000);
-  }
-  return "";
 }
 
 function numberOrUndef(v: unknown): number | undefined {

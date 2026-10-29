@@ -413,3 +413,67 @@ describe("codex multi-agent fixture (root-thread ownership of finality)", () => 
     expect(stats.statuslessToolResults).toBe(0);
   });
 });
+
+describe("codex Browser MCP fixture (claudexor#215)", () => {
+  it("replays the 0.162.1-shaped Browser stream with the server's page text as tool evidence", async () => {
+    const name = "app-server/synthetic-browser-mcp-0.162.1.jsonl";
+    const lines = readFileSync(join(FIXTURES, name), "utf8").split("\n").filter(Boolean);
+    const { spawn } = appServerReplay(lines);
+    const events: HarnessEvent[] = [];
+    for await (const event of runCodexAppServer({
+      bin: "codex",
+      args: [],
+      spec: HarnessRunSpec.parse({
+        session_id: "ses-browser",
+        intent: "implement",
+        prompt: "Open the probe page with the browser tool.",
+        cwd: process.cwd(),
+        access: "full",
+        model_hint: "gpt-6-astra",
+        effort_hint: "low",
+      }),
+      env: {},
+      spawn,
+      pollIntervalMs: 0,
+    }))
+      events.push(event);
+
+    const url = "http://127.0.0.1:61191/claudexor-browser-probe-cf77d14a49bca53a.html";
+    const value = "a4069362e00933b8e5cbb410";
+    const calls = events.filter((event) => event.type === "tool_call");
+    expect(calls.map((event) => [event.tool?.use_id, event.tool?.target])).toEqual([
+      ["mcp-navigate", "browser:browser_navigate"],
+      ["mcp-snapshot", "browser:browser_snapshot"],
+      ["mcp-navigate-unsafe", "browser:browser_navigate"],
+      ["mcp-close", "browser:browser_close"],
+    ]);
+    const results = events.filter((event) => event.type === "tool_result");
+    expect(results.map((event) => [event.tool?.use_id, event.tool?.status])).toEqual([
+      ["mcp-navigate", "ok"],
+      ["mcp-snapshot", "ok"],
+      ["mcp-navigate-unsafe", "error"],
+      ["mcp-close", "ok"],
+    ]);
+    // The browser reports the page it actually loaded, title included.
+    expect(results[0]?.tool?.content_summary).toContain(`Page URL: ${url}`);
+    expect(results[0]?.tool?.content_summary).toContain(
+      `Page Title: Claudexor Browser probe ${value}`,
+    );
+    expect(results[1]?.tool?.content_summary).toContain(`Probe value: ${value}`);
+    // The failed navigation keeps Playwright's own error, not a generic label.
+    expect(results[2]?.tool?.error_summary).toContain("net::ERR_UNSAFE_PORT");
+    // Closing never carries the page's content.
+    expect(results[3]?.tool?.content_summary).not.toContain(value);
+    expect(events.filter((event) => event.final).map((event) => event.text)).toEqual([
+      `The page title is "Claudexor Browser probe ${value}".`,
+    ]);
+    const stats = validateTypedStream(events);
+    expect(stats.started).toBe(1);
+    expect(stats.toolCalls).toBe(4);
+    expect(stats.toolResults).toBe(4);
+    expect(stats.errorToolResults).toBe(1);
+    expect(stats.statuslessToolResults).toBe(0);
+    expect(events.at(-1)?.type).toBe("completed");
+    expect(events.at(-1)?.payload).not.toHaveProperty("harness_reported_error");
+  });
+});
