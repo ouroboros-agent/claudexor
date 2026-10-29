@@ -29,6 +29,10 @@ __afterAllReap(() => {
   for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
 });
 
+// #257: a frozen review always covers the complete sealed packet.
+type FrozenDeltaScopeWasRemoved = "deltaScope" extends keyof FrozenDiffReviewInput ? false : true;
+const frozenDeltaScopeWasRemoved: FrozenDeltaScopeWasRemoved = true;
+
 function git(repo: string, args: string[]): string {
   return execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" });
 }
@@ -151,6 +155,10 @@ function deps(): DiffReviewDeps {
 }
 
 describe("frozen diff review", () => {
+  it("has no retired delta-scope input", () => {
+    expect(frozenDeltaScopeWasRemoved).toBe(true);
+  });
+
   it("reviews the exact candidate and leaves every sealed packet byte unchanged", async () => {
     const f = fixture();
     const before = packetFiles(f.packet);

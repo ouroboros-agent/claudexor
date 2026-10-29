@@ -8,7 +8,11 @@ import type { AttemptTelemetry } from "./attemptTelemetry.js";
 import { readOnlyNoSuccessTerminal } from "./attemptFinalize.js";
 import { budgetFailureRecord, classifyBudgetFailure, type BudgetDenial } from "./budgetFailure.js";
 import { unanimousDeclaredFailure } from "./candidateEvidence.js";
-import { resumableTerminal, type ContinuityTerminalFacts } from "./continuity-terminal.js";
+import {
+  carryingAttempts,
+  resumableTerminal,
+  type ContinuityTerminalFacts,
+} from "./continuity-terminal.js";
 import {
   attemptVendorFailure,
   dominantHarnessFailureCategory,
@@ -148,7 +152,7 @@ export function readOnlyChainFailureResult(
       error: singleError,
       pool_attempts: poolAttempts,
       failure_ref: "final/failure.yaml",
-      ...resumableTerminal(store, paths, attempts, true),
+      ...resumableTerminal(store, paths, carryingAttempts(attempts, paths.root), true),
     });
   } else {
     log.emit("run.failed", {
@@ -160,7 +164,7 @@ export function readOnlyChainFailureResult(
       error: singleError,
       pool_attempts: poolAttempts,
       failure_ref: "final/failure.yaml",
-      ...resumableTerminal(store, paths, attempts, true),
+      ...resumableTerminal(store, paths, carryingAttempts(attempts, paths.root), true),
     });
   }
   return {

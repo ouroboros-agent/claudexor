@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { budgetValuationFromEvents, cashKnowledgeFromEvents } from "./budget-valuation.js";
+import { budgetValuation, foldBudgetEvents } from "./budget-valuation.js";
+
+const budgetValuationFromEvents = (events: Record<string, unknown>[]) =>
+  budgetValuation(foldBudgetEvents(events));
+const cashKnowledgeFromEvents = (events: Record<string, unknown>[]) =>
+  foldBudgetEvents(events).cashKnowledge;
 
 describe("cash certainty projection", () => {
   it("distinguishes an unknown zero from an estimated zero without consulting valuation", () => {

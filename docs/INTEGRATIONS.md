@@ -673,8 +673,9 @@ root, preimages, verifier and retention boundaries are defined once in
 Unfinished work is continued, never restarted: a terminal run whose work is
 unfinished carries `resumable` on `GET /v2/runs/:id` (cause, the vendor's
 reset when known, the available `carriers`, the native session and where the
-tree is), and every continued try a `continuity` receipt (carrier, accounts,
-memory, the try's attested model). Continue it with `POST /v2/runs` and the
+tree is), and every continued try a `continuity` receipt (carrier, the actual
+source run/attempt/profile, accounts, memory, the try's attested model, and
+after a moved session whether its source was retired or not confirmed). Continue it with `POST /v2/runs` and the
 body `{continueFrom: <runId>, prompt: <next text, may be empty>}` and, to force
 a re-brief instead of a resume, `continueCarrier: "packet"`; read support from
 `continueFrom` in `GET /v2/agent-capabilities` `runControlKeys`, never from a
@@ -1290,6 +1291,10 @@ limits govern that successor alone, never the chain's remaining allowance. An
 empty prompt is valid. `claudexor_run_status` and `claudexor_run_result` project
 `continueFrom`, `resumable`, `continuity` and `retainedEnvelope` (omitted when
 the daemon detail did not carry them) for deciding whether and how to continue.
+An MCP server older than the daemon validates receipts strictly, so a receipt
+with the newer `sourceRetirement` field drops its `continuity` list until that
+server is updated. A settlement failure's `workspace.settlement_failed` warning
+is a timeline event and does not appear in these MCP facts.
 A second successor of the same predecessor is refused `continuation_superseded`
 with the chain `head` to continue instead; recover an unknown response with the
 original key and arguments. A successor is a new command, not resurrection of a
@@ -1815,6 +1820,14 @@ The same projection distinguishes deadline exhaustion from user cancellation:
 a terminal `cancelled` lifecycle with `wall_clock_exceeded` returns ACP
 `refusal`, while an explicit ACP/session Stop returns `cancelled`.
 
+Tool activity streams as `tool_call` (`in_progress`) followed by one
+`tool_call_update`. The update is `completed` only for a result that is not an
+error and does not report an unconfirmed command. An error is `failed`, and so
+is a command that was moved to a background shell, timed out, or has an unknown
+outcome: ACP v1 has no other terminal status short of success, and no later
+update will arrive for that call. Such an update carries the state as text
+content and the typed facts at `_meta.claudexor.commandOutcome`.
+
 `session/load` replays the conversation on reopen by fetching one run detail
 per turn. That fan-out is bounded to the most recent 50 turns: an older thread
 replays only its tail, and the omitted count is disclosed as a leading
@@ -2091,8 +2104,20 @@ run. Fresh lanes use `thread/start`; later lane turns use `thread/resume`; input
 verified local images and output schema ride `turn/start`. `turn/started`
 provides the exact active turn id. `item/*` maps `reasoning` → `thinking`,
 `commandExecution`/`mcpToolCall`/`webSearch` → `tool_call`+`tool_result`,
-`fileChange` → `file_change`, `agentMessage` → `message`; `turn/plan/updated`
-maps plan progress and `thread/tokenUsage/updated` maps usage.
+`fileChange` → one `file_change` per changed path typed `phase: started` /
+`completed` (the completed item's native status, when present, is the outcome:
+`completed` → ok, `failed` → error, `declined` → denied; each event's payload
+keeps the complete `path`, its own `change` and the item without its
+`changes` list), `agentMessage` →
+`message`; `turn/plan/updated` maps plan progress and
+`thread/tokenUsage/updated` maps usage.
+A finished `mcpToolCall` with status `completed` is `ok` and keeps the text
+blocks of its result (structured content when no text came back) with their
+line breaks as bounded, redacted `content_summary`; status `failed` covers an
+`isError` result and a call that returned nothing, and keeps `error.message`,
+else the result text on one line, as `error_summary`. Any other status stays
+statusless. The tool identity stays the native tool name with `server:tool` as
+target, which Browser and Delegate evidence match.
 `account/rateLimits/updated` maps measured known-scope windows to independent
 status+quota events from that same running process, without token usage or a
 cooldown. The full quota reader shares the native window codec; supplied RPC
@@ -2173,7 +2198,18 @@ the complete flush; `thinking`/`reasoning` → `thinking`; variant-keyed
 `tool_call` objects (`shellToolCall`, `writeToolCall`, …) → `tool_call` on
 `started`, `tool_result` (+ `file_change`) on `completed`/`failed`, nothing
 on `updated`; a native `{failure:{exitCode|error}}` result is an ERROR even
-when the outer subtype says completed. On successful terminal `result`, the
+when the outer subtype says completed, and so is a shell `spawnError`. A shell
+result also carries typed `command_outcome` facts beside its tool-call status:
+an observed exit with its exit code and signal; `timed_out` for `timeout` or a
+`failure` aborted by its timeout; `backgrounded` for a `success` that carries a
+background shell handle (`shellId`, `backgroundReason` or result-level
+`isBackground`), whose protobuf-default `exitCode: 0` is not an exit; and
+`unknown` for an ok result in an unrecognized shape. Such an unconfirmed result
+keeps tool status `ok`, names its state in the event text, and keeps its
+complete redacted native result as `payload.native_result` of the durable
+`harness.event`. These shapes follow the `agent.v1` shell protocol of
+cursor-agent 2026.08.11; no timeout or background frame has been recorded live.
+On successful terminal `result`, the
 adapter finalizes the LAST complete assistant flush
 (`final_source: assistant_message`) rather than Cursor's concatenated `result`
 string; it falls back to `result` only when no complete assistant frame exists.
@@ -2208,8 +2244,9 @@ are unavailable, recorded as an `agy_readonly_access_note` status. Events:
 `init` → `started` (the vendor `conversation_id` is the
 resumable native session id); tool steps emit `tool_call` on `ACTIVE`.
 `DONE` emits an error `tool_result` for native tool errors, a successful
-`tool_result` (+ `file_change` for writers) only with reported output, otherwise
-a diagnostic `status`. Other states are recognized no-ops. `text_delta` emits
+`tool_result` (+ a completed `file_change` for writers) only with reported
+output, otherwise a diagnostic `status`. Each carries the recorded `step_index`
+as its use id (`step-N`), which pairs a result with its own call. Other states are recognized no-ops. `text_delta` emits
 complete narration segments, not display deltas. Terminal `result` emits the
 `response` final (`final_source: result`); object `structured_output` is parsed
 but unreachable in shipped runs (`json_schema_output` is false).

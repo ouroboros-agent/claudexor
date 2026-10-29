@@ -19,11 +19,6 @@ export interface FrozenDiffReviewInput {
   candidateSha: string;
   candidateTree: string;
   packetManifestSha256: string;
-  /** Owner-amended delta scope (INV-125 second amendment): the contract's
-   * sol lane reviews the sealed DELTA.patch since this base SHA — the lane
-   * is pinned by the engine, the base/digest verify against the sealed
-   * FINGERPRINTS, and DELTA.patch must be the exact base..candidate diff. */
-  deltaScope?: { baseSha: string };
 }
 
 export interface DiffReviewInput {
@@ -134,7 +129,6 @@ export async function runDiffReview(
             candidateTree: input.frozen!.candidateTree,
             packetManifestSha256: frozen.manifestSha256,
           },
-          ...(input.frozen!.deltaScope ? { deltaScope: input.frozen!.deltaScope } : {}),
         }
       : {}),
     cwd: input.repoRoot,

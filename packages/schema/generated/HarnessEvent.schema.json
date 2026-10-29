@@ -555,6 +555,14 @@
               ],
               "description": "Outcome of the tool use; required on tool_result events (a missing status is never treated as ok)."
             },
+            "phase": {
+              "type": "string",
+              "enum": [
+                "started",
+                "completed"
+              ],
+              "description": "Native lifecycle frame of a file_change (started or completed); absent when the adapter does not type it. Completion is not success: the outcome stays in status."
+            },
             "error_summary": {
               "type": "string",
               "description": "Redacted, bounded error detail for status=error results."
@@ -566,6 +574,54 @@
             "exit_code": {
               "type": "integer",
               "description": "Process exit code for command tools, when known."
+            },
+            "command_outcome": {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "exited",
+                    "timed_out",
+                    "backgrounded",
+                    "unknown"
+                  ],
+                  "description": "exited: the tool observed the command end; timed_out: the tool's timeout elapsed before an observed end (the process may still run or may have been signalled); backgrounded: the command was handed to a background shell and was still running when the result returned; unknown: the native result established none of these."
+                },
+                "signal": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Vendor-reported signal name of an exited command."
+                },
+                "timeout_ms": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "The elapsed tool timeout behind timed_out or a timeout-driven background handoff."
+                },
+                "background_reason": {
+                  "type": "string",
+                  "enum": [
+                    "timeout",
+                    "requested"
+                  ],
+                  "description": "Why a backgrounded command left the foreground: its timeout or a request."
+                },
+                "shell_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Vendor handle of the background shell that kept the command."
+                },
+                "pid": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "description": "Vendor-reported process id."
+                }
+              },
+              "required": [
+                "state"
+              ],
+              "additionalProperties": false,
+              "description": "Command process facts (#450), separate from status; absent means not reported."
             },
             "web_retrieval": {
               "type": "string",

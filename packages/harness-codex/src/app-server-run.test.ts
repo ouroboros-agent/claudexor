@@ -553,9 +553,29 @@ describe("Codex app-server transport", () => {
         "session-map",
         state,
       ),
-    ).toMatchObject([
-      { type: "file_change", payload: { path: "one.ts" } },
-      { type: "file_change", payload: { path: "two.ts" } },
+    ).toEqual([
+      expect.objectContaining({
+        type: "file_change",
+        payload: expect.objectContaining({ path: "one.ts" }),
+        tool: {
+          name: "apply_patch",
+          kind: "file",
+          use_id: "patch-1",
+          target: "one.ts",
+          phase: "completed",
+        },
+      }),
+      expect.objectContaining({
+        type: "file_change",
+        payload: expect.objectContaining({ path: "two.ts" }),
+        tool: {
+          name: "apply_patch",
+          kind: "file",
+          use_id: "patch-1",
+          target: "two.ts",
+          phase: "completed",
+        },
+      }),
     ]);
   });
 

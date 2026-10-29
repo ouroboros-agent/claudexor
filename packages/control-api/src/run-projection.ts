@@ -15,17 +15,14 @@ import { controlRunResult } from "./run-delivery-state.js";
 import { lstatSync, readdirSync } from "node:fs";
 import { basename, extname, join } from "node:path";
 import { lastRunEventSeq } from "@claudexor/event-log";
+import { executionFactsOf } from "@claudexor/workspace";
 import { isVanishedErrno, safeArtifactPath } from "./artifact-paths.js";
 
 import { continuationSummary } from "./run-continuation-projection.js";
 import { boundedArtifactText, outputReadyState, primaryOutput } from "./primary-output.js";
 
-import {
-  controlWebEvidence,
-  latestPlanProgress,
-  readRunEventsWithIntegrity,
-  timelineEvents,
-} from "./run-timeline.js";
+import { controlWebEvidence, latestPlanProgress, timelineEvents } from "./run-timeline.js";
+import { readRunEventFacts, type RunEventFacts } from "./run-event-facts.js";
 import {
   paramsRecord,
   type ControlOperatorDecisionRecord,
@@ -137,10 +134,13 @@ export function winnerWorkStateFor(rec: DaemonRunRecord): WorkState | null {
   return winner?.outcome.work_state ?? null;
 }
 
-export function summarizeRun(
-  rec: DaemonRunRecord,
-  eventsSnapshot?: Record<string, unknown>[],
-): ControlRunSummary {
+/** An ancestor's continuation facts from the bounded event fold run detail keeps between reads. */
+function ancestorFacts(runDir: string) {
+  return executionFactsOf(readRunEventFacts({ runDir }).execution);
+}
+
+/** Run detail passes its folded event facts, which also add continuity receipts. */
+export function summarizeRun(rec: DaemonRunRecord, facts?: RunEventFacts): ControlRunSummary {
   const p = paramsRecord(rec);
   const project = projectMetadata(rec);
   // safeParse everywhere: one malformed job record (e.g. an old/foreign mode id)
@@ -172,7 +172,7 @@ export function summarizeRun(
   const terminalFacts = legacyOutcome
     ? effectiveTerminalFacts(rec.runDir, legacyOutcome, decision, expectedRunFacts(rec))
     : { runFacts: null, outcomeFacts: null, decision };
-  const budget = budgetSnapshot(rec, decision, eventsSnapshot);
+  const budget = budgetSnapshot(rec, decision, facts);
   const parsedReviewerPanel = Array.isArray(p["reviewerPanel"])
     ? ControlReviewerPanelEntry.array().safeParse(p["reviewerPanel"])
     : null;
@@ -200,7 +200,7 @@ export function summarizeRun(
       task?.run_lineage.delegated_from_run_id ??
       null,
     delegation: telemetry?.delegation ?? null,
-    ...continuationSummary(rec, eventsSnapshot),
+    ...continuationSummary(rec, facts, facts && ancestorFacts),
     taskId: rec.taskId,
     state: rec.state,
     runDir: rec.runDir,
@@ -285,13 +285,12 @@ export function detailFor(
   const operatorDecisionRaw = operator
     ? { action: operator.action, decidedAt: operator.decidedAt }
     : null;
-  // RunDetail perf (D15): parse events.jsonl ONCE per detail request and thread
-  // the snapshot through every event-consuming projection (timeline, budget
-  // fallback, plan progress) — before this each field re-parsed the whole log.
-  const { events, integrity } = rec.runDir
-    ? readRunEventsWithIntegrity(rec)
-    : { events: [] as Record<string, unknown>[], integrity: undefined };
-  const summary = summarizeRun(rec, events);
+  // RunDetail perf (D15): fold events.jsonl ONCE per detail request and thread
+  // the facts through every event-consuming projection (timeline, budget
+  // fallback, plan progress, continuity). The bulk worker keeps a run's folded
+  // prefix between requests, so a repeated detail parses only appended lines.
+  const facts = readRunEventFacts(rec);
+  const summary = summarizeRun(rec, facts);
   // applyEligibility is non-null exactly when the run has an applyable patch —
   // the authoritative "something to apply" banner signal (a convergence patch
   // may carry kind:patch with no meta.result_kind, so result.kind alone would
@@ -332,8 +331,8 @@ export function detailFor(
     primaryOutput: retentionProblem
       ? { kind: "diagnostic", path: "events.jsonl", text: retentionProblem }
       : primaryOutput(rec, summary.mode, failure, runFacts),
-    timeline: timelineEvents(rec, events, integrity),
-    budget: budgetSnapshot(rec, decision, events, integrity),
+    timeline: timelineEvents(rec, facts.timeline, facts.integrity),
+    budget: budgetSnapshot(rec, decision, facts),
     finalSummary: boundedArtifactText(rec, "final/summary.md"),
     decision,
     operatorDecision: operatorDecisionRaw,
@@ -350,7 +349,7 @@ export function detailFor(
     // review artifacts; empty for single-envelope modes.
     candidates: rec.runDir ? candidatesFor(rec.runDir, decision) : [],
     // Live plan checklist: the winner's (else last) plan.progress items.
-    planProgress: latestPlanProgress(rec, decision?.winner ?? null, events, integrity),
+    planProgress: latestPlanProgress(rec, decision?.winner ?? null, facts.plans, facts.integrity),
     failure,
     // Minimal typed required-actions (GH #29) for a succeeded-but-blocked run,
     // from the single status-projection owner: review-blocked / checks-failed /

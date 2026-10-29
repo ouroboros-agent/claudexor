@@ -1891,7 +1891,12 @@ fails, the run still writes inspectable failure artifacts
 Ask also tracks normalized tool lifecycle. `tool_result.is_error === true`
 preserves redacted detail in the event payload and blocks a green verified claim
 unless verified recovery exists, but a produced deliverable can still be terminal
-success with warnings. Optional web denial/error is warning evidence and does
+success with warnings. A command result's optional `command_outcome` is separate
+from its tool-call `status`: when it does not report an observed exit (the
+command was moved to a background shell, its timeout elapsed, or the outcome is
+unknown), the result is not a finished command, never recovers an earlier
+failure, and is not itself a tool error, so it neither discards nor downgrades a
+delivered answer. Optional web denial/error is warning evidence and does
 not trigger route fallback or terminal failure; a read-only route is judged on
 its answer and the ordinary harness/contract axes.
 
@@ -2000,9 +2005,12 @@ workspace work; they are never ignored or silently redirected.
 Envelope semantics are strict. Project runs execute under
 `~/.claudexor/v3/projects/<project-sha256>/workspaces/<task>/<attempt>/tree`, and
 the harness `cwd` is the envelope worktree. Proven work product is the git diff in that worktree, a
-declared run artifact, or an explicitly verified host side-effect. Absolute
-`/tmp/...` writes are host side effects and are not project diffs; project tmp
-requests default to `tmp/...` inside the project/envelope or to run artifacts.
+declared run artifact, or the text answer. Capture reads only the physical execution root, whatever
+its spelling: a project under `/tmp` is captured normally, while a write outside
+the root, such as an absolute `/tmp/...` host path, does not enter the project
+patch automatically and is not by itself proof of delivered project work.
+Capture neither refuses nor redirects such a write; the access profile decides
+whether the harness may make it.
 
 Git admission follows the semantic run shape, not a blanket mode rule.
 `GET /v2/run-applicability` (with the absolute `repoRoot` query) returns the
@@ -2961,21 +2969,75 @@ not retry automatically.
   `context/work-order.md`. An earlier continuation's caller text without a
   confirmed first-try delivery is carried as an uncertain reference to reconcile,
   never blindly replay; the receipt reports `inputDelivery: "uncertain"`.
+  Delivery is confirmed only by a continued first try (a later fallback's
+  included) whose receipt joins its own accepted start on attempt, process
+  session id and event order; a mismatched handshake, a later start or a
+  reviewer/repair process without a receipt proves nothing.
   Each uncertain input stays separate across run successors and unstarted
   in-run retries, including a stopped ancestor's admitted steering message
-  without delivery proof, until a newer run of the chain has started a process
-  with it. Inline quotes share a 2,048-character
+  without delivery proof, until a newer run of the chain has started a
+  continued try with it. Inline quotes share a 2,048-character
   budget filled newest first; every cut gives the shown and complete character
   counts and an absolute path to the complete text. The engine reuses the saved
   work order when it contains that text, otherwise it saves a context file.
-  That try's `run.continuity` receipt names the
-  predecessor (`from.runId`) and `workspace` `same_root` / `different_root`;
+  That try's `run.continuity` receipt names the actual
+  source run, attempt and profile in `from` (an ancestor when the requested head
+  left no carrier; `continueFrom` keeps the requested head) and `workspace`
+  `same_root` / `different_root`;
   its later tries continue in-run with the predecessor's sticky `acted` and
   evidence sources for the whole predecessor chain (steering delivery, retained
   answer, unresolved tools and artifact paths). A later native rejection or
   typed-limit hop whose session cannot be moved re-briefs from those sources
   as well as the successor's own run, so a
-  failed first try never falls back to a context-free replay. Workspace: an
+  failed first try never falls back to a context-free replay. A later attempt
+  of the same successor (an Ask `fallback_model` or required-web fallback, or
+  the D-16d checkpoint continuation in Ask and Agent) never re-plans or moves
+  the predecessor's session again: its first try is a fresh session re-briefed
+  by the evidence index over the chain's sources plus this run's earlier
+  attempts (a checkpoint carries only the exhausted try's last typed final as
+  its report, so a checkpoint continuation's index keeps every other output
+  recorded in this run once: earlier tries of the exhausted attempt and that
+  try's other narration and earlier native-turn finals, never the report or a
+  block repeating it), and its
+  receipt names the attempt of this run that carries its
+  latest work, else the planned predecessor. An attempt's own model (a fallback model or budget
+  downgrade) is never replaced by an inherited one; synthesis and repair never
+  re-plan. The predecessor's carrying session is its declared terminal source,
+  serial or concurrent: the session its `resumable` block names (none when the
+  block names none), else a completed run's final attempt. Only a run without
+  either (a host restart, an older run) falls back to recorded execution facts:
+  the newest attempt with an accepted start (not refused by its own identity
+  handshake) that made progress, else the newest started one, with its
+  capsule, or no native carrier when that attempt has none; a later attempt
+  that never started, or started and did nothing, cannot evict it. Without any
+  recorded start: the seeded native first try, or the run's only capsule;
+  several unrecorded capsules stay unchosen. Directory order and capsule mtimes
+  are not facts. A serial Ask chain's terminal `resumable` belongs to a
+  completed winner (which leaves none when its work is done), else to the
+  newest started attempt whose own recorded activity progressed (the same run
+  log facts), else to the newest started one: a later attempt of a continued
+  run inherits the chain's `acted`, which keeps `packet` available but is not
+  that attempt's activity, so an idle fallback never evicts the session that
+  worked. Concurrent candidates keep the first-declared block. The usable
+  carrier is a separate question from the evidence the successor must still
+  receive: a native resume adds, labelled as not part of the resumed session's
+  history, the recorded output and tool calls of every other attempt of that
+  run (each attributed to its attempt) and the steering delivered only to
+  them; steering never delivered stays the notice's run-level uncertain
+  input, each message once. Only a packet of this run that briefed the
+  session excludes the attempts before it, which happens to a successor's
+  attempts alone (a successor runs one candidate, attempt after attempt).
+  Event timing never decides lineage, so another candidate of a concurrent
+  run is that separate evidence, never the session's history. A packet keeps
+  the final answer (`final/answer.md`, labelled with its attempt) first and
+  then the recorded output it does not represent (other attempts, the winning
+  attempt's earlier native tries and the winning try's own other narration,
+  an earlier native turn's final included), each block once under
+  its attempt and try (process session), never the answer, the try's last
+  typed final (the one carried) or a block repeating them; a try without a
+  typed final is represented whole, since its joined narration is the answer.
+  The tool rows of a source with several attempts name their attempt.
+  Workspace: an
   explicit `execution.workspaceRoot` or live isolation wins; otherwise a
   predecessor whose isolated envelope was kept (below) is continued IN that
   envelope — same path, files and base, one cumulative patch. Delegate-belt
@@ -2988,13 +3050,18 @@ not retry automatically.
   `same_root`, even when the Ask ran at the project base.
   Predecessor
   references are recorded in `context/continuation.json` before announcement;
-  a failed head's `resumable` projection names its inherited carriers. Without
+  a failed head's `resumable` projection names its inherited carriers; a head
+  inherits only when, by the planner's own rule (`ownsContinuationSource`), it
+  holds no terminal block, no carrying session and no recorded work. Without
   an ancestor's terminal block, its retained custody supplies the cause, or
   `host_restart` is derived from that ancestor's interrupted state. `GET
   /v2/runs/:id` projects `continueFrom`, `resumable` (the engine's terminal
   block with the CURRENT workspace overlaid; a run the daemon found running at
-  its restart gets a derived block, cause `host_restart`, from its session
-  capsule and custody), `continuity` (the per-try receipts; run detail only —
+  its restart gets a derived block, cause `host_restart`, naming the source
+  the successor's planner would use, from the planner's execution facts that
+  run detail's bounded event fold keeps or, for a list row, the run's own log
+  read once per cached summary, and its custody), `continuity` (the per-try
+  receipts; run detail only —
   list rows omit it) and `retainedEnvelope` (root, disk use, cause).
   `continueFrom` appears in `GET /v2/agent-capabilities` `runControlKeys`.
 - Threads are the chat/session-first conversation SSOT (run lineage + native
@@ -3585,20 +3652,33 @@ handshake and status alone create no thread. Detail projection, child and cold
 summary hydration, detail's exact-patch digests, artifact walks/read-redact operations,
 and finite SSE seek/replay batches execute there. Only plain request records and
 results cross the port; daemon services, the registry and database remain with
-their owners. One projection context shares event parsing, structured reads,
+their owners. One projection context shares event facts, structured reads,
 budget and primary-output work across parent/children/operator validation. The
-context ends with the job. Timeline projection selects the last eligible rows
-before redaction and schema validation, with exact omitted/integrity markers;
-cash, valuation, plan and other folds still inspect the complete captured log.
-The final detail schema validation stays in the worker.
+context ends with the job. Detail and summaries consume one fold of the complete
+`events.jsonl`: integrity counts, the last eligible timeline rows with their
+total, the last `plan.progress` overall and per attempt, continuity receipts and
+the budget accumulators. Each owner folds events in file order. Inside the
+worker each run keeps its prefix between jobs: at most 32 runs, 64 MiB by
+retention accounting and 8 MiB per run, not an exact heap cap. Reuse checks the
+run directory, device, inode, newline-aligned offset and start/end guard bytes.
+It assumes the append-only writer; a middle-only in-place rewrite can go
+undetected. Identity changes, shortening below the offset or changed guards
+refold from byte 0, as do eviction and oversized state. An unterminated record
+counts for that answer only. Decision, telemetry, answer, reviews, task contract,
+artifacts and live fields stay fresh per request; no complete raw log is kept.
+Per-run SSE replay, bounded thread history, interrupted-output preparation and
+continuation-ancestry recovery retain their separate direct reads.
+Timeline projection validates and redacts only the
+selected rows, with exact omitted/integrity markers. The final detail schema
+validation stays in the worker.
 Bounded thread-history receipts keep their explicit artifact and event byte
 allowances, partial event-count coverage and typed oversized-artifact refusals.
 The shared readers distinguish those limits and preview options in their
 request-local memo keys; a bounded receipt cannot replace a complete detail fold.
 Thread inbox/head attention uses synchronous main-thread artifact reads for
 succeeded heads, with an exact-patch digest only when an operator decision exists.
-Detail and summaries fold the complete retained log in the worker; a log the
-worker cannot hold fails that run's detail/summary and jobs queued with it with
+Detail and summaries fold the complete retained log in the worker; a fold the
+worker cannot complete fails that run's detail/summary and jobs queued with it with
 the typed retryable `503 bulk_worker_failed`, while the control plane stays available.
 
 The executor processes one finite job at a time. Live SSE waits and HTTP
@@ -4111,7 +4191,13 @@ its base), the envelope — tree and scoped home — is kept (custody
 `retained`, the run-dir pointer `final/retained-envelope.json`, a
 `workspace.retained` event; disk use is measured once and projected as
 `retainedEnvelope`) instead of disposed. Terminal deferral is released even
-when settlement or its terminal artifact update throws. Route-scoped auth that Claudexor
+when settlement or its terminal artifact update throws; such a failure is first
+disclosed once as `workspace.settlement_failed` (attempt, envelope, root, stage
+`custody` / `dispose` / `retain` / `resumable`, redacted cause), a warning on
+the run timeline and a CLI follow line, while the run outcome stands, nothing is
+retried and the tree may remain. A diagnostic that cannot be written changes
+nothing. MCP run detail carries no timeline, so it does not show this event.
+Route-scoped auth that Claudexor
 itself seeds in that home (the Codex API-key `auth.json`, the Claude Keychain
 bridge link) is removed when it is kept; the adapters re-create it on the next
 spawn. Nothing removes a kept envelope automatically: a successor adopting it
@@ -5862,6 +5948,11 @@ home are the same store and the move copies nothing). The capsule's holder is th
 if another account's packet try failed before starting. A move copies and
 verifies all parts, then the engine writes the target capsule and invokes the
 adapter's retirement callback; a failed move removes its destination copies.
+The try's receipt records `sourceRetirement: retired` when that callback
+completed and `not_confirmed` when it failed, possibly part-way; the field is
+absent when no move retired a source. It reaches Control API and MCP
+continuation facts verbatim; a long-lived strict reader of an older version
+drops such receipts (MCP: the whole `continuity` list) until it is updated.
 When moving is unavailable, the carrier is `packet` (a fresh session whose
 prompt is the original prompt plus the bounded evidence index; owner answer
 1B) — never a fresh replay; a transport death (errored, not aborted, not a
@@ -5886,16 +5977,37 @@ display labels are never sent as model ids. An input whose delivery is uncertain
 before its first `started`, a steering message admitted but not echoed) rides the notice
 as a reference to reconcile, never a blind replay. Pinned accounts, `fail` /
 `ask` policies and a spent pool end typed. Thread session/checkpoint publication
-follows an accepted handshake; mismatched and packet-born sessions never replace
-the lane binding. A packet continuation updates the thread disclosure to `packet`,
+follows an accepted handshake; mismatched sessions and sessions whose recorded
+history is not full (packet-born, or a successor's partial or unknown one) never
+replace the lane binding. A packet continuation updates the thread disclosure to `packet`,
 including a preceding lane switch. The next turn hydrates that lane through the
 existing thread packet. Retained assistant evidence spans all accepted tries;
 identity-mismatched tries contribute no assistant output, and their stream stops
-at the mismatch. The evidence index pairs tool results by try and tool-use id,
-includes pending edit calls, filters steering by attempt, and preserves full
-evidence paths and tool counts when prose is truncated. Only begun continued tries settle with a
+at the mismatch. The evidence index pairs tool results by try and tool-use id
+within each attempt. An edit is completed by its tool result or by a typed
+`completed` frame (the tool reference's `phase`: Codex items per path, AGY
+steps keyed by their recorded step index); completion is not success, so a non-ok outcome is
+shown beside it. A result that names its tool but no earlier call (OpenCode's
+completed-only frames) is its own completed row with its target and outcome;
+an ambiguous, repeated or nameless result adds nothing. A closing result whose
+`command_outcome` reports no observed exit (#450: timed out, backgrounded or
+unknown) is listed as unconfirmed with that state, never as completed, whether
+it closed a call or stands as its own row. Edits are identified
+by their complete recorded path (`payload.path`), never the 500-character
+display target. A typed start never closes anything, repeats add no row, a
+null target never closes a named start, the companion `file_change` of a call
+its result already closed adds nothing, and any other untyped edit frame
+(Claude's edit call, older Codex logs) reads "completion not confirmed" until
+a result closes it. Steering appears once per run, delivered when any attempt
+the packet carries recorded it. A work order cut by its section budget names
+its true size and the complete `context/work-order.md` when the run has one; a
+route that cannot read files (`git_patch_envelope`) receives that complete
+work order inline in its packet prompt instead. Full evidence paths and tool counts
+survive prose truncation. Only begun continued tries settle with a
 `run.continuity` receipt (try index, carrier, cause, from/to profiles, memory
-full/partial/unknown, instructions as_sent/vendor_snapshot, re-ingested
+full/partial/unknown from the session's recorded origin rather than the carrier
+word, so a packet-born session stays partial on later native resumes, moves and
+successors, instructions as_sent/vendor_snapshot, re-ingested
 tokens, this try's observed model and mismatch, identity check, input
 delivery) beside the existing `route.profile.rotated` evidence. Every terminal
 whose work is unfinished — non-success lifecycles and succeeded runs whose
@@ -5982,7 +6094,8 @@ tool-error rollups are projections of the engine-owned
 that predate that artifact report `available: false` instead of recomputed
 guesses. Timeline projections include tool name, target/domain/path, error
 summary, severity, harness, attempt, and raw event reference, and are capped
-with an explicit truncation marker.
+with an explicit truncation marker. A tool row whose `command_outcome` does not
+report an observed exit is a warning, decided by that typed fact.
 
 ## 8. Artifact Layout
 
@@ -6243,9 +6356,12 @@ macOS UI/UX SSOT. This section keeps only the engine-facing facts.
   spoof it). A successful browser navigation records
   `web.verification: verified` plus a typed
   `browser: {attempted, satisfied, failed, unused}` receipt; a failed browser
-  call remains attributable warning evidence. The separate explicit Browser
-  capability preflight is unchanged and still refuses a pool with no effective
-  Browser lane before a harness starts.
+  call remains attributable warning evidence. Claude and Codex keep the
+  browser's returned text (page URL, title, snapshot) with its line breaks as
+  the result's bounded, redacted `content_summary`, so the journal shows which
+  page was read. The
+  separate explicit Browser capability preflight is unchanged and still refuses
+  a pool with no effective Browser lane before a harness starts.
   An armed-but-unused browser (generic `web_search` satisfied instead) is
   disclosed as an unused-browser flag on that receipt — disclosure only, never a
   run failure.
@@ -6506,6 +6622,15 @@ both global/run SSE streams use that owning client. The unified sidebar stores
 only location-tagged thread summaries with a last-sync timestamp under
 `~/Library/Application Support/Claudexor/` (directory mode `0700`; metadata
 files mode `0600`); transcripts and artifacts are fetched after reconnect.
+Only the app entry (`ClaudexorApp`) composes this storage and the app's other
+saved state, through `AppPersistence`: the Kit stores under Application
+Support, resolved again for every load and save; the standard user defaults for
+appearance, the current project and its recents; unresolved account-reset
+requests; the `CLAUDEXOR_DEBUG_APPEARANCE` and `CLAUDEXOR_PROJECT_ROOT` launch
+fallbacks; and the `~/.ssh/config` scan. Launch restore assigns through the
+same writers, so it saves the restored appearance, project and recents again,
+and an applied launch fallback becomes the saved value. Any other `AppModel`,
+including every test model, starts empty and keeps all of this in memory.
 
 Remote project browsing uses the home-contained directory endpoint, which
 lists only visible (non-hidden) directories and refuses to descend into dot

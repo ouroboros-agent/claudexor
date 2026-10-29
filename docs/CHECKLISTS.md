@@ -145,8 +145,8 @@ pnpm test
   labelled as the configured default model's verdict.
 - Tool success, web evidence, and tmp/workspace claims must be evidence-based:
   preserve redacted tool error detail; `tool_result.is_error === true` blocks
-  claimed success unless verified recovery exists; absolute `/tmp/...` is not
-  project diff evidence.
+  claimed success unless verified recovery exists; a write outside the
+  execution root, such as absolute `/tmp/...`, is not project diff evidence.
 - No regex governance for risk, permissions, tool success, web-required
   detection, winners, or tests-passed.
 - Live input into active runs ships only as a declared per-adapter channel

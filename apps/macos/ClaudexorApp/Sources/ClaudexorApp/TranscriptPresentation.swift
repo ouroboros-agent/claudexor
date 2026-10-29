@@ -60,8 +60,8 @@ enum TranscriptPresentation {
                 flushTools()
                 rows.append(.message(id: id, text: text))
             case .tool(let id, let tool):
-                // Only quiet successes group; a running or failed tool always
-                // stands alone (its status is the information).
+                // Only quiet successes group; a running, failed or unconfirmed
+                // tool always stands alone (its status is the information).
                 if tool.status == .ok,
                    pendingTools.isEmpty || pendingTools.last?.tool.name == tool.name {
                     pendingTools.append((id, tool))

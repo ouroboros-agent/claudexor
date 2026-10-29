@@ -65,6 +65,12 @@ import {
   withBatteryReviewerModels,
   withExplicitBatteryModels,
 } from "./lib/real-harness-battery-state.mjs";
+import {
+  browserProbeInstruction,
+  evaluateBrowserPageEvidence,
+  readRunJournal,
+  startBrowserProbePage,
+} from "./lib/real-harness-browser-probe.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const cli = join(root, "packages", "cli", "dist", "cli.js");
@@ -2781,27 +2787,6 @@ function runArtifactContains(runDir, needle) {
   return false;
 }
 
-function browserToolObserved(runDir) {
-  const eventsPath = runDir ? join(runDir, "events.jsonl") : "";
-  if (!eventsPath || !existsSync(eventsPath)) return false;
-  for (const line of readFileSync(eventsPath, "utf8").split("\n")) {
-    if (!line) continue;
-    try {
-      const event = JSON.parse(line);
-      const payload = event?.type === "harness.event" ? event.payload : null;
-      if (
-        (payload?.type === "tool_call" || payload?.type === "tool_result") &&
-        payload?.tool?.kind === "mcp" &&
-        /(browser|playwright)/i.test(payload?.tool?.name ?? "")
-      )
-        return true;
-    } catch {
-      /* malformed journal is independently rejected by the normal battery */
-    }
-  }
-  return false;
-}
-
 const batteryModelCache = new Map();
 
 function selectBatteryModel(harnessId) {
@@ -2850,7 +2835,9 @@ async function runNativeAccessSuccessRow(phase, row, profileEntry) {
     ? canonicalBatteryProfileState(profileEntry, row.harness)
     : { valid: true, locator: null, files: [] };
   let trustGranted = false;
+  let page = null;
   try {
+    if (row.browser) page = await startBrowserProbePage();
     if (row.access === "full") {
       const trust = runCliJson(["trust", "--allow-full-access"], {
         cwd: stable,
@@ -2869,9 +2856,7 @@ async function runNativeAccessSuccessRow(phase, row, profileEntry) {
     }
     const { ensureDaemon, enqueueAndAwait } = await import("../packages/cli/dist/daemon-run.js");
     const { client, addr } = await ensureDaemon();
-    const browserInstruction = row.browser
-      ? " First use the provided browser tool to open https://example.com and read its page title."
-      : "";
+    const browserInstruction = page ? browserProbeInstruction(page.url) : "";
     const outcome = await enqueueAndAwait(
       client,
       addr,
@@ -2932,7 +2917,9 @@ async function runNativeAccessSuccessRow(phase, row, profileEntry) {
           (receipt) => receipt.capability === "browser" && receipt.harness_id === row.harness,
         )
       : null;
-    const browserUsed = row.browser ? browserToolObserved(outcome.runDir) : null;
+    const browserEvidence = page
+      ? evaluateBrowserPageEvidence(readRunJournal(outcome.runDir), page)
+      : null;
     const rootPairExact =
       params?.scope?.root === stable && params?.execution?.workspaceRoot === execution;
     const taskStable = task?.repo?.root === stable;
@@ -2955,7 +2942,7 @@ async function runNativeAccessSuccessRow(phase, row, profileEntry) {
       typeof route?.requestedModel === "string" &&
       route?.verified === true &&
       typeof route?.observedModel === "string" &&
-      (!row.browser || (browserReceipt?.effective === true && browserUsed === true));
+      (!row.browser || (browserReceipt?.effective === true && browserEvidence?.proven === true));
     (valid ? pass : fail)(phase, row.name, {
       runId: outcome.runId ?? null,
       status: outcome.status,
@@ -2978,7 +2965,13 @@ async function runNativeAccessSuccessRow(phase, row, profileEntry) {
       },
       roots: { stable, execution, rootPairExact, taskStable },
       mutation: { stableUntouched, executionMutated, gateGreen },
-      browser: row.browser ? { receipt: browserReceipt ?? null, toolObserved: browserUsed } : null,
+      browser: page
+        ? {
+            receipt: browserReceipt ?? null,
+            page: { url: page.url, requests: page.requests },
+            evidence: browserEvidence,
+          }
+        : null,
       boundaryEvidence,
       noSandboxExec: noWrapper,
       fullResidual:
@@ -2993,6 +2986,7 @@ async function runNativeAccessSuccessRow(phase, row, profileEntry) {
       error: redactSecrets(error instanceof Error ? error.message : String(error)),
     });
   } finally {
+    await page?.close();
     if (trustGranted) {
       const revoke = runCliJson(["trust", "--revoke-full-access"], {
         cwd: stable,

@@ -13,6 +13,9 @@ export interface CliFlagSpec {
   readonly kind: CliFlagKind;
   readonly valueHint?: string;
   readonly help: string | null;
+  /** Still parsed only so its command refuses every use, with or without a
+   * value, by naming the replacement. */
+  readonly retired?: true;
 }
 
 /** Controls that have the same meaning in every run mode. */
@@ -109,11 +112,14 @@ const FROZEN_REVIEW_FLAGS: readonly CliFlagSpec[] = [
     "<sha256>",
     "Expected SHA-256 identity of the sealed packet manifest",
   ),
-  valueFlag(
-    "delta-scope",
-    "<baseSha>",
-    "Owner-amended sol-lane scope (INV-125 second amendment): the contract's sol lane reviews the packet's sealed DELTA.patch since this base SHA (verified against the sealed FINGERPRINTS)",
-  ),
+  {
+    ...valueFlag(
+      "delta-scope",
+      "<baseSha>",
+      "Retired; always errors (sealed review covers the full packet; review a chosen delta with --diff)",
+    ),
+    retired: true,
+  },
 ];
 
 export const FROZEN_REVIEW_FLAG_NAMES = FROZEN_REVIEW_FLAGS.map((flag) => flag.name);
@@ -374,10 +380,10 @@ export const CLI_FLAGS: readonly CliFlagSpec[] = [
 /** Every flag the CLI accepts anywhere (the unknown-flag preflight set). */
 export const KNOWN_FLAGS: ReadonlySet<string> = new Set(CLI_FLAGS.map((f) => f.name));
 
-/** Flags that require a non-empty value. */
-export const VALUE_FLAGS: readonly string[] = CLI_FLAGS.filter((f) => f.kind === "value").map(
-  (f) => f.name,
-);
+/** Flags that require a non-empty value (a retired flag is refused by its command instead). */
+export const VALUE_FLAGS: readonly string[] = CLI_FLAGS.filter(
+  (f) => f.kind === "value" && f.retired !== true,
+).map((f) => f.name);
 
 /** Flags that never consume a following token as a value. */
 export const BOOLEAN_FLAGS: ReadonlySet<string> = new Set(

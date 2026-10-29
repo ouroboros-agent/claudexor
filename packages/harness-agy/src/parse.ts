@@ -49,7 +49,15 @@ export function parseAgyEvent(obj: Json, sessionId: string): HarnessEvent[] | nu
             ? step.tool_name
             : "tool";
       const target = boundedTarget(primaryToolTarget(info.parameters));
-      const tool: ToolRef = { name, kind: toolKindFor(name), target };
+      // The recorded step_index is the same on a call's ACTIVE and DONE frames:
+      // it is the invocation id that pairs them (and keys INV-043 recovery).
+      const useId = Number.isInteger(step.step_index) ? `step-${step.step_index}` : undefined;
+      const tool: ToolRef = {
+        name,
+        kind: toolKindFor(name),
+        ...(useId ? { use_id: useId } : {}),
+        target,
+      };
       const state = typeof step.state === "string" ? step.state : "";
       if (state === "ACTIVE") {
         // ACTIVE/DONE arrive as a pair per call (fixture-pinned): ACTIVE is
@@ -86,12 +94,13 @@ export function parseAgyEvent(obj: Json, sessionId: string): HarnessEvent[] | nu
             tool: { ...tool, status: "ok", content_summary: output || undefined },
           });
           if (isWriteTool(name)) {
+            // The write's companion of its own DONE result: the same step, completed.
             events.push({
               type: "file_change",
               session_id: sessionId,
               ts,
-              tool: { name, kind: "file" },
-              payload: { path: boundedTarget(primaryToolTarget(info.parameters)), tool: name },
+              tool: { ...tool, kind: "file", phase: "completed", status: "ok" },
+              payload: { path: target, tool: name },
             });
           }
         }

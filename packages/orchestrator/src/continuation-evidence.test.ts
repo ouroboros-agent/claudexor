@@ -190,36 +190,49 @@ describe("evidence collector (I/O)", () => {
     ]);
   });
 
-  it("a file edit reported twice (codex started, then completed) is one resolved call", () => {
+  it("a repeated untyped edit frame (pre-#410 codex log) is one call whose completion is not confirmed", () => {
     const edit = (session: string) => ({
       type: "file_change",
       session_id: session,
       tool: { name: "apply_patch", kind: "file", use_id: "item-7", target: "src/a.ts" },
     });
+    // The repeat may be a completion or a second start: its count proves neither.
     expect(toolCallIndex([edit("s1"), edit("s1")])).toEqual([
-      { name: "apply_patch", target: "src/a.ts", resolved: true },
+      { name: "apply_patch", target: "src/a.ts", resolved: false, unconfirmed: true },
     ]);
-    // A started edit that never completed stays unresolved; another session's id is its own call.
+    // A single untyped frame proves no completion either way; another session's id is its own call.
     expect(toolCallIndex([edit("s1"), edit("s2")])).toEqual([
-      { name: "apply_patch", target: "src/a.ts", resolved: false },
-      { name: "apply_patch", target: "src/a.ts", resolved: false },
+      { name: "apply_patch", target: "src/a.ts", resolved: false, unconfirmed: true },
+      { name: "apply_patch", target: "src/a.ts", resolved: false, unconfirmed: true },
     ]);
   });
 
-  it("one codex item with several paths is one call per path, each resolved by its own completion", () => {
-    const edit = (path: string) => ({
+  it("one codex item with several paths is one call per path, each resolved by its own typed completion", () => {
+    const edit = (path: string, phase?: "started" | "completed") => ({
       type: "file_change",
       session_id: "s1",
-      tool: { name: "apply_patch", kind: "file", use_id: "patch-1", target: path },
+      tool: { name: "apply_patch", kind: "file", use_id: "patch-1", target: path, phase },
     });
-    expect(toolCallIndex([edit("one.ts"), edit("two.ts")])).toEqual([
+    expect(toolCallIndex([edit("one.ts", "started"), edit("two.ts", "started")])).toEqual([
       { name: "apply_patch", target: "one.ts", resolved: false },
       { name: "apply_patch", target: "two.ts", resolved: false },
     ]);
+    expect(
+      toolCallIndex([
+        edit("one.ts", "started"),
+        edit("two.ts", "started"),
+        edit("one.ts", "completed"),
+        edit("two.ts", "completed"),
+      ]),
+    ).toEqual([
+      { name: "apply_patch", target: "one.ts", resolved: true },
+      { name: "apply_patch", target: "two.ts", resolved: true },
+    ]);
+    // The same untyped frames from an older log only prove that each path was named.
     expect(toolCallIndex([edit("one.ts"), edit("two.ts"), edit("one.ts"), edit("two.ts")])).toEqual(
       [
-        { name: "apply_patch", target: "one.ts", resolved: true },
-        { name: "apply_patch", target: "two.ts", resolved: true },
+        { name: "apply_patch", target: "one.ts", resolved: false, unconfirmed: true },
+        { name: "apply_patch", target: "two.ts", resolved: false, unconfirmed: true },
       ],
     );
   });
@@ -275,9 +288,9 @@ describe("evidence review regressions", () => {
       { session_id: "try-1", type: "file_change", tool: { name: "Edit", use_id: "edit" } },
     ]);
     expect(calls).toEqual([
-      { name: "Write", target: null, resolved: false },
+      { name: "Write", target: null, resolved: false, unconfirmed: true },
       { name: "Read", target: null, resolved: true },
-      { name: "Edit", target: null, resolved: false },
+      { name: "Edit", target: null, resolved: false, unconfirmed: true },
     ]);
   });
 
@@ -349,5 +362,82 @@ describe("evidence review regressions", () => {
       { text: "mine", delivery: "uncertain" },
       { text: "run steering", delivery: "uncertain" },
     ]);
+  });
+});
+
+// #450: a command result that reports a background handoff, an elapsed
+// timeout or an unknown outcome carries a recorded result, yet the command did
+// not finish; the packet must never list it as completed.
+describe("command outcomes in the evidence index (#450)", () => {
+  const call = (id: string, target: string) => ({
+    type: "tool_call",
+    session_id: "s1",
+    tool: { name: "shell", kind: "command", use_id: id, target },
+  });
+  const result = (id: string, extra: Record<string, unknown> = {}) => ({
+    type: "tool_result",
+    session_id: "s1",
+    tool: { name: "shell", kind: "command", use_id: id, status: "ok", ...extra },
+  });
+  const handoff = {
+    state: "backgrounded",
+    background_reason: "timeout",
+    timeout_ms: 30000,
+    shell_id: "3",
+    pid: 4242,
+  };
+
+  it("forwards the stored result's command facts onto its call", () => {
+    const calls = toolCallIndex([
+      call("bg", "find /workspace -name '*.log'"),
+      result("bg", { command_outcome: handoff }),
+      call("ls", "ls"),
+      result("ls", { exit_code: 0, command_outcome: { state: "exited" } }),
+      call("legacy", "pnpm test"),
+      result("legacy"),
+    ]);
+    expect(calls).toEqual([
+      {
+        name: "shell",
+        target: "find /workspace -name '*.log'",
+        resolved: true,
+        commandOutcome: handoff,
+      },
+      { name: "shell", target: "ls", resolved: true, commandOutcome: { state: "exited" } },
+      { name: "shell", target: "pnpm test", resolved: true },
+    ]);
+    expect(calls[2]).not.toHaveProperty("commandOutcome");
+  });
+
+  it("labels unconfirmed commands and keeps exits, legacy and cut-off calls as before", () => {
+    const md = buildEvidenceIndex(
+      input({
+        toolCalls: [
+          { name: "shell", target: "find /workspace", resolved: true, commandOutcome: handoff },
+          {
+            name: "shell",
+            target: "sleep 120",
+            resolved: true,
+            commandOutcome: { state: "timed_out", timeout_ms: 30000 },
+          },
+          { name: "shell", target: "x", resolved: true, commandOutcome: { state: "suspended" } },
+          { name: "shell", target: "ls", resolved: true, commandOutcome: { state: "exited" } },
+          { name: "shell", target: "pnpm test", resolved: true },
+          { name: "shell", target: "pnpm build", resolved: false },
+        ],
+      }),
+    ).markdown;
+    expect(md).toContain(
+      "- shell — find /workspace (unconfirmed: Moved to background after 30s · still running · shell 3 · pid 4242)",
+    );
+    expect(md).toContain(
+      "- shell — sleep 120 (unconfirmed: Timed out after 30s · exit status unknown)",
+    );
+    expect(md).toContain("- shell — x (unconfirmed: Command outcome not reported)");
+    expect(md).toContain("- shell — ls (completed)");
+    expect(md).toContain("- shell — pnpm test (completed)");
+    expect(md).toContain("- shell — pnpm build (unresolved: no result recorded)");
+    expect(md).not.toContain("find /workspace (completed)");
+    expect(md).toContain("Tool calls: 6; unresolved: 1.");
   });
 });

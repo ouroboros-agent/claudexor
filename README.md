@@ -747,12 +747,14 @@ copy. Git-backed chat thread turns follow the workspace mode described above:
 worktree, and `delegated` uses the caller-owned workspace bound at creation
 (see [INTEGRATIONS](docs/INTEGRATIONS.md)).
 
-Proven work product means a Git diff, a complete directory file manifest, a
-declared run artifact, or an explicitly verified host side-effect. Absolute
-`/tmp/...` writes are host side effects and do not count as project success.
-A project prompt asking for a tmp file should resolve to project-local `tmp/...`
-or a run artifact unless a
-future verified host-side-effect mode is explicitly selected.
+Proven work product means a Git diff or a complete directory file manifest
+captured from the run's physical execution root, a declared run artifact, or
+the text answer. A project or folder that itself lives under `/tmp` is captured
+like any other. A write outside the root, such as an absolute `/tmp/...` host
+path, does not enter the project patch or directory capture automatically and
+is not by itself proof of delivered project work; capture neither refuses nor
+redirects it, and the access profile decides whether the harness may write
+there.
 
 ## Integrations
 

@@ -236,6 +236,11 @@ export const RunEventType = z
      * adoption (`continueFrom`), apply or the discard decision; never removed
      * automatically. */
     "workspace.retained",
+    /** Settling a kept-or-disposed candidate envelope failed before the
+     * deferred terminal was published; the run's outcome is unchanged and the
+     * tree may remain. Payload: {attempt_id, envelope_id, root, stage
+     * (custody | dispose | retain | resumable), cause}. */
+    "workspace.settlement_failed",
   ])
   .describe(
     "Type of an append-only run event, covering run lifecycle, contract/context creation, budget, routing fallbacks, harness activity, interactions, gates, review, arbitration, work products, and control verbs.",

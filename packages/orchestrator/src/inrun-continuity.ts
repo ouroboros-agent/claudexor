@@ -10,7 +10,6 @@
  * bounded by triedProfiles; work never silently becomes a fresh prompt replay.
  * Full mechanism and carrier rationale: ARCHITECTURE "In-run continuation". */
 import { CONTINUITY_IDENTITY_MISMATCH_CODE, acceptedTryOutput } from "@claudexor/core";
-import { readContinuationSources } from "@claudexor/workspace";
 import {
   HarnessRunSpec as HarnessRunSpecSchema,
   type ContinuityIdentityCheck,
@@ -24,6 +23,7 @@ import {
 } from "@claudexor/schema";
 import type { AttemptOutputMarkers } from "./attemptOutputMarkers.js";
 import {
+  carriedRunAttempts,
   composeContinuedTry,
   continuityReceipt,
   relocateCapsule,
@@ -48,7 +48,7 @@ import type { AfterTryVerdict, InRunContinuityDeps, TryFacts } from "./inrun-con
 import { discloseContinuedTry } from "./inrun-continuity-thread.js";
 import type { ContinuityTerminalFacts } from "./continuity-terminal.js";
 import { RetainedAttemptOutput } from "./inrun-retained-output.js";
-import { unconfirmedContinuationInputs, type UncertainInput } from "./continuation-input.js";
+import { undeliveredInputs, type UncertainInput } from "./continuation-input.js";
 import {
   noteRefusedBeforeProgress,
   type PreProgressRefusalSubject,
@@ -72,6 +72,9 @@ export class InRunContinuity {
   private tryIndex = 0;
   private tryAbort: AbortController | null = null;
   private tryStarted = false;
+  /** Some try of this attempt started with an accepted handshake (it carries work). */
+  private startedAccepted = false;
+  private trySessionId: string | null = null;
   private expectedSessionId: string | null = null;
   private tryModel: string | null = null;
   private tryRequestedModel: string | null = null;
@@ -79,7 +82,9 @@ export class InRunContinuity {
   private tryFirstInputTokens: number | null = null;
   private continued: ContinuedTry | null = null;
   private pending: ContinuedTry | null = null;
-  private packetSession = false;
+  /** History quality of the capsule's session: packet-born stays partial, a seeded
+   * native carrier keeps its predecessor's recorded quality. */
+  private sessionMemory: RunContinuityReceipt["memory"];
   private threadSwitch: { harness: string; profileId: string | null } | null = null;
   private readonly retainedOutput = new RetainedAttemptOutput();
   /** Carrier of the try that just settled (null = the first try or a fresh replay). */
@@ -94,6 +99,9 @@ export class InRunContinuity {
     this.capsule = readSessionCapsule(deps.attemptDir);
     this.acted = deps.seed?.acted === true;
     this.pending = deps.seed?.continued ?? null;
+    const seeded = this.pending?.carrier;
+    this.sessionMemory =
+      seeded === "native" || seeded === "native_moved" ? this.pending!.memory : "full";
   }
 
   /** The loop calls this before each try spawns; `abort` is THIS try's controller.
@@ -112,6 +120,7 @@ export class InRunContinuity {
     this.tryIndex = nativeTry;
     this.tryAbort = abort;
     this.tryStarted = false;
+    this.trySessionId = runSpec.session_id;
     this.continued = this.pending;
     this.pending = null;
     if (this.continued) {
@@ -170,7 +179,10 @@ export class InRunContinuity {
     if (ev.type !== "started") return null;
     this.tryStarted = true;
     const nid = ev.payload?.["native_session_id"];
-    if (typeof nid !== "string" || nid.length === 0) return null;
+    if (typeof nid !== "string" || nid.length === 0) {
+      this.startedAccepted = true;
+      return null;
+    }
     // Only an adapter with the `continuity` capability promises that a resume
     // keeps the session id; on any other harness a new id after a resume is the
     // vendor's own answer and is recorded as the session, as before.
@@ -183,12 +195,12 @@ export class InRunContinuity {
       void this.deps.adapter.cancel?.(runSpec.session_id)?.catch(() => {});
       return `resumed native session ${nid} is not the requested ${this.expectedSessionId}; the try was stopped${markers.sawAgentProgress ? " (effects may have occurred)" : " before any effect"}`;
     }
+    this.startedAccepted = true;
     if (this.expectedSessionId && nid === this.expectedSessionId)
       this.tryIdentity = "matched_before_effects";
     // Packet-born history lacks earlier thread turns, even on later native resumes.
-    this.packetSession =
-      this.continued?.carrier === "packet" ||
-      (this.packetSession && this.capsule?.nativeSessionId === nid);
+    if (this.continued?.carrier === "packet") this.sessionMemory = "partial";
+    else if (this.capsule?.nativeSessionId !== nid) this.sessionMemory = "full";
     // A new native session (or the resumed one) is the attempt's capsule now.
     this.nativeRejected = false;
     this.capsule = {
@@ -207,7 +219,9 @@ export class InRunContinuity {
 
   /** Both loops consult this only after the controller accepts the handshake. */
   get mayPublishSession(): boolean {
-    return this.tryStarted && !this.tryIdentity.startsWith("mismatch") && !this.packetSession;
+    return (
+      this.tryStarted && !this.tryIdentity.startsWith("mismatch") && this.sessionMemory === "full"
+    );
   }
 
   /** Record the try's account row from its own facts, before workspace capture can throw. */
@@ -228,17 +242,9 @@ export class InRunContinuity {
     await this.relocate(facts.runSpec);
     this.settledCarrier = this.continued?.carrier ?? null;
     this.emitReceipt(facts.runSpec);
-    if (this.tryStarted) this.unstartedInputs = [];
-    else if (this.tryIndex === 0) {
-      const { runDir, runId, workOrder } = this.deps;
-      const sources = readContinuationSources(runDir);
-      // A successor's workOrder is the whole joined chain. Keep the individual
-      // undelivered callers newest first, including this run's own correction.
-      // Further unstarted tries keep these references until a try starts.
-      this.unstartedInputs = sources.length
-        ? unconfirmedContinuationInputs([{ runDir, runId, state: "running" }, ...sources])
-        : [{ text: workOrder, runDir }];
-    }
+    // A mismatched handshake delivered nothing, exactly like a try that never started.
+    if (this.tryStarted && !this.tryIdentity.startsWith("mismatch")) this.unstartedInputs = [];
+    else if (this.tryIndex === 0) this.unstartedInputs = undeliveredInputs(this.deps);
     if (facts.budgetStopped) return this.breakWith("other");
     if (!facts.harnessErrored || facts.aborted) return { kind: "break" };
     // A cancel or deadline after the try settled ends the attempt: nothing
@@ -314,11 +320,11 @@ export class InRunContinuity {
 
   /** Keep a snapshot for gates/review/arbitration that can fail after this try completed. */
   terminalFacts(resumable: RunResumable | null): ContinuityTerminalFacts {
-    const poolAttempts = this.poolEvidence.snapshot();
-    if (resumable) return { resumable, poolAttempts };
+    const facts = { poolAttempts: this.poolEvidence.snapshot(), started: this.startedAccepted };
+    if (resumable) return { ...facts, resumable };
     return this.acted || this.capsule
-      ? { resumableOnFailure: this.resumable("other"), poolAttempts }
-      : { poolAttempts };
+      ? { ...facts, resumableOnFailure: this.resumable("other") }
+      : facts;
   }
 
   resumable(cause: ResumableCause): RunResumable {
@@ -541,9 +547,10 @@ export class InRunContinuity {
         uncertainInput: uncertainInputFor(
           this.deps.runDir,
           this.unstartedInputs,
-          this.deps.attemptId,
+          carriedRunAttempts(this.deps),
         ),
         retainedOutput: this.retainedOutput.text(),
+        sessionMemory: this.sessionMemory,
       },
       facts,
       base,
@@ -567,7 +574,8 @@ export class InRunContinuity {
     this.deps.emit("run.continuity", {
       harness_id: this.deps.adapter.id,
       attempt_id: this.deps.attemptId,
-      session_id: runSpec.session_id,
+      // The settled try's own process session joins this receipt to its start.
+      session_id: this.trySessionId ?? runSpec.session_id,
       receipt: continuityReceipt({
         deps: this.deps,
         continued,
