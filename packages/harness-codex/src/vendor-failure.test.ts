@@ -1,4 +1,4 @@
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -119,6 +119,22 @@ describe("withCodexVendorFailure", () => {
     vi.setSystemTime(SPAWN_MS + 60_000);
     expect(await wrap(input)).toEqual(input);
   });
+
+  it.runIf(process.platform !== "win32")(
+    "attaches nothing from a rollout reached through a link (#336)",
+    async () => {
+      const linked = mkdtempSync(join(tmpdir(), "codex-vendor-failure-link-"));
+      const day = join(linked, "sessions", "2026", "09", "15");
+      mkdirSync(day, { recursive: true });
+      symlinkSync(FIXTURE, join(day, `rollout-2026-09-15T12-42-52-${THREAD}.jsonl`));
+      try {
+        const input = [started, error, completed({ exit_code: 1, harness_reported_error: true })];
+        expect(await wrap(input, { codexHome: linked })).toEqual(input);
+      } finally {
+        rmSync(linked, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("passes every other event through identical and in order", async () => {
     const usage: HarnessEvent = {
