@@ -291,7 +291,8 @@ jobs:
       # ONLY here. Suites built on POSIX mode bits, symlinks or `#!/bin/sh`
       # fixtures stay on the Linux/macOS legs; their win32 branches are
       # proven by injected-platform unit tests instead. The CLI exit tail runs
-      # here because only Windows libuv aborts a forced exit after fetch().
+      # here because only Windows libuv aborts a forced exit after fetch(). The
+      # release smoke's daemon stop loop runs under this runner's pwsh.
       - name: Test (platform auth, agy print, ConPTY, setup transport, SQL recovery, CLI exit)
         run: >
           pnpm vitest run packages/schema/src/schema.test.ts
@@ -354,6 +355,7 @@ jobs:
           packages/daemon/src/resource-store.model.test.ts
           packages/daemon/src/command-retention.test.ts
           packages/control-api/src/model-routes.test.ts
+          scripts/lib/release-windows-stop.test.mjs
 
       - name: Reproduce Codex cleanup control loss on the known broken control (Windows, no credentials)
         if: github.event_name == 'pull_request' && github.head_ref == 'fix/windows-codex-verdict-1755'
