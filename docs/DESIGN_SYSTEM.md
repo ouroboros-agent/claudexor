@@ -565,11 +565,20 @@ frequency and volume are. The contracts:
   measurements. A new gesture or explicit navigation cancels a pending restore.
   Following continues to pin the bottom and ends only on the reader's own upward scroll
   (wheel, trackpad, scroller or keys) or on focus, selection and navigation, never on
-  placement, anchoring or growth. A message never scrolls the feed because its size
-  changed: AppKit's request to keep a resized text view's selection in view, which on
-  macOS 26.6 moves a followed feed to a growing answer's first line, is dropped.
-  Full-prompt sheets own independent prose:
-  they inherit neither the feed registry nor a turn’s selection/focus identity.
+  placement, anchoring or growth. Prose never scrolls because its size changed:
+  AppKit's own reveal from inside a text view's frame change, which on macOS 26.6
+  moves a followed feed to a growing answer's first line, is dropped everywhere,
+  including the one a window's live resize triggers when it ends.
+  Outside the feed (Run details, file previews) a non-empty selection the reader
+  can see keeps its height in the viewport instead. It is captured as scrolling and
+  selection change and restored once a width change settles, outside layout. An
+  insertion point or a selection scrolled out of view repositions nothing (a column
+  that gets shorter is still clamped as usual), and the reader's own scrolling or a
+  new selection cancels a pending restore. A selection, caret or scroll key in another
+  host of a split answer also ends the earlier host's keeping; focus moving on does not.
+  Full-prompt and file-preview sheets own independent prose:
+  they inherit neither the feed registry nor a turn’s selection/focus identity, so
+  Copy message in a preview copies the previewed Markdown.
 - **Per-row readable measure (D-13 C).** The 680pt conversation measure
   (`conversationMeasure()`) is applied PER ROW (each `TurnCard`), not as a
   double-frame around the whole history page; a sidebar drag / width change
@@ -1833,6 +1842,13 @@ thread (the Counter Lab long thread) and stand in for the deterministic gates:
   no unbounded growth (the nested `LazyVStack`-in-`LazyVStack` loop). The
   deterministic backstop is `expandedTranscriptReadPathIsAlwaysReducerCapped`
   (the rendered array is reducer-capped at 200 blocks).
+- **A selected passage survives a narrower inspector or preview (#520).** In Run
+  details select a sentence low in the answer, then drag the inspector divider to
+  its narrowest width and back: once each drag settles the selection is at the same
+  height again. Repeat without a selection (no selection-driven repositioning; a
+  shorter answer may still clamp the offset as before), with a selection scrolled
+  out of view (no pull back), and in a Markdown file preview with legacy scroll bars
+  at its minimum width.
 - **Sidebar drag / width change stays smooth (D-13 C/E).** Drag the sidebar
   resize handle across a long thread: the scroll position stays anchored and the
   whole column does not visibly reflow as one unit (per-row measure), and a
