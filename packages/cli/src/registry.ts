@@ -1,15 +1,23 @@
 import {
   hasModelInventoryForRoute,
+  modelCatalogFailureRetryable,
+  modelCatalogFailureText,
+  readModelCatalog,
   validateModel,
+  validateModelOnUnreadCatalog,
+  type ModelCatalogFailure,
   type ModelCheck,
   type AdapterRegistry,
   type HarnessAdapter,
 } from "@claudexor/core";
 import {
   ControlHarnessAccountModelsResponse,
+  ControlProblem,
   harnessHasDefaultCredentialStore,
   type ControlHarnessModelsResponse,
   type ModelInventoryAbsence,
+  type ModelRoutingVariant,
+  type RefusedModelVariant,
 } from "@claudexor/schema";
 import { HarnessGateway } from "@claudexor/gateway";
 import { createAgyAdapter } from "@claudexor/harness-agy";
@@ -28,6 +36,41 @@ import {
 } from "./account-catalog.js";
 
 import { retainAccountProbeObservations } from "./account-observations.js";
+
+/**
+ * The request-time routing variants the OpenRouter instance admits on a listed
+ * model id (#145). Provenance: OpenRouter's public model-variants overview,
+ * https://openrouter.ai/docs/guides/routing/model-variants/overview (read
+ * 2026-10-28 and 2026-10-29): `:nitro` sorts providers by throughput and
+ * admits priority-tier endpoints billed at their priority rate; `:floor` sorts
+ * by price and admits flex-tier endpoints billed at their flex rate; `:exacto`
+ * sorts by tool-calling quality and does not change billing. Suffixes combine
+ * in any order, with at most one catalog variant. Every undeclared suffix is
+ * admitted only by exact catalog membership.
+ */
+export const OPENROUTER_ROUTING_VARIANTS: readonly ModelRoutingVariant[] = [
+  { suffix: ":nitro", billing: "service_tier" },
+  { suffix: ":floor", billing: "service_tier" },
+  { suffix: ":exacto", billing: "base" },
+];
+
+/** The OpenRouter instance's identity, endpoint and default key variable:
+ * one declaration for its adapter and its key-allowance source. */
+export function openRouterInstance() {
+  return {
+    id: "openrouter",
+    baseUrl: process.env.CLAUDEXOR_OPENROUTER_BASE_URL ?? "https://openrouter.ai/api/v1",
+    keyEnv: "OPENROUTER_API_KEY",
+  };
+}
+
+/** `:online` (same documentation; deprecated there) runs provider web search
+ * for the request: live egress outside this route's `web_policy: none`. It is
+ * refused even while the catalog cannot be read, when an explicit model is
+ * otherwise forwarded unverified (#393). */
+export const OPENROUTER_REFUSED_VARIANTS: readonly RefusedModelVariant[] = [
+  { suffix: ":online", reason: "provider_web_search" },
+];
 
 export interface RegistryOptions {
   /** Register the fake-harness suite (so `--harness fake-*` works). Default true. */
@@ -52,12 +95,12 @@ export function buildRegistry(opts: RegistryOptions = {}): AdapterRegistry {
     createGrokAdapter(),
     createRawApiAdapter(),
     createRawApiAdapter({
-      id: "openrouter",
+      ...openRouterInstance(),
       providerFamily: "unknown",
       providerUsageCostUnit: "usd",
-      baseUrl: process.env.CLAUDEXOR_OPENROUTER_BASE_URL ?? "https://openrouter.ai/api/v1",
-      keyEnv: "OPENROUTER_API_KEY",
       defaultModel: process.env.CLAUDEXOR_OPENROUTER_MODEL ?? "openai/gpt-5.5",
+      routingVariants: OPENROUTER_ROUTING_VARIANTS,
+      refusedVariants: OPENROUTER_REFUSED_VARIANTS,
     }),
   ]) {
     registry.set(adapter.id, retainAccountProbeObservations(adapter));
@@ -78,7 +121,23 @@ export function buildGateway(opts: RegistryOptions = {}): HarnessGateway {
 export type HarnessModelTruth = {
   response: ControlHarnessModelsResponse;
   absence: ModelInventoryAbsence;
+  /** Set when the live read failed: the empty list proves nothing (#393). */
+  failure?: ModelCatalogFailure;
+  /** The list is a typed successful read, so its [] is an empty catalog. */
+  catalogRead?: boolean;
+  routingVariants?: readonly ModelRoutingVariant[];
+  refusedVariants?: readonly RefusedModelVariant[];
 };
+
+/** The control-API face of a failed read; the typed cause stays in context. */
+export function catalogFailureProblem(failure: ModelCatalogFailure): ControlProblem {
+  return ControlProblem.parse({
+    code: "model_catalog_unavailable",
+    message: modelCatalogFailureText(failure),
+    retryable: modelCatalogFailureRetryable(failure),
+    context: { cause: failure.cause, httpStatus: failure.httpStatus },
+  });
+}
 
 /**
  * Resolve enumerable models for one harness (ADP4). The SSOT shared by the
@@ -86,8 +145,9 @@ export type HarnessModelTruth = {
  * surfaces report identical truth: `source: "api"` when the adapter has a real
  * models() producer, `"manifest"` when the manifest's known-good hint set is
  * the truth source (with the CLI version it was verified against), `"none"`
- * only when the harness has no truth source at all. Fails soft — adapter
- * models() already swallows network/auth errors and returns [].
+ * only when the harness has no truth source at all. Fails soft for the picker:
+ * a typed failed read answers `source: "api"`, no models and a `problem`, never
+ * an apparently empty catalog (#393).
  */
 export async function harnessModelTruth(
   harnessId: string,
@@ -105,18 +165,33 @@ export async function harnessModelTruth(
   if (!adapter) return { response: none, absence: "authoritative" };
   const manifest = await adapter.discover();
   const absence = manifest.capabilities.model_inventory_absence ?? "authoritative";
+  const routingVariants = manifest.capabilities.model_routing_variants ?? [];
+  const refusedVariants = manifest.capabilities.model_refused_variants ?? [];
+  // The declared suffixes travel with the rows they apply to (#146): a
+  // surface resolves a variant id to its listed row without guessing.
+  const declared = routingVariants.length > 0 ? { routingVariants: [...routingVariants] } : {};
   if (
     hasModelInventoryForRoute(adapter, manifest.capabilities.model_inventory_routes, route ?? null)
   ) {
     // A live enumeration already reflects the credentials it ran under; the
     // route filter applies to manifest annotations only.
-    const models = await adapter.models({
+    const read = await readModelCatalog(adapter, {
       cwd,
       ...(route
         ? { authPreference: route === "api_key" ? ("api_key" as const) : ("subscription" as const) }
         : {}),
     });
-    const rows = models.map(({ processing: _processing, ...model }) => ({
+    if (read.status === "unavailable") {
+      const problem = catalogFailureProblem(read.failure);
+      const response = { harnessId, models: [], source: "api" as const, verifiedAgainst: null };
+      return {
+        response: { ...response, problem },
+        absence,
+        failure: read.failure,
+        refusedVariants,
+      };
+    }
+    const rows = read.models.map(({ processing: _processing, ...model }) => ({
       ...model,
       routes: model.routes ?? null,
     }));
@@ -131,8 +206,12 @@ export async function harnessModelTruth(
         models: rows,
         source: hintsOnly ? "manifest" : "api",
         verifiedAgainst: hintsOnly ? manifest.capabilities.known_models_verified_against : null,
+        ...declared,
       },
       absence,
+      catalogRead: !read.failSoft,
+      routingVariants,
+      refusedVariants,
     };
   }
   const known = manifest.capabilities.known_models.filter((entry) =>
@@ -151,8 +230,11 @@ export async function harnessModelTruth(
       ),
       source: "manifest",
       verifiedAgainst: manifest.capabilities.known_models_verified_against,
+      ...declared,
     },
     absence,
+    routingVariants,
+    refusedVariants,
   };
 }
 
@@ -183,11 +265,19 @@ export async function harnessModels(
  * `unverified` note the caller surfaces.
  */
 export function checkHarnessModelTruth(truth: HarnessModelTruth, model: string): ModelCheck {
+  const refusedVariants = truth.refusedVariants ?? [];
+  if (truth.failure)
+    return validateModelOnUnreadCatalog(model, truth.failure, truth.absence, { refusedVariants });
   return validateModel(
     model,
     truth.response.models.map((entry) => entry.id),
     truth.response.source === "api" ? "api" : "manifest",
     truth.absence,
+    {
+      catalogRead: truth.catalogRead === true,
+      routingVariants: truth.routingVariants ?? [],
+      refusedVariants,
+    },
   );
 }
 
@@ -249,10 +339,19 @@ export async function harnessAccountModels(
         canReadCatalog &&
         hasModelInventoryForRoute(adapter, manifest.capabilities.model_inventory_routes, route)
       ) {
-        const models = await adapter.models({ cwd: input.cwd, credentialProfile: profile });
-        // The legacy array API also returns [] on transport failures; it is
+        const read = await readModelCatalog(adapter, {
+          cwd: input.cwd,
+          credentialProfile: profile,
+        });
+        // A typed failed read keeps its cause on the account row (#393).
+        if (read.status === "unavailable")
+          throw Object.assign(new Error(modelCatalogFailureText(read.failure)), {
+            problem: catalogFailureProblem(read.failure),
+          });
+        const models = read.models;
+        // A fail-soft producer also returns [] on transport failures; that is
         // not a receipt proving this account has an empty vendor inventory.
-        if (models.length === 0) return null;
+        if (models.length === 0 && read.failSoft) return null;
         // A profile probe that could not read the vendor answers hint rows
         // only; that account row is manifest truth, not a live enumeration.
         const hintsOnly = answeredOnlyHints(models);

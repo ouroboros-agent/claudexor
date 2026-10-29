@@ -81,6 +81,125 @@ enum RunFacts {
             : ("best-of \(requested)", false)
     }
 
+    /// A request the engine refused before sending it, keyed by the typed
+    /// `RunFailure.code` (#147 raw context, #393 missing or rejected key). The
+    /// engine's message stays the complete source; this only names the refusal.
+    struct Refusal: Equatable {
+        /// The chat failure card's heading.
+        let title: String
+        /// The short run fact in the workspace facts row.
+        let fact: String
+        /// The receipt's attention chip.
+        let chip: String
+    }
+
+    /// `retried`: the record's typed `poolAttempts` lists an earlier try of this
+    /// run that failed after it was handed to its harness, so the refused request
+    /// is a retry. A row does not say whether that try's request reached the
+    /// provider (a connection that never opened is a row too), so no label claims
+    /// it was sent, and none claims that nothing in the run was.
+    static func refusal(code: String?, retried: Bool = false) -> Refusal? {
+        let lead = retried ? "Retry not sent" : "Not sent"
+        let named: (title: String, fact: String)
+        switch code {
+        case "raw_context_exceeds_window":
+            named = ("the request doesn't fit the model's context window", "over the context window")
+        case "raw_context_mandatory_unavailable":
+            named = ("mandatory context files are unavailable", "mandatory files unavailable")
+        case "model_catalog_unavailable":
+            named = ("the API key is missing or was rejected", "API key missing or rejected")
+        default:
+            return nil
+        }
+        return Refusal(title: "\(lead): \(named.title)", fact: "\(lead): \(named.fact)", chip: lead)
+    }
+
+    static func refusal(_ task: TaskRun) -> Refusal? {
+        refusal(code: task.failureCode, retried: task.failureRecord?.poolAttempts.isEmpty == false)
+    }
+
+    /// Compact token figure for a run fact: 950, 9.5k, 182k, 1.2M. Fixed
+    /// English formatting, independent of the host locale.
+    static func tokenCount(_ value: Int) -> String {
+        func scaled(_ unit: Double, _ suffix: String) -> String {
+            let figure = Double(value) / unit
+            let text = figure < 9.95 ? String(format: "%.1f", figure) : String(format: "%.0f", figure)
+            return (text.hasSuffix(".0") ? String(text.dropLast(2)) : text) + suffix
+        }
+        if value < 1_000 { return "\(value)" }
+        return value < 999_500 ? scaled(1_000, "k") : scaled(1_000_000, "M")
+    }
+
+    /// #147: the two compact facts of the raw-api request the final attempt last
+    /// prepared, from its typed receipt (`rawContext`), never from the adapter's
+    /// status sentence. The receipt is stamped just before the POST, so it says
+    /// what was prepared, not that the provider received it.
+    static func rawContextFacts(_ raw: RawContextReceiptInfo) -> [Fact] {
+        let estimate = "≈\(tokenCount(raw.estimatedRequestTokens))"
+        let method = "Estimated as characters ÷ 4 plus about 1,600 per image, never a tokenizer count."
+        var facts: [Fact] = []
+        if let window = raw.checkedWindow {
+            let answer = raw.budget.outputAllowanceTokens.map { " \($0) more were kept free for the answer." } ?? ""
+            facts.append(Fact(
+                id: "raw_context", text: "Context \(estimate) of \(tokenCount(window)) tokens · estimated",
+                glyph: "doc.text", tone: .neutral,
+                help: "The last request prepared for \(raw.model), sized against its \(window)-token context window from the model catalog.\(answer) \(method)"))
+        } else if raw.budget.basis == "assumed_ceiling" {
+            facts.append(Fact(
+                id: "raw_context",
+                text: "Context \(estimate) tokens · window unknown, assumed \(tokenCount(raw.budget.selectionLimitTokens))",
+                glyph: "doc.text", tone: .warning,
+                help: "The model catalog gave no context window for \(raw.model), so optional files were limited to an assumed \(raw.budget.selectionLimitTokens)-token ceiling, which is not a fact about the model. \(method)"))
+        } else {
+            facts.append(Fact(
+                id: "raw_context", text: "Context \(estimate) tokens · window not checked", glyph: "doc.text",
+                tone: .warning,
+                help: "The packet was sized for \(raw.budget.model ?? "another model"); the window of \(raw.model) was not checked. \(method)"))
+        }
+        let omitted = raw.budget.omittedForBudget
+        if omitted > 0 {
+            facts.append(Fact(
+                id: "raw_context_omitted", text: "\(omitted) optional file\(omitted == 1 ? "" : "s") left out",
+                glyph: "doc.badge.ellipsis", tone: .neutral,
+                help: "Left out so the request fits; the run's raw context packet lists them under omissions."))
+        }
+        return facts
+    }
+
+    /// #147 refusal sizes as the card shows them: one summary whose parts add up
+    /// to the request, and the largest mandatory files with their estimates.
+    struct Shortfall: Equatable {
+        struct Row: Equatable {
+            let label: String
+            let size: String
+            let isPath: Bool
+        }
+        let summary: String
+        let rows: [Row]
+    }
+
+    /// `earlierFailedTries`: the record's `poolAttempts` count. Those tries failed
+    /// after dispatch; whether their requests reached the provider is unknown, so
+    /// the summary says only that this request was not sent.
+    static func shortfall(_ s: RawContextShortfallInfo, earlierFailedTries: Int, maxFiles: Int = 5) -> Shortfall {
+        let sent = earlierFailedTries == 0
+            ? "This request was not sent."
+            : "This retry was not sent; \(earlierFailedTries) earlier \(earlierFailedTries == 1 ? "try" : "tries") failed."
+        let summary = "\(s.model) has a \(tokenCount(s.contextWindow))-token context window; this request needs about "
+            + "\(tokenCount(s.neededTokens)): mandatory files ≈\(tokenCount(s.mandatoryTokens)), the rest of the request "
+            + "≈\(tokenCount(s.otherRequestTokens)) and \(tokenCount(s.outputAllowanceTokens)) kept for the answer. \(sent)"
+        var rows = s.mandatoryFiles.prefix(maxFiles).map {
+            Shortfall.Row(label: $0.path, size: "≈\(tokenCount($0.estimatedTokens))", isPath: true)
+        }
+        let rest = s.mandatoryFiles.dropFirst(maxFiles)
+        if !rest.isEmpty {
+            rows.append(Shortfall.Row(
+                label: "\(rest.count) more file\(rest.count == 1 ? "" : "s")",
+                size: "≈\(tokenCount(rest.reduce(0) { $0 + $1.estimatedTokens }))", isPath: false))
+        }
+        return Shortfall(summary: summary, rows: rows)
+    }
+
     /// Convenience over a task's own mode + requested `n` + delivered candidates.
     static func bestOfLabel(_ task: TaskRun) -> (text: String, degraded: Bool)? {
         bestOfLabel(isMultiCandidate: task.mode.isMultiCandidate,
@@ -172,6 +291,15 @@ enum RunFacts {
             facts.append(Fact(id: "access", text: access, glyph: "lock.shield", tone: .neutral,
                               help: "Access profile the engine enforced (requested vs effective)."))
         }
+        if let refusal = refusal(task) {
+            facts.append(Fact(
+                id: "request_refused",
+                text: refusal.fact,
+                glyph: "hand.raised.fill",
+                tone: .failure,
+                help: task.engineError ?? refusal.title))
+        }
+        if let raw = task.rawContext { facts.append(contentsOf: rawContextFacts(raw)) }
         if let outputReady = task.outputReadyState, outputReady != "ready" {
             facts.append(Fact(
                 id: "output_ready",

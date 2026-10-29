@@ -17,6 +17,7 @@ import { WorkspaceKind } from "./files-manifest.js";
 import { ProcessingPreference } from "./processing.js";
 import { PromptCacheTtl } from "./prompt-cache.js";
 import { CatalogInputLimit } from "./harness-input.js";
+import { ControlProblem } from "./problem.js";
 
 /**
  * AgentCapabilityCatalog — the machine-readable answer to "what can this
@@ -85,6 +86,9 @@ export const CatalogModelSummary = z
       .describe(
         "Vendor CLI version the manifest hints were last verified against (null for api/none sources).",
       ),
+    problem: ControlProblem.optional().describe(
+      "Present only when the live catalog read failed: count is then 0 and is NOT an empty catalog.",
+    ),
   })
   .describe("Summary of a harness's model truth source (full list via the models endpoint/verb).");
 export type CatalogModelSummary = z.infer<typeof CatalogModelSummary>;

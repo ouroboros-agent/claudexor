@@ -2,8 +2,11 @@ import type { HarnessEvent, HarnessRunSpec } from "@claudexor/schema";
 import { join } from "node:path";
 import {
   canonicalIsolationLocator,
+  credentialProfilePinned,
+  credentialProfileUnpinned,
   providerScrubEnv,
   type CredentialAccountProbeReceipt,
+  type CredentialProfileProbeOptions,
 } from "@claudexor/core";
 import type { AuthPreference, CredentialProfile, CredentialProfileStatus } from "@claudexor/schema";
 import { CredentialProfileStatus as CredentialProfileStatusSchema } from "@claudexor/schema";
@@ -13,16 +16,16 @@ import {
   cursorObservationError,
   cursorObservationIdentity,
   cursorProfileKeyOrRefusal,
-  probeCursorNativeAuth,
   type CursorAuthRoute,
   type CursorStatusObservation,
 } from "./auth.js";
 import type { CursorEventParser } from "./parse.js";
+import { CURSOR_PINNED_STATUS_WAIT_MS, type CursorStatusRead } from "./status-cache.js";
 
 type EnvMap = Record<string, string | null | undefined>;
 
 export interface CursorProfileRuntimeDeps {
-  nativeAuthOk: typeof probeCursorNativeAuth;
+  nativeAuthOk: CursorStatusRead;
   resolveProfileSecret: (ref: string) => string | null;
 }
 
@@ -92,20 +95,30 @@ function cursorStaleDetail(probeError: string, stale: CursorStaleAuth): string {
   return `${probeError}; the last positive status answer (${stale.observedAt}, ${stale.ageMs}ms old) stands in for unpinned routing only`;
 }
 
+/** A pin waited for its status answer up to the bound and none came (#532):
+ * the honest refusal names the bound, never a logout or a stale pass. */
+function cursorPinUnconfirmed(probe: CursorStatusObservation): string | null {
+  if (probe.kind !== "unknown" || probe.timedOut !== true) return null;
+  return `Cursor did not confirm sign-in within ${CURSOR_PINNED_STATUS_WAIT_MS / 1000}s (${cursorObservationError(probe)}); a pinned account waits for that answer and never starts on an older one`;
+}
+
 /** Strict profile resolution: the named identity or a typed refusal, never default auth.
- * `admitLastPositive` is the caller's decision, never inferred from the profile:
- * absent, a timeout's bounded last positive refuses like any unknown answer. */
+ * Both options are the caller's engine facts, never inferred from the profile:
+ * absent `admitLastPositive`, a timeout's bounded last positive refuses like
+ * any unknown answer; `pinned` (an explicit pin) also waits for the status
+ * answer up to the pinned bound (#532). */
 export async function resolveCursorProfileRoute(
   profile: CredentialProfile,
   specEnv: EnvMap,
   runtime: CursorProfileRuntimeDeps,
   abortSignal?: AbortSignal,
-  options: { admitLastPositive?: boolean } = {},
+  options: { admitLastPositive?: boolean; pinned?: boolean } = {},
 ): Promise<CursorResolvedProfileRoute> {
   if (profile.credential_kind === "config_dir_login") {
     try {
       const env = cursorProfileRunEnv(profile.isolation_locator ?? "", specEnv);
-      const probe = await runtime.nativeAuthOk(env, abortSignal);
+      const pinned = options.pinned === true;
+      const probe = await runtime.nativeAuthOk(env, abortSignal, pinned ? { pinned } : undefined);
       if (cursorObservationAuthenticated(probe)) return { kind: "native", env };
       // INV-135 #363: the bounded last positive starts only an unpinned
       // choice, disclosed; an explicit pin refuses on it below.
@@ -113,16 +126,19 @@ export async function resolveCursorProfileRoute(
       if (lastPositive && options.admitLastPositive === true)
         return { kind: "native", env, staleAuth: lastPositive };
       const probeError = cursorObservationError(probe);
+      const unconfirmed = pinned ? cursorPinUnconfirmed(probe) : null;
       // Unknown is not a logout: only a positive logged-out answer carries
       // login advice (#363).
       return {
-        refusal: probeError
-          ? `credential profile "${profile.profile_id}": Cursor login state is unknown (status probe failed — ${probeError})${
-              lastPositive
-                ? `; its last positive status answer (${lastPositive.observedAt}) serves unpinned routing only, never an explicit pin`
-                : ""
-            }`
-          : `credential profile "${profile.profile_id}" has no Cursor login in its profile HOME (run the profile login first)`,
+        refusal: unconfirmed
+          ? `credential profile "${profile.profile_id}": ${unconfirmed}`
+          : probeError
+            ? `credential profile "${profile.profile_id}": Cursor login state is unknown (status probe failed — ${probeError})${
+                lastPositive
+                  ? `; its last positive status answer (${lastPositive.observedAt}) serves unpinned routing only, never an explicit pin`
+                  : ""
+              }`
+            : `credential profile "${profile.profile_id}" has no Cursor login in its profile HOME (run the profile login first)`,
       };
     } catch (err) {
       return { refusal: err instanceof Error ? err.message : String(err) };
@@ -166,8 +182,9 @@ export async function resolveCursorRunRoute(
   runtime: CursorProfileRuntimeDeps,
   resolveDefaultRoute: (input: CursorDefaultRouteInput) => Promise<CursorRunRoute>,
   abortSignal: AbortSignal | undefined,
-  /** Whether a named row may ride its bounded last positive (#363). */
-  options: { admitLastPositive: boolean },
+  /** Whether a named row may ride its bounded last positive (#363) and
+   * whether it is an explicit pin that waits for its answer (#532). */
+  options: { admitLastPositive: boolean; pinned?: boolean },
 ): Promise<CursorRunRoute | { refusal: string }> {
   const profile = spec.credential_profile;
   const profileRoute = profile
@@ -190,6 +207,14 @@ export async function resolveCursorRunRoute(
     abortSignal,
     ...(keyOverride === null ? {} : { cursorApiKey: () => keyOverride }),
   });
+}
+
+/** The engine's pin facts a spawn-time route check reads from its spec. */
+export function cursorSpawnPinFacts(spec: Pick<HarnessRunSpec, "credential_profile" | "extra">) {
+  return {
+    admitLastPositive: credentialProfileUnpinned(spec),
+    pinned: credentialProfilePinned(spec),
+  };
 }
 
 /** Run-stream disclosure that a row's spawn rides its bounded last positive
@@ -221,8 +246,18 @@ export function stampCursorProfileEvents(
 function cursorProfileNativeStatus(
   profile: CredentialProfile,
   probe: CursorStatusObservation,
+  pinned: boolean,
 ): CredentialProfileStatus {
   const base = { profile_id: profile.profile_id, harness_id: "cursor" };
+  // A pin never consumes a last positive, so its unanswered wait is plain unknown.
+  const unconfirmed = pinned ? cursorPinUnconfirmed(probe) : null;
+  if (unconfirmed)
+    return CredentialProfileStatusSchema.parse({
+      ...base,
+      availability: "unknown",
+      verification: "not_run",
+      detail: unconfirmed,
+    });
   if (probe.kind === "authenticated")
     return CredentialProfileStatusSchema.parse({
       ...base,
@@ -273,15 +308,18 @@ export async function probeCursorCredentialProfile(
   profile: CredentialProfile,
   runtime: CursorProfileRuntimeDeps,
   abortSignal?: AbortSignal,
+  options?: CredentialProfileProbeOptions,
 ): Promise<CredentialProfileStatus> {
-  return (await probeCursorCredentialAccount(profile, runtime, abortSignal)).status;
+  return (await probeCursorCredentialAccount(profile, runtime, abortSignal, options)).status;
 }
 
-/** Accounts-only rich probe: readiness and optional email share one status call. */
+/** Accounts-only rich probe: readiness and optional email share one status call.
+ * Only run admission passes `options.pinned` (#532); Accounts keeps the ordinary wait. */
 export async function probeCursorCredentialAccount(
   profile: CredentialProfile,
   runtime: CursorProfileRuntimeDeps,
   abortSignal?: AbortSignal,
+  options?: CredentialProfileProbeOptions,
 ): Promise<CredentialAccountProbeReceipt> {
   if (profile.credential_kind !== "config_dir_login") {
     const base = { profile_id: profile.profile_id, harness_id: "cursor" };
@@ -320,9 +358,9 @@ export async function probeCursorCredentialAccount(
   }
   try {
     const env = cursorProfileRunEnv(profile.isolation_locator ?? "");
-    const observation = await runtime.nativeAuthOk(env, abortSignal);
+    const observation = await runtime.nativeAuthOk(env, abortSignal, options);
     return {
-      status: cursorProfileNativeStatus(profile, observation),
+      status: cursorProfileNativeStatus(profile, observation, options?.pinned === true),
       identity: cursorObservationIdentity(observation),
     };
   } catch (err) {

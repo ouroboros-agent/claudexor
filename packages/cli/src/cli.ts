@@ -1315,8 +1315,12 @@ async function dispatch(args: ParsedArgs, outputMode: CliOutputMode): Promise<nu
           const model = h.configuredModel
             ? ` model=${h.configuredModel}${h.configuredModelValid === false ? " (REJECTED)" : ""}`
             : "";
+          // A failed read is not an empty catalog (#393): name it, count nothing.
+          const models = h.models.problem
+            ? `unavailable (${h.models.source}: ${h.models.problem.message})`
+            : `${h.models.count} (${h.models.source})`;
           print(
-            `  ${statusGlyph(h.status)} ${h.id}: ${h.status}; intents=${h.enabledIntents.join(",") || "-"}; models=${h.models.count} (${h.models.source})${model}`,
+            `  ${statusGlyph(h.status)} ${h.id}: ${h.status}; intents=${h.enabledIntents.join(",") || "-"}; models=${models}${model}`,
           );
         }
         print(`mcp tools: ${catalog.mcpTools.join(", ")}`);

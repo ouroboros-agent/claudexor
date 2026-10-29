@@ -259,6 +259,8 @@ public struct RunSummary: Codable, Sendable, Identifiable, Equatable {
     public let route: RouteInfo?
     /// Auth route receipt incl. requested-vs-observed model mismatch (W10/W20).
     public let authRoute: RunAuthRoute?
+    /// Size of the raw-api request the final attempt last prepared (#147); nil otherwise.
+    public let rawContext: RawContextReceiptInfo?
     public let tests: [TestCommandInvocation]?
     public let createdAt: String?
     public let startedAt: String?

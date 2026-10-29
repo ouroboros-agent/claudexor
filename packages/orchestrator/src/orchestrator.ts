@@ -20,7 +20,6 @@ import {
   processingAttemptCostEvidence,
   processingAdmissionForLease,
   updateProcessingStreamHold,
-  ProcessingBudgetAdmissionError,
 } from "./processing-dispatch.js";
 import {
   cancelledCandidatesResult,
@@ -147,6 +146,7 @@ import type {
   CredentialProfile,
   BudgetLease,
   ImplementationTransport,
+  RawContextPacket,
   RawGitPatchEnvelope,
   WebPolicySupport,
   WorkspaceEnvelope,
@@ -188,6 +188,7 @@ import type {
   HarnessAdapter,
   InteractionChannel,
   PreparedHarnessProcessing,
+  RawRequestCapacity,
 } from "@claudexor/core";
 import {
   prepareRoutedProcessing,
@@ -204,7 +205,12 @@ import {
   summarizeDiffPaths as diffStats,
   withInactivityWatchdog,
 } from "@claudexor/core";
-import { assertRouteModelsAllowed, runModelGovernedRoute } from "./modelGovernance.js";
+import {
+  assertRouteModelsAllowed,
+  isDispatchRefusal,
+  runModelGovernedRoute,
+  type DispatchRefusal,
+} from "./modelGovernance.js";
 import {
   authModeForCredentialRoute,
   authModeForPreference,
@@ -321,7 +327,7 @@ import { recordProcessingIntent } from "./retry-processing-intent.js";
 import { prepareReviewEvidenceDir, recordReviewEvidenceCleanup } from "./reviewEvidence.js";
 import { ArtifactStore, type RunPaths } from "@claudexor/artifact-store";
 import type { EventLog, TerminalPersistenceHook } from "@claudexor/event-log";
-import { buildContextPack, rawContextForEnvelope, writeEvidencePacket } from "@claudexor/context";
+import { buildContextPack, rawContextSizer, writeEvidencePacket } from "@claudexor/context";
 import {
   WorkspaceManager,
   captureRawPatchEnvelope,
@@ -355,7 +361,6 @@ import {
   BudgetLedger,
   isBudgetTerminal,
   type RouterCandidate,
-  RoutingPreflightError,
   explainRanking,
   loadHarnessMetrics,
   promptFingerprint,
@@ -885,30 +890,25 @@ export class Orchestrator {
   }
 
   private async resolveReviewers(
-    cwd: string,
-    runAuthPreference?: AuthPreference,
+    run: Pick<RunInput, "repoRoot" | "authPreference" | "signal">,
     onIgnoredSetting?: (detail: string) => void,
   ): Promise<ReviewerSpec[]> {
     if (this.deps.reviewers) return this.deps.reviewers;
-    if (this.deps.reviewerPanel && this.deps.reviewerPanel.length > 0) {
-      return this.resolveExplicitReviewerPanel(
-        cwd,
-        this.deps.reviewerPanel,
-        runAuthPreference,
-        onIgnoredSetting,
-      );
-    }
-    return resolveAutoReviewerPanel(
-      {
-        cwd,
-        registry: this.deps.registry,
-        harnessSettings: this.config(cwd)?.global.harnesses ?? {},
-        authPreferenceFor: (id) => this.authPreferenceForHarness(cwd, id, runAuthPreference),
-        resolveReviewerProfile: reviewerProfileResolver(this.credentials, cwd),
-        onIgnoredSetting,
-      },
-      { reviewerModels: this.deps.reviewerModels, reviewerEfforts: this.deps.reviewerEfforts },
-    );
+    const { repoRoot: cwd, authPreference, signal } = run;
+    const panelDeps = {
+      cwd,
+      registry: this.deps.registry,
+      harnessSettings: this.config(cwd)?.global.harnesses ?? {},
+      authPreferenceFor: (id: string) => this.authPreferenceForHarness(cwd, id, authPreference),
+      resolveReviewerProfile: reviewerProfileResolver(this.credentials, cwd, signal),
+      onIgnoredSetting,
+    };
+    if (this.deps.reviewerPanel && this.deps.reviewerPanel.length > 0)
+      return resolveExplicitReviewerPanel(panelDeps, this.deps.reviewerPanel);
+    return resolveAutoReviewerPanel(panelDeps, {
+      reviewerModels: this.deps.reviewerModels,
+      reviewerEfforts: this.deps.reviewerEfforts,
+    });
   }
   /**
    * Resolve reviewers INSIDE a strategy, after run-dir creation: an explicit
@@ -931,7 +931,7 @@ export class Orchestrator {
       // Reviewer knobs a panel omitted or dropped → ignored-settings channel (QA-070):
       const warn = (d: string) => void log.emit("review.preflight", { ignored_settings: [d] });
       const config = this.config(input.repoRoot).global;
-      const reviewers = await this.resolveReviewers(input.repoRoot, input.authPreference, warn);
+      const reviewers = await this.resolveReviewers(input, warn);
       return {
         reviewers: await prepareReviewerProcessing(
           withReviewerPromptCacheTtl(reviewers, input.promptCacheTtl, warn),
@@ -979,25 +979,6 @@ export class Orchestrator {
         },
       };
     }
-  }
-
-  private async resolveExplicitReviewerPanel(
-    cwd: string,
-    panel: ControlReviewerPanelEntry[],
-    runAuthPreference?: AuthPreference,
-    onIgnoredSetting?: (detail: string) => void,
-  ): Promise<ReviewerSpec[]> {
-    return resolveExplicitReviewerPanel(
-      {
-        cwd,
-        registry: this.deps.registry,
-        harnessSettings: this.config(cwd)?.global.harnesses ?? {},
-        authPreferenceFor: (id) => this.authPreferenceForHarness(cwd, id, runAuthPreference),
-        resolveReviewerProfile: reviewerProfileResolver(this.credentials, cwd),
-        onIgnoredSetting,
-      },
-      panel,
-    );
   }
 
   private authPreferenceForHarness(
@@ -1413,6 +1394,11 @@ export class Orchestrator {
         );
         continue;
       }
+      const readRefusal = this.requestRequirements.projectReadRefusal(intent, input, status);
+      if (readRefusal) {
+        dropLane(id, "capability", readRefusal);
+        continue;
+      }
       const reason = status.reasons.length > 0 ? `: ${status.reasons.join("; ")}` : "";
       if (status.enabledIntents.includes(intent) && accessSupported) {
         pool.push({
@@ -1585,7 +1571,15 @@ export class Orchestrator {
         `no harness remains eligible for '${intent}' after budget and quota routing`,
       );
     }
-    emitPrimaryDivergence(log, input.primaryHarness, ordered, pool, dropped, browserOmissions);
+    emitPrimaryDivergence(
+      log,
+      input.primaryHarness,
+      ordered,
+      pool,
+      dropped,
+      browserOmissions,
+      statusById,
+    );
     const n = input.n ?? ordered.length;
     const selectionOrder = ordered;
     const out: RoutedAdapter[] = [];
@@ -2336,7 +2330,6 @@ export class Orchestrator {
         artifactRoot: join(paths.attemptsDir, attemptId),
         observedPaths: [...observedPaths],
       }));
-    const rawContextPacket = await rawContextForEnvelope(routed.implementationTransport, envelope);
     const sessionFields = runInput
       ? await this.sessionSpecFields(
           runInput,
@@ -2438,10 +2431,20 @@ export class Orchestrator {
         ? { resume_session_id: sessionFields.resume_session_id }
         : {}),
       ...(scopedEnv ? { env: scopedEnv } : {}),
-      raw_context_packet: rawContextPacket,
       stream_deltas: streamDeltas,
     });
     if (runInput) this.credentials.stampProfileSelection(spec, runInput, adapter.id);
+    // #147: bound to the project's context config; each try's dispatch sizes its own
+    // packet for THIS request from the catalog read the gate makes for that try.
+    const { context } = this.projectConfig(contract.repo.root);
+    const sizeRawContext = rawContextSizer(routed.implementationTransport, envelope, context);
+    let rawContextPacket: RawContextPacket | null = null;
+    const dispatch = sizeRawContext
+      ? {
+          rawContext: async (capacity: RawRequestCapacity | null) =>
+            (rawContextPacket = await sizeRawContext(capacity)),
+        }
+      : {};
     bindProcessingAdmission(
       spec,
       ledger,
@@ -2483,7 +2486,7 @@ export class Orchestrator {
     let costEstimated = false;
     let harnessErrored = false;
     let streamBudgetDenied = false;
-    let processingRefusal: ProcessingBudgetAdmissionError | RoutingPreflightError | null = null;
+    let processingRefusal: DispatchRefusal | null = null;
     let poolExhausted: Error | null = null; // A5: typed pool-exhausted refusal
     const deltaFlood = { count: 0, disclosed: false }; // W-C4 per-attempt delta budget
     // QA-024: emit the belt-failure disclosure event at most once per attempt.
@@ -2557,8 +2560,9 @@ export class Orchestrator {
         const transientStart = telemetry.transientFailures.length;
         const rateLimitStart = telemetry.rateLimits.length;
         let rawPatch: RawGitPatchEnvelope | null = null;
+        rawContextPacket = null; // a patch binds only the packet its own try sent
         try {
-          const watched = withInactivityWatchdog(runModelGovernedRoute(routed, runSpec), {
+          const watched = withInactivityWatchdog(runModelGovernedRoute(routed, runSpec, dispatch), {
             timeoutMs: inactivityMs,
             countsAsProgress: countsAsAgentProgress,
             onTimeout: () => {
@@ -2572,7 +2576,7 @@ export class Orchestrator {
             suspensionVersion: () => interaction?.suspensionVersion?.() ?? 0,
           });
           for await (const ev of watched) {
-            rawPatch = captureRawPatchEnvelope(rawContextPacket !== null, rawPatch, ev);
+            rawPatch = captureRawPatchEnvelope(sizeRawContext !== null, rawPatch, ev);
             if (ev.type === "patch_produced") continue;
             const safeEv = redactHarnessEvent(ev);
             if (directory) observeDirectoryPaths(observedPaths, safeEv, envelope.worktree_path);
@@ -2649,7 +2653,7 @@ export class Orchestrator {
             observeBudgetSignals(ledger, log, adapter.id, attemptId, safeEv, budgetSignalState);
             this.deps.quotaEventSink?.(adapter.id, safeEv);
           }
-          if (rawContextPacket && !harnessErrored)
+          if (sizeRawContext && !harnessErrored)
             await consumeRawPatchEnvelope({
               repoRoot: envelope.repo_root,
               worktreePath: envelope.worktree_path,
@@ -2664,10 +2668,7 @@ export class Orchestrator {
           // gate and required-actions read a typed category, not a bare boolean.
           harnessErrored = true;
           errors.push(safeErrorMessage(err));
-          if (
-            err instanceof ProcessingBudgetAdmissionError ||
-            err instanceof RoutingPreflightError
-          ) {
+          if (isDispatchRefusal(err)) {
             processingRefusal = err;
             break;
           }
@@ -4933,7 +4934,7 @@ export class Orchestrator {
             input.signal,
             undefined,
             input.effort,
-            "repair",
+            this.requestRequirements.convergenceIntent(routed, this.candidateIntent(input)),
             log,
             effectiveWeb,
             interactionChannelFor(
@@ -5543,6 +5544,7 @@ export class Orchestrator {
         resetsAt: convDeclared?.resetsAt ?? null,
         requestRefusal: convDeclared?.requestRefusal,
         quotaRefusal: convDeclared?.quotaRefusal,
+        rawContextShortfall: convDeclared?.rawContextShortfall,
         harnessId: lastRun?.harnessId,
         attemptId: lastRun?.attemptId,
         runDir: paths.root,
@@ -6728,7 +6730,7 @@ export class Orchestrator {
       let costEstimated = false;
       let harnessError: string | null = null;
       let streamBudgetDenied = false;
-      let processingRefusal: ProcessingBudgetAdmissionError | RoutingPreflightError | null = null;
+      let processingRefusal: DispatchRefusal | null = null;
       let poolExhausted: Error | null = null; // A5: typed pool-exhausted refusal
       try {
         for (let nativeTry = 0; !input.signal?.aborted; nativeTry += 1) {
@@ -6831,10 +6833,7 @@ export class Orchestrator {
             }
           } catch (err) {
             harnessError = safeErrorMessage(err);
-            if (
-              err instanceof ProcessingBudgetAdmissionError ||
-              err instanceof RoutingPreflightError
-            ) {
+            if (isDispatchRefusal(err)) {
               processingRefusal = err;
               break;
             }

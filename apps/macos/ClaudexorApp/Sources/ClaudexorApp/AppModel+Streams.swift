@@ -582,7 +582,8 @@ extension AppModel {
             let note = Self.primaryDivergedNote(
                 requested: requested,
                 effective: effective,
-                reason: payload["reason"]?.stringValue)
+                reason: payload["reason"]?.stringValue,
+                detail: payload["detail"]?.stringValue)
             t.attentionNote = note
             taskChanged = true
             box.appendActivity(ActivityEvent(.system, note, at: .now))

@@ -864,6 +864,12 @@ describe("DaemonControlApiServer", () => {
           location: "query",
           enum: ["true", "false"],
         }),
+        // #138: API-key rows are negotiated; strict clients that omit it see none.
+        expect.objectContaining({
+          name: "includeApiKeys",
+          location: "query",
+          enum: ["true", "false"],
+        }),
       ]);
       expect(credentialProfiles?.responseSchema).toBe("ControlCredentialProfilesQueryResponse");
       const models = ops.find((o) => o.path === "/v2/harnesses/:id/models");
@@ -12212,10 +12218,18 @@ describe("DaemonControlApiServer", () => {
               location: "query",
               enum: ["resources", "constraint_freshness", "resources_freshness"],
             }),
+            expect.objectContaining({
+              name: "includeApiKeys",
+              location: "query",
+              enum: ["true", "false"],
+            }),
           ],
         });
         expect(operations.find((operation) => operation.id === "post:quota")).toMatchObject({
-          parameters: [expect.objectContaining({ name: "view", enum: ["resources"] })],
+          parameters: [
+            expect.objectContaining({ name: "view", enum: ["resources"] }),
+            expect.objectContaining({ name: "includeApiKeys", enum: ["true", "false"] }),
+          ],
         });
         // A service must honor negotiation, never silently downgrade or leak
         // the new shape to a strict legacy consumer.

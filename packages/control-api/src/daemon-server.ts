@@ -14,7 +14,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { trackRequest } from "./request-timing.js";
 import { serveRunDetail } from "./run-detail-route.js";
 import { handleDeferredMessageRoute } from "./deferred-message-routes.js";
-import { handleAccountResourceRoute } from "./account-resource-routes.js";
+import { handleAccountResourceRoute, type ResourceRead } from "./account-resource-routes.js";
 import { CONTROL_STORE_IDENTITY_HEADER, ControlAccountResetRequest } from "@claudexor/schema";
 import { recordedExecutionRoot } from "./run-delivery-state.js";
 import * as exactPatch from "./run-exact-patch.js";
@@ -252,13 +252,11 @@ export interface DaemonControlApiOptions {
         clientId: string;
       }) => Promise<unknown>;
       accountReset?: (id: string) => Promise<unknown>;
-      refreshQuota?: (
-        input?: ControlQuotaRefreshRequest & { view?: "resources" },
-      ) => Promise<unknown>;
+      refreshQuota?: (input?: ControlQuotaRefreshRequest & ResourceRead) => Promise<unknown>;
       accountPools?: () => Promise<unknown>;
       accountRoutingEvidence?: (includeCapabilities?: boolean) => Promise<unknown>;
       rollbackAccountsMigration?: (input: unknown) => Promise<unknown>;
-      credentialProfiles?: (input?: { snapshot?: boolean; view?: "resources" }) => Promise<unknown>;
+      credentialProfiles?: (input?: { snapshot?: boolean } & ResourceRead) => Promise<unknown>;
       runApplicability?: (input: { repoRoot: string }) => Promise<unknown>;
       createCredentialProfile?: (input: unknown) => Promise<unknown>;
       updateCredentialProfile?: (input: unknown) => Promise<unknown>;

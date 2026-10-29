@@ -167,7 +167,10 @@ extension AppModel {
         guard let requestClient = gateway(for: locationID) else { return (false, false) }
         do {
             try await requestClient.setSecret(name: name, value: value)
+            noteAccountResourceBindingWrite(AccountTarget(harness: family.setupHarnessId, profileId: nil), at: locationID)
             await refreshSecrets(locationID: locationID)
+            // API-key resource rows are bound to the stored key: a replaced key reads as unread.
+            scheduleAccountsQuotaDisplayHydration(at: locationID)
             guard let request = family.apiKeyAuthReadinessRequest else { return (true, false) }
             let refreshed = await refreshAuthReadiness(for: family, request: request)
             // The harness CARD renders daemon-NORMALIZED rows, which only a

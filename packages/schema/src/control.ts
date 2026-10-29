@@ -36,6 +36,7 @@ import { RequestRequirementResolution } from "./request-requirements.js";
 import { ProtectedPathApproval, TestCommandInvocation } from "./task.js";
 import { RunScope } from "./control-run-scope.js";
 import { RunFailure } from "./control-run-failure.js";
+import { RawContextReceipt } from "./raw.js";
 import { ControlRunSummaryProcessScope } from "./control-process-scope.js";
 import { RunExecution } from "./control-run-execution.js";
 import { WorkspaceScopePath } from "./files-manifest.js";
@@ -794,6 +795,11 @@ export const ControlRunSummary = z
       .default(null)
       .describe(
         "Typed routing rationale (QA-034) projected from telemetry; null when no ranking was computed or on legacy runs.",
+      ),
+    rawContext: RawContextReceipt.nullable()
+      .default(null)
+      .describe(
+        "Size of the raw-api request the final attempt last prepared, as receipted just before its POST (#147); null otherwise.",
       ),
     tests: z.array(TestCommandInvocation).optional().describe("Typed argv gates."),
     createdAt: z.string().optional().describe("When the run was created."),

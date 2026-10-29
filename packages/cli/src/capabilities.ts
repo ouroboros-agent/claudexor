@@ -105,6 +105,7 @@ export async function buildAgentCapabilityCatalog(): Promise<AgentCapabilityCata
           source: truth.source,
           count: truth.models.length,
           verifiedAgainst: truth.verifiedAgainst,
+          ...("problem" in truth && truth.problem ? { problem: truth.problem } : {}),
         },
         webPolicy: s.manifest?.capabilities.web_policy ?? "none",
         attachmentInputs: [...(profile?.attachment_inputs ?? [])],

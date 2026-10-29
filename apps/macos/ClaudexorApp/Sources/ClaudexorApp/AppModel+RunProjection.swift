@@ -56,6 +56,9 @@ extension AppModel {
         }
         task.authRoute = summary.authRoute
         task.failureCategory = summary.failure?.category
+        task.failureCode = summary.failure?.code
+        task.failureRecord = summary.failure
+        task.rawContext = summary.rawContext
         task.requestedAccess = summary.requestedAccess
         task.effectiveAccess = summary.effectiveAccess
         task.externalContextPolicy = summary.externalContextPolicy

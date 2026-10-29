@@ -164,10 +164,10 @@ export function summarizeRun(rec: DaemonRunRecord, facts?: RunEventFacts): Contr
   const webEvidence = controlWebEvidence(telemetry, task);
   const decision = safeReadStructuredArtifact(rec, "arbitration/decision.yaml", DecisionRecord);
   const failure = readFailure(rec);
-  const workState = telemetry?.final_attempt_id
-    ? (telemetry.attempts.find((a) => a.attempt_id === telemetry.final_attempt_id)?.outcome
-        .work_state ?? null)
-    : null;
+  const finalAttempt = telemetry?.final_attempt_id
+    ? telemetry.attempts.find((a) => a.attempt_id === telemetry.final_attempt_id)
+    : undefined;
+  const workState = finalAttempt?.outcome.work_state ?? null;
   const legacyOutcome = legacyRunOutcomeFacts(rec, decision, failure, workState);
   const terminalFacts = legacyOutcome
     ? effectiveTerminalFacts(rec.runDir, legacyOutcome, decision, expectedRunFacts(rec))
@@ -260,6 +260,8 @@ export function summarizeRun(rec: DaemonRunRecord, facts?: RunEventFacts): Contr
     // QA-034: routing rationale projected verbatim from the engine telemetry —
     // surfaces never reconstruct the order from prose.
     routingRationale: telemetry?.routing_rationale ?? null,
+    // #147: what the request that produced the result carried, typed.
+    rawContext: finalAttempt?.raw_context ?? null,
     tests: requestTests ?? (contractTests?.length ? contractTests : undefined),
     createdAt: rec.createdAt,
     startedAt: rec.startedAt,

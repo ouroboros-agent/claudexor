@@ -452,6 +452,24 @@ Cursor resource rows optionally carry `scope` (personal/team), `usage_kind`
 bonus usage is not remaining budget. The internal dashboard is not a stable
 public API, and these amounts never authorize spending or change quota admission.
 
+API-key rows are a further opt-in: add `includeApiKeys=true` to `GET /v2/quota` with
+`view=resources` or `view=resources_freshness`, to `POST /v2/quota` with `view=resources`, or
+to `GET /v2/credential-profiles` with `snapshot=true&view=resources`, after finding the
+parameter on all three operations in the catalog. A harness with an API-key resource
+source (OpenRouter) then adds one row per key a request can send now: its default key
+as `target: {harness, profile_id: null}` (the API-key route, not an account) and each
+enabled registered API-key account, each with a non-secret `credential_fingerprint`. A
+key not read yet has unknown facets, and a row read with a replaced key is never shown.
+The spending row describes the key's own cap: `capped: false` means no per-key limit
+(the account's credit balance and workspace budgets still apply), `limit` and
+`remaining` are the provider's decimal USD, `used` counts the UTC `window` (`day`,
+`week`, `month` or `lifetime`), and `resets_at` is only a provider-reported instant.
+These figures never authorize spending, decide admission or change routing. With the
+flag, POST quota also accepts `target` naming the default key (`profile_id: null`) or a
+registered API-key account; a key that is not current answers HTTP 404, and a null
+`profile_id` without the flag answers HTTP 400. `claudexor quota --resources` and the
+MCP `claudexor_account_resources` tool include these rows.
+
 `POST /v2/account-resets` accepts `{target, offer_id, grant_id?}` and requires an
 Idempotency-Key. The receipt separates provider outcome from readback freshness;
 `GET /v2/account-resets/:id` reads it again. After a timeout without a receipt id,
@@ -1920,7 +1938,11 @@ its exact profile probe. Only a genuinely profile-less/default fallback depends
 on aggregate doctor. OpenCode and the raw-API adapter currently report
 `degraded` even with a key (no isolated smoke proves their default routes yet),
 so they are skipped by auto-pools unless a supported exact profile route proves
-ready, and explicitly selecting an `unavailable` route fails loudly.
+ready, and explicitly selecting an `unavailable` route fails loudly. An explicit
+selection of a `degraded` route runs the intents its doctor still enables: a
+client offering that choice reads harness status `enabledIntents`, while
+`routableIntents` answers only Auto eligibility
+([Routing](ARCHITECTURE.md#4-routing)).
 
 Adapters must translate native I/O into Claudexor events and artifacts. They must
 not orchestrate, arbitrate, manage budgets, or decide review policy.

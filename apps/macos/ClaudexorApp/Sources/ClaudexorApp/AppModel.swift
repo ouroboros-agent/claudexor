@@ -280,6 +280,8 @@ final class AppModel {
     let accountResourceActions: AccountsResourceActions
     let accountsRoutingEvidence = AccountsRoutingEvidenceState()
     @ObservationIgnored var accountsQuotaDisplayGenerations: [ExecutionLocationID: UInt64] = [:]
+    /// Per account, the binding changes (key or presence) seen: committed snapshots and acknowledged own writes.
+    @ObservationIgnored var accountResourceBindingChanges: [ExecutionLocationID: [AccountTarget: UInt64]] = [:]
     @ObservationIgnored var accountsQuotaSubscribers:
         [ExecutionLocationID: Set<UUID>] = [:]
     @ObservationIgnored var accountsQuotaDisplayTasks:
