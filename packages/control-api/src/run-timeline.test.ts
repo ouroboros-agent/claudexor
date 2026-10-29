@@ -92,3 +92,23 @@ describe("soft run time limit reached notification", () => {
     ]);
   });
 });
+
+describe("timelineEvents classifies a workspace settlement failure (#411f)", () => {
+  it("is a warning row whose cause is not mistaken for a run error", () => {
+    const rows = timelineEvents({}, [
+      {
+        type: "workspace.settlement_failed",
+        payload: {
+          attempt_id: "a01",
+          envelope_id: "env-1",
+          root: "/kept/tree",
+          stage: "dispose",
+          cause: "EBUSY: resource busy",
+        },
+      },
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.severity).toBe("warning");
+    expect(rows[0]!.attemptId).toBe("a01");
+  });
+});

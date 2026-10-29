@@ -112,6 +112,8 @@ fixtures:
       started_events: 1
       delta_messages: 0
       typed_rate_limit: false
+  # Its file_change frame is a synthetic native-format example: no live Codex
+  # edit has been captured, so it pins the parser shape, never vendor behavior.
   basic-run.jsonl:
     source: synthetic
     expectations:
