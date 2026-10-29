@@ -21,22 +21,68 @@ public enum TranscriptBlock: Identifiable, Sendable, Equatable {
 }
 
 public struct ToolBlock: Sendable, Equatable {
-    public enum Status: String, Sendable { case running, ok, error }
+    /// `unconfirmed`: the result did not establish that the command finished
+    /// (moved to a background shell, timed out, or an unrecognized outcome,
+    /// #450). It is never shown as success and no later event resolves it.
+    public enum Status: String, Sendable { case running, ok, error, unconfirmed }
+
+    /// The typed `command_outcome` facts of a result (#450), as far as the
+    /// transcript shows them.
+    public struct CommandOutcome: Sendable, Equatable {
+        public enum State: String, Sendable { case exited, timedOut = "timed_out", backgrounded, unknown }
+        public enum BackgroundReason: String, Sendable { case timeout, requested }
+        public var state: State
+        public var timeoutMs: Int?
+        public var backgroundReason: BackgroundReason?
+        public var shellId: String?
+        public var pid: Int?
+
+        public init(state: State, timeoutMs: Int? = nil, backgroundReason: BackgroundReason? = nil,
+                    shellId: String? = nil, pid: Int? = nil) {
+            self.state = state
+            self.timeoutMs = timeoutMs
+            self.backgroundReason = backgroundReason
+            self.shellId = shellId
+            self.pid = pid
+        }
+
+        /// Present facts; an unrecognized state is `unknown`, never an exit
+        /// (mirrors the schema's `commandOutcomeUnconfirmed`).
+        init?(_ value: JSONValue?) {
+            guard let value, value != .null else { return nil }
+            func integer(_ key: String, minimum: Double) -> Int? {
+                guard let number = value[key]?.doubleValue, number >= minimum,
+                      number == number.rounded(), number <= 9_007_199_254_740_991 else { return nil }
+                return Int(number)
+            }
+            state = value["state"]?.stringValue.flatMap(State.init(rawValue:)) ?? .unknown
+            timeoutMs = integer("timeout_ms", minimum: 0)
+            backgroundReason = value["background_reason"]?.stringValue.flatMap(BackgroundReason.init(rawValue:))
+            shellId = value["shell_id"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 }
+            pid = integer("pid", minimum: 1)
+        }
+
+        public var unconfirmed: Bool { state != .exited }
+    }
+
     public var name: String
     public var kind: String?
     public var target: String?
     public var status: Status
     public var detail: String?      // content_summary / error_summary
     public var exitCode: Int?
+    public var commandOutcome: CommandOutcome?
 
     public init(name: String, kind: String? = nil, target: String? = nil,
-                status: Status, detail: String? = nil, exitCode: Int? = nil) {
+                status: Status, detail: String? = nil, exitCode: Int? = nil,
+                commandOutcome: CommandOutcome? = nil) {
         self.name = name
         self.kind = kind
         self.target = target
         self.status = status
         self.detail = detail
         self.exitCode = exitCode
+        self.commandOutcome = commandOutcome
     }
 }
 
@@ -232,7 +278,11 @@ public struct TranscriptReducer: Sendable {
             let name = tool?["name"]?.stringValue
             let idx = (useId.flatMap { toolIndexByUseId[$0] }) ?? (name.flatMap { lastOpenToolByName[$0] })
             let statusStr = tool?["status"]?.stringValue
-            let status: ToolBlock.Status = statusStr == "error" ? .error : .ok
+            // #450: an ok result whose command end is unconfirmed (background
+            // handoff, elapsed timeout, unknown outcome) is not a success.
+            let outcome = boundedOutcome(ToolBlock.CommandOutcome(tool?["command_outcome"]))
+            let status: ToolBlock.Status = statusStr == "error"
+                ? .error : outcome?.unconfirmed == true ? .unconfirmed : .ok
             let detail = tool?["error_summary"]?.stringValue ?? tool?["content_summary"]?.stringValue
             let exit = tool?["exit_code"]?.doubleValue.map { Int($0) }
             if let i = idx, i < blocks.count, case .tool(let id, var b) = blocks[i] {
@@ -245,13 +295,17 @@ public struct TranscriptReducer: Sendable {
                     b.detail = bounded
                 }
                 if let exit { b.exitCode = exit }
+                textChars += (outcome?.shellId?.count ?? 0) - (b.commandOutcome?.shellId?.count ?? 0)
+                b.commandOutcome = outcome
                 blocks[i] = .tool(id: id, b)
                 if let useId { toolIndexByUseId.removeValue(forKey: useId) }
                 if let name { lastOpenToolByName.removeValue(forKey: name) }
                 enforceBudget()
             } else {
                 // A result with no matching call (e.g. reconnect mid-tool): show it standalone.
-                append(.tool(id: "tool-\(seqKey)", boundedTool(name: name ?? "tool", kind: tool?["kind"]?.stringValue, target: tool?["target"]?.stringValue, status: status, detail: detail, exitCode: exit)))
+                var block = boundedTool(name: name ?? "tool", kind: tool?["kind"]?.stringValue, target: tool?["target"]?.stringValue, status: status, detail: detail, exitCode: exit)
+                block.commandOutcome = outcome
+                append(.tool(id: "tool-\(seqKey)", block))
             }
             return true
         default:
@@ -298,6 +352,14 @@ public struct TranscriptReducer: Sendable {
         )
     }
 
+    /// The command facts' one free-form string (the vendor shell handle) gets
+    /// the same per-field bound as every other harness-supplied tool string.
+    private mutating func boundedOutcome(_ outcome: ToolBlock.CommandOutcome?) -> ToolBlock.CommandOutcome? {
+        guard var outcome else { return nil }
+        outcome.shellId = outcome.shellId.map { bound($0, cap: toolFieldCap, keepTail: false) }
+        return outcome
+    }
+
     /// Counted text of a block — every retained string, tool fields included
     /// (the invariant must cover ALL unbounded inputs, review sol #2).
     private func chars(of block: TranscriptBlock) -> Int {
@@ -306,6 +368,7 @@ public struct TranscriptReducer: Sendable {
         case .message(_, let text): return text.count
         case .tool(_, let b):
             return b.name.count + (b.kind?.count ?? 0) + (b.target?.count ?? 0) + (b.detail?.count ?? 0)
+                + (b.commandOutcome?.shellId?.count ?? 0)
         }
     }
 

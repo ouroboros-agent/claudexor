@@ -947,7 +947,13 @@ views in the shared design-system files; screens compose them.
     `TranscriptPresentation`): one line per tool (status glyph + typed-kind
     icon + humane title — a command shows its binary's basename, the full
     command line is the subtitle); a FAILED tool stands alone and carries its
-    error summary (or "exit N") as a second dimmed line; runs of MORE THAN
+    error summary (or "exit N") as a second dimmed line; an UNCONFIRMED command
+    (moved to a background shell, timed out, or an unknown outcome) never shows
+    the success check: it stands alone with the amber warning triangle
+    (`exclamationmark.triangle.fill`, caution tone) and its typed
+    state as a second secondary line («Moved to background after 30s · still
+    running · shell 3 · pid 4242»), worded by the engine's command-outcome
+    label; runs of MORE THAN
     THREE consecutive same-name OK tools collapse into one quiet group row
     («Read · 6 calls»); thinking is a single timer row («◐ Thinking · 12s» —
     the reasoning text and full tool output live only in the inspector); zero

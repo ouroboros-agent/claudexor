@@ -8,6 +8,7 @@ import { closeSync, fstatSync, lstatSync, openSync, readSync } from "node:fs";
 import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import {
+  commandOutcomeUnconfirmed,
   ControlTimelineEvent,
   type ControlEvidenceIntegrity,
   ControlWebEvidence,
@@ -260,6 +261,9 @@ function timelineSeverity(
   tool: Record<string, unknown>,
 ): "info" | "warning" | "error" {
   if (payload["error"] || tool["status"] === "error" || ERROR_EVENT_TYPES.has(type)) return "error";
+  // #450: a command still running in a background shell, timed out or in an
+  // unknown state is not a finished success (typed fact, never row text).
+  if (commandOutcomeUnconfirmed(tool["command_outcome"])) return "warning";
   const reason = FallbackReason.safeParse(payload["reason"]);
   if (
     type === "route.fallback.auth_switched" &&
