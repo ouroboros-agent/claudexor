@@ -2975,7 +2975,7 @@ export class Orchestrator {
       firstPrompt: lane.firstPrompt,
       registry: this.config(repoRoot)?.global.credential_profiles ?? [],
       policy: this.credentials.profilePolicy(repoRoot, adapter.id),
-      snapshots: this.deps.quotaSnapshots?.() ?? [],
+      quotaSnapshots: () => this.deps.quotaSnapshots?.() ?? [],
       retryPolicy: transientRetryPolicy(this.config(repoRoot)),
       pinned: runInput?.credentialProfileId != null, // D-U6: a pin never rotates
       defaultRouteWasVendorNative: routed.authRouteEstimate === "local_session",

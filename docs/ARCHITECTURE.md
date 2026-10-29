@@ -1528,7 +1528,14 @@ that legitimately flows as mid-stream `message` events (the claude
 org-disabled incident shape) can never suppress failover on any adapter.
 Credentials never change inside a running spawn; a
 rotation INTO a spent or still-cooling profile is refused by the same
-headroom-plus-cooldown check. When no
+headroom-plus-cooldown check. A reactive decision reads the quota registry's
+current projection once, after its readiness and current-subject probes, and
+uses that one value for selection, the exhaustion event and the typed terminal
+(#457): a reset, replacement or clock-aged window recorded after the attempt
+began is seen, while a stale but live spent window still blocks. Because
+read-time aging marks a whole snapshot stale once any window resets, a weekly
+reserve below 100% on the same snapshot is not enforced until the next poll;
+that freshness rule is unchanged here. When no
 target survives (all spent/excluded/wrong-kind), the engine emits typed
 `route.profile.rotation_exhausted` with each rejected profile's reason and
 headroom or cooldown evidence (with its earliest known release instant); the
@@ -5365,7 +5372,11 @@ that tick. A subject's poll rate-limit floor is never bypassed. An absence-only
 lane keeps the pure ladder, and a lane whose last satisfied subject disappears
 continues at its earned rung. Every refresher learns whether the cycle is an
 explicit foreground refresh or a paced background poll, so a source may
-re-present on request a credential it otherwise leaves alone. A typed
+re-present on request a credential it otherwise leaves alone. Account-polling
+sources, agy included, also apply the cycle's exact target, due-subject
+selection and subject floors before spawning a vendor read. Agy has no typed
+rate-limit outcome yet (#240): its non-auth poll failures stay `refresh_failed`
+and arm no floor. A typed
 `rate_limited` poll absence arms a subject-and-route floor in the same
 pacer/store. A bare 429 has unknown vendor bucket scope: policy holds the
 observed subject and known token-identical aliases while unrelated accounts
@@ -6864,8 +6875,12 @@ code touching one of these areas must honor it or change it explicitly here.
   profile, operation id, time, cause, known currentness and native binary/child
   facts are non-secret metadata. A physical Claude usage HTTP attempt, a skipped
   token, and a Codex native RPC are different observations; an RPC does not imply
-  one HTTP request. Native refresh receipts describe observed expiry and child
-  outcome, not an inferred writer or reconstructed historical credential loss.
+  one HTTP request. An Agy `poll` receipt records one account's quota read
+  (its `/quota` and `/model` print commands) or why it was skipped, not a count
+  of vendor requests; a read's started and terminal receipts share one operation
+  id, and each skip has its own. Native refresh receipts describe observed
+  expiry and child outcome, not an inferred writer or reconstructed historical
+  credential loss.
   Retry-After and existing foreground/background polling rules are unchanged.
 - The `verify` intent is reserved: the shipped FinalVerifier is
   deterministic-only (fresh-tree apply + gates, no model), so no engine path
