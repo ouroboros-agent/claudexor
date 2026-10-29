@@ -165,7 +165,10 @@ export interface PurgeRepositoryRecord {
  * worktree and a project folder can be replaced, so the repository asked goes
  * to `recordRepository` before Git's first change in it, wherever it was
  * found: a retry after a refused branch deletion asks the same repository,
- * not whatever is at the project path by then. Where Git has nothing of the
+ * not whatever is at the project path by then. That holds after Git deleted
+ * the registration but not the directory too: the `.git` file left behind
+ * names a registration that is gone, and when it was in the recorded
+ * repository, still at its path, that one is asked. Where Git has nothing of the
  * thread to change, nothing is recorded. A repository that cannot be
  * reached, or a recorded one replaced at its path, keeps the purge pending. A
  * link above the thread directory is refused (`ownedProjectRuntimeDir`); one
@@ -197,9 +200,10 @@ export async function purgeThreadWorktree(
     if (stat?.isSymbolicLink()) unlinkSync(entry);
     if (!stat?.isDirectory()) break;
   }
+  const recorded = () => recordedRepository(repository, threadId);
   const owner =
-    worktreeRepository(path) ??
-    recordedRepository(repository, threadId) ??
+    worktreeRepository(path, recorded) ??
+    recorded() ??
     (await projectRepository(projectRoot, worktreeRecorded));
   if (owner !== null) {
     const record = { gitDir: owner, identity: directoryIdentity(owner) };

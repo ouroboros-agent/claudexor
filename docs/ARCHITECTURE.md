@@ -3130,8 +3130,12 @@ not retry automatically.
   Git directory and that directory's inode) before Git's first change there
   and waits until the record is on disk; until the obligation clears, a retry
   and the startup replay ask that repository, not whatever is at the project
-  path by then, and its Git directories are the ones synced to disk. What is
-  already gone in the repository asked counts as deleted, and a cleanup in
+  path by then, and its Git directories are the ones synced to disk. Git
+  deletes the registration even when it fails to delete the worktree
+  directory (a read-only one, for example): the directory keeps its `.git`
+  file naming that registration, and a retry asks the recorded repository
+  when the registration was in it and that repository is still at its path.
+  What is already gone in the repository asked counts as deleted, and a cleanup in
   which Git had nothing to change records nothing. A repository that cannot
   be reached keeps the cleanup pending, because a repository moved without a
   relink and a deleted one look the same: after a move, `git worktree repair`

@@ -288,8 +288,10 @@ export async function worktreeRemove(repo: string, path: string): Promise<void> 
  * Deregister the linked worktree Git records at `path`; Git deletes its
  * directory too. A path Git does not register is already removed. A refusal
  * (a locked worktree, an unreadable registration) throws and leaves the
- * registration and the directory as they were. The registration is found by
- * `samePlace` and removed in Git's own spelling, so a stale one whose
+ * registration and the directory as they were. A directory Git cannot delete
+ * (a permission error) throws after Git deleted the registration: the
+ * directory stays, its `.git` file naming what is gone. The registration is
+ * found by `samePlace` and removed in Git's own spelling, so a stale one whose
  * directory is gone still goes. Git prints porcelain paths unquoted, one per
  * line, so a path holding a line break cannot be read back and is refused
  * rather than reported absent. `beforeRemove` runs once Git is known to
@@ -320,22 +322,31 @@ export async function worktreeRemoveRegistered(
  * The common Git directory of the repository that registered the linked
  * worktree at `path`, from Git's own records: the worktree's `.git` file names
  * its registration, which must still exist and name this worktree back. Null
- * when `path` holds no such file. Throws when the registration is gone or
- * names another worktree: the repository moved or was deleted, which nothing
- * here can tell apart, so whatever it still records cannot be proven gone.
+ * when `path` holds no such file. A registration that is gone or names another
+ * worktree is what a moved or deleted repository leaves, and also a removal
+ * that deleted the registration but not the directory
+ * (`worktreeRemoveRegistered`; a later worktree can take the freed name).
+ * `recorded`, called only then, tells them apart: the common Git directory a
+ * caller kept from before its removal is returned when the registration was
+ * in it. Otherwise this throws, since whatever a moved repository still
+ * records cannot be proven gone.
  */
-export function worktreeRepository(path: string): string | null {
+export function worktreeRepository(
+  path: string,
+  recorded: () => string | null = () => null,
+): string | null {
   const gitfile = join(path, ".git");
   const pointer = /^gitdir: (.+)$/m.exec(plainText(gitfile) ?? "")?.[1]?.trimEnd();
   if (!pointer) return null;
   const registration = resolve(path, pointer);
   const named = plainText(join(registration, "gitdir"))?.trimEnd();
-  if (!named || !samePlace(resolve(registration, named), gitfile)) {
-    throw new WorkspaceError(
-      `Git no longer registers worktree ${path} at ${registration}: its repository moved or was deleted; if it moved, run "git worktree repair" in it so the next attempt can finish this cleanup`,
-    );
-  }
-  return resolve(registration, readFileSync(join(registration, "commondir"), "utf8").trimEnd());
+  if (named && samePlace(resolve(registration, named), gitfile))
+    return resolve(registration, readFileSync(join(registration, "commondir"), "utf8").trimEnd());
+  const gitDir = recorded();
+  if (gitDir !== null && samePlace(dirname(registration), join(gitDir, "worktrees"))) return gitDir;
+  throw new WorkspaceError(
+    `Git no longer registers worktree ${path} at ${registration}: its repository moved or was deleted; if it moved, run "git worktree repair" in it so the next attempt can finish this cleanup`,
+  );
 }
 
 /** The common Git directory of the repository `dir` is in; throws when Git cannot tell. */

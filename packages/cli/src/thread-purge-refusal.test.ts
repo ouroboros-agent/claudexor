@@ -7,9 +7,12 @@
  * Git still records; once the cause is gone, the replay completes. The
  * repository a cleanup asks, whether a moved worktree names it or the project
  * folder holds it, is recorded with the obligation (#333 review R1, R2): the
- * retry and a replay after restart finish and sync there, not at the old path.
+ * retry and a replay after restart finish and sync there, not at the old path,
+ * also after Git dropped the registration of a worktree directory it could not
+ * delete (R3).
  */
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -421,6 +424,55 @@ describe("purge cleanup refusals stay pending (#333 review C1, C2)", () => {
     expect(openPurges()).toEqual([]);
     expect(sentinel(project.root)).toBe("user data must remain");
   });
+
+  // Permissions do not stop root, and Windows has no read-only directory bit.
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+    "finishes at the next start a worktree removal Git left half done on a read-only directory",
+    async () => {
+      const project = userProject(join(root, "project"));
+      const { thread, tree, branch } = await isolatedThread(project.root);
+      graph.threads.trashThread(thread.id);
+      chmodSync(tree.path, 0o555);
+      let receipt: Awaited<ReturnType<typeof removeWithTrashedThreads>>;
+      try {
+        receipt = await removeWithTrashedThreads(project.id);
+      } finally {
+        chmodSync(tree.path, 0o755);
+      }
+      expect(receipt.purgedThreads).toEqual([
+        {
+          threadId: thread.id,
+          cleanup: "pending",
+          cleanupError: expect.stringContaining("git worktree remove failed"),
+        },
+      ]);
+      // Git dropped the registration although it failed on the directory, which
+      // keeps the `.git` file naming it; the obligation kept the repository.
+      expect(await registrations(project.root)).not.toContain(thread.id);
+      expect(existsSync(join(tree.path, ".git"))).toBe(true);
+      expect(await branchExists(project.root, branch)).toBe(true);
+      expect(graph.obligations.get("purge_fs", thread.id)?.payload).toMatchObject({
+        repository: { gitDir: join(project.root, ".git"), identity: expect.any(String) },
+      });
+      await store.flushed();
+      expect(openPurges()).toEqual([{ kind: "purge_fs", key: thread.id, state: "pending" }]);
+
+      await graph.close();
+      await store.close();
+      await open();
+      const synced = syncedDirectories();
+      expect(await replay()).toEqual({
+        completed: [{ kind: "purge_fs", key: thread.id }],
+        failed: [],
+        unhandled: [],
+      });
+      expect(await branchExists(project.root, branch)).toBe(false);
+      expect(existsSync(dirname(tree.path))).toBe(false);
+      expect(synced()).toContain(join(project.root, ".git"));
+      expect(openPurges()).toEqual([]);
+      expect(sentinel(project.root)).toBe("user data must remain");
+    },
+  );
 
   it("completes an isolated thread that never had a worktree, outside any repository", async () => {
     const project = userProject(join(root, "plain"));

@@ -2,10 +2,12 @@
  * The isolated-thread purge never reports as deleted what Git still records
  * (#333 review C2) and never follows a link out of the runtime tree (C1): a
  * Git refusal, a link above the thread directory or a repository it cannot
- * reach throws, keeping directory, registration and branch; what is already
- * gone counts as done.
+ * reach throws, keeping what Git still records; what is already gone counts as
+ * done. A removal Git left half done, its registration gone and the directory
+ * still there, finishes in the repository recorded before it (R3).
  */
 import {
+  chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -53,6 +55,30 @@ const branchExists = async (repo: string, branch: string): Promise<boolean> =>
   (await git(repo, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`])).code === 0;
 const registrations = async (repo: string): Promise<string> =>
   (await git(repo, ["worktree", "list", "--porcelain"])).stdout;
+
+// Permissions do not stop root, and Windows has no read-only directory bit.
+const unixUser = it.skipIf(process.platform === "win32" || process.getuid?.() === 0);
+
+/** Git drops a worktree's registration even when it cannot delete the
+ * directory, which stays with the `.git` file naming the registration now gone. */
+async function partlyRemoved(repo: string, threadId: string) {
+  const tree = await ensureThreadWorktree(repo, threadId);
+  const recorded: PurgeRepositoryRecord[] = [];
+  const recordRepository = async (repository: PurgeRepositoryRecord) =>
+    void recorded.push(repository);
+  chmodSync(tree.path, 0o555);
+  try {
+    await expect(purgeThreadWorktree(repo, threadId, { recordRepository })).rejects.toThrow(
+      /git worktree remove failed/,
+    );
+  } finally {
+    chmodSync(tree.path, 0o755);
+  }
+  expect(await registrations(repo)).not.toContain(threadId);
+  expect(existsSync(join(tree.path, ".git"))).toBe(true);
+  expect(recorded).toEqual([{ gitDir: join(repo, ".git"), identity: expect.any(String) }]);
+  return { tree, recorded, recordRepository };
+}
 
 describe("isolated thread purge", () => {
   it("keeps a locked worktree, its registration and branch, and finishes once unlocked", async () => {
@@ -271,6 +297,85 @@ describe("isolated thread purge", () => {
     mkdirSync(repo);
     expect((await git(repo, ["init", "-q"])).code).toBe(0);
     await purgeThreadWorktree(repo, "th-orphan");
+  });
+
+  unixUser("finishes a removal Git left half done in the repository it recorded", async () => {
+    const repo = await userRepo();
+    const { tree, recorded, recordRepository } = await partlyRemoved(repo, "th-partial");
+    const retry = () =>
+      purgeThreadWorktree(repo, "th-partial", { repository: recorded[0], recordRepository });
+    // Without the record, nothing tells this from a moved repository.
+    await expect(purgeThreadWorktree(repo, "th-partial")).rejects.toThrow(/git worktree repair/);
+
+    // While the directory cannot be deleted, the cleanup stays pending.
+    chmodSync(tree.path, 0o555);
+    try {
+      await expect(retry()).rejects.toThrow();
+    } finally {
+      chmodSync(tree.path, 0o755);
+    }
+    expect(existsSync(join(tree.path, ".git"))).toBe(true);
+    await expect(retry()).resolves.toBe(join(repo, ".git"));
+    expect(await branchExists(repo, "claudexor/thread-th-partial")).toBe(false);
+    expect(existsSync(dirname(tree.path))).toBe(false);
+    expect(recorded).toHaveLength(1);
+  });
+
+  unixUser("leaves the worktree that took a half-removed one's registration name", async () => {
+    const repo = await userRepo();
+    const { tree, recorded } = await partlyRemoved(repo, "th-partial-reused");
+    const newer = await ensureThreadWorktree(repo, "th-newer");
+    // Git names a registration after the directory, so the newer one got the freed name.
+    expect(readFileSync(join(repo, ".git", "worktrees", "tree", "gitdir"), "utf8")).toContain(
+      "th-newer",
+    );
+
+    await expect(
+      purgeThreadWorktree(repo, "th-partial-reused", { repository: recorded[0] }),
+    ).resolves.toBe(join(repo, ".git"));
+    expect(existsSync(dirname(tree.path))).toBe(false);
+    expect(await branchExists(repo, "claudexor/thread-th-partial-reused")).toBe(false);
+    expect(await registrations(repo)).toContain(realpathSync(newer.path));
+    expect(await branchExists(repo, "claudexor/thread-th-newer")).toBe(true);
+    expect(readFileSync(join(newer.path, "README.md"), "utf8")).toBe("user file\n");
+  });
+
+  unixUser(
+    "keeps a half-done removal pending while its repository is away or replaced",
+    async () => {
+      const project = await userRepo();
+      const { tree, recorded } = await partlyRemoved(project, "th-partial-moved");
+      const elsewhere = join(tempDir("claudexor-purge-moved-"), "repo");
+      renameSync(project, elsewhere);
+      const retry = () =>
+        purgeThreadWorktree(project, "th-partial-moved", { repository: recorded[0] });
+
+      await expect(retry()).rejects.toThrow(/is gone or another one is there now/);
+      mkdirSync(project);
+      expect((await git(project, ["init", "-q"])).code).toBe(0);
+      await expect(retry()).rejects.toThrow(/is gone or another one is there now/);
+      expect(await branchExists(elsewhere, "claudexor/thread-th-partial-moved")).toBe(true);
+      expect(existsSync(join(tree.path, ".git"))).toBe(true);
+
+      rmSync(project, { recursive: true, force: true });
+      renameSync(elsewhere, project);
+      await expect(retry()).resolves.toBe(join(project, ".git"));
+      expect(await branchExists(project, "claudexor/thread-th-partial-moved")).toBe(false);
+      expect(existsSync(dirname(tree.path))).toBe(false);
+    },
+  );
+
+  unixUser("trusts the record only for a registration that was in that repository", async () => {
+    const repo = await userRepo();
+    const { tree, recorded } = await partlyRemoved(repo, "th-partial-foreign");
+    const other = await userRepo();
+    writeFileSync(join(tree.path, ".git"), `gitdir: ${join(other, ".git", "worktrees", "tree")}\n`);
+
+    await expect(
+      purgeThreadWorktree(repo, "th-partial-foreign", { repository: recorded[0] }),
+    ).rejects.toThrow(/git worktree repair/);
+    expect(await branchExists(repo, "claudexor/thread-th-partial-foreign")).toBe(true);
+    expect(existsSync(join(tree.path, ".git"))).toBe(true);
   });
 
   // Neither character is allowed in a Windows file name.
