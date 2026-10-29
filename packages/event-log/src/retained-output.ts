@@ -21,6 +21,9 @@ interface SourceOutput {
   blocks: TextBlock[];
   openDelta: boolean;
   pendingFlush: boolean;
+  /** The block of the last final AnswerAssembly accepts (null when that final has no
+   * visible text, only machine truth); absent while none was accepted. */
+  answer?: TextBlock | null;
 }
 
 /** What a caller already passes on, so the projection does not repeat it. */
@@ -28,9 +31,10 @@ interface CarriedOutput {
   /** Carried text (a final answer, a checkpoint): a block wholly within it is omitted. */
   text?: string;
   /** The native try (attempt, process session) whose answer is carried. Its answer is
-   * its typed final (AnswerAssembly), so that final and the blocks repeating it are
-   * omitted and its other narration stays; without a typed final its joined
-   * narration is the answer and the whole try is omitted. */
+   * the LAST typed final AnswerAssembly accepts (a later native turn's final wins),
+   * so only that final and the blocks it repeats are omitted; its earlier finals and
+   * other narration stay. Without an accepted final its joined narration is the
+   * answer and the whole try is omitted. */
   represented?: { attempt: string; session: string };
 }
 
@@ -78,10 +82,21 @@ export function retainedOutput(
       continue;
     }
     const text = p["text"];
-    if (typeof text !== "string" || text.length === 0) continue;
-    const seq = event.seq ?? 0;
     const delta = payload?.["delta"] === true;
     const final = p["final"] === true;
+    // AnswerAssembly accepts a typed final that is no fragment or snapshot and has
+    // display text or machine truth; the last one accepted is the answer.
+    const accepted =
+      final &&
+      !delta &&
+      payload?.["buffered"] !== true &&
+      ((typeof text === "string" && text.trim() !== "") ||
+        typeof payload?.["work_report_envelope"] === "string");
+    if (typeof text !== "string" || text.length === 0) {
+      if (accepted) source.answer = null;
+      continue;
+    }
+    const seq = event.seq ?? 0;
     const last = source.blocks.at(-1);
     if (delta && source.openDelta && last) {
       last.text += text;
@@ -100,6 +115,7 @@ export function retainedOutput(
     }
     source.openDelta = delta;
     source.pendingFlush = payload?.["buffered"] === true;
+    if (accepted) source.answer = text.trim() ? source.blocks.at(-1)! : null;
   }
   const observed = [...sources.values()]
     .flatMap((source) => source.blocks)
@@ -110,15 +126,14 @@ export function retainedOutput(
     const represented =
       carried.represented?.attempt === source.attempt &&
       carried.represented.session === source.session;
-    const answers = represented
-      ? source.blocks.filter((block) => block.final && block.text.trim()).map((b) => b.text.trim())
-      : [];
+    const answer = represented ? source.answer : undefined;
     const blocks = source.blocks.filter((block) => {
       const text = block.text.trim();
       if (!text || carried.text?.includes(text)) return false;
-      return (
-        !represented || (answers.length > 0 && !answers.some((answer) => answer.includes(text)))
-      );
+      if (!represented) return true;
+      // No accepted final: the joined narration is the answer.
+      if (answer === undefined) return false;
+      return answer === null || (block !== answer && !answer.text.trim().includes(text));
     });
     if (!blocks.length) return [];
     return [

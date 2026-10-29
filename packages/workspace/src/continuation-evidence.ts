@@ -109,11 +109,12 @@ function terminalRecords(runDir: string) {
  * Recorded assistant output that what a run carries forward does not
  * represent, each block once under its attempt and native try (its process
  * session). The represented try is the last accepted try of
- * `representedAttempt`, whose answer or report is carried: its typed final
- * and the blocks repeating it are left out, its other narration stays (with
- * no typed final its joined narration is the carried answer, so the whole try
- * is left out). Any block the carried text contains is left out too. Read
- * from events the caller already holds.
+ * `representedAttempt`, whose answer or report is carried: its last typed
+ * final (AnswerAssembly's answer) and the blocks repeating it are left out,
+ * its other narration and earlier native-turn finals stay (with no typed final
+ * its joined narration is the carried answer, so the whole try is left out).
+ * Any block the carried text contains is left out too. Read from events the
+ * caller already holds.
  */
 export function unrepresentedOutput(
   events: readonly RunEvent[],
@@ -223,8 +224,8 @@ export function readContinuationEvidence(runDir: string) {
   const attempt = telemetry?.attempts.find((entry) => entry.attempt_id === attemptId);
   // The final answer speaks for the run; the recorded output it does not
   // represent (other attempts, the winner's earlier native tries and its
-  // winning try's non-final narration) stays beside it as evidence, once under
-  // its attempt and try.
+  // winning try's other narration and earlier native-turn finals) stays beside
+  // it as evidence, once under its attempt and try.
   const winner = telemetry?.final_attempt_id ?? null;
   const unrepresented = answer ? unrepresentedOutput(events.events, facts, winner, answer) : null;
   const output = answer

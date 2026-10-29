@@ -2958,10 +2958,11 @@ not retry automatically.
   the D-16d checkpoint continuation in Ask and Agent) never re-plans or moves
   the predecessor's session again: its first try is a fresh session re-briefed
   by the evidence index over the chain's sources plus this run's earlier
-  attempts (a checkpoint carries only the exhausted try's typed final report,
-  so a checkpoint continuation's index keeps every other output recorded in
-  this run once: earlier tries of the exhausted attempt and that try's own
-  non-final narration, never the report or a block repeating it), and its
+  attempts (a checkpoint carries only the exhausted try's last typed final as
+  its report, so a checkpoint continuation's index keeps every other output
+  recorded in this run once: earlier tries of the exhausted attempt and that
+  try's other narration and earlier native-turn finals, never the report or a
+  block repeating it), and its
   receipt names the attempt of this run that carries its
   latest work, else the planned predecessor. An attempt's own model (a fallback model or budget
   downgrade) is never replaced by an inherited one; synthesis and repair never
@@ -2994,11 +2995,12 @@ not retry automatically.
   run is that separate evidence, never the session's history. A packet keeps
   the final answer (`final/answer.md`, labelled with its attempt) first and
   then the recorded output it does not represent (other attempts, the winning
-  attempt's earlier native tries and the winning try's own non-final
-  narration), each block once under its attempt and try (process session),
-  never the answer, its typed final or a block repeating them; a try without
-  a typed final is represented whole, since its joined narration is the
-  answer. The tool rows of a source with several attempts name their attempt.
+  attempt's earlier native tries and the winning try's own other narration,
+  an earlier native turn's final included), each block once under
+  its attempt and try (process session), never the answer, the try's last
+  typed final (the one carried) or a block repeating them; a try without a
+  typed final is represented whole, since its joined narration is the answer.
+  The tool rows of a source with several attempts name their attempt.
   Workspace: an
   explicit `execution.workspaceRoot` or live isolation wins; otherwise a
   predecessor whose isolated envelope was kept (below) is continued IN that

@@ -6,9 +6,9 @@
  * second time. The new attempt's first try is a fresh session re-briefed by
  * the evidence index over the ancestral sources plus this run's earlier
  * attempts. A checkpoint continuation's checkpoint carries only the exhausted
- * try's typed final report, so its index keeps every other output recorded in
- * this run once (earlier tries of the exhausted attempt and that try's own
- * non-final narration included). Its receipt names
+ * try's last typed final as its report, so its index keeps every other output
+ * recorded in this run once (earlier tries of the exhausted attempt and that
+ * try's other narration and earlier native-turn finals included). Its receipt names
  * the actual source: this run's latest attempt that started, else the planned
  * predecessor.
  */
