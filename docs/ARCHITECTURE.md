@@ -6401,10 +6401,10 @@ saved state, through `AppPersistence`: the Kit stores under Application
 Support, resolved again for every load and save; the standard user defaults for
 appearance, the current project and its recents; unresolved account-reset
 requests; the `CLAUDEXOR_DEBUG_APPEARANCE` and `CLAUDEXOR_PROJECT_ROOT` launch
-fallbacks; and the `~/.ssh/config` scan. Launch restore runs before the writers
-are attached, so a restored value or launch fallback is never written back. Any
-other `AppModel`, including every test model, starts empty and keeps all of
-this in memory.
+fallbacks; and the `~/.ssh/config` scan. Launch restore assigns through the
+same writers, so it saves the restored appearance, project and recents again,
+and an applied launch fallback becomes the saved value. Any other `AppModel`,
+including every test model, starts empty and keeps all of this in memory.
 
 Remote project browsing uses the home-contained directory endpoint, which
 lists only visible (non-hidden) directories and refuses to descend into dot

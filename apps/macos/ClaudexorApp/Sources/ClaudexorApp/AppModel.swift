@@ -59,9 +59,9 @@ final class AppModel {
         route = .task(id)
         inspectorPresented = true
     }
-    /// Where this session's state persists (AppPersistence.swift). Attached
-    /// only after launch restore, so restoring never writes anything back.
-    @ObservationIgnored private(set) var persistence = AppPersistence.memoryOnly
+    /// Where this session's state persists (AppPersistence.swift), fixed
+    /// before launch restore so the writers below save what it restores.
+    let persistence: AppPersistence
     var appearance: AppearanceMode = .dark {
         didSet { persistence.preferences?.save(appearance.rawValue, "claudexor.appearance") }
     }
@@ -418,6 +418,7 @@ final class AppModel {
          persistence: AppPersistence = .memoryOnly,
          lifecycleOwner: LocalRuntimeLifecycleOwner = LocalRuntimeLifecycleOwner()) {
         self.localRuntimeLifecycleOwner = lifecycleOwner
+        self.persistence = persistence
         self.accountResourceActions = AccountsResourceActions(preferences: persistence.accountResetRecovery)
         let sshManager = SSHConnectionManager()
         self.sshConnectionManager = sshManager
@@ -429,13 +430,14 @@ final class AppModel {
         // Without this first-run authorization request, run-completion
         // notifications are silently dropped in the bundled .app forever.
         if requestNotificationAuthorization { Notifier.requestAuthIfPossible() }
-        if loadPersistedState { restore(from: persistence) }
-        self.persistence = persistence
+        if loadPersistedState { restore() }
     }
 
-    /// Launch restore. A debug appearance or environment project applies to
-    /// this session only: the writers are not attached yet.
-    private func restore(from persistence: AppPersistence) {
+    /// Launch restore. It assigns through the `didSet` writers, as the app
+    /// always has: the restored appearance, project and recents are saved
+    /// again, and an applied `CLAUDEXOR_DEBUG_APPEARANCE` or
+    /// `CLAUDEXOR_PROJECT_ROOT` value becomes the saved one.
+    private func restore() {
         if let raw = persistence.preferences?.load("claudexor.appearance") as? String,
            let saved = AppearanceMode(rawValue: raw) {
             appearance = saved

@@ -310,11 +310,15 @@ Tests and local smokes must never touch real user state:
   closure-backed preferences. `HOME` does not move Foundation's home directory,
   so a test of the default locations re-executes itself through
   `isolatedRuntimeConsumer` (fresh `HOME` and `CFFIXED_USER_HOME`) and proves
-  each path resolves inside that home before writing there. Unchanged decoy
-  bytes prove no write; a model that stays empty beside loadable decoys proves
-  no read. Rescan, New SSH Host and adding a connection still use the real
-  `~/.ssh/config`, and a test that reaches the default daemon discovery or
-  launcher still needs `isolatedRuntimeConsumer`.
+  each path resolves inside that home before writing there. Launch restore
+  saves the preferences it applies, so that test only reads the real user
+  defaults and gives the app's composition a recording preference writer; a
+  fresh `HOME` or `CFFIXED_USER_HOME` is not relied on to keep a write out of
+  the developer's defaults domain. Unchanged decoy bytes prove no write; a
+  model that stays empty beside loadable decoys proves no read. Rescan, New SSH
+  Host and adding a connection still use the real `~/.ssh/config`, and a test
+  that reaches the default daemon discovery or launcher still needs
+  `isolatedRuntimeConsumer`.
 - The `fake-*` harnesses are the offline, keyless, deterministic fixtures
   (`--harness fake-success`, etc.); they are only selectable by explicit id and
   never enter automatic or reviewer pools. `fake-implement` additionally writes

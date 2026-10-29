@@ -6,9 +6,11 @@ import Testing
 
 /// Where an AppModel's state persists (#379). Stores live in disposable
 /// directories and preferences in closures. The one test that touches the
-/// default Application Support, user defaults and `~/.ssh/config` locations
-/// re-executes itself in a fresh HOME/CFFIXED_USER_HOME and proves where each
-/// resolves before it writes anything there.
+/// default Application Support and `~/.ssh/config` locations re-executes
+/// itself in a fresh HOME/CFFIXED_USER_HOME and proves where each resolves
+/// before it writes anything there. It reads the real user defaults but
+/// records their writes: no test writes the user defaults of the Mac it
+/// runs on.
 @MainActor @Suite struct AppPersistenceTests {
     @Test func injectedStoresSaveEveryRemoteWriterAndRestoreItOffline() async throws {
         let stores = TemporaryRemoteStores("cx-persist")
@@ -27,7 +29,7 @@ import Testing
         #expect(model.remoteConnections.map(\.id) == [alpha.id, beta.id])
         #expect(model.remoteConnections.map(\.status) == [RemoteConnectionState.offline, .offline])
         #expect(model.remoteThreadCache.map(\.thread.id) == ["alpha-old", "beta-kept"])
-        // Restoring is not saving: the file still holds the live status.
+        // Restoring does not rewrite connections: the file still holds the live status.
         #expect(try stores.connections.load().map(\.status) == [RemoteConnectionState.connected, .offline])
 
         // Each writer is checked on its own; a later save would mask a missed one.
@@ -89,11 +91,22 @@ import Testing
         var launch = saved.persistence
         launch.environment = ["CLAUDEXOR_DEBUG_APPEARANCE": "light", "CLAUDEXOR_PROJECT_ROOT": "/env/project"]
         let model = AppModel(requestNotificationAuthorization: false, persistence: launch)
-        // The launch switches apply to this session only; restoring saves nothing.
         #expect(model.appearance == .light)
         #expect(model.projectRoot == "/env/project")
         #expect(model.recentProjects == ["/saved/one"])
-        #expect(saved.writes.isEmpty)
+        // Restoring saves what it applied, the launch switches included...
+        #expect(saved.writes == [
+            "claudexor.appearance", "claudexor.appearance", "claudexor.projectRoot", "claudexor.recentProjects",
+        ])
+        #expect(saved.values["claudexor.appearance"] as? String == "light")
+        #expect(saved.values["claudexor.projectRoot"] as? String == "/env/project")
+        #expect(saved.values["claudexor.recentProjects"] as? [String] == ["/saved/one"])
+        // ...so a later launch without them keeps them.
+        let restarted = AppModel(requestNotificationAuthorization: false, persistence: saved.persistence)
+        #expect(restarted.appearance == .light)
+        #expect(restarted.projectRoot == "/env/project")
+        #expect(restarted.recentProjects == ["/saved/one"])
+        saved.writes.removeAll()
 
         model.appearance = .system
         model.selectProject("/picked/two")
@@ -240,8 +253,13 @@ import Testing
             #expect(try Data(contentsOf: sshConfig) == sshBefore)
             #expect(savedStandardPreferences(preferenceKeys) == preferencesBefore)
 
-            // The app's composition reads every decoy and restores without saving...
-            let app = AppModel(requestNotificationAuthorization: false, persistence: .user)
+            // The app's composition reads every decoy. Its restore saves the
+            // applied preferences back, so only that writer is replaced, by a
+            // recorder: the real user defaults domain is never written...
+            let appPreferences = PreferenceRecorder()
+            var composition = AppPersistence.user
+            composition.preferences = appPreferences.preferences(reading: AppPreferences.standard.load)
+            let app = AppModel(requestNotificationAuthorization: false, persistence: composition)
             #expect(app.remoteConnections.map(\.id) == [decoyHost.id])
             #expect(app.remoteConnections.map(\.status) == [RemoteConnectionState.offline])
             #expect(app.remoteThreadCache.map(\.thread.id) == ["decoy-default-thread"])
@@ -251,11 +269,17 @@ import Testing
             #expect(app.recentProjects == ["/decoy/default-project"])
             #expect(app.accountResourceActions.attempts(
                 for: AccountResourcesFixtures.target, at: .local).map(\.id) == ["decoy-reset"])
+            #expect(appPreferences.writes == [
+                "claudexor.appearance", "claudexor.projectRoot", "claudexor.recentProjects",
+            ])
+            #expect(appPreferences.values["claudexor.appearance"] as? String == "light")
+            #expect(appPreferences.values["claudexor.projectRoot"] as? String == "/decoy/default-project")
+            #expect(appPreferences.values["claudexor.recentProjects"] as? [String] == ["/decoy/default-project"])
             #expect(try fileBytes(in: defaultDirectory) == filesBefore)
             #expect(savedStandardPreferences(preferenceKeys) == preferencesBefore)
-            // ...then saves its remote writers where the next launch finds them.
+            // ...and its remote writers save where the next launch finds them.
             try await exerciseRemoteWriters(app, on: decoyHost, token: "app")
-            let relaunched = AppModel(requestNotificationAuthorization: false, persistence: .user)
+            let relaunched = AppModel(requestNotificationAuthorization: false, persistence: composition)
             #expect(relaunched.remoteConnections.map(\.nickname) == ["app nickname"])
             #expect(relaunched.remoteConnections.map(\.enabled) == [false])
             #expect(relaunched.remoteConnections.first?.savedProjects == ["/app/project"])
@@ -300,15 +324,18 @@ private final class PreferenceRecorder {
 
     var persistence: AppPersistence {
         AppPersistence(
-            preferences: AppPreferences(
-                load: { self.values[$0] },
-                save: { value, key in
-                    self.values[key] = value
-                    self.writes.append(key)
-                }),
+            preferences: preferences(reading: { self.values[$0] }),
             accountResetRecovery: AccountResetRecoveryPreferences(
                 load: { self.resetRecovery },
                 save: { self.resetRecovery = $0 }))
+    }
+
+    /// Preferences that read through `load` and save here.
+    func preferences(reading load: @escaping (String) -> Any?) -> AppPreferences {
+        AppPreferences(load: load, save: { value, key in
+            self.values[key] = value
+            self.writes.append(key)
+        })
     }
 }
 
