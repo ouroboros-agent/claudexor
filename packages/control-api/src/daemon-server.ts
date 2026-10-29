@@ -78,7 +78,7 @@ import { acceptRiskDecision, type RiskDecisionBody } from "./decision-accept-ris
 import { handleProjectRoute, type ProjectRouteServices } from "./project-routes.js";
 import { writeBinaryResponse } from "./binary-response.js";
 import { handleRecoveryRoute } from "./recovery-routes.js";
-import { handleJournalEventRoute } from "./journal-event-routes.js";
+import { handleJournalEventRoute, type JournalEventPageRequest } from "./journal-event-routes.js";
 import { handleDaemonStatusRoute } from "./daemon-status-routes.js";
 import { handleMaintenanceRoute, type MaintenanceRouteServices } from "./maintenance-routes.js";
 import { handleResourceRoute, type ResourceRouteServices } from "./resource-routes.js";
@@ -242,7 +242,7 @@ export interface DaemonControlApiOptions {
       recoveryValidatePartition?: (partition: string) => Promise<unknown>;
       recoveryExportPartition?: (partition: string) => Promise<unknown>;
       recoveryQuarantinePartition?: (partition: string, input: unknown) => Promise<unknown>;
-      journalEvents?: (partition: string, afterCursor?: string) => Promise<unknown>;
+      journalEvents?: (partition: string, request: JournalEventPageRequest) => Promise<unknown>;
       settings?: () => Promise<unknown>;
       updateSettings?: (patch: unknown) => Promise<unknown>;
       quota?: (input?: ControlQuotaReadRequest) => Promise<unknown>;
