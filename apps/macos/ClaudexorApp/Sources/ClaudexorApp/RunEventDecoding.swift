@@ -111,8 +111,20 @@ extension AppModel {
     /// pinned primary harness never ran and the run routed elsewhere. Built from
     /// typed event facts only — "requested claude → ran on codex (quota
     /// exhausted)". Pure so it is unit-tested directly against the event payload.
-    static func primaryDivergedNote(requested: String, effective: String?, reason: String?) -> String {
+    ///
+    /// `readiness_preferred` (#133): the primary was only a preference inside an
+    /// Auto pool and the doctor reports it degraded, so Auto ran a ready harness.
+    /// Said as a preference, never as a strict choice that was overridden; the
+    /// engine's `detail` carries the doctor's reason verbatim.
+    static func primaryDivergedNote(
+        requested: String, effective: String?, reason: String?, detail: String? = nil
+    ) -> String {
         let ran = (effective?.isEmpty == false) ? "ran on \(effective!)" : "no harness could run"
+        if reason == "readiness_preferred" {
+            let doctor = detail?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return "preferred \(requested) → \(ran). Auto runs only ready harnesses; "
+                + (doctor.isEmpty ? "\(requested) is not ready" : doctor)
+        }
         let why: String
         switch reason {
         case "quota_exhausted", "subscription_exhausted": why = "\(requested) quota exhausted"

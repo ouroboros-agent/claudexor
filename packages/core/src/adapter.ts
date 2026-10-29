@@ -1,4 +1,5 @@
 import type { NativeHomeLifetime } from "./native-home-lifetime.js";
+import type { CredentialProfileProbeOptions } from "./credential-selection.js";
 import type {
   AccountIdentity,
   AuthPreference,
@@ -52,6 +53,63 @@ export interface DoctorSpec {
  * doctor cache contract. */
 export interface HarnessModelSpec extends DoctorSpec {
   credentialProfile?: CredentialProfile | null;
+}
+
+/** Why one live model-catalog read produced no catalog (INV-104: a failed read
+ * is never a successful empty catalog). `auth_rejected` is an HTTP 401/403
+ * answer, `http_status` any other non-OK answer, `incomplete` an answer that
+ * declares more rows than it carries, `malformed` a body that is not a complete
+ * catalog (unparseable, no list, or one invalid row). */
+export interface ModelCatalogFailure {
+  cause:
+    | "no_credential"
+    | "auth_rejected"
+    | "http_status"
+    | "network"
+    | "timeout"
+    | "malformed"
+    | "incomplete";
+  /** The endpoint's HTTP status when it answered; null otherwise. */
+  httpStatus: number | null;
+  /** Bounded, redacted diagnostic for disclosure; never parsed. */
+  detail: string;
+}
+
+/** The key one catalog read sent, as its producer names it. Only the
+ * non-secret fingerprint is public; the producer may keep the key on the same
+ * object, private, so the request of the spawn whose dispatch gate made that
+ * read sends exactly the key the read checked (#393 x #147). */
+export interface ModelCatalogCredential {
+  readonly fingerprint: string;
+}
+
+/** One typed read of a live model catalog at one credential identity and time.
+ * `listed` proves presence; an empty `listed` answer is a successful empty
+ * catalog. `unavailable` proves nothing about any model. `credential` names
+ * the key the read sent, absent when the producer names none: two reads share
+ * a credential only when both carry the same fingerprint. */
+export type ModelCatalogObservation =
+  | { status: "listed"; models: HarnessModel[]; credential?: ModelCatalogCredential }
+  | { status: "unavailable"; failure: ModelCatalogFailure; credential?: ModelCatalogCredential };
+
+/**
+ * What one request that inlines a RawContextPacket may spend, derived for a
+ * spec before its packet exists (#147) from the catalog the dispatch gate read
+ * for that spawn. Token figures are ceil(characters / 4) estimates of the text
+ * the model receives, never a tokenizer count.
+ */
+export interface RawRequestCapacity {
+  /** Model the request names: the spec's model hint, else the adapter default. */
+  model: string;
+  /** Window of that model's catalog row (a routing variant resolves to its
+   * listed row); null when unknown: no row, no field, or a failed read. */
+  contextWindow: number | null;
+  /** Tokens kept free for the answer, and whether the catalog supplied them. */
+  outputAllowance: number;
+  outputAllowanceSource: "catalog" | "default";
+  /** Estimated tokens the request carries outside the packet: instructions,
+   * user text, the patch protocol and attachments as sent. */
+  framingTokens: number;
 }
 
 export interface HarnessProcessingSpec extends HarnessModelSpec {
@@ -156,8 +214,21 @@ export interface HarnessAdapter {
    * implement this (e.g. raw-api via OpenAI-compatible `GET /v1/models`);
    * native-CLI adapters that cannot enumerate simply omit it. Must fail soft
    * (return [] on network/auth error) — never throw into a picker/consumer.
+   * Consumers read through `readModelCatalog`, which prefers `modelCatalog`.
    */
   models?(spec?: HarnessModelSpec): Promise<HarnessModel[]>;
+
+  /**
+   * Optional typed read of the same catalog for a producer that can tell a
+   * failed read from an empty catalog. Its `models()` is then only the
+   * fail-soft projection of this answer. Never throws.
+   */
+  modelCatalog?(spec?: HarnessModelSpec): Promise<ModelCatalogObservation>;
+
+  /** Capacity facts for a spec whose transport inlines a RawContextPacket
+   * (#147), from `catalog`: the rows of the dispatch gate's own read for this
+   * spawn's credential identity ([] when that read failed). Reads nothing. */
+  rawRequestCapacity?(spec: HarnessRunSpec, catalog: readonly HarnessModel[]): RawRequestCapacity;
 
   /** Translate service intent using this account's inventory before ranking or
    * reserving spend. Discovery only; never starts a generation or changes auth. */
@@ -187,6 +258,7 @@ export interface HarnessAdapter {
   probeCredentialProfile?(
     profile: CredentialProfile,
     abortSignal?: AbortSignal,
+    options?: CredentialProfileProbeOptions,
   ): Promise<CredentialProfileStatus>;
 
   /**

@@ -847,6 +847,68 @@
                       ],
                       "description": "Vendor-attested request refusal that stops retries and account rotation on its harness; input, executable and credential-source causes carry their own evidence."
                     },
+                    "rawContextShortfall": {
+                      "type": "object",
+                      "properties": {
+                        "model": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "Model whose window was checked."
+                        },
+                        "context_window": {
+                          "type": "integer",
+                          "exclusiveMinimum": 0
+                        },
+                        "packet_tokens": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "description": "The packet with every optional file omitted: mandatory files, file manifest and metadata."
+                        },
+                        "framing_tokens": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "description": "The request outside the packet: instructions, user text, patch protocol and attachments."
+                        },
+                        "output_allowance_tokens": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "description": "Tokens kept free for the answer."
+                        },
+                        "mandatory_files": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "path": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "estimated_tokens": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "description": "This file's share of packet_tokens: its packet entry with content and evidence."
+                              }
+                            },
+                            "required": [
+                              "path",
+                              "estimated_tokens"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "description": "Every mandatory file, largest first."
+                        }
+                      },
+                      "required": [
+                        "model",
+                        "context_window",
+                        "packet_tokens",
+                        "framing_tokens",
+                        "output_allowance_tokens",
+                        "mandatory_files"
+                      ],
+                      "additionalProperties": false,
+                      "description": "Typed sizes behind code raw_context_exceeds_window: the window, the request's parts and every mandatory file, so surfaces never read them from safeMessage."
+                    },
                     "captureFailure": {
                       "type": "object",
                       "properties": {
@@ -944,6 +1006,9 @@
                             "subscription_window_exhausted",
                             "credential_pool_exhausted",
                             "input_too_large",
+                            "raw_context_mandatory_unavailable",
+                            "raw_context_exceeds_window",
+                            "model_catalog_unavailable",
                             "vendor_cli_too_old",
                             "credential_source_unconfirmed",
                             "delegated_home_unavailable",
@@ -2413,6 +2478,135 @@
                 }
               ],
               "description": "Typed routing rationale (QA-034) projected from telemetry; null when no ranking was computed or on legacy runs.",
+              "default": null
+            },
+            "rawContext": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "model": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Model the request named."
+                    },
+                    "estimated_request_tokens": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "Estimated tokens of the whole rendered request (chars/4, plus a fixed figure per image); never a tokenizer count."
+                    },
+                    "budget": {
+                      "type": "object",
+                      "properties": {
+                        "estimator": {
+                          "type": "string",
+                          "const": "chars_div_4"
+                        },
+                        "basis": {
+                          "type": "string",
+                          "enum": [
+                            "model_context_window",
+                            "assumed_ceiling"
+                          ]
+                        },
+                        "model": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "Model whose catalog row was consulted; null when the producer reported none."
+                        },
+                        "context_window": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "exclusiveMinimum": 0
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "output_allowance_tokens": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": 0
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "framing_tokens": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": 0
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "Estimated tokens of the request outside this packet; null when unmeasured."
+                        },
+                        "selection_limit_tokens": {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "description": "Limit the optional selection honoured: the packet's share of the window, or the assumed ceiling on file contents."
+                        },
+                        "estimated_packet_tokens": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "omitted_for_budget": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "description": "Optional files left out to honour selection_limit_tokens (listed in omissions)."
+                        },
+                        "mandatory_paths": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "description": "Project mandatory files, each delivered complete in readable_files."
+                        }
+                      },
+                      "required": [
+                        "estimator",
+                        "basis",
+                        "model",
+                        "context_window",
+                        "output_allowance_tokens",
+                        "framing_tokens",
+                        "selection_limit_tokens",
+                        "estimated_packet_tokens",
+                        "omitted_for_budget",
+                        "mandatory_paths"
+                      ],
+                      "additionalProperties": false,
+                      "description": "Sizing evidence for a raw context packet; disclosed, never a tokenizer count."
+                    }
+                  },
+                  "required": [
+                    "model",
+                    "estimated_request_tokens",
+                    "budget"
+                  ],
+                  "additionalProperties": false,
+                  "description": "Estimated size of one raw-api request as prepared just before its POST, and the budget its packet honoured; not proof the provider received it."
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Size of the raw-api request the final attempt last prepared, as receipted just before its POST (#147); null otherwise.",
               "default": null
             },
             "tests": {

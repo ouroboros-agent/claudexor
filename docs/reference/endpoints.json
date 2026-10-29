@@ -129,6 +129,18 @@
           ],
           "schema_ref": null,
           "description": "Return one fresh server-authored Accounts snapshot epoch."
+        },
+        {
+          "name": "includeApiKeys",
+          "in": "query",
+          "required": false,
+          "repeatable": false,
+          "enum": [
+            "true",
+            "false"
+          ],
+          "schema_ref": null,
+          "description": "With a resources view, add API-key rows: each harness's default API-key route (target.profile_id null) and its enabled registered API-key accounts, bound to the key a request would send now. A row read with another key is never shown. Omitted or false preserves account-only resources for strict clients."
         }
       ],
       "response_schema": "ControlCredentialProfilesQueryResponse",
@@ -836,6 +848,18 @@
           ],
           "schema_ref": null,
           "description": "Opt in to typed resources, per-constraint freshness, or resources_freshness combining both with an explicit availability_scope echo. Omitted preserves the legacy shape. Does not refresh quota."
+        },
+        {
+          "name": "includeApiKeys",
+          "in": "query",
+          "required": false,
+          "repeatable": false,
+          "enum": [
+            "true",
+            "false"
+          ],
+          "schema_ref": null,
+          "description": "With a resources view, add API-key rows: each harness's default API-key route (target.profile_id null) and its enabled registered API-key accounts, bound to the key a request would send now. A row read with another key is never shown. Omitted or false preserves account-only resources for strict clients."
         }
       ],
       "response_schema": "ControlQuotaQueryResponse",
@@ -860,6 +884,18 @@
           ],
           "schema_ref": null,
           "description": "Opt in to typed account resources alongside quota."
+        },
+        {
+          "name": "includeApiKeys",
+          "in": "query",
+          "required": false,
+          "repeatable": false,
+          "enum": [
+            "true",
+            "false"
+          ],
+          "schema_ref": null,
+          "description": "With a resources view, add API-key rows: each harness's default API-key route (target.profile_id null) and its enabled registered API-key accounts, bound to the key a request would send now. A row read with another key is never shown. Omitted or false preserves account-only resources for strict clients."
         }
       ],
       "response_schema": "ControlQuotaQueryResponse",

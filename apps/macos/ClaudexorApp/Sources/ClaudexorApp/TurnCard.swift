@@ -221,8 +221,10 @@ struct TurnCard: View {
                 // state, so D42 must not leave a project mutation visible only in
                 // the workspace Outcome facts (INV-093 honest outcome).
                 applyStateLine(run)
-                // Inline failure card: a terminal-FAILED turn with nothing to show.
-                if isSilentFailure(run) { failureCard(run) }
+                // Inline failure card: a terminal-FAILED turn with nothing to show,
+                // or a request the engine refused before sending (#147/#393) — its
+                // collapsed transcript would otherwise hide why nothing ran.
+                if isSilentFailure(run) || RunFacts.refusal(run) != nil { failureCard(run) }
             } else if let refusal = turn.enqueueError {
                 TurnRefusalCard(turn: turn, refusal: refusal, target: target)
             } else if historyRow?.runStatus == "not_retained" {
@@ -438,35 +440,7 @@ struct TurnCard: View {
     }
 
     private func failureCard(_ run: TaskRun) -> some View {
-        HStack(alignment: .top, spacing: Theme.Spacing.sm) {
-            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Theme.status(.negative))
-            VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
-                HStack(spacing: Theme.Spacing.xs) {
-                    Text(RunReasonLabel.label(run.outcomeFacts?.reason) ?? run.phase.label)
-                        .font(.caption.weight(.semibold)).foregroundStyle(Theme.status(.negative))
-                    if let category = run.failureCategory, category != "unknown" {
-                        Text(category.replacingOccurrences(of: "_", with: " "))
-                            .font(.caption2)
-                            .padding(.horizontal, Theme.Spacing.xs)
-                            .background(Theme.status(.negative).opacity(0.12), in: Capsule())
-                            .foregroundStyle(Theme.status(.negative))
-                    }
-                    if let route = run.authRoute, let effective = route.effective, effective != "unknown" {
-                        Text("route: \(RunFacts.authModeLabel(effective))")
-                            .font(.caption2).foregroundStyle(.secondary)
-                            .help("Auth route this turn ran under — requested: \(route.requested), reason: \(route.reason).")
-                    }
-                }
-                Text(failureReason(run))
-                    .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-            }
-            Spacer()
-            Button("Open run") { model.openRun(run.id) }
-                .buttonStyle(.link)
-                .help("Open this run in the thread workspace — failure detail, evidence, logs")
-        }
-        .padding(Theme.Spacing.sm)
-        .background(Theme.status(.negative).opacity(0.08), in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+        TurnFailureCard(run: run, reason: failureReason(run), openRun: { model.openRun(run.id) })
     }
 
     private func failureReason(_ run: TaskRun) -> String {

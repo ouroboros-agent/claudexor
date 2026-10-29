@@ -1,5 +1,6 @@
 import { z } from "zod/v3";
 import { HarnessRequestRefusal } from "./harness-input.js";
+import { RawContextShortfall } from "./raw.js";
 import { HarnessFailureCategory } from "./telemetry.js";
 
 /**
@@ -28,6 +29,16 @@ export const RunFailureCode = z
      * member reopens — or null when any member's reset is unknown. */
     "credential_pool_exhausted",
     "input_too_large",
+    /* A raw-api packet refused before its request was sent (#147): a project
+     * mandatory file is missing/unreadable/sensitive or absent from the bound
+     * base tree, or the mandatory content cannot fit the model's KNOWN window. */
+    "raw_context_mandatory_unavailable",
+    "raw_context_exceeds_window",
+    /* An explicit model whose authoritative live catalog read found no usable
+     * credential or had it rejected (HTTP 401/403): refused with that typed
+     * cause, never reported as absent. Other failed reads forward the model
+     * unverified on the same key (#393, owner decision A). */
+    "model_catalog_unavailable",
     "vendor_cli_too_old",
     /* The vendor's own startup frame reported a credential source other than
      * the session login a subscription route requires (Grok `apiKeySource`). */
@@ -185,6 +196,9 @@ export type RunFailureCategory = z.infer<typeof RunFailureCategory>;
 export const RunFailure = z
   .object({
     requestRefusal: HarnessRequestRefusal.optional(),
+    rawContextShortfall: RawContextShortfall.optional().describe(
+      "Typed sizes behind code raw_context_exceeds_window: the window, the request's parts and every mandatory file, so surfaces never read them from safeMessage.",
+    ),
     captureFailure: WorkspaceCaptureFailure.optional(),
     phase: z.string().default("unknown").describe("Pipeline phase where the failure happened."),
     category: RunFailureCategory.default("unknown").describe(

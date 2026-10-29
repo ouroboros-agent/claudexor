@@ -80,7 +80,8 @@ export async function settingsCommand(args: ParsedArgs, json: boolean): Promise<
     if (json) printJson(snapshot);
     else {
       print(`updated ${key}`);
-      // An advisory harness admitted a model its list lacks: say so once.
+      // A model its truth source could not verify (an advisory miss, or an
+      // unreadable catalog under decision A): say so once.
       for (const note of snapshot.notes) print(`note: ${note}`);
     }
     return 0;

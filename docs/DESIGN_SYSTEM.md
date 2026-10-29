@@ -1266,7 +1266,35 @@ views in the shared design-system files; screens compose them.
   the run's TYPED failure category as a small chip; diagnostics preserve any
   machine-readable failure sub-code, including Delegate child-drain timeout.
   The auth route the turn actually ran under comes from the route receipt —
-  never inferred from prose.
+  never inferred from prose. A request the engine refused before sending
+  (`RunFailure.code` `raw_context_exceeds_window`,
+  `raw_context_mandatory_unavailable` or `model_catalog_unavailable`, the last
+  now meaning a missing or rejected API key) shows the card even when a
+  transcript exists, headed by `RunFacts.refusal` with a raised-hand glyph. The
+  labels describe the refused request only: "Not sent: …", or "Retry not sent: …"
+  when the record's typed `poolAttempts` lists earlier tries that failed after
+  dispatch. A row does not say whether its request reached the provider (a
+  connection that never opened is a row too), so no label calls an earlier try
+  sent, and none says nothing in the run was. The same code adds one
+  failure-toned run fact, and the receipt's attention chip reads "Not sent" or
+  "Retry not sent" instead of the generic failed reason. An over-window refusal
+  whose record carries `rawContextShortfall` (#147) replaces the paragraph with
+  one summary line built from those typed sizes (the model's window, the
+  request's total, and its parts: mandatory files, the rest of the request, the
+  room kept for the answer, so they add up; then "This request was not sent." or
+  "This retry was not sent; N earlier tries failed."), a two-column table of the
+  five largest mandatory files (paths in the code face, ≈ estimates on the right
+  edge, a closing "N more files" row with the remainder) and the record's typed
+  `nextActions` as arrow lines; the engine's complete message is the summary's
+  hover help. Without those sizes the body stays the engine's message verbatim.
+  The raw-API request the final attempt last prepared adds two compact run facts
+  from the run summary's typed `rawContext`, which is receipted just before the
+  POST, so its help says "prepared", never "sent": "Context ≈159k of 200k tokens
+  · estimated" against a window the
+  catalog gave for that model ("… · window unknown, assumed 200k" in the
+  warning tone when none was known), and "N optional files left out" when the
+  budget omitted any; their hover help says the figures are characters ÷ 4
+  estimates. Nothing is read from the adapter's status sentence.
 - **Delegate outcome + child rows.** A requested Delegate run that the engine
   continued before injection renders a persistent amber “Done with warnings ·
   continued without Delegate” receipt with the typed cause and remedy; it is
@@ -1556,7 +1584,11 @@ views in the shared design-system files; screens compose them.
 - **Harness chips.** Chips reflect Gateway status for the active mode intent. A
   harness that is not installed, not authenticated, degraded without the required
   intent, or unable to enforce read-only is visible but disabled, with a hover
-  reason and a path to Harness Doctor/Auth setup.
+  reason and a path to Harness Doctor/Auth setup. An explicit chip reads the
+  status's `enabledIntents` (the app's `HarnessInfo` keeps it as `intents`), so
+  a degraded harness that still enables the intent stays selectable and shows
+  its degradation reason; `routableIntents` answers only whether the Auto pool
+  may choose the harness.
 - **Onboarding.** First run is native-first: explain native auth for Codex,
   Claude, Cursor, and Antigravity
   and expose daemon-owned native-login jobs, then offer API-key fallback
@@ -1577,6 +1609,20 @@ views in the shared design-system files; screens compose them.
   setup complete, or skip, but it must not invent app-only auth state. Offline or unimplemented
   surfaces show honest empty states — there is no sample/demo data mode; every surface
   reflects live engine truth.
+- **Key allowance.** When the engine negotiates API-key rows and publishes one for the
+  family, the Auth sheet shows a **Key allowance** panel after the API-key field.
+  Key entry comes first so a growing allowance list cannot push keyboard focus out
+  of view. Each key a request can send has one block (default first); each block
+  names its key except a lone default key, so a lone registered key stays distinct. A block
+  shows the cadence title ("Monthly key limit"), "$37.66 left of $50.00" with a native
+  progress bar of the spent share, then spend for the window, the reset and the read age
+  ("read 2m ago"). No cap reads "No limit set" with no bar; a key never read reads "Not
+  read yet"; older or failed data keeps "Last known:" figures and one caution-glyph line
+  with the read age and plain cause. Dollars keep the provider's digits (whole cents
+  padded, never rounded to zero). One scope sentence says the limit is not the account
+  balance and never affects routing. **Refresh** reads exactly the shown keys;
+  `KeyAllowancePresentation` owns the vocabulary and `KeyAllowancePanel` is the leaf.
+  The API-key field stores on Return like **Store Key**.
 
 ### 5.1 Component contracts (SSOT for the smallest details)
 
@@ -1699,6 +1745,34 @@ DesignSystemComponents.swift, DesignTokens.swift.)
   mid-string, and every menu item renders through `HarnessModelPresentation.menuTitle`
   (one capped "label (id)" derivation, middle ellipsis) — the OPEN `Picker` menu is an
   NSMenu sized by its widest item, which no closed-control frame can bound (issue #53).
+- **Model catalog problems and declared input (#393, #146).** A models response
+  with `problem` (code `model_catalog_unavailable`) is a failed live read, not an
+  empty catalog: the composer row says "Catalog unavailable" (Retry only when the
+  problem is `retryable`), the Settings model override shows its existing "model
+  catalog unavailable" state (never "not in this harness's model list"), the hover
+  carries the engine's message and says a run sends the stored model unverified
+  unless the API key is missing or rejected (#393 decision A), and the next
+  appearance reads it again.
+  `HarnessModel.input_modalities` and `max_output_tokens` decode verbatim;
+  absent means unknown. When an image is attached and a presented
+  lane's selected (or configured default) model has a cached catalog row that
+  declares input modalities without `image`, the composer adds one non-blocking
+  line naming the model and its declared input. A selected routing variant
+  (`m:nitro`) finds its listed row through the `routingVariants` the same models
+  response declares, never by guessing at the name. Unknown metadata adds
+  nothing, and nothing is fetched for the note.
+- **`HarnessPoolSection` (composer "⋯" harness pool, #133).** The Auto chip and
+  the harnesses whose `routableIntents` contain the intent form the first row.
+  Harnesses whose `enabledIntents` (`HarnessInfo.intents`) contain it but whose
+  `routableIntents` do not sit under a quiet "Manual only — Auto won't pick these"
+  caption as ordinary `FilterChip`s, each with the doctor's first reason verbatim
+  on its own line. Selecting one from Auto makes Auto's harnesses plus that one the
+  thread's explicit pool (`HarnessPoolPresentation.toggling` keeps ids outside
+  Auto's set), which the engine runs as an explicit selection. A project-scoped
+  Ask on a harness whose manifest declares `read_files: false` is disabled with a
+  visible line ("Can't read project files. Ask without a project, or choose a
+  harness that reads files."), matching the engine's pre-dispatch refusal;
+  not-installed or otherwise blocked harnesses keep their hover reason.
 - **`composerGlass()`** — the floating-panel glass modifier: static `.glassEffect(.regular)`
   (NOT `.interactive()` — see §3.1) with a `surfaceRaised` solid fallback under Reduce
   Transparency. Chrome only.
@@ -1708,7 +1782,11 @@ DesignSystemComponents.swift, DesignTokens.swift.)
   account segment shows the thread's pinned profile or the stable label "Automatic"; the shared
   AccountsSurface owns the computed next-up disclosure. Picking pins the thread's credential profile
   (the per-thread override — the accounts popover owns the global Enabled set that next-up routing
-  draws from).
+  draws from). Inside an Auto pool the harness segment is a preference, not an explicit
+  selection: the request carries only `primaryHarness`, and when the engine runs another harness
+  the receipt's `route.primary.diverged` note says why. For `readiness_preferred` it reads
+  "preferred X → ran on Y. Auto runs only ready harnesses;" followed by the engine's detail (the
+  doctor's reason) verbatim, so it never implies a strict choice was overridden.
 
 - **Titles / H1.** Headed surfaces (Settings tabs) use the shared title recipe
   (`.title2.weight(.bold)` + optional `.callout` secondary subtitle); never

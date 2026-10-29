@@ -5,6 +5,7 @@ import { refreshClaudeStatuslineQuota } from "./claude-statusline.js";
 import { refreshCodexQuota } from "./codex-quota-source.js";
 import { refreshAgyQuota } from "./agy-quota-source.js";
 import { refreshCursorQuota } from "./cursor-quota-source.js";
+import { refreshOpenRouterKeyAllowance } from "./openrouter-key-source.js";
 import type { QuotaDiagnosticSink } from "./quota-refresh-diagnostics.js";
 
 export interface QuotaRefresherRegistration {
@@ -59,6 +60,12 @@ export const QUOTA_REFRESHER_REGISTRATIONS = [
     vendor: "cursor",
     refresh: (cycle?: QuotaRefreshCycle, diagnostic?: QuotaDiagnosticSink) =>
       refreshCursorQuota(diagnostic ? { diagnostic } : {}, cycle),
+  },
+  {
+    source: "openrouter_key",
+    vendor: "openrouter",
+    refresh: (cycle?: QuotaRefreshCycle, diagnostic?: QuotaDiagnosticSink) =>
+      refreshOpenRouterKeyAllowance(diagnostic ? { diagnostic } : {}, cycle),
   },
 ] as const satisfies readonly QuotaRefresherRegistration[];
 

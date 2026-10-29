@@ -21,7 +21,7 @@ import {
 import {
   emptyResourceFacet,
   type AccountResourceObservation,
-  type AccountTarget,
+  type AccountResourceTarget,
   type QuotaAbsence,
   type QuotaSnapshot,
 } from "@claudexor/schema";
@@ -156,7 +156,7 @@ export async function refreshCodexQuota(
 /** The default native home plus every enabled codex config_dir_login profile,
  * resolved to its scoped CODEX_HOME (the profile's isolation_locator dir). */
 function codexQuotaCandidates(
-  target?: AccountTarget,
+  target?: AccountResourceTarget,
 ): Array<{ subjectId: string | null; home: string }> {
   // A MIGRATED harness has no null subject (its former default home IS the
   // auto-registered row the profile loop covers): probing it again would

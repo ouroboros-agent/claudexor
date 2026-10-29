@@ -15,6 +15,7 @@ import type { EventLedger } from "./store-contracts.js";
 import {
   ControlQuotaResponse,
   AccountResourceSnapshot,
+  type AccountResourceTarget,
   type AccountTarget,
   observedResourceFacet,
   HarnessEvent,
@@ -161,7 +162,7 @@ export class QuotaRegistry {
     return resourceQuotaSnapshots(this.snapshots.values(), this.resourceCutoffs, now, admission);
   }
 
-  async refresh(target?: AccountTarget, afterCurrent = false) {
+  async refresh(target?: AccountResourceTarget, afterCurrent = false) {
     return (await this.refreshCycle(true, undefined, target, afterCurrent)).response;
   }
 
@@ -175,7 +176,7 @@ export class QuotaRegistry {
   }
 
   async refreshResources(
-    target?: AccountTarget,
+    target?: AccountResourceTarget,
     afterCurrent = false,
     invalidateBeforeRead = false,
   ) {
@@ -199,7 +200,7 @@ export class QuotaRegistry {
   private async refreshCycle(
     followCredentialChanges = true,
     scope?: PacingLane,
-    target?: AccountTarget,
+    target?: AccountResourceTarget,
     afterCurrent = false,
     invalidateBeforeRead = false,
   ): Promise<Awaited<ReturnType<QuotaRegistry["performRefreshCycle"]>>> {
@@ -209,7 +210,8 @@ export class QuotaRegistry {
         .run((credentialGeneration) => {
           // Drain the previous cycle before moving the reset cutoff. Even an old
           // source stamped at delivery cannot renew history after this boundary.
-          if (target && invalidateBeforeRead) this.invalidateAccountResources(target);
+          if (target?.profile_id && invalidateBeforeRead)
+            this.invalidateAccountResources({ ...target, profile_id: target.profile_id });
           return this.performRefreshCycle(credentialGeneration, scope ?? null, target);
         }, followCredentialChanges)
         .catch((error) => {
@@ -225,7 +227,7 @@ export class QuotaRegistry {
   private async performRefreshCycle(
     credentialGeneration: number,
     scope: PacingLane | null,
-    target?: AccountTarget,
+    target?: AccountResourceTarget,
   ) {
     const serial = ++this.refreshSerial;
     if (this.refresherLanes.entries.length === 0) {
@@ -322,7 +324,7 @@ export class QuotaRegistry {
     claims: readonly QuotaAbsence[],
     now: number,
     scope: ReadonlySet<string> | null = null,
-    target?: AccountTarget,
+    target?: AccountResourceTarget,
   ): void {
     const laneVendors = new Set(
       this.refresherLanes.lanes.map((lane) => lane.vendor).filter((vendor) => vendor !== null),

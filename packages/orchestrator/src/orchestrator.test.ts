@@ -12523,6 +12523,31 @@ describe("Orchestrator", () => {
     expect(res.summary).toContain("in-place convergence is unavailable");
   });
 
+  it("asks an isolated raw patch convergence round for implement, with its packet (#147)", async () => {
+    const repo = await initRepo();
+    const raw = rawPatchImplementer("raw-patch");
+    const intents: string[] = [];
+    const run = raw.run.bind(raw);
+    raw.run = (spec) => {
+      intents.push(`${spec.intent}:${spec.raw_context_packet ? "packet" : "none"}`);
+      return run(spec);
+    };
+    const res = await new Orchestrator({
+      registry: new Map([[raw.id, raw]]),
+      reviewers: reviewers(),
+    }).run({
+      repoRoot: repo,
+      prompt: "edit README",
+      mode: "agent",
+      harnesses: [raw.id],
+      attempts: 1,
+      review: false,
+    });
+
+    expect(intents).toEqual(["implement:packet"]);
+    expect(legacyOutcome(res), res.summary).toBe("success");
+  });
+
   it("refuses access=full without a user-level trust allow (loud, no silent downgrade)", async () => {
     const repo = await initRepo();
     const configDir = reapMk(join(tmpdir(), "claudexor-orch-notrust-"));

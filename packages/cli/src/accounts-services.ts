@@ -122,7 +122,11 @@ export function createCredentialProfilesService(
       }),
     };
   };
-  const credentialProfiles = async (input?: { snapshot?: boolean; view?: "resources" }) => {
+  const credentialProfiles = async (input?: {
+    snapshot?: boolean;
+    view?: "resources";
+    includeApiKeys?: boolean;
+  }) => {
     if (input?.snapshot === true) {
       accountObservations.invalidateCatalogs();
       const [probed, statuses, git, fencedQuota] = await Promise.all([
@@ -155,7 +159,13 @@ export function createCredentialProfilesService(
         git,
         quota:
           input.view === "resources"
-            ? accountResourcesResponse(quotaRegistry(), rawQuota, fencedQuota.resources)
+            ? accountResourcesResponse(
+                quotaRegistry(),
+                rawQuota,
+                fencedQuota.resources,
+                {},
+                input.includeApiKeys === true,
+              )
             : legacyQuotaResponse(quotaRegistry(), rawQuota, fencedQuota.resources),
         quotaEventCursor: fencedQuota.quotaEventCursor,
       };

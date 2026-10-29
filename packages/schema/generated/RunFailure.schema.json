@@ -146,6 +146,68 @@
           ],
           "description": "Vendor-attested request refusal that stops retries and account rotation on its harness; input, executable and credential-source causes carry their own evidence."
         },
+        "rawContextShortfall": {
+          "type": "object",
+          "properties": {
+            "model": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Model whose window was checked."
+            },
+            "context_window": {
+              "type": "integer",
+              "exclusiveMinimum": 0
+            },
+            "packet_tokens": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "The packet with every optional file omitted: mandatory files, file manifest and metadata."
+            },
+            "framing_tokens": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "The request outside the packet: instructions, user text, patch protocol and attachments."
+            },
+            "output_allowance_tokens": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Tokens kept free for the answer."
+            },
+            "mandatory_files": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "estimated_tokens": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "This file's share of packet_tokens: its packet entry with content and evidence."
+                  }
+                },
+                "required": [
+                  "path",
+                  "estimated_tokens"
+                ],
+                "additionalProperties": false
+              },
+              "description": "Every mandatory file, largest first."
+            }
+          },
+          "required": [
+            "model",
+            "context_window",
+            "packet_tokens",
+            "framing_tokens",
+            "output_allowance_tokens",
+            "mandatory_files"
+          ],
+          "additionalProperties": false,
+          "description": "Typed sizes behind code raw_context_exceeds_window: the window, the request's parts and every mandatory file, so surfaces never read them from safeMessage."
+        },
         "captureFailure": {
           "type": "object",
           "properties": {
@@ -243,6 +305,9 @@
                 "subscription_window_exhausted",
                 "credential_pool_exhausted",
                 "input_too_large",
+                "raw_context_mandatory_unavailable",
+                "raw_context_exceeds_window",
+                "model_catalog_unavailable",
                 "vendor_cli_too_old",
                 "credential_source_unconfirmed",
                 "delegated_home_unavailable",

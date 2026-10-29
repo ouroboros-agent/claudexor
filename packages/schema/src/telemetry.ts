@@ -23,6 +23,7 @@ import { RunFacts } from "./run-facts.js";
 import { InputTokenUsage, HarnessRequestRefusal } from "./harness.js";
 import { AttemptObservedModelFields } from "./harness-model.js";
 import { PromptCacheTtlReceipt } from "./prompt-cache.js";
+import { RawContextReceipt } from "./raw.js";
 
 /** Engine-owned final/telemetry.yaml: surfaces project, never re-derive evidence.
  * Legacy runs without this artifact disclose unavailable telemetry. */
@@ -388,6 +389,9 @@ export const AttemptTelemetryRecord = z
     processing_cost_basis: ProcessingCostBasis.optional(),
     prompt_cache_ttl: PromptCacheTtlReceipt.optional(),
     usage_cost: UsageCostSummary.optional(),
+    raw_context: RawContextReceipt.optional().describe(
+      "Size of the raw-api request this attempt last prepared, from the status event that try emitted just before its POST (#147); not proof the provider received it. Absent for other transports.",
+    ),
     attempt_id: Id.describe("Attempt id."),
     harness_id: Id.describe("Harness that ran the attempt."),
     ...AttemptObservedModelFields,

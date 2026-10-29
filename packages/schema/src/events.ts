@@ -318,8 +318,9 @@ export type RouteFallbackPayload = z.infer<typeof RouteFallbackPayload>;
 /**
  * Typed payload for the `route.primary.diverged` event. Emitted at route
  * selection when a run's requested/sticky PRIMARY harness is not the harness
- * that will actually run (its account was quota-exhausted / on cooldown, or the
- * route was unavailable), so the composer's visible harness choice silently
+ * that will actually run (its account was quota-exhausted / on cooldown, the
+ * route was unavailable, or it is degraded and the Auto pool admits only
+ * doctor-ok routes), so the composer's visible harness choice silently
  * would not have applied. The orchestrator validates this before stamping it, so
  * the divergence is always evidence-backed — the receipt discloses "requested
  * <requested> → ran on <effective> (<reason>)" from real facts, never invented.

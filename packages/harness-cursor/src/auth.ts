@@ -10,7 +10,9 @@ const CURSOR_JSON_STATUS_UNSUPPORTED =
   /(?:unknown|unrecognized|unsupported|invalid|unimplemented)\s+(?:option|flag|argument)[^\n]*--format|--format[^\n]*(?:unknown|unrecognized|unsupported|invalid|unimplemented)\s+(?:option|flag|argument)|(?:unknown|unrecognized|unsupported|invalid|unimplemented)[^\n]*(?:--format|json status)/i;
 
 const MAX_CURSOR_ACCOUNT_EMAIL_LENGTH = 320;
-/** Budget of one `cursor-agent status` child, enforced by a timer the probe owns. */
+/** The ordinary wait for one `cursor-agent status` answer: the budget of an
+ * unshared child, enforced by a timer the probe owns, and an ordinary caller's
+ * wait for a shared child (status-cache.ts, #532). */
 export const CURSOR_STATUS_TIMEOUT_MS = 10_000;
 
 /**
@@ -19,8 +21,9 @@ export const CURSOR_STATUS_TIMEOUT_MS = 10_000;
  * Accounts identity; every other successful-but-unknown shape fails closed.
  * `observedAt` is when the vendor gave a reused positive answer (status-cache.ts).
  * An unknown observation stays unknown: `timedOut` means the probe's OWN
- * budget expired before observed native exit or caller cancellation (never
- * inferred from a signal or elapsed wall time). `lastPositive` (set only by the coordinator on such a
+ * budget expired before observed native exit or caller cancellation, or this
+ * caller's own wait for a shared child ended first (never inferred from a
+ * signal). `lastPositive` (set only by the coordinator on such a
  * timeout) is the row store's bounded last positive answer — stale evidence
  * for unpinned admission alone, never authentication (#363, INV-135).
  */
