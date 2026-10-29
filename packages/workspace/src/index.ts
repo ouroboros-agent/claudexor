@@ -19,8 +19,10 @@ export * from "./continuation-facts.js";
 export * from "./auxiliary-writable-roots.js";
 
 export {
-  continuationCarrier,
+  continuationSource,
+  ownsContinuationSource,
   readContinuationEvidence,
   readSessionCapsule,
   runFilesExpired,
+  unrepresentedOutput,
 } from "./continuation-evidence.js";

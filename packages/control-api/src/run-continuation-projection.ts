@@ -8,24 +8,28 @@
  * terminal) with the CURRENT workspace overlaid: the envelope a run keeps
  * (custody `retained`) or, once a successor adopted it or the run was
  * discarded, none. A run the daemon found running at its restart never reached
- * an engine terminal: its block is derived here from the session the
- * successor's planner would resume (`continuationCarrier`) and the custody
- * record (cause `host_restart`), so it can be continued.
+ * an engine terminal: its block is derived here from the source the
+ * successor's planner would use (`continuationSource`, its
+ * `ownsContinuationSource` rule) and the custody record (cause `host_restart`),
+ * so it can be continued.
  */
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { readRunEvents } from "@claudexor/event-log";
 import {
   RunContinuityReceipt,
   RunResumable,
   type ControlRunSummary,
   type RunEvent,
+  type SessionCapsule,
 } from "@claudexor/schema";
 import {
-  continuationCarrier,
+  continuationSource,
+  executionFactsOf,
   readContinuationSources,
   retainedEnvelopeInChain,
   retainedEnvelopeOfRun,
+  runExecutionFacts,
+  type ExecutionFold,
 } from "@claudexor/workspace";
 import { safeReadStructuredArtifact } from "./run-artifact-read.js";
 import { paramsRecord, type DaemonRunRecord } from "./run-record.js";
@@ -56,7 +60,9 @@ export function continuityReceiptOf(event: Record<string, unknown>): RunContinui
  * events or already folded from them. */
 export function continuationSummary(
   rec: DaemonRunRecord,
-  events?: readonly Record<string, unknown>[] | { continuity: RunContinuityReceipt[] },
+  events?:
+    | readonly Record<string, unknown>[]
+    | { continuity: RunContinuityReceipt[]; execution?: ExecutionFold },
 ): Continuation {
   const params = paramsRecord(rec);
   const continueFrom = typeof params["continueFrom"] === "string" ? params["continueFrom"] : null;
@@ -84,37 +90,35 @@ export function continuationSummary(
     ? { kind: "retained_envelope" as const, root: available.envelope.worktree_path }
     : null;
   let written = safeReadStructuredArtifact(rec, "final/resumable.yaml", RunResumable);
-  // The session a successor would resume, by the planner's own rule, read only
-  // for a derived block: a caller's raw events serve as the snapshot; folded
-  // detail facts carry none, so the log is read only when no terminal record
-  // decides (never mtime order).
+  // The successor planner's own source and chain walk, read only for a derived
+  // block: the head is its own source when it holds a session or recorded work
+  // (`ownsContinuationSource`), else the nearest ancestor that is. Run detail
+  // passes its bounded event fold, which carries the planner's execution facts;
+  // a list row reads its own log once per cached summary.
   const runDir = rec.runDir;
-  const snapshot = Array.isArray(events) ? (events as readonly RunEvent[]) : undefined;
-  const ownCarrier = () => continuationCarrier(runDir, snapshot)?.capsule ?? null;
-  let capsule = written || rec.state === "succeeded" ? null : ownCarrier();
+  const recorded = !events
+    ? undefined
+    : "continuity" in events
+      ? events.execution && executionFactsOf(events.execution)
+      : runExecutionFacts(events as readonly RunEvent[]);
+  const own = () => continuationSource(runDir, recorded);
+  let capsule: SessionCapsule | null = null;
   let inherited = false;
   let inheritedState: string | null = null;
-  if (!written && !capsule && rec.state !== "succeeded") {
-    for (const source of sources) {
-      const ancestor = { ...source, id: source.runId };
-      written = safeReadStructuredArtifact(ancestor, "final/resumable.yaml", RunResumable);
-      capsule = continuationCarrier(source.runDir)?.capsule ?? null;
-      inherited =
-        !!written ||
-        !!capsule ||
-        ["answer.md", "retained-output.md", "patch.diff"].some((file) =>
-          existsSync(join(source.runDir, "final", file)),
-        ) ||
-        readRunEvents(join(source.runDir, "events.jsonl")).events.some(
-          (event) =>
-            event.type === "harness.event" &&
-            ["tool_call", "file_change", "message"].includes(String(event.payload["type"])),
-        );
-      if (inherited) {
+  if (!written && rec.state !== "succeeded") {
+    const head = own();
+    capsule = head.held?.capsule ?? null;
+    if (!head.owns)
+      for (const source of sources) {
+        const ancestor = continuationSource(source.runDir);
+        if (!ancestor.owns) continue;
+        const record = { ...source, id: source.runId };
+        written = safeReadStructuredArtifact(record, "final/resumable.yaml", RunResumable);
+        capsule = ancestor.held?.capsule ?? null;
+        inherited = true;
         inheritedState = source.state;
         break;
       }
-    }
   }
   if (written) {
     const workspace =
@@ -127,7 +131,7 @@ export function continuationSummary(
   const restarted =
     rec.state === "interrupted" && !existsSync(join(rec.runDir, "final", "run_facts.yaml"));
   if (!restarted && !kept && !inherited) return { ...base, resumable: null, retainedEnvelope };
-  if (rec.state === "succeeded") capsule = ownCarrier();
+  if (rec.state === "succeeded") capsule = own().held?.capsule ?? null;
   const root = inPlaceRoot(params);
   return {
     ...base,

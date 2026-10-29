@@ -33,49 +33,120 @@ export interface RunExecutionFacts {
   /** Starts not refused by their own identity handshake, in event order. */
   accepted: RecordedStart[];
   receipts: RecordedReceipt[];
+  /** The run recorded work of its own in its events: a tool call or edit, or
+   * output its retained-output projection keeps (assistant text, a captured file). */
+  recordedWork: boolean;
   /** The receipt the continued try of this start settled with, when any. */
   receiptOf(start: RecordedStart): RecordedReceipt | null;
 }
 
-const TOOL_PROGRESS = new Set(["tool_call", "tool_result", "file_change", "patch_produced"]);
+/**
+ * The same facts accumulated event by event, so a bounded event fold (run
+ * detail's) can keep them between reads and add only appended events.
+ */
+export interface ExecutionFold {
+  attempts: string[];
+  progressed: Set<string>;
+  starts: RecordedStart[];
+  receipts: RecordedReceipt[];
+  recordedWork: boolean;
+  /** A terminal row was seen: retained output ends there. */
+  ended: boolean;
+  /** Position of the next event. */
+  next: number;
+}
 
-export function runExecutionFacts(events: readonly RunEvent[]): RunExecutionFacts {
-  const attempts: string[] = [];
-  const progressed = new Set<string>();
-  const starts: RecordedStart[] = [];
-  const receipts: RecordedReceipt[] = [];
-  events.forEach((event, index) => {
-    const payload = event.payload;
-    const attemptId = typeof payload["attempt_id"] === "string" ? payload["attempt_id"] : null;
-    const sessionId = typeof payload["session_id"] === "string" ? payload["session_id"] : null;
-    if (attemptId === null) return;
-    if (event.type === "run.continuity") {
-      const receipt = RunContinuityReceipt.safeParse(payload["receipt"]).data;
-      if (receipt) receipts.push({ index, attemptId, sessionId, receipt });
-      return;
-    }
-    if (event.type !== "harness.event") return;
-    if (!attempts.includes(attemptId)) attempts.push(attemptId);
-    // The controller's own "acted" facts: agent progress or a typed final answer
-    // (a crashed try's narration is evidence, not progress).
-    const type = String(payload["type"]);
-    const text = typeof payload["text"] === "string" ? payload["text"].trim() : "";
-    if (
-      TOOL_PROGRESS.has(type) ||
-      (type === "thinking" && text) ||
-      (type === "message" && text && payload["final"] === true)
-    )
-      progressed.add(attemptId);
-    if (type !== "started") return;
-    const nested = payload["payload"] as Record<string, unknown> | null | undefined;
-    const native = nested?.["native_session_id"];
-    starts.push({
-      index,
-      attemptId,
-      sessionId,
-      nativeSessionId: typeof native === "string" && native ? native : null,
-    });
+const TOOL_PROGRESS = new Set(["tool_call", "tool_result", "file_change", "patch_produced"]);
+const TERMINAL_ROWS = new Set(["run.completed", "run.failed", "run.blocked"]);
+
+export function emptyExecutionFold(): ExecutionFold {
+  return {
+    attempts: [],
+    progressed: new Set(),
+    starts: [],
+    receipts: [],
+    recordedWork: false,
+    ended: false,
+    next: 0,
+  };
+}
+
+/** A copy a later event can extend without changing `fold`. */
+export function copyExecutionFold(fold: ExecutionFold): ExecutionFold {
+  return {
+    ...fold,
+    attempts: [...fold.attempts],
+    progressed: new Set(fold.progressed),
+    starts: [...fold.starts],
+    receipts: [...fold.receipts],
+  };
+}
+
+/** Output the retained-output projection keeps (`retainedOutput`): a captured
+ * produced file or non-empty assistant text that is not an auth-switch notice. */
+function retainsOutput(type: unknown, payload: Record<string, unknown>): boolean {
+  if (type === "output.ready") {
+    const [root, attempt, directory, ...relative] = String(payload["path"] ?? "").split("/");
+    return (
+      payload["kind"] === "artifact" &&
+      root === "attempts" &&
+      !!attempt &&
+      directory === "produced" &&
+      !!relative.join("/")
+    );
+  }
+  const nested = payload["payload"] as Record<string, unknown> | null | undefined;
+  return (
+    type === "harness.event" &&
+    payload["type"] === "message" &&
+    nested?.["auth_switched"] !== true &&
+    typeof payload["text"] === "string" &&
+    payload["text"].trim() !== ""
+  );
+}
+
+export function addExecutionEvent(
+  fold: ExecutionFold,
+  event: { type?: unknown; payload?: unknown },
+): void {
+  const index = fold.next++;
+  const payload = (event.payload ?? {}) as Record<string, unknown>;
+  if (TERMINAL_ROWS.has(String(event.type))) fold.ended = true;
+  if (!fold.ended && retainsOutput(event.type, payload)) fold.recordedWork = true;
+  const attemptId = typeof payload["attempt_id"] === "string" ? payload["attempt_id"] : null;
+  const sessionId = typeof payload["session_id"] === "string" ? payload["session_id"] : null;
+  if (attemptId === null) return;
+  if (event.type === "run.continuity") {
+    const receipt = RunContinuityReceipt.safeParse(payload["receipt"]).data;
+    if (receipt) fold.receipts.push({ index, attemptId, sessionId, receipt });
+    return;
+  }
+  if (event.type !== "harness.event") return;
+  if (!fold.attempts.includes(attemptId)) fold.attempts.push(attemptId);
+  const type = String(payload["type"]);
+  if (type === "tool_call" || type === "file_change") fold.recordedWork = true;
+  // The controller's own "acted" facts: agent progress or a typed final answer
+  // (a crashed try's narration is evidence, not progress).
+  const text = typeof payload["text"] === "string" ? payload["text"].trim() : "";
+  if (
+    TOOL_PROGRESS.has(type) ||
+    (type === "thinking" && text) ||
+    (type === "message" && text && payload["final"] === true)
+  )
+    fold.progressed.add(attemptId);
+  if (type !== "started") return;
+  const nested = payload["payload"] as Record<string, unknown> | null | undefined;
+  const native = nested?.["native_session_id"];
+  fold.starts.push({
+    index,
+    attemptId,
+    sessionId,
+    nativeSessionId: typeof native === "string" && native ? native : null,
   });
+}
+
+export function executionFactsOf(fold: ExecutionFold): RunExecutionFacts {
+  const { attempts, progressed, receipts, recordedWork } = fold;
   const receiptOf = (start: RecordedStart): RecordedReceipt | null =>
     start.sessionId === null
       ? null
@@ -85,10 +156,16 @@ export function runExecutionFacts(events: readonly RunEvent[]): RunExecutionFact
             entry.attemptId === start.attemptId &&
             entry.sessionId === start.sessionId,
         ) ?? null);
-  const accepted = starts.filter(
+  const accepted = fold.starts.filter(
     (start) => !receiptOf(start)?.receipt.identityCheck.startsWith("mismatch"),
   );
-  return { attempts, progressed, accepted, receipts, receiptOf };
+  return { attempts, progressed, accepted, receipts, recordedWork, receiptOf };
+}
+
+export function runExecutionFacts(events: readonly RunEvent[]): RunExecutionFacts {
+  const fold = emptyExecutionFold();
+  for (const event of events) addExecutionEvent(fold, event);
+  return executionFactsOf(fold);
 }
 
 /**

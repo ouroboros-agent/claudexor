@@ -10,9 +10,14 @@ import {
   type RunContinuityReceipt,
   type RunEvent,
 } from "@claudexor/schema";
-import { readContinuationEvidence } from "./continuation-evidence.js";
+import { readContinuationEvidence, unrepresentedOutput } from "./continuation-evidence.js";
+import { retainedOutput } from "@claudexor/event-log";
 import {
+  addExecutionEvent,
   continuedTryStarted,
+  copyExecutionFold,
+  emptyExecutionFold,
+  executionFactsOf,
   recordedSessionMemory,
   runExecutionFacts,
   uncoveredAttempts,
@@ -104,6 +109,95 @@ describe("recorded execution facts", () => {
     // A seeded native first try that never started keeps its receipt's recorded memory.
     const seeded = runExecutionFacts([receipt("a01", "s0", { memory: "partial" })]);
     expect(recordedSessionMemory(seeded, held("a01", "sid-seeded"), true)).toBe("partial");
+  });
+});
+
+describe("execution facts folded event by event (a bounded detail fold)", () => {
+  const events = [
+    started("a01", "s0", "sid-A"),
+    receipt("a01", "s0", { identityCheck: "mismatch_before_effects" }),
+    started("a01", "s1", "sid-B"),
+    row("harness.event", { attempt_id: "a01", session_id: "s1", type: "tool_call" }),
+    receipt("a01", "s1", { tryIndex: 1, carrier: "packet", memory: "partial" }),
+    started("a02", "s2", "sid-C"),
+  ];
+
+  it("equal the batch facts, also when a copy continues from a kept prefix", () => {
+    const batch = runExecutionFacts(events);
+    const prefix = emptyExecutionFold();
+    events.slice(0, 3).forEach((event) => addExecutionEvent(prefix, event));
+    const continued = copyExecutionFold(prefix);
+    events.slice(3).forEach((event) => addExecutionEvent(continued, event));
+    const folded = executionFactsOf(continued);
+    expect(folded.attempts).toEqual(batch.attempts);
+    expect([...folded.progressed]).toEqual([...batch.progressed]);
+    expect(folded.accepted).toEqual(batch.accepted);
+    expect(folded.receipts).toEqual(batch.receipts);
+    expect(folded.recordedWork).toBe(batch.recordedWork);
+    // The kept prefix itself is unchanged by the continuation.
+    expect(executionFactsOf(prefix).attempts).toEqual(["a01"]);
+  });
+
+  it("record own work exactly when the retained-output projection or a tool call or edit would", () => {
+    const say = (text: string, extra: Record<string, unknown> = {}) =>
+      row("harness.event", { attempt_id: "a01", session_id: "s", type: "message", text, ...extra });
+    const cases: RunEvent[][] = [
+      [say("finding")],
+      [say("   ")],
+      [say("switched", { payload: { auth_switched: true } })],
+      [row("run.failed", {}), say("after the terminal row")],
+      [row("output.ready", { kind: "artifact", path: "attempts/a01/produced/report.md" })],
+      [row("output.ready", { kind: "artifact", path: "final/answer.md" })],
+      [row("harness.event", { attempt_id: "a01", session_id: "s", type: "file_change" })],
+      [started("a01", "s", "sid")],
+    ];
+    for (const rows of cases) {
+      const actions = rows.some(
+        (event) =>
+          event.type === "harness.event" &&
+          ["tool_call", "file_change"].includes(String(event.payload["type"])),
+      );
+      expect(runExecutionFacts(rows).recordedWork).toBe(retainedOutput(rows) !== null || actions);
+    }
+  });
+});
+
+describe("recorded output that what a run carries forward does not represent", () => {
+  const say = (attempt: string, session: string, text: string) =>
+    row("harness.event", { attempt_id: attempt, session_id: session, type: "message", text });
+  const events = [
+    started("a01", "s0", "sid-A"),
+    say("a01", "s0", "EARLY-TRY-FACT-1"),
+    started("a01", "s1", "sid-A"),
+    // The represented (last) try: its raw text is a work-report envelope that the
+    // carried answer, an unwrapped deliverable, does not contain verbatim.
+    say("a01", "s1", '{"deliverable":"FINAL-ANSWER-2","work_report":{}}'),
+    started("a02", "s2", "sid-B"),
+    say("a02", "s2", "FINAL-ANSWER-2"),
+    say("a02", "s2", "OTHER-ATTEMPT-FACT-3"),
+  ];
+  const carried = "# Answer\n\nFINAL-ANSWER-2";
+
+  it("keeps earlier tries and other attempts once, never the represented try or carried text", () => {
+    const facts = runExecutionFacts(events);
+    const output = unrepresentedOutput(events, facts, "a01", carried)!;
+    expect(output).toContain("EARLY-TRY-FACT-1");
+    expect(output).toContain("OTHER-ATTEMPT-FACT-3");
+    expect(output).not.toContain("work_report");
+    expect(output).not.toMatch(/^FINAL-ANSWER-2$/m);
+    expect(output.match(/## Attempt a01/g)).toHaveLength(1);
+    expect(output).toContain("Session: `s0`");
+    expect(output).not.toContain("Session: `s1`");
+  });
+
+  it("without a known represented attempt only the carried text is left out", () => {
+    const output = unrepresentedOutput(events, runExecutionFacts(events), null, carried)!;
+    expect(output).toContain("work_report");
+    expect(output).not.toMatch(/^FINAL-ANSWER-2$/m);
+    // The represented try alone leaves nothing to add.
+    expect(unrepresentedOutput(events.slice(2, 4), runExecutionFacts(events), "a01", "")).toBe(
+      null,
+    );
   });
 });
 

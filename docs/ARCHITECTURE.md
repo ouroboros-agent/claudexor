@@ -2958,8 +2958,10 @@ not retry automatically.
   the D-16d checkpoint continuation in Ask and Agent) never re-plans or moves
   the predecessor's session again: its first try is a fresh session re-briefed
   by the evidence index over the chain's sources plus this run's earlier
-  attempts (a checkpoint continuation omits their output, which its checkpoint
-  carries), and its receipt names the attempt of this run that carries its
+  attempts (a checkpoint carries only the exhausted try's report, so a
+  checkpoint continuation's index keeps every other output recorded in this
+  run, earlier tries of the exhausted attempt included, once and never the
+  report again), and its receipt names the attempt of this run that carries its
   latest work, else the planned predecessor. An attempt's own model (a fallback model or budget
   downgrade) is never replaced by an inherited one; synthesis and repair never
   re-plan. The predecessor's carrying session is its declared terminal source,
@@ -2989,9 +2991,11 @@ not retry automatically.
   attempts alone (a successor runs one candidate, attempt after attempt).
   Event timing never decides lineage, so another candidate of a concurrent
   run is that separate evidence, never the session's history. A packet keeps
-  the final answer (`final/answer.md`, labelled with its attempt) and every
-  other attempt's recorded output, each once under its attempt, and the tool
-  rows of a source with several attempts name their attempt. Workspace: an
+  the final answer (`final/answer.md`, labelled with its attempt) first and
+  then the recorded output it does not represent (other attempts and the
+  winning attempt's earlier native tries), each block once under its attempt
+  and try (process session), never a block the answer contains; the tool rows
+  of a source with several attempts name their attempt. Workspace: an
   explicit `execution.workspaceRoot` or live isolation wins; otherwise a
   predecessor whose isolated envelope was kept (below) is continued IN that
   envelope — same path, files and base, one cumulative patch. Delegate-belt
@@ -3004,15 +3008,18 @@ not retry automatically.
   `same_root`, even when the Ask ran at the project base.
   Predecessor
   references are recorded in `context/continuation.json` before announcement;
-  a failed head's `resumable` projection names its inherited carriers. Without
+  a failed head's `resumable` projection names its inherited carriers; a head
+  inherits only when, by the planner's own rule (`ownsContinuationSource`), it
+  holds no terminal block, no carrying session and no recorded work. Without
   an ancestor's terminal block, its retained custody supplies the cause, or
   `host_restart` is derived from that ancestor's interrupted state. `GET
   /v2/runs/:id` projects `continueFrom`, `resumable` (the engine's terminal
   block with the CURRENT workspace overlaid; a run the daemon found running at
-  its restart gets a derived block, cause `host_restart`, naming the session
-  the successor's planner would resume, from the detail's event snapshot or,
-  for a list row, the run's own log read once per cached summary, and its
-  custody), `continuity` (the per-try receipts; run detail only —
+  its restart gets a derived block, cause `host_restart`, naming the source
+  the successor's planner would use, from the planner's execution facts that
+  run detail's bounded event fold keeps or, for a list row, the run's own log
+  read once per cached summary, and its custody), `continuity` (the per-try
+  receipts; run detail only —
   list rows omit it) and `retainedEnvelope` (root, disk use, cause).
   `continueFrom` appears in `GET /v2/agent-capabilities` `runControlKeys`.
 - Threads are the chat/session-first conversation SSOT (run lineage + native

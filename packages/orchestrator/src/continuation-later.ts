@@ -5,9 +5,11 @@
  * (`continue-from.ts`). The predecessor's session is never moved or retired a
  * second time. The new attempt's first try is a fresh session re-briefed by
  * the evidence index over the ancestral sources plus this run's earlier
- * attempts; a checkpoint continuation omits their output, which its checkpoint
- * already carries. Its receipt names the actual source: this run's latest
- * attempt that started, else the planned predecessor.
+ * attempts. A checkpoint continuation's checkpoint carries only the exhausted
+ * try's report, so its index keeps every other output recorded in this run
+ * (earlier tries of the exhausted attempt included), once. Its receipt names
+ * the actual source: this run's latest attempt that started, else the planned
+ * predecessor.
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -17,12 +19,14 @@ import {
   type HarnessRunSpec,
   type ResumableCause,
   type RunContinuityReceipt,
+  type RunEvent,
 } from "@claudexor/schema";
 import {
   carryingAttempt,
   readContinuationSources,
   readSessionCapsule,
   runExecutionFacts,
+  unrepresentedOutput,
 } from "@claudexor/workspace";
 import {
   buildEvidenceIndex,
@@ -53,6 +57,15 @@ export interface ContinuationPlan {
 /** A fallback attempt, or the D-16d one-shot checkpoint continuation. */
 export type LaterAttempt = "fallback" | "checkpoint";
 
+/** The attempt whose last try's report the D-16d checkpoint carries: its `run.continuation`
+ * row is written before the checkpoint attempt is planned. */
+function exhaustedAttempt(events: readonly RunEvent[]): string | null {
+  const from = events.findLast((event) => event.type === "run.continuation")?.payload[
+    "from_attempt"
+  ];
+  return typeof from === "string" ? from : null;
+}
+
 export function openLaterAttempt(
   deps: InRunContinuityDeps,
   first: { spec: HarnessRunSpec; later: LaterAttempt },
@@ -75,7 +88,9 @@ export function openLaterAttempt(
     workOrder: plan.workOrder,
     steering: [],
     retainedOutput:
-      first.later === "checkpoint" ? "" : (retainedOutput(earlierEvents) ?? "").trim(),
+      (first.later === "checkpoint"
+        ? unrepresentedOutput(earlierEvents, facts, exhaustedAttempt(events), first.spec.prompt)
+        : retainedOutput(earlierEvents)?.trim()) ?? "",
     diffStat: null,
   };
   const cause: ResumableCause = !previous

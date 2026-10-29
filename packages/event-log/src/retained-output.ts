@@ -23,11 +23,14 @@ interface SourceOutput {
   pendingFlush: boolean;
 }
 
-/** Evidence projection only: never chooses an answer, validates a verdict or starts work. */
+/** Evidence projection only: never chooses an answer, validates a verdict or starts work.
+ * `carried` is text the caller already passes on (a final answer, a checkpoint):
+ * a block wholly within it is not repeated. */
 export function retainedOutput(
   events: Iterable<RunEvent>,
   malformed = 0,
   onlyAdditional = false,
+  carried?: string,
 ): string | null {
   const sources = new Map<string, SourceOutput>();
   const captured = new Map<string, string[]>();
@@ -95,7 +98,9 @@ export function retainedOutput(
   if (onlyAdditional && !malformed && !captured.size && observed.length === 1 && observed[0]!.final)
     return null;
   const sections = [...sources.values()].flatMap((source) => {
-    const blocks = source.blocks.filter((block) => block.text.trim().length > 0);
+    const blocks = source.blocks.filter(
+      (block) => block.text.trim().length > 0 && !carried?.includes(block.text.trim()),
+    );
     if (!blocks.length) return [];
     return [
       `## Attempt ${source.attempt} · ${source.harness}\n\nSession: \`${source.session}\`\n\n` +

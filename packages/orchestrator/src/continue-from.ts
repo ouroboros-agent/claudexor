@@ -35,7 +35,11 @@ import {
   type SessionCapsule,
 } from "@claudexor/schema";
 import { readTextSafe } from "@claudexor/util";
-import { readContinuationEvidence, retainedEnvelopeInChain } from "@claudexor/workspace";
+import {
+  ownsContinuationSource,
+  readContinuationEvidence,
+  retainedEnvelopeInChain,
+} from "@claudexor/workspace";
 import {
   decideCarrier,
   prepareCarrier,
@@ -111,6 +115,8 @@ interface PredecessorFacts {
   cause: ResumableCause;
   acted: boolean;
   hasEvidence: boolean;
+  /** This run is its own continuation source (`ownsContinuationSource`). */
+  ownsSource: boolean;
   observedModel: string | null;
   profileId: string | null;
   workOrder: string;
@@ -121,6 +127,7 @@ interface PredecessorFacts {
 }
 
 function readSource(from: ContinueFromSource): PredecessorFacts {
+  const evidence = readContinuationEvidence(from.runDir);
   const {
     resumable,
     held,
@@ -132,7 +139,7 @@ function readSource(from: ContinueFromSource): PredecessorFacts {
     patch,
     output,
     hasEvidence,
-  } = readContinuationEvidence(from.runDir);
+  } = evidence;
   const cause: ResumableCause =
     resumable?.cause ??
     (from.state === "interrupted"
@@ -156,6 +163,7 @@ function readSource(from: ContinueFromSource): PredecessorFacts {
       ? resumable.carriers.includes("packet")
       : hasEvidence || from.state === "succeeded",
     hasEvidence,
+    ownsSource: ownsContinuationSource(evidence),
     observedModel: attempt?.observed_model ?? held?.capsule.requestedModel ?? null,
     profileId: held?.capsule.holderProfileId ?? attempt?.profile_id ?? null,
     // What the predecessor itself was given, else the daemon's chain record.
@@ -171,8 +179,7 @@ function readPredecessor(from: ContinueFromSource): PredecessorFacts {
   for (const source of [from, ...(from.ancestors ?? [])]) {
     const facts =
       source === from ? own : readSource({ ...from, ...source, scopeRoot: source.scopeRoot });
-    if (facts.capsule || facts.resumable || facts.hasEvidence)
-      return { ...facts, workOrder: own.workOrder };
+    if (facts.ownsSource) return { ...facts, workOrder: own.workOrder };
   }
   return own;
 }

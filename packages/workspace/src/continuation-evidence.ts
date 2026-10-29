@@ -71,7 +71,7 @@ function selectCarrier(
   resumable: RunResumable | undefined,
   telemetry: RunTelemetry | undefined,
   sessions: readonly HeldSession[],
-  facts: () => RunExecutionFacts,
+  facts: RunExecutionFacts,
 ): { held: HeldSession | null; source: string | null } {
   const ofAttempt = (id: string | null | undefined) =>
     sessions.find((entry) => entry.attemptId === id) ?? null;
@@ -79,7 +79,7 @@ function selectCarrier(
     const id = resumable.session?.nativeSessionId;
     const named = sessions.filter((entry) => entry.capsule.nativeSessionId === id);
     const started = (entry: HeldSession) =>
-      facts().accepted.some(
+      facts.accepted.some(
         (start) => start.attemptId === entry.attemptId && start.nativeSessionId === id,
       );
     const held = (named.length > 1 ? named.find(started) : undefined) ?? named[0] ?? null;
@@ -87,9 +87,9 @@ function selectCarrier(
   }
   const final = telemetry?.final_attempt_id;
   if (final) return { held: ofAttempt(final), source: final };
-  const carrier = carryingAttempt(facts());
+  const carrier = carryingAttempt(facts);
   if (carrier) return { held: ofAttempt(carrier), source: carrier };
-  const seeded = facts().receipts.find(
+  const seeded = facts.receipts.find(
     ({ receipt }) => receipt.tryIndex === 0 && receipt.carrier.startsWith("native"),
   );
   const held = ofAttempt(seeded?.attemptId) ?? (sessions.length === 1 ? sessions[0]! : null);
@@ -104,32 +104,89 @@ function terminalRecords(runDir: string) {
   };
 }
 
-/** The carrying session alone (status projections): the run's event log is read
- * only when its terminal records leave the choice to the recorded facts and the
- * caller holds no snapshot of it. */
-export function continuationCarrier(
-  runDir: string,
-  events?: readonly RunEvent[],
-): HeldSession | null {
-  const sessions = sessionCapsules(runDir);
-  if (sessions.length === 0) return null;
+/**
+ * Recorded assistant output that what a run carries forward does not
+ * represent, each block once under its attempt and native try (its process
+ * session): everything but the represented try, the last accepted try of
+ * `representedAttempt` whose answer or report is carried, and any block the
+ * carried text already contains. Read from events the caller already holds.
+ */
+export function unrepresentedOutput(
+  events: readonly RunEvent[],
+  facts: RunExecutionFacts,
+  representedAttempt: string | null,
+  carried: string,
+): string | null {
+  const represented = facts.accepted
+    .filter((start) => start.attemptId === representedAttempt)
+    .at(-1)?.sessionId;
+  const kept = events.filter(
+    (event) =>
+      event.type === "harness.event" &&
+      !(
+        represented !== undefined &&
+        event.payload["attempt_id"] === representedAttempt &&
+        event.payload["session_id"] === represented
+      ),
+  );
+  return retainedOutput(kept, 0, false, carried)?.trim() || null;
+}
+
+/**
+ * Whether a run is its own continuation source: it declared a terminal block,
+ * holds a carrying session or recorded its own work. The successor's planner
+ * and the status projection stop their walk up a chain at the first such run;
+ * only a run with none of these defers to its ancestors.
+ */
+export function ownsContinuationSource(evidence: {
+  resumable: RunResumable | undefined;
+  held: HeldSession | null;
+  hasEvidence: boolean;
+}): boolean {
+  return evidence.resumable !== undefined || evidence.held !== null || evidence.hasEvidence;
+}
+
+/**
+ * What decides a run's continuation source, from its terminal records,
+ * capsules and final files plus its recorded execution facts: the carrying
+ * session, the attempt that speaks for the run, and whether the run recorded
+ * work of its own (a patch, a final or retained output, or work in its events).
+ */
+function sourceFactsOf(runDir: string, facts: RunExecutionFacts) {
+  const finalDir = join(runDir, "final");
   const { resumable, telemetry } = terminalRecords(runDir);
-  let facts: RunExecutionFacts | undefined;
-  return selectCarrier(resumable, telemetry, sessions, () => {
-    facts ??= runExecutionFacts(events ?? readRunEvents(join(runDir, "events.jsonl")).events);
-    return facts;
-  }).held;
+  const { held, source } = selectCarrier(resumable, telemetry, sessionCapsules(runDir), facts);
+  const attemptId = source ?? carryingAttempt(facts) ?? "a01";
+  const patch =
+    readTextSafe(join(runDir, "attempts", attemptId, "patch.diff")) ??
+    readTextSafe(join(finalDir, "patch.diff")) ??
+    "";
+  const answer = readTextSafe(join(finalDir, "answer.md"))?.trim() ?? "";
+  const retained = readTextSafe(join(finalDir, "retained-output.md"))?.trim() ?? "";
+  const hasEvidence = !!patch.trim() || !!answer || !!retained || facts.recordedWork;
+  return { resumable, telemetry, held, attemptId, patch, answer, retained, hasEvidence };
+}
+
+/**
+ * The source a status projection names, by the planner's own rule: the
+ * carrying session and whether the run is its own source. `facts` are the
+ * run's execution facts when the caller already folded them (run detail);
+ * otherwise its log is read once.
+ */
+export function continuationSource(
+  runDir: string,
+  facts?: RunExecutionFacts,
+): { held: HeldSession | null; owns: boolean } {
+  const recorded = facts ?? runExecutionFacts(readRunEvents(join(runDir, "events.jsonl")).events);
+  const source = sourceFactsOf(runDir, recorded);
+  return { held: source.held, owns: ownsContinuationSource(source) };
 }
 
 export function readContinuationEvidence(runDir: string) {
-  const finalDir = join(runDir, "final");
-  const attemptsDir = join(runDir, "attempts");
-  const { resumable, telemetry } = terminalRecords(runDir);
-  const sessions = sessionCapsules(runDir);
   const events = readRunEvents(join(runDir, "events.jsonl"));
   const facts = runExecutionFacts(events.events);
-  const selected = selectCarrier(resumable, telemetry, sessions, () => facts);
-  const { held } = selected;
+  const { resumable, telemetry, held, attemptId, patch, answer, retained, hasEvidence } =
+    sourceFactsOf(runDir, facts);
   const sessionMemory = held
     ? recordedSessionMemory(
         facts,
@@ -137,40 +194,17 @@ export function readContinuationEvidence(runDir: string) {
         readContinuationSources(runDir).length > 0,
       )
     : null;
-  const attemptId = selected.source ?? carryingAttempt(facts) ?? "a01";
   const attempt = telemetry?.attempts.find((entry) => entry.attempt_id === attemptId);
-  const patch =
-    readTextSafe(join(attemptsDir, attemptId, "patch.diff")) ??
-    readTextSafe(join(finalDir, "patch.diff")) ??
-    "";
-  // The final answer speaks for the run; the distinct output of every other
-  // attempt stays beside it as evidence, each once under its own attempt.
-  const answer = readTextSafe(join(finalDir, "answer.md"))?.trim();
+  // The final answer speaks for the run; the recorded output it does not
+  // represent (other attempts, the winner's earlier native tries) stays beside
+  // it as evidence, once under its attempt and try.
   const winner = telemetry?.final_attempt_id ?? null;
-  const others = winner ? facts.attempts.filter((id) => id !== winner) : [];
-  const othersOutput = others.length
-    ? retainedOutput(
-        events.events.filter(
-          (event) =>
-            event.type === "harness.event" && others.includes(String(event.payload["attempt_id"])),
-        ),
-      )
-    : null;
+  const unrepresented = answer ? unrepresentedOutput(events.events, facts, winner, answer) : null;
   const output = answer
-    ? othersOutput
-      ? `Final answer (final/answer.md, attempt ${winner}):\n\n${answer}\n\n${othersOutput.trim()}`
+    ? unrepresented
+      ? `Final answer (final/answer.md${winner ? `, attempt ${winner}` : ""}):\n\n${answer}\n\n${unrepresented}`
       : answer
-    : readTextSafe(join(finalDir, "retained-output.md"))?.trim() ||
-      retainedOutput(events.events, events.malformed) ||
-      "";
-  const hasEvidence =
-    !!patch.trim() ||
-    !!output ||
-    events.events.some(
-      (event) =>
-        event.type === "harness.event" &&
-        ["tool_call", "file_change"].includes(String(event.payload["type"])),
-    );
+    : retained || retainedOutput(events.events, events.malformed) || "";
   return {
     resumable,
     held,
