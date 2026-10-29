@@ -361,6 +361,10 @@ pnpm test
 - npm packages publish in dependency order with provenance. Existing versions
   require exact tag/commit/source/digest proof; differing bytes are collisions.
   Clean installed-package smokes pass on the supported Node floor and pin.
+- Before re-running a publish run that stopped after npm accepted a package,
+  reconcile the versions its log shows as sent with read-only reconciliation
+  ([DEVELOPMENT](DEVELOPMENT.md#development-commands)): a re-run sends a new
+  publish request for every version npm does not expose yet.
 - Confirm npm `latest` and `next` point to the published version. Exact-pinned
   embedding hosts do not follow those tags.
 - Asset upload never clobbers. The remote asset set is checked before/after
