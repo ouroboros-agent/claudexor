@@ -59,16 +59,19 @@ final class AppModel {
         route = .task(id)
         inspectorPresented = true
     }
+    /// Where this session's state persists (AppPersistence.swift). Attached
+    /// only after launch restore, so restoring never writes anything back.
+    @ObservationIgnored private(set) var persistence = AppPersistence.memoryOnly
     var appearance: AppearanceMode = .dark {
-        didSet { UserDefaults.standard.set(appearance.rawValue, forKey: "claudexor.appearance") }
+        didSet { persistence.preferences?.save(appearance.rawValue, "claudexor.appearance") }
     }
     /// The shared AuthSheet's target (harness default login, or a profile login).
     var authSheetTarget: AuthSheetTarget?
     var projectRoot: String = "" {
-        didSet { UserDefaults.standard.set(projectRoot, forKey: "claudexor.projectRoot") }
+        didSet { persistence.preferences?.save(projectRoot, "claudexor.projectRoot") }
     }
     var recentProjects: [String] = [] {
-        didSet { UserDefaults.standard.set(recentProjects, forKey: "claudexor.recentProjects") }
+        didSet { persistence.preferences?.save(recentProjects, "claudexor.recentProjects") }
     }
     /// A draft and every materialized thread have one immutable execution
     /// location. Local daemon ids are never assumed globally unique: the UI
@@ -274,7 +277,7 @@ final class AppModel {
     /// Display freshness is intentionally separate from routing authority.
     /// Stale values may remain visible, but can never make `next_up` current.
     var accountsQuotaDisplayStates: [ExecutionLocationID: AccountsQuotaDisplayState] = [:]
-    let accountResourceActions = AccountsResourceActions(preferences: .standard)
+    let accountResourceActions: AccountsResourceActions
     let accountsRoutingEvidence = AccountsRoutingEvidenceState()
     @ObservationIgnored var accountsQuotaDisplayGenerations: [ExecutionLocationID: UInt64] = [:]
     @ObservationIgnored var accountsQuotaSubscribers:
@@ -412,8 +415,10 @@ final class AppModel {
     }
 
     init(client: GatewayClient? = nil, requestNotificationAuthorization: Bool = true, loadPersistedState: Bool = true,
+         persistence: AppPersistence = .memoryOnly,
          lifecycleOwner: LocalRuntimeLifecycleOwner = LocalRuntimeLifecycleOwner()) {
         self.localRuntimeLifecycleOwner = lifecycleOwner
+        self.accountResourceActions = AccountsResourceActions(preferences: persistence.accountResetRecovery)
         let sshManager = SSHConnectionManager()
         self.sshConnectionManager = sshManager
         self.remoteRuntimeInstaller = RemoteRuntimeInstaller(ssh: sshManager)
@@ -424,26 +429,33 @@ final class AppModel {
         // Without this first-run authorization request, run-completion
         // notifications are silently dropped in the bundled .app forever.
         if requestNotificationAuthorization { Notifier.requestAuthIfPossible() }
-        guard loadPersistedState else { return }
-        if let raw = UserDefaults.standard.string(forKey: "claudexor.appearance"),
+        if loadPersistedState { restore(from: persistence) }
+        self.persistence = persistence
+    }
+
+    /// Launch restore. A debug appearance or environment project applies to
+    /// this session only: the writers are not attached yet.
+    private func restore(from persistence: AppPersistence) {
+        if let raw = persistence.preferences?.load("claudexor.appearance") as? String,
            let saved = AppearanceMode(rawValue: raw) {
             appearance = saved
         }
-        switch ProcessInfo.processInfo.environment["CLAUDEXOR_DEBUG_APPEARANCE"] {
+        switch persistence.environment["CLAUDEXOR_DEBUG_APPEARANCE"] {
         case "light": appearance = .light
         case "dark": appearance = .dark
         default: break
         }
-        projectRoot = UserDefaults.standard.string(forKey: "claudexor.projectRoot") ?? ProcessInfo.processInfo.environment["CLAUDEXOR_PROJECT_ROOT"] ?? ""
-        recentProjects = UserDefaults.standard.stringArray(forKey: "claudexor.recentProjects") ?? []
-        remoteConnections = ((try? RemoteConnectionStore.applicationSupport().load()) ?? [])
+        projectRoot = persistence.preferences?.load("claudexor.projectRoot") as? String
+            ?? persistence.environment["CLAUDEXOR_PROJECT_ROOT"] ?? ""
+        recentProjects = persistence.preferences?.load("claudexor.recentProjects") as? [String] ?? []
+        remoteConnections = ((try? persistence.remoteConnections?().load()) ?? [])
             .map { stored in
                 var value = stored
                 value.status = .offline
                 return value
             }
-        remoteThreadCache = (try? RemoteThreadCacheStore.applicationSupport().load()) ?? []
-        sshHostScan = SSHHostScanState.scan()
+        remoteThreadCache = (try? persistence.remoteThreadCache?().load()) ?? []
+        if persistence.scansSSHConfig { sshHostScan = SSHHostScanState.scan() }
     }
 
     /// Single-flight + coalescing runs-list refresh (QA-052), mirroring the
@@ -999,7 +1011,7 @@ final class AppModel {
             }
             remoteThreadCache.append(RemoteThreadCacheEntry(
                 locationID: locationID, thread: updated, syncedAt: .now))
-            try? RemoteThreadCacheStore.applicationSupport().save(remoteThreadCache)
+            persistRemoteThreadCache()
         }
         if selectedExecutionLocation == locationID,
            selectedThreadId == updated.id
@@ -1115,7 +1127,7 @@ final class AppModel {
                 }
                 remoteThreadCache.append(RemoteThreadCacheEntry(
                     locationID: locationID, thread: thread, syncedAt: .now))
-                try? RemoteThreadCacheStore.applicationSupport().save(remoteThreadCache)
+                persistRemoteThreadCache()
                 if let projectList = try? await requestClient.listProjects(),
                    isCurrentGateway(requestClient, at: locationID) {
                     remoteProjects[locationID] = projectList.projects
