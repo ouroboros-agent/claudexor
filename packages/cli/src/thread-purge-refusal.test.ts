@@ -4,12 +4,16 @@
  * Git. A lane parent linking out to the user's project, a held ref lock, a
  * locked worktree and a repository moved without a relink each keep the
  * thread's cleanup pending without deleting any user file or forgetting what
- * Git still records; once the cause is gone, the replay completes.
+ * Git still records; once the cause is gone, the replay completes. The
+ * repository a cleanup asks, whether a moved worktree names it or the project
+ * folder holds it, is recorded with the obligation (#333 review R1, R2): the
+ * retry and a replay after restart finish and sync there, not at the old path.
  */
 import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   renameSync,
@@ -37,17 +41,21 @@ let root: string;
 let store: EngineStore;
 let graph: ReturnType<typeof createSqlDaemonServices>;
 
-beforeEach(async () => {
-  root = realpathSync(mkdtempSync(join(tmpdir(), "cx-purge-refusal-")));
-  vi.stubEnv("CLAUDEXOR_CONFIG_DIR", join(root, "config"));
+async function open() {
   store = await EngineStore.open({
     daemonDir: join(root, "daemon"),
     workerEntry: resolve(import.meta.dirname, "../../daemon/dist/store/flusher-worker.js"),
   });
-  store.transaction(() => setGlobalGenerationInTx(store, createPartition(store, "global").pid));
   graph = createSqlDaemonServices(store, {
     purgeFiles: threadPurgeEffect(join(root, "no-project")),
   });
+}
+
+beforeEach(async () => {
+  root = realpathSync(mkdtempSync(join(tmpdir(), "cx-purge-refusal-")));
+  vi.stubEnv("CLAUDEXOR_CONFIG_DIR", join(root, "config"));
+  await open();
+  store.transaction(() => setGlobalGenerationInTx(store, createPartition(store, "global").pid));
 });
 
 afterEach(async () => {
@@ -94,6 +102,18 @@ async function replay() {
   const receipt = await graph.recoverAfterStartup();
   await store.flushed();
   return receipt;
+}
+
+/** The directories the store's flusher is asked to sync, recorded and forwarded. */
+function syncedDirectories(): () => string[] {
+  const spy = vi.spyOn(store, "registerExternal");
+  return () => spy.mock.calls.map(([dir]) => dir);
+}
+
+/** A repository moved without a relink; `git worktree repair` relinks its worktrees. */
+async function moveRepository(from: string, to: string): Promise<void> {
+  renameSync(from, to);
+  expect((await git(to, ["worktree", "repair"])).code).toBe(0);
 }
 
 describe("purge cleanup refusals stay pending (#333 review C1, C2)", () => {
@@ -247,6 +267,159 @@ describe("purge cleanup refusals stay pending (#333 review C1, C2)", () => {
     expect(existsSync(dirname(tree.path))).toBe(false);
     expect(openPurges()).toEqual([]);
     expect(sentinel(moved)).toBe("user data must remain");
+  });
+
+  it("finishes a moved repository's ref-locked cleanup there, not in a repository now at the old path", async () => {
+    const project = userProject(join(root, "project"));
+    const { thread, tree, branch } = await isolatedThread(project.root);
+    graph.threads.trashThread(thread.id);
+    const moved = join(root, "project-moved");
+    await moveRepository(project.root, moved);
+    const lock = join(moved, ".git", "refs", "heads", `${branch}.lock`);
+    writeFileSync(lock, "held by a concurrent git process");
+
+    const receipt = await removeWithTrashedThreads(project.id);
+    expect(receipt.purgedThreads).toEqual([
+      {
+        threadId: thread.id,
+        cleanup: "pending",
+        cleanupError: expect.stringContaining("git branch -D"),
+      },
+    ]);
+    // Git removed the worktree and the file naming its repository; the obligation kept it.
+    expect(existsSync(tree.path)).toBe(false);
+    expect(graph.obligations.get("purge_fs", thread.id)?.payload).toMatchObject({
+      repository: { gitDir: join(moved, ".git"), identity: expect.any(String) },
+    });
+    expect(await branchExists(moved, branch)).toBe(true);
+
+    rmSync(lock);
+    mkdirSync(project.root);
+    expect((await git(project.root, ["init", "-q"])).code).toBe(0);
+    const synced = syncedDirectories();
+    expect((await replay()).completed).toEqual([{ kind: "purge_fs", key: thread.id }]);
+    expect(await branchExists(moved, branch)).toBe(false);
+    expect(await registrations(moved)).not.toContain(thread.id);
+    expect(synced()).toContain(join(moved, ".git"));
+    expect(existsSync(dirname(tree.path))).toBe(false);
+    expect(openPurges()).toEqual([]);
+    expect(sentinel(moved)).toBe("user data must remain");
+    expect(readdirSync(project.root)).toEqual([".git"]);
+  });
+
+  it("syncs the moved repository it cleaned, also when a restart replays the completed cleanup", async () => {
+    const project = userProject(join(root, "project"));
+    const { thread, tree, branch } = await isolatedThread(project.root);
+    graph.threads.trashThread(thread.id);
+    const moved = join(root, "project-moved");
+    await moveRepository(project.root, moved);
+    const synced = syncedDirectories();
+
+    const receipt = await removeWithTrashedThreads(project.id);
+    // The process stops before the durability barrier clears the obligation
+    // (nothing awaits first, or the next flusher pass clears it); the next
+    // start replays it with the original project folder still gone.
+    graph.obligations.close();
+    expect(openPurges()).toEqual([{ kind: "purge_fs", key: thread.id, state: "materialized" }]);
+    expect(receipt.purgedThreads).toEqual([
+      { threadId: thread.id, cleanup: "completed", cleanupError: null },
+    ]);
+    expect(synced()).toContain(join(moved, ".git"));
+    expect(await branchExists(moved, branch)).toBe(false);
+    await graph.close();
+    await store.close();
+    await open();
+    const replayed = syncedDirectories();
+    expect((await replay()).completed).toEqual([{ kind: "purge_fs", key: thread.id }]);
+    expect(replayed()).toContain(join(moved, ".git"));
+    expect(openPurges()).toEqual([]);
+    expect(existsSync(project.root)).toBe(false);
+    expect(existsSync(dirname(tree.path))).toBe(false);
+    expect(sentinel(moved)).toBe("user data must remain");
+  });
+
+  it("keeps a missing worktree directory's ref-locked cleanup in the repository it found, not one now at the old path", async () => {
+    const project = userProject(join(root, "project"));
+    const { thread, tree, branch } = await isolatedThread(project.root);
+    graph.threads.trashThread(thread.id);
+    rmSync(tree.path, { recursive: true, force: true });
+    writeFileSync(join(project.root, ".git", "refs", "heads", `${branch}.lock`), "held");
+
+    const receipt = await removeWithTrashedThreads(project.id);
+    expect(receipt.purgedThreads).toEqual([
+      {
+        threadId: thread.id,
+        cleanup: "pending",
+        cleanupError: expect.stringContaining("git branch -D"),
+      },
+    ]);
+    // Git dropped the stale registration in the project folder's repository, which the obligation kept.
+    expect(await registrations(project.root)).not.toContain(thread.id);
+    expect(graph.obligations.get("purge_fs", thread.id)?.payload).toMatchObject({
+      repository: { gitDir: join(project.root, ".git"), identity: expect.any(String) },
+    });
+
+    const moved = join(root, "project-moved");
+    renameSync(project.root, moved);
+    rmSync(join(moved, ".git", "refs", "heads", `${branch}.lock`));
+    mkdirSync(project.root);
+    expect((await git(project.root, ["init", "-q"])).code).toBe(0);
+    expect((await replay()).failed).toMatchObject([
+      {
+        kind: "purge_fs",
+        key: thread.id,
+        error: expect.stringContaining("another one is there now"),
+      },
+    ]);
+    expect(await branchExists(moved, branch)).toBe(true);
+    expect(openPurges()).toEqual([{ kind: "purge_fs", key: thread.id, state: "pending" }]);
+
+    rmSync(project.root, { recursive: true, force: true });
+    renameSync(moved, project.root);
+    const synced = syncedDirectories();
+    expect((await replay()).completed).toEqual([{ kind: "purge_fs", key: thread.id }]);
+    expect(await branchExists(project.root, branch)).toBe(false);
+    expect(synced()).toContain(join(project.root, ".git"));
+    expect(openPurges()).toEqual([]);
+    expect(sentinel(project.root)).toBe("user data must remain");
+  });
+
+  it("replays a completed cleanup of a missing worktree directory only in the repository it recorded", async () => {
+    const project = userProject(join(root, "project"));
+    const { thread, tree, branch } = await isolatedThread(project.root);
+    graph.threads.trashThread(thread.id);
+    rmSync(tree.path, { recursive: true, force: true });
+
+    const receipt = await removeWithTrashedThreads(project.id);
+    // The process stops before the durability barrier clears the obligation.
+    graph.obligations.close();
+    expect(graph.obligations.get("purge_fs", thread.id)).toMatchObject({
+      state: "materialized",
+      payload: { repository: { gitDir: join(project.root, ".git") } },
+    });
+    expect(receipt.purgedThreads).toEqual([
+      { threadId: thread.id, cleanup: "completed", cleanupError: null },
+    ]);
+    expect(await branchExists(project.root, branch)).toBe(false);
+    await graph.close();
+    await store.close();
+
+    // The next start finds another repository at the project path...
+    const moved = join(root, "project-moved");
+    renameSync(project.root, moved);
+    mkdirSync(project.root);
+    expect((await git(project.root, ["init", "-q"])).code).toBe(0);
+    await open();
+    expect((await replay()).failed).toMatchObject([{ kind: "purge_fs", key: thread.id }]);
+    expect(openPurges()).toEqual([{ kind: "purge_fs", key: thread.id, state: "pending" }]);
+    // ...and with the recorded repository back, the replay syncs that one.
+    rmSync(project.root, { recursive: true, force: true });
+    renameSync(moved, project.root);
+    const synced = syncedDirectories();
+    expect((await replay()).completed).toEqual([{ kind: "purge_fs", key: thread.id }]);
+    expect(synced()).toContain(join(project.root, ".git"));
+    expect(openPurges()).toEqual([]);
+    expect(sentinel(project.root)).toBe("user data must remain");
   });
 
   it("completes an isolated thread that never had a worktree, outside any repository", async () => {

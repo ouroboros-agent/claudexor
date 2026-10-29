@@ -3029,14 +3029,24 @@ not retry automatically.
   Ask/Plan turns, of a delegated thread's turns, and its cached continuation
   summaries). Git drops the worktree's registration and then the branch before
   the thread's directory goes, in the repository the worktree's own `.git`
-  file names or, once that file is gone, in the project folder's repository;
-  what is already gone there counts as deleted. A repository that can no
-  longer be reached there keeps the cleanup pending, because a repository
-  moved without a relink and a deleted one look the same: after a move,
-  `git worktree repair` in the moved repository lets the next attempt finish;
-  after a deletion, removing the thread's leftover worktree directory and
-  creating an empty repository at the project path does. A thread that never
-  had a worktree leaves no Git state to look for. Deletion never follows a
+  file names or, without that file, in the project folder's repository.
+  Because Git deletes that file with the worktree and a project folder can be
+  replaced, the cleanup obligation records the repository asked (its common
+  Git directory and that directory's inode) before Git's first change there
+  and waits until the record is on disk; until the obligation clears, a retry
+  and the startup replay ask that repository, not whatever is at the project
+  path by then, and its Git directories are the ones synced to disk. What is
+  already gone in the repository asked counts as deleted, and a cleanup in
+  which Git had nothing to change records nothing. A repository that cannot
+  be reached keeps the cleanup pending, because a repository moved without a
+  relink and a deleted one look the same: after a move, `git worktree repair`
+  in the moved repository lets the next attempt finish, and a recorded
+  repository that later moved away, or was replaced by another directory at
+  its path, waits until it is back there; after a deletion that came before
+  any record, removing the thread's leftover worktree directory and creating
+  an empty repository at the project path finishes it, while a cleanup whose
+  recorded repository was deleted stays pending. A thread that never had a
+  worktree leaves no Git state to look for. Deletion never follows a
   link: a runtime directory between the config root and the thread's own (such
   as the project's `lanes` or `threads`) that is a link is refused, and a link
   in place of the thread's directory or worktree is only unlinked. A delegated

@@ -12,6 +12,7 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -21,7 +22,11 @@ import { basename, dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { projectRuntimeDir } from "@claudexor/util";
 import { git, worktreeRemoveRegistered } from "./git.js";
-import { ensureThreadWorktree, purgeThreadWorktree } from "./thread-tree.js";
+import {
+  ensureThreadWorktree,
+  purgeThreadWorktree,
+  type PurgeRepositoryRecord,
+} from "./thread-tree.js";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -81,9 +86,127 @@ describe("isolated thread purge", () => {
     expect(existsSync(dirname(tree.path))).toBe(true);
 
     rmSync(lock);
-    await purgeThreadWorktree(repo, "th-reflock");
+    await expect(purgeThreadWorktree(repo, "th-reflock")).resolves.toBe(join(repo, ".git"));
     expect(existsSync(dirname(tree.path))).toBe(false);
     expect(await branchExists(repo, "claudexor/thread-th-reflock")).toBe(false);
+  });
+
+  it("records a moved repository before Git deletes the worktree naming it, and finishes there after a ref lock", async () => {
+    const project = await userRepo();
+    const tree = await ensureThreadWorktree(project, "th-moved");
+    const moved = join(tempDir("claudexor-purge-moved-"), "repo");
+    renameSync(project, moved);
+    expect((await git(moved, ["worktree", "repair"])).code).toBe(0);
+    const common = join(moved, ".git");
+    const lock = join(common, "refs", "heads", "claudexor", "thread-th-moved.lock");
+    writeFileSync(lock, "held by a concurrent git process\n");
+    const recorded: PurgeRepositoryRecord[] = [];
+    const recordRepository = async (repository: PurgeRepositoryRecord) => {
+      expect(existsSync(join(tree.path, ".git"))).toBe(true);
+      recorded.push(repository);
+    };
+
+    await expect(purgeThreadWorktree(project, "th-moved", { recordRepository })).rejects.toThrow(
+      /git branch -D/,
+    );
+    expect(recorded).toEqual([{ gitDir: common, identity: expect.any(String) }]);
+    expect(existsSync(join(tree.path, ".git"))).toBe(false);
+    expect(await branchExists(moved, "claudexor/thread-th-moved")).toBe(true);
+
+    // Another repository at the old project path holds nothing of this thread.
+    mkdirSync(project);
+    expect((await git(project, ["init", "-q"])).code).toBe(0);
+    rmSync(lock);
+    await expect(
+      purgeThreadWorktree(project, "th-moved", { repository: recorded[0], recordRepository }),
+    ).resolves.toBe(common);
+    expect(await branchExists(moved, "claudexor/thread-th-moved")).toBe(false);
+    expect(await registrations(moved)).not.toContain("th-moved");
+    expect(existsSync(dirname(tree.path))).toBe(false);
+    expect(recorded).toHaveLength(1);
+  });
+
+  it("stays pending once the repository it recorded moved away, also with another one at its path", async () => {
+    const project = await userRepo();
+    const tree = await ensureThreadWorktree(project, "th-moved-later");
+    const lock = join(project, ".git", "refs", "heads", "claudexor", "thread-th-moved-later.lock");
+    writeFileSync(lock, "held by a concurrent git process\n");
+    const recorded: PurgeRepositoryRecord[] = [];
+    await expect(
+      purgeThreadWorktree(project, "th-moved-later", {
+        recordRepository: async (repository) => void recorded.push(repository),
+      }),
+    ).rejects.toThrow(/git branch -D/);
+    expect(recorded).toEqual([{ gitDir: join(project, ".git"), identity: expect.any(String) }]);
+    rmSync(lock);
+    const elsewhere = join(tempDir("claudexor-purge-moved-"), "repo");
+    renameSync(project, elsewhere);
+    const retry = () => purgeThreadWorktree(project, "th-moved-later", { repository: recorded[0] });
+
+    await expect(retry()).rejects.toThrow(/is gone or another one is there now/);
+    mkdirSync(project);
+    expect((await git(project, ["init", "-q"])).code).toBe(0);
+    await expect(retry()).rejects.toThrow(/is gone or another one is there now/);
+    expect(await branchExists(elsewhere, "claudexor/thread-th-moved-later")).toBe(true);
+
+    // Back at its path, the recorded repository finishes the cleanup.
+    rmSync(project, { recursive: true, force: true });
+    renameSync(elsewhere, project);
+    await expect(retry()).resolves.toBe(join(project, ".git"));
+    expect(await branchExists(project, "claudexor/thread-th-moved-later")).toBe(false);
+    expect(existsSync(dirname(tree.path))).toBe(false);
+  });
+
+  it("records the project folder's repository before Git changes it when the worktree directory is gone", async () => {
+    const project = await userRepo();
+    const tree = await ensureThreadWorktree(project, "th-dirless");
+    rmSync(tree.path, { recursive: true, force: true });
+    const lock = join(project, ".git", "refs", "heads", "claudexor", "thread-th-dirless.lock");
+    writeFileSync(lock, "held by a concurrent git process\n");
+    const recorded: PurgeRepositoryRecord[] = [];
+    const recordRepository = async (repository: PurgeRepositoryRecord) => {
+      expect(await registrations(project)).toContain("th-dirless");
+      recorded.push(repository);
+    };
+
+    await expect(purgeThreadWorktree(project, "th-dirless", { recordRepository })).rejects.toThrow(
+      /git branch -D/,
+    );
+    expect(recorded).toEqual([{ gitDir: join(project, ".git"), identity: expect.any(String) }]);
+    expect(await registrations(project)).not.toContain("th-dirless");
+    rmSync(lock);
+    const elsewhere = join(tempDir("claudexor-purge-moved-"), "repo");
+    renameSync(project, elsewhere);
+    mkdirSync(project);
+    expect((await git(project, ["init", "-q"])).code).toBe(0);
+    const retry = () =>
+      purgeThreadWorktree(project, "th-dirless", { repository: recorded[0], recordRepository });
+
+    await expect(retry()).rejects.toThrow(/is gone or another one is there now/);
+    expect(await branchExists(elsewhere, "claudexor/thread-th-dirless")).toBe(true);
+    rmSync(project, { recursive: true, force: true });
+    renameSync(elsewhere, project);
+    await expect(retry()).resolves.toBe(join(project, ".git"));
+    expect(await branchExists(project, "claudexor/thread-th-dirless")).toBe(false);
+    expect(recorded).toHaveLength(1);
+  });
+
+  it("records nothing when Git holds nothing of the thread to change", async () => {
+    const repo = await userRepo();
+    const recorded: PurgeRepositoryRecord[] = [];
+    const recordRepository = async (repository: PurgeRepositoryRecord) =>
+      void recorded.push(repository);
+    const gone = await ensureThreadWorktree(repo, "th-gone");
+    expect((await git(repo, ["worktree", "remove", "--force", gone.path])).code).toBe(0);
+    expect((await git(repo, ["branch", "-D", "claudexor/thread-th-gone"])).code).toBe(0);
+
+    await expect(
+      purgeThreadWorktree(repo, "th-lazy", { worktreeRecorded: false, recordRepository }),
+    ).resolves.toBe(join(repo, ".git"));
+    await expect(purgeThreadWorktree(repo, "th-gone", { recordRepository })).resolves.toBe(
+      join(repo, ".git"),
+    );
+    expect(recorded).toEqual([]);
   });
 
   it("finds Git's registration when the config dir is spelled in another case", async (context) => {
@@ -104,7 +227,7 @@ describe("isolated thread purge", () => {
     const tree = await ensureThreadWorktree(repo, "th-stale");
     rmSync(dirname(tree.path), { recursive: true, force: true });
 
-    await purgeThreadWorktree(repo, "th-stale");
+    await expect(purgeThreadWorktree(repo, "th-stale")).resolves.toBe(join(repo, ".git"));
     expect(await registrations(repo)).not.toContain("th-stale");
     expect(await branchExists(repo, "claudexor/thread-th-stale")).toBe(false);
   });
@@ -123,7 +246,9 @@ describe("isolated thread purge", () => {
     const tree = join(projectRuntimeDir(plain), "threads", "th-synthetic", "tree");
     mkdirSync(tree, { recursive: true });
 
-    await purgeThreadWorktree(plain, "th-synthetic", { worktreeRecorded: false });
+    await expect(
+      purgeThreadWorktree(plain, "th-synthetic", { worktreeRecorded: false }),
+    ).resolves.toBeNull();
     expect(existsSync(dirname(tree))).toBe(false);
   });
 
@@ -201,7 +326,7 @@ describe("isolated thread purge", () => {
     const tree = await ensureThreadWorktree(project, "th-subfolder");
     rmSync(project, { recursive: true, force: true });
 
-    await purgeThreadWorktree(project, "th-subfolder");
+    await expect(purgeThreadWorktree(project, "th-subfolder")).resolves.toBe(join(repo, ".git"));
     expect(await registrations(repo)).not.toContain("th-subfolder");
     expect(await branchExists(repo, "claudexor/thread-th-subfolder")).toBe(false);
     expect(existsSync(dirname(tree.path))).toBe(false);

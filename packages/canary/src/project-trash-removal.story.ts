@@ -8,7 +8,8 @@
  * that cannot finish (a directory that refuses deletion, a Git refusal such as
  * a locked worktree, a runtime directory that is a link, never followed) is
  * reported pending and completes when the daemon next starts after the cause
- * is gone.
+ * is gone, in the repository it recorded even after a move and with another
+ * repository at the old project path.
  */
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -31,10 +32,10 @@ import { afterEach, expect, it, vi } from "vitest";
 import {
   ControlDaemonStatus,
   ControlProjectRemoveReceipt,
-  type ControlRunDetail,
   type ControlThread,
 } from "@claudexor/schema";
 import { cli, makeSandbox, readEvents, type Sandbox } from "./support.js";
+import { controlApi } from "./project-trash-api.js";
 
 let sandbox: Sandbox | undefined;
 afterEach(() => {
@@ -132,107 +133,6 @@ function remove(sb: Sandbox, id: string, purgeTrashed: boolean) {
     "--json",
   ]);
   return { code: result.code, body: result.json() as Record<string, unknown>, result };
-}
-
-function controlApi(sb: Sandbox) {
-  let address = { host: "", port: 0 };
-  let token = "";
-  const call = async (method: string, path: string, body?: unknown, key?: string) => {
-    const response = await fetch(`http://${address.host}:${address.port}/v2${path}`, {
-      method,
-      headers: {
-        authorization: `Bearer ${token}`,
-        "content-type": "application/json",
-        "x-claudexor-protocol-major": "3",
-        ...(key ? { "idempotency-key": key } : {}),
-      },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    });
-    const text = await response.text();
-    return { status: response.status, body: (text ? JSON.parse(text) : {}) as any, text };
-  };
-  const connect = async () => {
-    address = JSON.parse(readFileSync(join(sb.configDir, "daemon", "control-api.json"), "utf8"));
-    token = readFileSync(join(sb.configDir, "daemon", "token"), "utf8").trim();
-    expect((await call("POST", "/handshake", { protocolMajor: 3, client: "canary" })).status).toBe(
-      200,
-    );
-  };
-  const terminal = async (runId: string): Promise<ControlRunDetail> => {
-    let detail: ControlRunDetail | undefined;
-    await vi.waitFor(
-      async () => {
-        const read = await call("GET", `/runs/${runId}`);
-        expect(read.status).toBe(200);
-        detail = read.body as ControlRunDetail;
-        expect(["succeeded", "failed", "cancelled", "interrupted"]).toContain(detail.summary.state);
-      },
-      { timeout: 60_000, interval: 100 },
-    );
-    return detail!;
-  };
-  const projectIds = async (): Promise<string[]> =>
-    ((await call("GET", "/projects")).body.projects as Array<{ id: string }>).map((p) => p.id);
-  const jobState = async (jobId: string): Promise<string | undefined> =>
-    (
-      (await call("GET", "/runs?limit=1000")).body.runs as Array<{ jobId: string; state: string }>
-    ).find((run) => run.jobId === jobId)?.state;
-  const openObligations = async (): Promise<number | null | undefined> =>
-    ControlDaemonStatus.parse((await call("GET", "/daemon/status")).body).store?.obligations_open;
-  const threadStates = async (): Promise<Record<string, string>> =>
-    Object.fromEntries(
-      ((await call("GET", "/threads")).body.threads as ControlThread[]).map((t) => [t.id, t.state]),
-    );
-  const thread = async (root: string, workspace: "in_place" | "isolated", key: string) => {
-    const created = await call(
-      "POST",
-      "/threads",
-      {
-        scope: { kind: "project", root },
-        workspace,
-        mode: "agent",
-        access: "workspace_write",
-        primaryHarness: "fake-session",
-        eligibleHarnesses: ["fake-session"],
-      },
-      key,
-    );
-    expect(created.status, created.text).toBe(200);
-    return (created.body as ControlThread).id;
-  };
-  const turn = async (
-    threadId: string,
-    body: Record<string, unknown>,
-    key: string,
-    status: 200 | 202 = 200,
-  ) => {
-    const started = await call("POST", `/threads/${threadId}/turns`, body, key);
-    expect(started.status, started.text).toBe(status);
-    return started.body as {
-      jobId: string;
-      turnId: string;
-      runId?: string;
-      runDir?: string;
-      state?: string;
-    };
-  };
-  const trash = async (threadId: string) => {
-    const trashed = await call("POST", `/threads/${threadId}/trash`);
-    expect(trashed.status, trashed.text).toBe(200);
-    expect(trashed.body.state).toBe("trashed");
-  };
-  return {
-    call,
-    connect,
-    terminal,
-    projectIds,
-    openObligations,
-    jobState,
-    threadStates,
-    thread,
-    turn,
-    trash,
-  };
 }
 
 it("[INV-035:project-remove-trashed-threads] removes a project with only its trashed threads in one action; default, mixed, running and queued removals change nothing", async () => {
@@ -553,9 +453,25 @@ it("[INV-035:project-remove-cleanup-refusal] keeps cleanup pending while Git ref
   symlinkSync(userFolder, lanesRoot, "dir");
   await api.trash(asked);
 
+  // An isolated thread whose repository the user moved without a relink and
+  // repaired with `git worktree repair`, while another Git process holds the
+  // thread branch's ref lock.
+  const moved = userProject(sb, "p-moved");
+  const movedOriginal = userState(moved.root);
+  const relocated = await api.thread(moved.root, "isolated", "moved-isolated");
+  const movedWrite = await api.turn(relocated, { prompt: "write a change" }, "moved-write");
+  expect((await api.terminal(movedWrite.runId!)).summary.state).toBe("succeeded");
+  await api.trash(relocated);
+  const movedTo = join(sb.home, "p-moved-elsewhere");
+  renameSync(moved.root, movedTo);
+  git(movedTo, ["worktree", "repair"]);
+  const refLock = join(movedTo, ".git", "refs", "heads", "claudexor", `thread-${relocated}.lock`);
+  writeFileSync(refLock, "held by another Git process\n");
+
   for (const [project, threadId, error] of [
     [locked, isolated, /git worktree remove failed/],
     [linked, asked, /link; refusing to follow/],
+    [moved, relocated, /git branch -D/],
   ] as const) {
     const removed = remove(sb, project.id, true);
     expect(removed.code, removed.result.stdout + removed.result.stderr).toBe(0);
@@ -568,12 +484,18 @@ it("[INV-035:project-remove-cleanup-refusal] keeps cleanup pending while Git ref
   expect(userState(locked.root)).toEqual(lockedBefore);
   expect(existsSync(join(tree, "FAKE_CHANGE.txt"))).toBe(true);
   expect(readFileSync(join(userFolder, asked, "keep.txt"), "utf8")).toContain("must survive");
-  expect(await api.openObligations()).toBeGreaterThanOrEqual(2);
+  expect(git(movedTo, ["branch", "--list", `claudexor/thread-${relocated}`])).not.toBe("");
+  expect(await api.openObligations()).toBeGreaterThanOrEqual(3);
 
-  // Lift both causes; the next start replays both cleanups through the purge owner.
+  // Lift every cause; the next start replays each cleanup through the purge
+  // owner. A new empty repository now at the moved project's old path must not
+  // stand in for the moved one, which still holds the thread branch.
   git(locked.root, ["worktree", "unlock", tree]);
   unlinkSync(lanesRoot);
   renameSync(`${lanesRoot}.real`, lanesRoot);
+  unlinkSync(refLock);
+  mkdirSync(moved.root);
+  git(moved.root, ["init", "-q"]);
   const stopped = cli(sb, ["daemon", "stop", "--json"]);
   expect(stopped.code, stopped.stdout + stopped.stderr).toBe(0);
   const restarted = cli(sb, ["daemon", "start", "--json"]);
@@ -583,11 +505,20 @@ it("[INV-035:project-remove-cleanup-refusal] keeps cleanup pending while Git ref
     timeout: 30_000,
     interval: 100,
   });
-  expect([...ownedDirs(sb, "threads", isolated), ...ownedDirs(sb, "lanes", asked)]).toEqual([]);
+  expect([
+    ...ownedDirs(sb, "threads", isolated),
+    ...ownedDirs(sb, "lanes", asked),
+    ...ownedDirs(sb, "threads", relocated),
+  ]).toEqual([]);
   expect(userState(locked.root)).toEqual(lockedOriginal);
   expect(readFileSync(join(userFolder, asked, "keep.txt"), "utf8")).toContain("must survive");
-  for (const project of [locked, linked])
-    expect(readFileSync(join(project.root, "sentinel.txt"), "utf8")).toContain(
+  // Only the main worktree's path changed with the move.
+  const movedAfter = userState(movedTo);
+  expect({ ...movedAfter, worktrees: null }).toEqual({ ...movedOriginal, worktrees: null });
+  expect(movedAfter.worktrees.match(/^worktree /gm)).toHaveLength(1);
+  expect(git(moved.root, ["for-each-ref"])).toBe("");
+  for (const root of [locked.root, linked.root, movedTo])
+    expect(readFileSync(join(root, "sentinel.txt"), "utf8")).toContain(
       "user data that must survive",
     );
 }, 180_000);

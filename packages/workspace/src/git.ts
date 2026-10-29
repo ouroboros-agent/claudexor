@@ -292,9 +292,14 @@ export async function worktreeRemove(repo: string, path: string): Promise<void> 
  * `samePlace` and removed in Git's own spelling, so a stale one whose
  * directory is gone still goes. Git prints porcelain paths unquoted, one per
  * line, so a path holding a line break cannot be read back and is refused
- * rather than reported absent.
+ * rather than reported absent. `beforeRemove` runs once Git is known to
+ * register the path, right before the removal.
  */
-export async function worktreeRemoveRegistered(repo: string, path: string): Promise<void> {
+export async function worktreeRemoveRegistered(
+  repo: string,
+  path: string,
+  beforeRemove: () => Promise<void> = async () => {},
+): Promise<void> {
   if (path.includes("\n")) {
     throw new WorkspaceError(
       `worktree path has a line break that git worktree list cannot report: ${JSON.stringify(path)}`,
@@ -306,6 +311,7 @@ export async function worktreeRemoveRegistered(repo: string, path: string): Prom
   }
   const registered = worktreePaths(listed.stdout).find((entry) => samePlace(entry, path));
   if (registered === undefined) return;
+  await beforeRemove();
   const r = await git(repo, ["worktree", "remove", "--force", registered]);
   if (r.code !== 0) throw new WorkspaceError(`git worktree remove failed: ${r.stderr.trim()}`);
 }
@@ -330,6 +336,15 @@ export function worktreeRepository(path: string): string | null {
     );
   }
   return resolve(registration, readFileSync(join(registration, "commondir"), "utf8").trimEnd());
+}
+
+/** The common Git directory of the repository `dir` is in; throws when Git cannot tell. */
+export async function gitCommonDir(dir: string): Promise<string> {
+  const r = await git(dir, ["rev-parse", "--git-common-dir"]);
+  if (r.code !== 0) {
+    throw new WorkspaceError(`git rev-parse --git-common-dir failed: ${r.stderr.trim()}`);
+  }
+  return resolve(dir, r.stdout.trim());
 }
 
 /** A regular file's text, or null when nothing (or no regular file) is there. */
@@ -524,14 +539,20 @@ export async function branchDelete(repo: string, branch: string): Promise<void> 
  * Delete a local branch, or throw when Git refuses (a held ref lock, a
  * worktree that still uses it). An absent branch is already deleted. Presence
  * is read first because `branch -D` reports "not found" and a refusal with the
- * same exit code.
+ * same exit code. `beforeDelete` runs only for a present branch, right before
+ * the deletion.
  */
-export async function branchDeleteIfPresent(repo: string, branch: string): Promise<void> {
+export async function branchDeleteIfPresent(
+  repo: string,
+  branch: string,
+  beforeDelete: () => Promise<void> = async () => {},
+): Promise<void> {
   const present = await git(repo, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
   if (present.code === 1) return;
   if (present.code !== 0) {
     throw new WorkspaceError(`git show-ref ${branch} failed: ${present.stderr.trim()}`);
   }
+  await beforeDelete();
   const r = await git(repo, ["branch", "-D", branch]);
   if (r.code !== 0) throw new WorkspaceError(`git branch -D ${branch} failed: ${r.stderr.trim()}`);
 }
