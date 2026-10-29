@@ -251,10 +251,10 @@ describe("SQL logical partition recovery", () => {
     expect(Buffer.from(preserved.payload)).toEqual(Buffer.from(JSON.stringify(evidence.payload)));
     const current = globalGeneration(store)!;
     expect(current.epoch).toBe(first.newEpoch);
-    expect(() => api.events(encodeJournalCursor("global", original.epoch, evidence.seq))).toThrow(
-      expect.objectContaining({ code: "journal_cursor_invalid", status: 409 }),
-    );
-    expect(api.events()[0]).toMatchObject({
+    expect(() =>
+      api.events({ after: encodeJournalCursor("global", original.epoch, evidence.seq) }),
+    ).toThrow(expect.objectContaining({ code: "journal_cursor_invalid", status: 409 }));
+    expect(api.events().events[0]).toMatchObject({
       type: "journal.partition_quarantined",
       payload: first,
     });

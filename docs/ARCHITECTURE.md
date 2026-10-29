@@ -3708,6 +3708,23 @@ live-only stream. `thread.entities_upserted` is state in tables, not a streamed
 event. Model/account-reset event copies expire after 30 days; their command
 receipts remain retained independently.
 
+Each connection replays and tails its partition in bounded keyset pages owned by
+the store: at most 256 rows and 1 MiB of stored payload per page, sized from the
+inline row length or a referenced body's recorded size before any body is read.
+An event above that budget is a page by itself and is sent whole, so one
+connection holds at most one page or that one event; no event is dropped or
+shortened. A walk reads through the head its first page captured, and the 250 ms
+poll starts the next walk. One page read is in flight per connection, the next
+frame waits for the socket to drain, a ping is never written into an undrained
+socket, and a departed client or daemon stop ends the walk before another read.
+Every page checks its position and head against the generation serving now, so
+a replaced or retired generation closes the stream even when no event was
+delivered yet. Resuming a replaced generation's cursor receives 409 `resnapshot`;
+a removed project's partition keeps its existing 404 `journal_partition_not_found`.
+Reading, digest checks, parsing and redaction of a page run on the
+store owner's thread, because the bulk worker holds no database connection;
+that work is bounded by one page or one oversized event.
+
 The global partition additionally carries `thread.head.updated` — a
 content-free invalidation ping `{thread_id, project_id, revision}` emitted on
 every thread mutation from any surface (create, rename, archive, turn-add,
