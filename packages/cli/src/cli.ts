@@ -1,9 +1,8 @@
 #!/usr/bin/env node
 import process from "node:process";
 import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
-import { dirname, join, relative, resolve, sep } from "node:path";
-import { ArtifactStore } from "@claudexor/artifact-store";
-import { CLAUDEXOR_VERSION, noProjectRepoRoot, readTextSafe, userConfigDir } from "@claudexor/util";
+import { join, relative, sep } from "node:path";
+import { CLAUDEXOR_VERSION, readTextSafe } from "@claudexor/util";
 import { resolveInstructions, taskGroupOptions } from "./run-options.js";
 import { releaseCommand } from "./release-command.js";
 import { serveBeltBridge, serveMcpBridge } from "./bridge-serve.js";
@@ -77,7 +76,6 @@ import { assertCliRunParamsHaveNoInlineSecrets } from "./run-secret-scan.js";
 import { resolveLocalAttachment, type LocalAttachment } from "./local-attachment.js";
 import { uploadLocalAttachment } from "./attachment-upload.js";
 import {
-  connectDaemonIfRunning,
   daemonOutcomeSummary,
   ensureDaemon,
   enqueueAndAwait,
@@ -97,6 +95,7 @@ import {
 } from "./delegation-output.js";
 import { inspectBudgetLine } from "./run-detail-projections.js";
 import { readRunFactsArtifact } from "./run-facts-projection.js";
+import { resolveRunStore, type ResolvedRunStore } from "./run-store-lookup.js";
 import { projectTerminalRunOutput, terminalRunRequiredActionLines } from "./terminal-run-output.js";
 import { runPlanQuestionLoop } from "./plan-question-loop.js";
 import { decisionAnswerLines, resolveDecisionBody } from "./decision.js";
@@ -846,64 +845,6 @@ async function decisionCommand(args: ParsedArgs, json: boolean): Promise<number>
   }
 }
 
-/**
- * Resolve the ArtifactStore that owns a given run, regardless of the cwd the
- * CLI is invoked from. Order:
- *   1. the project store rooted at the current cwd (the common case);
- *   2. the user store (~/.claudexor/v3/runs) used by no-project Ask runs;
- *   3. a daemon-tracked run that started in ANOTHER project — agent/race/create
- *      runs live under that project's external runtime namespace, so we ask
- *      the daemon for the run's absolute runDir (GET /runs/:id ->
- *      summary.runDir) and rebuild a store whose runPaths(runId).root matches.
- * Returns null when no store can be located (the run does not exist anywhere
- * reachable). Daemon absence falls through; a typed refusal (#93) propagates.
- */
-async function resolveRunStore(
-  runId: string,
-): Promise<{ store: ArtifactStore; root: string } | null> {
-  // An id that fails the store's shape fence (separators, `..`) can never
-  // name a run: report it as "no such run" through the normal typed path —
-  // the fence must not turn a typo'd id into a raw crash that breaks --json
-  // purity on inspect/apply/follow.
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(runId)) return null;
-  // 1. project cwd store
-  const cwdStore = new ArtifactStore(process.cwd());
-  if (existsSync(cwdStore.runPaths(runId).root))
-    return { store: cwdStore, root: cwdStore.runPaths(runId).root };
-  // 2. user-level (no-project Ask) store
-  const userStore = new ArtifactStore(noProjectRepoRoot(), { claudexorDir: userConfigDir() });
-  if (existsSync(userStore.runPaths(runId).root))
-    return { store: userStore, root: userStore.runPaths(runId).root };
-  // 3. daemon-tracked run in another project: ask the daemon for its runDir.
-  //    Connect ONLY to an already-running daemon — never auto-spawn one for a
-  //    read-only lookup (a typo'd id must report "no such run", not silently
-  //    launch a background daemon). Acting paths (decision/enqueue) still use
-  //    ensureDaemon().
-  const conn = await connectDaemonIfRunning(); // typed refusal (#93) propagates
-  if (!conn) return null;
-  const { addr } = conn;
-  try {
-    const resp = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}`, {
-      headers: { Authorization: `Bearer ${addr.token}` },
-    });
-    if (resp.ok) {
-      const detail = (await resp.json()) as { summary?: { runDir?: string } };
-      const runDir = detail.summary?.runDir;
-      if (runDir && existsSync(runDir)) {
-        // Reconstruct a store from the daemon-authoritative absolute runDir:
-        // runId -> runs -> owned runtime root.
-        const claudexorDir = resolve(runDir, "..", "..");
-        const ds = new ArtifactStore(dirname(claudexorDir), { claudexorDir });
-        if (existsSync(ds.runPaths(runId).root))
-          return { store: ds, root: ds.runPaths(runId).root };
-      }
-    }
-  } catch {
-    /* daemon unavailable: fall through */
-  }
-  return null;
-}
-
 function printPreflightError(args: ParsedArgs, outputMode: CliOutputMode, error: string): number {
   if (outputMode === "json" && (args._[0] ?? "help") === "plugin") {
     printJson(pluginCommandErrorResult(args._[1], args._[2], flagBool(args, "dry-run"), 2, error));
@@ -1087,18 +1028,20 @@ async function dispatch(args: ParsedArgs, outputMode: CliOutputMode): Promise<nu
       return reviewCommand(args, json);
 
     case "inspect": {
-      const runId = args._[1];
-      if (!runId) {
+      const requestedRunId = args._[1];
+      if (!requestedRunId) {
         return printUsageError(json, "usage: claudexor inspect <run_id>");
       }
       // Resolve the owning store from any cwd: project store, user-level Ask
       // store, or a daemon-tracked run that started in another project.
-      const resolved = await resolveRunStore(runId);
-      if (!resolved) {
-        // D-7 projector: canonical envelope, run id as a per-command extra.
-        return renderCliFailure(json, new Error(`no such run ${runId}`), { extras: { runId } });
+      let resolved: ResolvedRunStore;
+      try {
+        resolved = await resolveRunStore(requestedRunId);
+      } catch (err) {
+        // D-7 projector: each lookup outcome keeps its typed code (#235).
+        return renderCliFailure(json, err, { extras: { runId: requestedRunId } });
       }
-      const store = resolved.store;
+      const { store, runId } = resolved;
       const paths = store.runPaths(runId);
       const decision = store.readYaml(join(paths.arbitrationDir, "decision.yaml"));
       const workProduct = store.readYaml(join(paths.finalDir, "work_product.yaml"));
@@ -1275,7 +1218,7 @@ async function dispatch(args: ParsedArgs, outputMode: CliOutputMode): Promise<nu
         print("");
         print(primary.text.trim());
       } else {
-        print(summary ?? "(no summary — run may not exist)");
+        print(summary ?? "(no summary or primary output in the run directory)");
       }
       if (artifacts.length) {
         print("");

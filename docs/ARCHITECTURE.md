@@ -4794,10 +4794,31 @@ Control API apply gate reads that authority; the mirrored
 `arbitration/operator_decision.yaml` remains a compatibility projection for
 artifact readers. `accept_clean_patch` delivers through `verifyAndDeliver` and
 `rerun_with_feedback` enqueues a follow-up run. A mutated patch invalidates the
-override. UI must not fake local accept/unblock state. The CLI resolves a run from
-any cwd (project store, user Ask store, or — only when a daemon is already running —
-the daemon registry); read-only lookups (`inspect`/`apply`) never auto-start a
-daemon, while acting paths (`agent`/`best-of`/`create`, `decision`) do.
+override. UI must not fake local accept/unblock state.
+
+The CLI resolves a run for `inspect` from any cwd: the project store, the user Ask
+store, then the run registry of an already-running daemon. Read-only lookups
+(`inspect` and the MCP status, inspect and result tools) never auto-start a daemon,
+so a typo'd id cannot launch one; `apply` is server-owned delivery and starts it
+like the acting paths (`agent`/`best-of`/`create`, `decision`). A local retained run
+is shown while the daemon is down, and its files say nothing about whether it is
+still running. Only the run registry's own 404 from a running daemon (the
+run-detail route's `http_404` problem) reports `no such run` (`run_not_found`).
+Other recognized outcomes keep typed codes: `invalid_argument` for a malformed id;
+`daemon_unavailable` when no daemon is reachable (runs from other projects were not
+checked) or the connection drops before the whole answer arrives; the daemon's own
+problem code for any other error answer, including another 404;
+`invalid_service_response` for an invalid success body or a recorded run directory
+that is not an absolute `runs/<id>` path of a run store; `run_not_materialized` with
+the state for a known run without a run directory; and `run_artifacts_unavailable`
+with the state and recorded path when that directory is missing or unreadable. An
+error answer that is not a control problem (for example a non-daemon 404 page) has
+no `code` and names only its HTTP status. The lookup validates only the detail
+fields it uses (`summary.state`, `summary.runDir`), so additive same-major fields
+elsewhere do not fail it, and a known problem keeps its recovery fields when it
+carries extra ones; a run state this CLI does not know is still
+`invalid_service_response`. The CLI reads exactly the recorded directory, so a job
+id the daemon knows resolves to its run.
 
 A successful run can be applied when its requested review passed or its frozen
 `review_requested` is explicitly false and its review result is `not_run`.
