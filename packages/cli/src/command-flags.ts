@@ -367,6 +367,10 @@ export const CLI_FLAGS: readonly CliFlagSpec[] = [
     "harness install: select this release's tested vendor baseline instead of npm latest; a runnable managed copy at or above it is kept",
   ),
   booleanFlag("latest", "harness inspect: also read the newest published vendor version"),
+  booleanFlag(
+    "purge-trashed-threads",
+    "project remove: also purge the project's threads already in the trash",
+  ),
   booleanFlag("help", "Show this help"),
   booleanFlag("version", "Print the CLI version"),
 ];

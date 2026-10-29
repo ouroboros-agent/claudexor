@@ -123,6 +123,11 @@ export interface ProjectThreadPort {
     id: string,
     activeRunRoots: ReadonlySet<string>,
   ): import("@claudexor/schema").ControlProjectRemoveReceipt;
+  /** #333 opt-in: also purge the threads already in the trash, in one commit. */
+  removeProjectWithTrashedThreads(
+    id: string,
+    activeRunRoots: ReadonlySet<string>,
+  ): import("./store/projects.js").ProjectRemoval;
   createThread(
     input: CreateThreadInput & {
       ephemeral?: boolean;

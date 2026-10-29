@@ -11,6 +11,7 @@ import { STORE_IDENTITY_HEADER, queryParam, resumeHeader } from "./operation-par
 import { REMOTE_OPERATION_DRAFTS } from "./remote-operation-descriptors.js";
 import { MODEL_OPERATION_DRAFTS } from "./model-routes.js";
 import { MAINTENANCE_OPERATION_DRAFTS } from "./maintenance-routes.js";
+import { PROJECT_OPERATION_DRAFTS } from "./project-operation-descriptors.js";
 import { RUN_EVENT_PART_OPERATION_DRAFTS } from "./run-event-part-routes.js";
 import { descriptor, jsonOperation as j } from "./operation-descriptor.js";
 import { TASK_GROUP_RUNS_OPERATION_DRAFTS } from "./task-group-routes.js";
@@ -147,25 +148,7 @@ const operations: ControlOperationDescriptor[] = [
   }),
   j("GET", "/v2/projects", "read_only", null, "ControlProjectListResponse"),
   ...REMOTE_OPERATION_DRAFTS.map(descriptor),
-  j(
-    "POST",
-    "/v2/projects",
-    "mutating",
-    "ControlProjectRegisterRequest",
-    "ControlProjectRegisterResponse",
-    { idempotency: "key_required" },
-  ),
-  j(
-    "POST",
-    "/v2/projects/:id/relink",
-    "mutating",
-    "ControlProjectRelinkRequest",
-    "ControlProject",
-    { idempotency: "natural" },
-  ),
-  j("DELETE", "/v2/projects/:id", "mutating", null, "ControlProjectRemoveReceipt", {
-    idempotency: "natural",
-  }),
+  ...PROJECT_OPERATION_DRAFTS.map(descriptor),
   j("GET", "/v2/projects/:id/events", "read_only", null, null, {
     responseKind: "stream",
     parameters: [

@@ -39,15 +39,20 @@ export function threadPurgeOwner(
     thread.repo && thread.workspace.mode === "isolated" ? thread.repo.root : null;
   const lanesRoot = (thread: Thread): string => thread.repo?.root ?? noProjectRoot;
   const perform = threadPurgeEffect(noProjectRoot);
+  /** Deletes the directories of a committed purge, given its pre-purge record. */
+  const finishPurge = async (thread: Thread): Promise<void> => {
+    if (durability) await durability.complete(thread.id, perform);
+    else await perform(thread);
+  };
   return {
     purgeThread: async (id: string) => {
       const thread = threads.getThread(id);
       if (!thread) throw Object.assign(new Error(`no such thread: ${id}`), { status: 404 });
       const purged = threads.purgeThread(id);
-      if (durability) await durability.complete(id, perform);
-      else await perform(thread);
+      await finishPurge(thread);
       return purged;
     },
+    finishPurge,
     /** Whether a directory this owner deletes for the thread is still on disk. */
     hasPurgeLeftovers: (thread: Thread): boolean => {
       const worktreeRoot = isolatedRoot(thread);

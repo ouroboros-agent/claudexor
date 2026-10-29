@@ -3029,7 +3029,9 @@ not retry automatically.
   as a purge only from a list whose `problems` name no skipped project and
   whose rows it could all decode; a repeated purge or the next disk-retention
   pass (below) finishes the cleanup, and nothing makes a partially deleted
-  thread restorable again. Purge does not erase the
+  thread restorable again. Project removal can purge a project's trashed
+  threads in the same action (see `DELETE /v2/projects/:id` below). Purge does
+  not erase the
   conversation: thread, turn, session and checkpoint rows and original prompt
   bodies stay in the engine store, run trees
   follow the run retention below, native sessions that a route keeps outside
@@ -3887,6 +3889,22 @@ SNAPSHOT, disclosed as such in the receipt (`activeRunCheck: "snapshot"`): the
 active-run root set is read once through the in-process command activity
 projection and consumed by the synchronous removal in the same event-loop turn.
 There is no await where enqueue could interleave between check and mutation.
+The exact opt-in `?trashedThreads=purge` (CLI `claudexor project remove <id>
+--purge-trashed-threads`) removes the project together with the threads already
+in its trash. Any other thread, active or closed, still refuses it
+(`409 project_has_threads`; trash it first), and so does the snapshot fence or
+any queued or running command of the project's partition, such as a turn, a
+thread Apply or a run started under a former root (`409 project_has_active_run`);
+a refusal changes nothing. Every purge commits in the same store transaction that
+retires the project, with the same cleanup obligation as the thread purge route,
+whose list of what purge deletes and keeps applies unchanged. The directories are
+then deleted through the one thread purge owner, and the receipt's
+`purgedThreads` reports each thread's cleanup as `completed` or `pending` with
+its error. Daemon startup retries a pending cleanup; the retention pass, which
+finishes leftovers only for registered projects, does not. Only `trashedThreads`
+is read: a repeated or inexact value is a `400` before the service runs. Other
+query parameters stay ignored as before, so a misspelled name gets the default
+removal, which still refuses while any non-purged thread remains.
 Activity includes the global and healthy project partitions,
 and retention consumes that same prompt-free projection without a self-RPC. The CLI
 projects the same surface as `claudexor project list|register|relink|remove` and

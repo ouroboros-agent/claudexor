@@ -199,6 +199,11 @@ const BOOLEAN_FLAG_MAP = {
     mcp: null,
     reason: "harness install confirmation (subcommand plumbing, not a run control)",
   },
+  "purge-trashed-threads": {
+    mcp: null,
+    reason:
+      "project remove opt-in (registry ops verb, not a run control); public MCP has no project-removal tool",
+  },
   force: { mcp: null, reason: "subcommand plumbing" },
   "allow-full-access": { mcp: null, reason: "trust subcommand flag" },
   "revoke-full-access": { mcp: null, reason: "trust subcommand flag" },
