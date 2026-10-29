@@ -493,7 +493,7 @@ export class InRunContinuity {
       attemptId: this.deps.attemptId,
       policy: this.deps.policy,
       registry: this.deps.registry,
-      snapshots: this.deps.snapshots,
+      quotaSnapshots: this.deps.quotaSnapshots,
       probeReadyProfiles: () => this.deps.probeReadyProfiles(runSpec, this.triedProfiles),
       ...this.deps.rotationObservations(runSpec, facts.newTransients, facts.refusal),
       triedProfiles: this.triedProfiles,

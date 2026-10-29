@@ -2,7 +2,6 @@
 import type {
   Attachment,
   CommandListQuery,
-  ControlJournalEvent,
   ControlJournalExportReceipt,
   ControlJournalInspection,
   ControlJournalQuarantineReceipt,
@@ -32,6 +31,7 @@ import type { InteractionContext, InteractionTerminal } from "./interactions.js"
 import type { OperatorDecisionRecord, RecordedOperatorDecision } from "./operator-decisions.js";
 import type { CreateThreadInput, CreateTurnInput, UpdateThreadInput } from "./threads.js";
 import type { JournalQuarantineRequest } from "./journal-recovery-operation.js";
+import type { JournalEventPage, JournalEventPageRequest } from "./store/cursors.js";
 export interface ProfileContinuityResult {
   sessions: number;
   checkpoints: number;
@@ -258,7 +258,8 @@ export interface CommandQueries {
 
 /** Product recovery operations, without journal preparation or file ownership. */
 export interface PartitionControlPort {
-  events(afterCursor?: string): ControlJournalEvent[];
+  /** One bounded page of the partition's retained events (see `readJournalEventPage`). */
+  events(request?: JournalEventPageRequest): JournalEventPage;
   inspect(): ControlJournalInspection;
   preflightQuarantine(input: JournalQuarantineRequest): {
     disposition: string;

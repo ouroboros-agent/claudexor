@@ -12483,26 +12483,29 @@ describe("DaemonControlApiServer", () => {
     const calls: string[] = [];
     const emitted = new Set<string>();
     const services: DaemonControlApiOptions["services"] = {
-      journalEvents: async (partition, afterCursor) => {
-        const call = `${partition}:${afterCursor ?? ""}`;
+      journalEvents: async (partition, { after }) => {
+        const call = `${partition}:${after ?? ""}`;
         calls.push(call);
-        if (afterCursor === "stale")
+        if (after === "stale")
           throw Object.assign(new Error("journal cursor is stale; resnapshot is required"), {
             code: "journal_cursor_invalid",
             status: 409,
           });
-        if (emitted.has(call)) return [];
+        const cursor = partition === "global" ? "global-next" : "project-next";
+        if (emitted.has(call) || after === cursor)
+          return { events: [], position: after, through: "head", more: false };
         emitted.add(call);
-        return [
+        const events = [
           {
             schemaVersion: 1,
-            cursor: partition === "global" ? "global-next" : "project-next",
+            cursor,
             partition,
             type: "command.enqueued",
             observedAt: "2026-07-14T00:00:00.000Z",
             payload: { id: "cmd-1" },
           },
         ];
+        return { events, position: cursor, through: "head", more: false };
       },
     };
     const readOne = async (response: Response): Promise<string> => {

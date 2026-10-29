@@ -62,7 +62,7 @@ async function fixture() {
     pollMs: 5,
     terminalFilesPending: pending,
     services: {
-      journalEvents: async (partition, cursor) => graph.journalEvents(partition, cursor),
+      journalEvents: async (partition, request) => graph.journalEvents(partition, request),
     },
   });
   const { host, port } = await control.start();

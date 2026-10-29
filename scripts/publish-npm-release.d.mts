@@ -32,3 +32,29 @@ export function moveNextChannel(
   packed: ReadonlyArray<{ pkg: { name: string; version: string } }>,
   spawn?: (command: string, args: string[], options: Record<string, unknown>) => NpmSpawnResult,
 ): string[];
+
+/** The process, network, clock and output edges of `--reconcile`, injectable for tests. */
+export interface ReconcileIo {
+  spawn: (
+    command: string,
+    args: string[],
+    options: Record<string, unknown>,
+  ) => {
+    status: number | null;
+    stdout?: string;
+    stderr?: string;
+    error?: Error & { code?: string };
+  };
+  fetch: (
+    url: URL,
+    init: { headers: Record<string, string>; signal: AbortSignal },
+  ) => Promise<{ status: number; ok: boolean; json(): Promise<unknown> }>;
+  sleep: (ms: number) => Promise<void>;
+  now: () => number;
+  log: (line: string) => void;
+  error: (line: string) => void;
+}
+
+/** `--reconcile <selection.json>`: reads and verifies selected earlier publications, never
+ * publishing or moving a dist-tag; resolves to the process exit code. */
+export function reconcileNpmPublications(args: string[], io?: ReconcileIo): Promise<number>;

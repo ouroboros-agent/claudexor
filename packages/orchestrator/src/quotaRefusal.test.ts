@@ -218,7 +218,7 @@ describe("credential pool exhaustion (A5)", () => {
     attemptId: "a01",
     policy: rotatePolicy,
     registry: [mkProfile("b"), mkProfile("c")],
-    snapshots,
+    quotaSnapshots: () => snapshots,
     probeReadyProfiles: async () => new Set(["b", "c"]),
     triedProfiles: new Set<string>(),
     markers: { sawAgentProgress: false, fileChanges: 0 },
@@ -386,5 +386,58 @@ describe("credential pool exhaustion (A5)", () => {
         emit: () => {},
       }),
     ).toThrowError(expect.objectContaining({ code: "credential_pool_exhausted", resetsAt: EARLY }));
+  });
+
+  it("reads the quota authority once, after both probes; the exhausted event and terminal agree (#457)", async () => {
+    const order: string[] = [];
+    // A second read would see different evidence; one read keeps the event
+    // and the terminal on the same value.
+    const reads = [
+      [snapshotFor("b", { cooldown_until: MID }), snapshotFor("c", { cooldown_until: LATE })],
+      [snapshotFor("b", { cooldown_until: EARLY }), snapshotFor("c", { cooldown_until: EARLY })],
+    ];
+    const events: Array<{ type: string; payload: Record<string, unknown> }> = [];
+    const result = await rotateSpecOnTypedLimit({
+      ...rotateArgs([], LATE),
+      quotaSnapshots: () => {
+        order.push("quota");
+        return reads[order.filter((step) => step === "quota").length - 1] ?? [];
+      },
+      probeReadyProfiles: async () => {
+        order.push("ready");
+        return new Set(["b", "c"]);
+      },
+      probeCurrentSubject: async () => {
+        order.push("subject");
+        return null;
+      },
+      emit: (type, payload) => events.push({ type, payload }),
+    });
+    expect(order).toEqual(["ready", "subject", "quota"]);
+    const exhausted = events.find((e) => e.type === "route.profile.rotation_exhausted");
+    expect(exhausted?.payload["candidates"]).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ profile_id: "b", rejected: "cooldown", resets_at: MID }),
+        expect.objectContaining({ profile_id: "c", rejected: "cooldown", resets_at: LATE }),
+      ]),
+    );
+    expect(result).toMatchObject({ poolExhausted: { resetsAt: MID } });
+  });
+
+  it("a pinned or ineligible decision never reads the quota authority (#457)", async () => {
+    let reads = 0;
+    const quotaSnapshots = () => {
+      reads += 1;
+      return [];
+    };
+    await rotateSpecOnTypedLimit({ ...rotateArgs([], EARLY), quotaSnapshots, pinned: true });
+    await rotateSpecOnTypedLimit({
+      ...rotateArgs([], EARLY),
+      quotaSnapshots,
+      sawTypedLimit: false,
+      sawRetryable: false,
+      markers: { sawAgentProgress: true, fileChanges: 0 },
+    });
+    expect(reads).toBe(0);
   });
 });

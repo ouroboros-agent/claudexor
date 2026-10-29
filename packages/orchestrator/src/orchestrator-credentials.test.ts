@@ -114,7 +114,7 @@ describe("OrchestratorCredentials differential verdict fence (#363)", () => {
       attemptId: "a01",
       policy: { limit_action: "rotate", rotation_eligible: [], headroom_threshold: 1 },
       registry: [],
-      snapshots: [],
+      quotaSnapshots: () => [],
       probeReadyProfiles: async () => new Set(),
       ...observations,
       triedProfiles: new Set(),

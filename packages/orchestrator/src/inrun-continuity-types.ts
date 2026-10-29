@@ -36,7 +36,10 @@ export interface InRunContinuityDeps {
   firstPrompt: string;
   registry: readonly CredentialProfile[];
   policy: ProfilePolicy;
-  snapshots: readonly QuotaSnapshot[];
+  /** The quota authority's current projection (#457). Each rotation decision
+   * samples it once, after its readiness probes, so a reset or replacement
+   * observed after this attempt began still reaches the decision. */
+  quotaSnapshots: () => readonly QuotaSnapshot[];
   retryPolicy: TransientRetryPolicy;
   pinned: boolean;
   defaultRouteWasVendorNative: boolean;

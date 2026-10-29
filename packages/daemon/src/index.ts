@@ -48,6 +48,7 @@ export { runMutation } from "./store/mutation.js";
 export { lookupIdempotency } from "./store/idempotency.js";
 export { currentGeneration } from "./store/partitions.js";
 export { encodeJournalCursor, decodeJournalCursor } from "./store/cursors.js";
+export type { JournalEventPage, JournalEventPageRequest } from "./store/cursors.js";
 export * from "./quota-registry.js";
 export * from "./quota-poll-lanes.js";
 export { quotaPacerFileStore } from "./quota-poll-pacer.js";

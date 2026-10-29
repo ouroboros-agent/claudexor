@@ -6,9 +6,17 @@ import { DurableJournal } from "./store/test-support/fixtures/legacy/journal/ind
 import { withQuotaAvailability, type QuotaSubject } from "@claudexor/schema";
 import { hashJson, sha256 } from "@claudexor/util";
 import { sqlFixture as openSqlFixture } from "./store/test-support/sql-fixture.js";
+import { readJournalEvents } from "../dist/store/cursors.js";
 import { QuotaRegistry } from "./quota-registry.js";
 
 const sqlStores: Array<Awaited<ReturnType<typeof openSqlFixture>>> = [];
+
+/** Whole retained histories, read through the same bounded pages the SSE replays. */
+const journal = (
+  graph: Awaited<ReturnType<typeof openSqlFixture>>["graph"],
+  name: string,
+  cursor?: string,
+) => readJournalEvents(graph.store, name, cursor, graph.blobs);
 async function sqlFixture(root: string, now?: () => Date) {
   const sql = await openSqlFixture(root, now);
   sqlStores.push(sql);
@@ -421,29 +429,30 @@ describe("QuotaRegistry", () => {
 
     const fenced = await slot.refreshWithCursor();
     expect(fenced.response.snapshots).toHaveLength(2);
-    const refreshEvents = manager.graph.journalEvents("global");
+    const refreshEvents = journal(manager.graph, "global");
     expect(refreshEvents.map((event) => event.type)).toEqual([
       "quota.snapshot.upserted",
       "quota.snapshot.upserted",
       "quota.projection.updated",
     ]);
     expect(refreshEvents.at(-1)?.payload).toMatchObject({ reason: "refresh" });
-    expect(manager.graph.journalEvents("global", fenced.quotaEventCursor)).toEqual([]);
+    expect(journal(manager.graph, "global", fenced.quotaEventCursor)).toEqual([]);
 
     slot.upsert(quotaSnapshot("claude", "later", 0.6));
-    const laterEvents = manager.graph.journalEvents("global", fenced.quotaEventCursor);
+    const laterEvents = journal(manager.graph, "global", fenced.quotaEventCursor);
     expect(laterEvents.map((event) => event.type)).toEqual([
       "quota.snapshot.upserted",
       "quota.projection.updated",
     ]);
     expect(laterEvents.at(-1)?.payload).toMatchObject({ reason: "direct_mutation" });
-    const afterUpsertCursor = manager.graph.journalEvents("global").at(-1)?.cursor;
+    const afterUpsertCursor = journal(manager.graph, "global").at(-1)?.cursor;
     expect(afterUpsertCursor).toBeTruthy();
 
     slot.removeSubject("claude", "later");
-    expect(
-      manager.graph.journalEvents("global", afterUpsertCursor).map((event) => event.type),
-    ).toEqual(["quota.subject.removed", "quota.projection.updated"]);
+    expect(journal(manager.graph, "global", afterUpsertCursor).map((event) => event.type)).toEqual([
+      "quota.subject.removed",
+      "quota.projection.updated",
+    ]);
 
     await manager.close();
     rmSync(root, { recursive: true, force: true });
@@ -481,10 +490,10 @@ describe("QuotaRegistry", () => {
     const fenced = await slot.refreshWithCursor();
     expect(fenced.response.snapshots).toEqual([]);
     expect(fenced.response.absences).toHaveLength(1);
-    const events = manager.graph.journalEvents("global");
+    const events = journal(manager.graph, "global");
     expect(events.map((event) => event.type)).toEqual(["quota.projection.updated"]);
     expect(events[0]?.payload).toMatchObject({ reason: "refresh" });
-    expect(manager.graph.journalEvents("global", fenced.quotaEventCursor)).toEqual([]);
+    expect(journal(manager.graph, "global", fenced.quotaEventCursor)).toEqual([]);
 
     await manager.close();
     rmSync(root, { recursive: true, force: true });
