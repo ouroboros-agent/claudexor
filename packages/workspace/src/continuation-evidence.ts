@@ -65,13 +65,14 @@ function sessionCapsules(runDir: string): HeldSession[] {
  * names none), else the completed run's final attempt. Only a run without
  * either (a host restart, an old run) falls back to its recorded execution
  * facts: the carrying attempt; without any start, the seeded native first try
- * or the run's only capsule. Never mtime or directory order.
+ * or the run's only capsule. Never mtime or directory order. `facts` is
+ * asked only when the terminal records leave the choice to the recorded facts.
  */
 function selectCarrier(
   resumable: RunResumable | undefined,
   telemetry: RunTelemetry | undefined,
   sessions: readonly HeldSession[],
-  facts: RunExecutionFacts,
+  facts: () => RunExecutionFacts,
 ): { held: HeldSession | null; source: string | null } {
   const ofAttempt = (id: string | null | undefined) =>
     sessions.find((entry) => entry.attemptId === id) ?? null;
@@ -79,7 +80,7 @@ function selectCarrier(
     const id = resumable.session?.nativeSessionId;
     const named = sessions.filter((entry) => entry.capsule.nativeSessionId === id);
     const started = (entry: HeldSession) =>
-      facts.accepted.some(
+      facts().accepted.some(
         (start) => start.attemptId === entry.attemptId && start.nativeSessionId === id,
       );
     const held = (named.length > 1 ? named.find(started) : undefined) ?? named[0] ?? null;
@@ -87,9 +88,9 @@ function selectCarrier(
   }
   const final = telemetry?.final_attempt_id;
   if (final) return { held: ofAttempt(final), source: final };
-  const carrier = carryingAttempt(facts);
+  const carrier = carryingAttempt(facts());
   if (carrier) return { held: ofAttempt(carrier), source: carrier };
-  const seeded = facts.receipts.find(
+  const seeded = facts().receipts.find(
     ({ receipt }) => receipt.tryIndex === 0 && receipt.carrier.startsWith("native"),
   );
   const held = ofAttempt(seeded?.attemptId) ?? (sessions.length === 1 ? sessions[0]! : null);
@@ -107,9 +108,12 @@ function terminalRecords(runDir: string) {
 /**
  * Recorded assistant output that what a run carries forward does not
  * represent, each block once under its attempt and native try (its process
- * session): everything but the represented try, the last accepted try of
- * `representedAttempt` whose answer or report is carried, and any block the
- * carried text already contains. Read from events the caller already holds.
+ * session). The represented try is the last accepted try of
+ * `representedAttempt`, whose answer or report is carried: its typed final
+ * and the blocks repeating it are left out, its other narration stays (with
+ * no typed final its joined narration is the carried answer, so the whole try
+ * is left out). Any block the carried text contains is left out too. Read
+ * from events the caller already holds.
  */
 export function unrepresentedOutput(
   events: readonly RunEvent[],
@@ -117,19 +121,18 @@ export function unrepresentedOutput(
   representedAttempt: string | null,
   carried: string,
 ): string | null {
-  const represented = facts.accepted
+  const session = facts.accepted
     .filter((start) => start.attemptId === representedAttempt)
     .at(-1)?.sessionId;
-  const kept = events.filter(
-    (event) =>
-      event.type === "harness.event" &&
-      !(
-        represented !== undefined &&
-        event.payload["attempt_id"] === representedAttempt &&
-        event.payload["session_id"] === represented
-      ),
+  const represented =
+    representedAttempt !== null && session ? { attempt: representedAttempt, session } : undefined;
+  const harness = events.filter((event) => event.type === "harness.event");
+  return (
+    retainedOutput(harness, 0, false, {
+      text: carried,
+      ...(represented ? { represented } : {}),
+    })?.trim() || null
   );
-  return retainedOutput(kept, 0, false, carried)?.trim() || null;
 }
 
 /**
@@ -146,47 +149,70 @@ export function ownsContinuationSource(evidence: {
   return evidence.resumable !== undefined || evidence.held !== null || evidence.hasEvidence;
 }
 
-/**
- * What decides a run's continuation source, from its terminal records,
- * capsules and final files plus its recorded execution facts: the carrying
- * session, the attempt that speaks for the run, and whether the run recorded
- * work of its own (a patch, a final or retained output, or work in its events).
- */
-function sourceFactsOf(runDir: string, facts: RunExecutionFacts) {
+/** A run's own work outside its events: the source attempt's patch, its final answer and retained output. */
+function sourceFiles(runDir: string, attemptId: string) {
   const finalDir = join(runDir, "final");
-  const { resumable, telemetry } = terminalRecords(runDir);
-  const { held, source } = selectCarrier(resumable, telemetry, sessionCapsules(runDir), facts);
-  const attemptId = source ?? carryingAttempt(facts) ?? "a01";
-  const patch =
-    readTextSafe(join(runDir, "attempts", attemptId, "patch.diff")) ??
-    readTextSafe(join(finalDir, "patch.diff")) ??
-    "";
-  const answer = readTextSafe(join(finalDir, "answer.md"))?.trim() ?? "";
-  const retained = readTextSafe(join(finalDir, "retained-output.md"))?.trim() ?? "";
-  const hasEvidence = !!patch.trim() || !!answer || !!retained || facts.recordedWork;
-  return { resumable, telemetry, held, attemptId, patch, answer, retained, hasEvidence };
+  return {
+    patch:
+      readTextSafe(join(runDir, "attempts", attemptId, "patch.diff")) ??
+      readTextSafe(join(finalDir, "patch.diff")) ??
+      "",
+    answer: readTextSafe(join(finalDir, "answer.md"))?.trim() ?? "",
+    retained: readTextSafe(join(finalDir, "retained-output.md"))?.trim() ?? "",
+  };
+}
+
+/** The run recorded work of its own: a patch, a final or retained output, or work in
+ * its events, which are asked only when no file shows it. */
+function hasOwnWork(
+  files: ReturnType<typeof sourceFiles>,
+  facts: () => RunExecutionFacts,
+): boolean {
+  return !!files.patch.trim() || !!files.answer || !!files.retained || facts().recordedWork;
 }
 
 /**
  * The source a status projection names, by the planner's own rule: the
- * carrying session and whether the run is its own source. `facts` are the
- * run's execution facts when the caller already folded them (run detail);
- * otherwise its log is read once.
+ * carrying session and whether the run is its own source. A declared terminal
+ * block or a carrying session decides without the run's events; only otherwise
+ * are they asked for, from `facts` when the caller holds them (run detail's
+ * bounded fold), else by reading the log once.
  */
 export function continuationSource(
   runDir: string,
-  facts?: RunExecutionFacts,
+  facts?: () => RunExecutionFacts,
 ): { held: HeldSession | null; owns: boolean } {
-  const recorded = facts ?? runExecutionFacts(readRunEvents(join(runDir, "events.jsonl")).events);
-  const source = sourceFactsOf(runDir, recorded);
-  return { held: source.held, owns: ownsContinuationSource(source) };
+  let recorded: RunExecutionFacts | undefined;
+  const lazy = () =>
+    (recorded ??= facts
+      ? facts()
+      : runExecutionFacts(readRunEvents(join(runDir, "events.jsonl")).events));
+  const { resumable, telemetry } = terminalRecords(runDir);
+  const { held, source } = selectCarrier(resumable, telemetry, sessionCapsules(runDir), lazy);
+  const owns = ownsContinuationSource({
+    resumable,
+    held,
+    get hasEvidence() {
+      return hasOwnWork(sourceFiles(runDir, source ?? carryingAttempt(lazy()) ?? "a01"), lazy);
+    },
+  });
+  return { held, owns };
 }
 
 export function readContinuationEvidence(runDir: string) {
   const events = readRunEvents(join(runDir, "events.jsonl"));
   const facts = runExecutionFacts(events.events);
-  const { resumable, telemetry, held, attemptId, patch, answer, retained, hasEvidence } =
-    sourceFactsOf(runDir, facts);
+  const { resumable, telemetry } = terminalRecords(runDir);
+  const { held, source } = selectCarrier(
+    resumable,
+    telemetry,
+    sessionCapsules(runDir),
+    () => facts,
+  );
+  const attemptId = source ?? carryingAttempt(facts) ?? "a01";
+  const files = sourceFiles(runDir, attemptId);
+  const { patch, answer, retained } = files;
+  const hasEvidence = hasOwnWork(files, () => facts);
   const sessionMemory = held
     ? recordedSessionMemory(
         facts,
@@ -196,8 +222,9 @@ export function readContinuationEvidence(runDir: string) {
     : null;
   const attempt = telemetry?.attempts.find((entry) => entry.attempt_id === attemptId);
   // The final answer speaks for the run; the recorded output it does not
-  // represent (other attempts, the winner's earlier native tries) stays beside
-  // it as evidence, once under its attempt and try.
+  // represent (other attempts, the winner's earlier native tries and its
+  // winning try's non-final narration) stays beside it as evidence, once under
+  // its attempt and try.
   const winner = telemetry?.final_attempt_id ?? null;
   const unrepresented = answer ? unrepresentedOutput(events.events, facts, winner, answer) : null;
   const output = answer

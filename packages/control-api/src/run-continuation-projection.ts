@@ -30,6 +30,7 @@ import {
   retainedEnvelopeOfRun,
   runExecutionFacts,
   type ExecutionFold,
+  type RunExecutionFacts,
 } from "@claudexor/workspace";
 import { safeReadStructuredArtifact } from "./run-artifact-read.js";
 import { paramsRecord, type DaemonRunRecord } from "./run-record.js";
@@ -57,12 +58,14 @@ export function continuityReceiptOf(event: Record<string, unknown>): RunContinui
 }
 
 /** The chain facts of one run; run detail adds the per-try receipts, from its
- * events or already folded from them. */
+ * events or already folded from them. `foldedFacts` reads an ancestor's
+ * execution facts from run detail's bounded event fold, when the caller has one. */
 export function continuationSummary(
   rec: DaemonRunRecord,
   events?:
     | readonly Record<string, unknown>[]
     | { continuity: RunContinuityReceipt[]; execution?: ExecutionFold },
+  foldedFacts?: (runDir: string) => RunExecutionFacts,
 ): Continuation {
   const params = paramsRecord(rec);
   const continueFrom = typeof params["continueFrom"] === "string" ? params["continueFrom"] : null;
@@ -92,15 +95,17 @@ export function continuationSummary(
   let written = safeReadStructuredArtifact(rec, "final/resumable.yaml", RunResumable);
   // The successor planner's own source and chain walk, read only for a derived
   // block: the head is its own source when it holds a session or recorded work
-  // (`ownsContinuationSource`), else the nearest ancestor that is. Run detail
-  // passes its bounded event fold, which carries the planner's execution facts;
-  // a list row reads its own log once per cached summary.
+  // (`ownsContinuationSource`), else the nearest ancestor that is. A run's
+  // events are asked for only when its terminal records do not decide: run
+  // detail's bounded event fold (the head's, an ancestor's through
+  // `foldedFacts`), else one read, once per cached list summary.
   const runDir = rec.runDir;
+  const fold = events && "continuity" in events ? events.execution : undefined;
   const recorded = !events
     ? undefined
     : "continuity" in events
-      ? events.execution && executionFactsOf(events.execution)
-      : runExecutionFacts(events as readonly RunEvent[]);
+      ? fold && (() => executionFactsOf(fold))
+      : () => runExecutionFacts(events as readonly RunEvent[]);
   const own = () => continuationSource(runDir, recorded);
   let capsule: SessionCapsule | null = null;
   let inherited = false;
@@ -110,7 +115,10 @@ export function continuationSummary(
     capsule = head.held?.capsule ?? null;
     if (!head.owns)
       for (const source of sources) {
-        const ancestor = continuationSource(source.runDir);
+        const ancestor = continuationSource(
+          source.runDir,
+          foldedFacts && (() => foldedFacts(source.runDir)),
+        );
         if (!ancestor.owns) continue;
         const record = { ...source, id: source.runId };
         written = safeReadStructuredArtifact(record, "final/resumable.yaml", RunResumable);

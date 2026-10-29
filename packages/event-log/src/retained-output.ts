@@ -23,14 +23,23 @@ interface SourceOutput {
   pendingFlush: boolean;
 }
 
-/** Evidence projection only: never chooses an answer, validates a verdict or starts work.
- * `carried` is text the caller already passes on (a final answer, a checkpoint):
- * a block wholly within it is not repeated. */
+/** What a caller already passes on, so the projection does not repeat it. */
+interface CarriedOutput {
+  /** Carried text (a final answer, a checkpoint): a block wholly within it is omitted. */
+  text?: string;
+  /** The native try (attempt, process session) whose answer is carried. Its answer is
+   * its typed final (AnswerAssembly), so that final and the blocks repeating it are
+   * omitted and its other narration stays; without a typed final its joined
+   * narration is the answer and the whole try is omitted. */
+  represented?: { attempt: string; session: string };
+}
+
+/** Evidence projection only: never chooses an answer, validates a verdict or starts work. */
 export function retainedOutput(
   events: Iterable<RunEvent>,
   malformed = 0,
   onlyAdditional = false,
-  carried?: string,
+  carried: CarriedOutput = {},
 ): string | null {
   const sources = new Map<string, SourceOutput>();
   const captured = new Map<string, string[]>();
@@ -98,9 +107,19 @@ export function retainedOutput(
   if (onlyAdditional && !malformed && !captured.size && observed.length === 1 && observed[0]!.final)
     return null;
   const sections = [...sources.values()].flatMap((source) => {
-    const blocks = source.blocks.filter(
-      (block) => block.text.trim().length > 0 && !carried?.includes(block.text.trim()),
-    );
+    const represented =
+      carried.represented?.attempt === source.attempt &&
+      carried.represented.session === source.session;
+    const answers = represented
+      ? source.blocks.filter((block) => block.final && block.text.trim()).map((b) => b.text.trim())
+      : [];
+    const blocks = source.blocks.filter((block) => {
+      const text = block.text.trim();
+      if (!text || carried.text?.includes(text)) return false;
+      return (
+        !represented || (answers.length > 0 && !answers.some((answer) => answer.includes(text)))
+      );
+    });
     if (!blocks.length) return [];
     return [
       `## Attempt ${source.attempt} · ${source.harness}\n\nSession: \`${source.session}\`\n\n` +
