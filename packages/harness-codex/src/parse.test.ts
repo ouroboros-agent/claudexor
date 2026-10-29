@@ -361,6 +361,120 @@ describe("parseCodexEvent", () => {
     expect(out?.[0]?.tool?.error_summary).toContain("child-failed");
   });
 
+  describe("MCP tool results keep the server's evidence (claudexor#215)", () => {
+    const completed = (item: Record<string, unknown>) =>
+      parseCodexEvent(
+        {
+          type: "item.completed",
+          item: { id: "mcp-1", type: "mcp_tool_call", server: "browser", ...item },
+        },
+        "s1",
+      )?.[0];
+    const page =
+      "### Ran Playwright code\n```js\nawait page.goto('http://127.0.0.1:4/p.html');\n```\n" +
+      "### Page\n- Page URL: http://127.0.0.1:4/p.html\n- Page Title: probe 0a1b2c";
+
+    it("keeps a completed result's text, never its image bytes, under the unchanged identity", () => {
+      const out = completed({
+        tool: "browser_navigate",
+        status: "completed",
+        result: {
+          content: [
+            { type: "text", text: page },
+            { type: "image", data: "iVBORw0KGgoAAAANSUhEUg", mimeType: "image/png" },
+          ],
+          structuredContent: null,
+        },
+      });
+      expect(out?.text).toBe("tool_result");
+      expect(out?.tool).toMatchObject({
+        name: "browser_navigate",
+        kind: "mcp",
+        use_id: "mcp-1",
+        target: "browser:browser_navigate",
+        status: "ok",
+      });
+      expect(out?.tool?.error_summary).toBeUndefined();
+      expect(out?.tool?.content_summary).toBe(page);
+      expect(out?.tool?.content_summary).not.toContain("iVBORw0KGgo");
+    });
+
+    it("keeps the result's line breaks, collapsing whitespace within each line", () => {
+      const out = completed({
+        tool: "browser_snapshot",
+        status: "completed",
+        result: {
+          content: [
+            { type: "text", text: "### Page\r\n-   Page URL:  http://x/  \n\n  - nested\t item" },
+            { type: "text", text: "### Snapshot" },
+          ],
+        },
+      });
+      expect(out?.tool?.content_summary).toBe(
+        "### Page\n- Page URL: http://x/\n - nested item\n### Snapshot",
+      );
+    });
+
+    it("uses structured content only when the server returned no text", () => {
+      const out = completed({
+        tool: "lookup",
+        status: "completed",
+        result: { content: [], structured_content: { title: "probe" } },
+      });
+      expect(out?.tool?.content_summary).toBe('{"title":"probe"}');
+    });
+
+    it("keeps the native error message of a call that returned no result", () => {
+      const out = completed({
+        tool: "browser_snapshot",
+        status: "failed",
+        result: null,
+        error: { message: "MCP tool call timed out" },
+      });
+      expect(out?.text).toBe("tool_result: error");
+      expect(out?.tool).toMatchObject({
+        status: "error",
+        error_summary: "MCP tool call timed out",
+      });
+      expect(out?.tool?.content_summary).toBeUndefined();
+    });
+
+    it("reports an isError result as an error carrying the server's own text", () => {
+      const out = completed({
+        tool: "browser_navigate",
+        status: "failed",
+        result: {
+          content: [{ type: "text", text: "### Error\nError: net::ERR_CONNECTION_REFUSED" }],
+        },
+        error: null,
+      });
+      expect(out?.tool?.status).toBe("error");
+      expect(out?.tool?.error_summary).toBe("### Error Error: net::ERR_CONNECTION_REFUSED");
+      expect(out?.tool?.content_summary).toBe("### Error\nError: net::ERR_CONNECTION_REFUSED");
+    });
+
+    it("leaves an unknown completion status statusless instead of calling it a success", () => {
+      for (const status of ["inProgress", undefined]) {
+        const out = completed({ tool: "browser_navigate", status, result: { content: [] } });
+        expect(out?.type).toBe("tool_result");
+        expect(out?.text).toBe("tool_result");
+        expect(out?.tool?.status).toBeUndefined();
+        expect(out?.tool?.target).toBe("browser:browser_navigate");
+      }
+    });
+
+    it("redacts and bounds result text like other tool summaries", () => {
+      const secret = "sk-" + "a".repeat(30);
+      const out = completed({
+        tool: "browser_snapshot",
+        status: "completed",
+        result: { content: [{ type: "text", text: `token ${secret} ${"x".repeat(2000)}` }] },
+      });
+      expect(out?.tool?.content_summary).not.toContain(secret);
+      expect(out?.tool?.content_summary?.length).toBe(1000);
+    });
+  });
+
   it("maps failed web searches to error tool_results", () => {
     const out = parseCodexEvent(
       {

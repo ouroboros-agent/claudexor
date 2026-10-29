@@ -2111,6 +2111,13 @@ keeps the complete `path`, its own `change` and the item without its
 `changes` list), `agentMessage` →
 `message`; `turn/plan/updated` maps plan progress and
 `thread/tokenUsage/updated` maps usage.
+A finished `mcpToolCall` with status `completed` is `ok` and keeps the text
+blocks of its result (structured content when no text came back) with their
+line breaks as bounded, redacted `content_summary`; status `failed` covers an
+`isError` result and a call that returned nothing, and keeps `error.message`,
+else the result text on one line, as `error_summary`. Any other status stays
+statusless. The tool identity stays the native tool name with `server:tool` as
+target, which Browser and Delegate evidence match.
 `account/rateLimits/updated` maps measured known-scope windows to independent
 status+quota events from that same running process, without token usage or a
 cooldown. The full quota reader shares the native window codec; supplied RPC

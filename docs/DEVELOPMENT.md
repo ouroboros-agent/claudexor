@@ -483,10 +483,17 @@ Tests and local smokes must never touch real user state:
   receipt, and no `sandbox-exec` invocation. Codex, Claude, and Cursor each run
   default and named `workspace_write` rows; Agy is named-only. Cursor also runs
   trusted `full`; Claude/Codex Browser and Delegate rows retain their native
-  per-adapter access requirements. OpenCode `workspace_write` must refuse
-  before spawn, while its trusted-Full smoke is recorded as a conditional
-  omission when the binary/route is unavailable, not as a required PASS or
-  SKIP. The lane revokes every temporary disposable-repo full-access grant.
+  per-adapter access requirements. A Browser row serves a one-use loopback
+  page and passes only on a correlated Browser navigation or snapshot result
+  with typed `ok` status whose single Page block lists exactly that URL with a
+  title only the page carries; a tool name, another Browser tool, a failed
+  call, a longer URL or title, a Page block echoed in code or page text or cut
+  off by the summary bound, command output or the model's answer cannot
+  satisfy it. OpenCode `workspace_write`
+  must refuse before spawn, while its trusted-Full smoke is recorded as a
+  conditional omission when the binary/route is unavailable, not as a required
+  PASS or SKIP. The lane revokes every temporary disposable-repo full-access
+  grant.
   Each of Codex, Claude, Cursor and Agy (named) also runs a readonly
   capability row: an `ask` run must report a random word from a file outside
   the project, the number of files in an outside directory and the
