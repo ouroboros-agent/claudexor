@@ -1,16 +1,18 @@
-import { existsSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, lstatSync, rmSync, unlinkSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { WorkspaceError } from "@claudexor/core";
-import { ensureDir, projectRuntimeDir } from "@claudexor/util";
+import { ensureDir, ownedProjectRuntimeDir, projectRuntimeDir } from "@claudexor/util";
 import {
   branchDelete,
+  branchDeleteIfPresent,
   ensureGitRepository,
   git,
   revParse,
   snapshotTree,
   worktreeAdd,
   worktreeAddExisting,
-  worktreeRemove,
+  worktreeRemoveRegistered,
+  worktreeRepository,
 } from "./git.js";
 import type { EnsureGitRepositoryResult } from "./git.js";
 
@@ -142,14 +144,53 @@ export function threadWorktreeDirExists(projectRoot: string, threadId: string): 
 }
 
 /** Explicit purge of daemon-owned isolated-thread resources. Lifecycle
- * authority lives in the journal; the generic orphan sweeper never guesses. */
-export async function purgeThreadWorktree(projectRoot: string, threadId: string): Promise<void> {
+ * authority lives in the journal; the generic orphan sweeper never guesses.
+ * Git drops the worktree registration and then the branch before the
+ * directory goes: a refusal (a locked worktree, a held ref lock) throws with
+ * the directory still on disk, so the purge stays pending instead of reporting
+ * what Git still records as deleted. What is already gone counts as done, but
+ * only where it was looked for: in the repository the worktree's own `.git`
+ * file names (`worktreeRepository`), or without one in the project folder's.
+ * A repository that cannot be reached there keeps the purge pending. A link
+ * above the thread directory is refused (`ownedProjectRuntimeDir`); one at the
+ * directory or its tree is unlinked first, so Git sees a missing worktree and
+ * neither Git nor rm follows it. `worktreeRecorded`: the thread record names a
+ * worktree; a thread that never had one leaves no Git state to look for. */
+export async function purgeThreadWorktree(
+  projectRoot: string,
+  threadId: string,
+  { worktreeRecorded = true }: { worktreeRecorded?: boolean } = {},
+): Promise<void> {
   if (!/^[A-Za-z0-9._-]+$/.test(threadId) || threadId === "." || threadId === "..") {
     throw new WorkspaceError(`threadId '${threadId}' is not a safe path segment`);
   }
-  const threadDir = join(projectRuntimeDir(projectRoot), "threads", threadId);
+  const threadDir = join(ownedProjectRuntimeDir(projectRoot, "threads"), threadId);
   const path = join(threadDir, "tree");
-  if (existsSync(join(path, ".git"))) await worktreeRemove(projectRoot, path);
+  for (const entry of [threadDir, path]) {
+    const stat = lstatSync(entry, { throwIfNoEntry: false });
+    if (stat?.isSymbolicLink()) unlinkSync(entry);
+    if (!stat?.isDirectory()) break;
+  }
+  const repo = worktreeRepository(path) ?? projectRepository(projectRoot, worktreeRecorded);
+  if (repo !== null) {
+    await worktreeRemoveRegistered(repo, path);
+    await branchDeleteIfPresent(repo, `claudexor/thread-${threadId}`);
+  }
   rmSync(threadDir, { recursive: true, force: true });
-  await branchDelete(projectRoot, `claudexor/thread-${threadId}`).catch(() => {});
+}
+
+/** Without the worktree's own record of its repository: the project folder's
+ * repository, which may be a larger one around it. None there is no proof for
+ * a recorded worktree, since a moved or deleted repository looks the same. */
+function projectRepository(projectRoot: string, worktreeRecorded: boolean): string | null {
+  if (existsSync(projectRoot)) {
+    for (let current = resolve(projectRoot); ; current = dirname(current)) {
+      if (existsSync(join(current, ".git"))) return projectRoot;
+      if (dirname(current) === current) break;
+    }
+  }
+  if (!worktreeRecorded) return null;
+  throw new WorkspaceError(
+    `project folder ${projectRoot} is gone or in no Git repository, so the thread's worktree registration and branch cannot be checked; restoring the folder there lets the next attempt finish this cleanup`,
+  );
 }

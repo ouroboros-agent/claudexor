@@ -7,7 +7,11 @@
  * and every lane home (INV-034 lifecycle owner (a)).
  *
  * A directory error after the journal commit (ENOTEMPTY, EBUSY, a Windows
- * lock) leaves a purged thread that every listing hides while its directories
+ * lock), a Git refusal to drop the worktree or branch (a locked worktree, a
+ * held ref lock), a repository that registered the worktree but can no longer
+ * be reached (moved or deleted) or a runtime directory that is a link (never
+ * followed) makes the effect throw: the cleanup stays pending, never reported
+ * complete, and every listing hides the purged thread while its directories
  * remain. Calling the owner again journals nothing new (the reducer keeps a
  * purged thread as it is) and deletes what is left; `hasPurgeLeftovers` names
  * exactly the directories this owner deletes, so the retention pass retries a
@@ -76,7 +80,9 @@ export function threadPurgeEffect(noProjectRoot: string) {
           result.code === 0 ? resolve(thread.repo!.root, result.stdout.trim()) : null,
         )
         .catch(() => null);
-      await purgeThreadWorktree(thread.repo.root, thread.id);
+      await purgeThreadWorktree(thread.repo.root, thread.id, {
+        worktreeRecorded: thread.workspace.worktree_path !== null,
+      });
       parents.push(join(projectRuntimeDir(thread.repo.root), "threads"));
       if (gitDir)
         parents.push(gitDir, join(gitDir, "worktrees"), join(gitDir, "refs", "heads", "claudexor"));

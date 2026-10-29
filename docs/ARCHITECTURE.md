@@ -2033,7 +2033,8 @@ and outside every worktree (INV-063). The lane home persists across turns so
 the harness's recorded native session is reachable for Codex app-server
 `thread/resume` / `claude --resume` on the next lane turn (INV-034); it is
 removed only by thread purge, credential-profile deletion, or the orphan-lane
-retention sweep. The in-place candidate of a delegated thread's turn (readonly
+retention sweep, each of which refuses a link above the directory it deletes
+and only unlinks one in its place. The in-place candidate of a delegated thread's turn (readonly
 Agent included) runs in the same lane home, re-keyed to the account the
 attempt actually resolved, so Ask, Plan, and Agent turns of one lane share it;
 an in-run account hop moves the spec and the recorded home and account
@@ -3026,15 +3027,31 @@ not retry automatically.
   isolated worktree, with any changes never applied to the project, and its
   `claudexor/thread-*` branch, and every lane home (the per-thread HOME of its
   Ask/Plan turns, of a delegated thread's turns, and its cached continuation
-  summaries). A delegated thread's caller-owned workspace is never deleted, and
-  its recorded binding stays on the purged record. A directory error
-  after that commit (ENOTEMPTY, EBUSY, a Windows lock) fails the request
-  although the thread is already purged and no longer restorable, so a client
-  re-reads the list instead of promising Trash, and reads the thread's absence
-  as a purge only from a list whose `problems` name no skipped project and
-  whose rows it could all decode; a repeated purge or the next disk-retention
-  pass (below) finishes the cleanup, and nothing makes a partially deleted
-  thread restorable again. Project removal can purge a project's trashed
+  summaries). Git drops the worktree's registration and then the branch before
+  the thread's directory goes, in the repository the worktree's own `.git`
+  file names or, once that file is gone, in the project folder's repository;
+  what is already gone there counts as deleted. A repository that can no
+  longer be reached there keeps the cleanup pending, because a repository
+  moved without a relink and a deleted one look the same: after a move,
+  `git worktree repair` in the moved repository lets the next attempt finish;
+  after a deletion, removing the thread's leftover worktree directory and
+  creating an empty repository at the project path does. A thread that never
+  had a worktree leaves no Git state to look for. Deletion never follows a
+  link: a runtime directory between the config root and the thread's own (such
+  as the project's `lanes` or `threads`) that is a link is refused, and a link
+  in place of the thread's directory or worktree is only unlinked. A delegated
+  thread's caller-owned workspace is never deleted, and its recorded binding
+  stays on the purged record. A directory error after that commit (ENOTEMPTY,
+  EBUSY, a Windows lock), a Git refusal (a locked worktree, a held ref lock),
+  an unreachable repository or a refused link fails the
+  request although the thread is already purged and no longer restorable, so a
+  client re-reads the list instead of promising Trash, and reads the thread's
+  absence as a purge only from a list whose `problems` name no skipped project
+  and whose rows it could all decode; nothing is reported deleted while Git
+  still records it, and a repeated purge or the next disk-retention pass
+  (below) finishes the cleanup once the cause is gone (a locked worktree waits
+  for `git worktree unlock`). Nothing makes a partially deleted thread
+  restorable again. Project removal can purge a project's trashed
   threads in the same action (see `DELETE /v2/projects/:id` below). Purge does
   not erase the
   conversation: thread, turn, session and checkpoint rows and original prompt
@@ -3917,8 +3934,11 @@ a refusal changes nothing. Every purge commits in the same store transaction tha
 retires the project, with the same cleanup obligation as the thread purge route,
 whose list of what purge deletes and keeps applies unchanged. The directories are
 then deleted through the one thread purge owner, and the receipt's
-`purgedThreads` reports each thread's cleanup as `completed` or `pending` with
-its error. Daemon startup retries a pending cleanup; the retention pass, which
+`purgedThreads` reports each thread's cleanup as `completed`, once its
+directories, worktree registration and branch are gone, or `pending` with its
+error, such as a locked worktree, a repository moved without a relink or a
+refused link. Daemon startup retries a
+pending cleanup; the retention pass, which
 finishes leftovers only for registered projects, does not. Only `trashedThreads`
 is read: a repeated or inexact value is a `400` before the service runs. Other
 query parameters stay ignored as before, so a misspelled name gets the default

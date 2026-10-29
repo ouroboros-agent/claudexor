@@ -5,8 +5,10 @@
  * removal, a misspelled or invalid opt-in, a mixed project and running or
  * queued work change nothing; the user's project folder and Git state are never
  * touched (only the thread's own worktree, branch and lane homes go); a cleanup
- * that cannot finish is reported pending and completes when the daemon next
- * starts.
+ * that cannot finish (a directory that refuses deletion, a Git refusal such as
+ * a locked worktree, a runtime directory that is a link, never followed) is
+ * reported pending and completes when the daemon next starts after the cause
+ * is gone.
  */
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -18,7 +20,10 @@ import {
   readdirSync,
   readFileSync,
   readlinkSync,
+  renameSync,
   statSync,
+  symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join, relative } from "node:path";
@@ -514,3 +519,75 @@ it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
   },
   180_000,
 );
+
+it("[INV-035:project-remove-cleanup-refusal] keeps cleanup pending while Git refuses or a runtime directory is a link, touching nothing of the user's, and finishes it at the next start once lifted", async () => {
+  sandbox = makeSandbox();
+  const sb = sandbox;
+  const started = cli(sb, ["daemon", "start", "--json"]);
+  expect(started.code, started.stdout + started.stderr).toBe(0);
+  const api = controlApi(sb);
+  await api.connect();
+
+  // An isolated thread whose worktree the user locked with `git worktree lock`.
+  const locked = userProject(sb, "p-locked");
+  const lockedOriginal = userState(locked.root);
+  const isolated = await api.thread(locked.root, "isolated", "locked-isolated");
+  const write = await api.turn(isolated, { prompt: "write a change" }, "locked-write");
+  expect((await api.terminal(write.runId!)).summary.state).toBe("succeeded");
+  const tree = join(ownedDirs(sb, "threads", isolated)[0]!, "tree");
+  git(locked.root, ["worktree", "lock", tree]);
+  const lockedBefore = userState(locked.root);
+  await api.trash(isolated);
+
+  // An Ask thread whose project lanes directory became a link to a user folder
+  // holding a directory named like the thread.
+  const linked = userProject(sb, "p-linked");
+  const asked = await api.thread(linked.root, "in_place", "linked-asked");
+  const ask = await api.turn(asked, { prompt: "q", mode: "ask" }, "linked-ask");
+  expect((await api.terminal(ask.runId!)).summary.state).toBe("succeeded");
+  const lanesRoot = dirname(ownedDirs(sb, "lanes", asked)[0]!);
+  const userFolder = join(sb.home, "user-folder");
+  mkdirSync(join(userFolder, asked), { recursive: true });
+  writeFileSync(join(userFolder, asked, "keep.txt"), "user data that must survive\n");
+  renameSync(lanesRoot, `${lanesRoot}.real`);
+  symlinkSync(userFolder, lanesRoot, "dir");
+  await api.trash(asked);
+
+  for (const [project, threadId, error] of [
+    [locked, isolated, /git worktree remove failed/],
+    [linked, asked, /link; refusing to follow/],
+  ] as const) {
+    const removed = remove(sb, project.id, true);
+    expect(removed.code, removed.result.stdout + removed.result.stderr).toBe(0);
+    expect(ControlProjectRemoveReceipt.parse(removed.body).purgedThreads).toEqual([
+      { threadId, cleanup: "pending", cleanupError: expect.stringMatching(error) },
+    ]);
+    expect(await api.projectIds()).not.toContain(project.id);
+  }
+  // The locked worktree with its change, registration and branch is all there.
+  expect(userState(locked.root)).toEqual(lockedBefore);
+  expect(existsSync(join(tree, "FAKE_CHANGE.txt"))).toBe(true);
+  expect(readFileSync(join(userFolder, asked, "keep.txt"), "utf8")).toContain("must survive");
+  expect(await api.openObligations()).toBeGreaterThanOrEqual(2);
+
+  // Lift both causes; the next start replays both cleanups through the purge owner.
+  git(locked.root, ["worktree", "unlock", tree]);
+  unlinkSync(lanesRoot);
+  renameSync(`${lanesRoot}.real`, lanesRoot);
+  const stopped = cli(sb, ["daemon", "stop", "--json"]);
+  expect(stopped.code, stopped.stdout + stopped.stderr).toBe(0);
+  const restarted = cli(sb, ["daemon", "start", "--json"]);
+  expect(restarted.code, restarted.stdout + restarted.stderr).toBe(0);
+  await api.connect();
+  await vi.waitFor(async () => expect(await api.openObligations()).toBe(0), {
+    timeout: 30_000,
+    interval: 100,
+  });
+  expect([...ownedDirs(sb, "threads", isolated), ...ownedDirs(sb, "lanes", asked)]).toEqual([]);
+  expect(userState(locked.root)).toEqual(lockedOriginal);
+  expect(readFileSync(join(userFolder, asked, "keep.txt"), "utf8")).toContain("must survive");
+  for (const project of [locked, linked])
+    expect(readFileSync(join(project.root, "sentinel.txt"), "utf8")).toContain(
+      "user data that must survive",
+    );
+}, 180_000);

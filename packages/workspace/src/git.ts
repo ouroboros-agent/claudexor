@@ -1,6 +1,14 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  type BigIntStats,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { assertCaptureComplete, runCaptureRaw, WorkspaceError } from "@claudexor/core";
 import { isClaudexorOwnedRuntimePath } from "@claudexor/util";
 import {
@@ -270,8 +278,101 @@ export async function worktreeAddExisting(
     throw new WorkspaceError(`git worktree add (existing branch) failed: ${r.stderr.trim()}`);
 }
 
+/** Best-effort: Git's exit status is ignored. An owner that must not report a
+ * refused removal as done uses `worktreeRemoveRegistered`. */
 export async function worktreeRemove(repo: string, path: string): Promise<void> {
   await git(repo, ["worktree", "remove", "--force", path]);
+}
+
+/**
+ * Deregister the linked worktree Git records at `path`; Git deletes its
+ * directory too. A path Git does not register is already removed. A refusal
+ * (a locked worktree, an unreadable registration) throws and leaves the
+ * registration and the directory as they were. The registration is found by
+ * `samePlace` and removed in Git's own spelling, so a stale one whose
+ * directory is gone still goes. Git prints porcelain paths unquoted, one per
+ * line, so a path holding a line break cannot be read back and is refused
+ * rather than reported absent.
+ */
+export async function worktreeRemoveRegistered(repo: string, path: string): Promise<void> {
+  if (path.includes("\n")) {
+    throw new WorkspaceError(
+      `worktree path has a line break that git worktree list cannot report: ${JSON.stringify(path)}`,
+    );
+  }
+  const listed = await git(repo, ["worktree", "list", "--porcelain"]);
+  if (listed.code !== 0) {
+    throw new WorkspaceError(`git worktree list failed: ${listed.stderr.trim()}`);
+  }
+  const registered = worktreePaths(listed.stdout).find((entry) => samePlace(entry, path));
+  if (registered === undefined) return;
+  const r = await git(repo, ["worktree", "remove", "--force", registered]);
+  if (r.code !== 0) throw new WorkspaceError(`git worktree remove failed: ${r.stderr.trim()}`);
+}
+
+/**
+ * The common Git directory of the repository that registered the linked
+ * worktree at `path`, from Git's own records: the worktree's `.git` file names
+ * its registration, which must still exist and name this worktree back. Null
+ * when `path` holds no such file. Throws when the registration is gone or
+ * names another worktree: the repository moved or was deleted, which nothing
+ * here can tell apart, so whatever it still records cannot be proven gone.
+ */
+export function worktreeRepository(path: string): string | null {
+  const gitfile = join(path, ".git");
+  const pointer = /^gitdir: (.+)$/m.exec(plainText(gitfile) ?? "")?.[1]?.trimEnd();
+  if (!pointer) return null;
+  const registration = resolve(path, pointer);
+  const named = plainText(join(registration, "gitdir"))?.trimEnd();
+  if (!named || !samePlace(resolve(registration, named), gitfile)) {
+    throw new WorkspaceError(
+      `Git no longer registers worktree ${path} at ${registration}: its repository moved or was deleted; if it moved, run "git worktree repair" in it so the next attempt can finish this cleanup`,
+    );
+  }
+  return resolve(registration, readFileSync(join(registration, "commondir"), "utf8").trimEnd());
+}
+
+/** A regular file's text, or null when nothing (or no regular file) is there. */
+function plainText(file: string): string | null {
+  try {
+    return lstatSync(file).isFile() ? readFileSync(file, "utf8") : null;
+  } catch (error) {
+    if (absent(error)) return null;
+    throw error;
+  }
+}
+
+/**
+ * Whether two spellings name the same place: the deepest existing part of
+ * each is one file by identity, so the filesystem itself decides about letter
+ * case, links and Unicode normalization, and the names below it are equal.
+ * Without a usable identity the spellings must match exactly.
+ */
+function samePlace(a: string, b: string): boolean {
+  if (resolve(a) === resolve(b)) return true;
+  const [x, y] = [existingPart(a), existingPart(b)];
+  if (x.rest !== y.rest) return false;
+  if (!x.stat || !y.stat || x.stat.ino === 0n || y.stat.ino === 0n) return x.path === y.path;
+  return x.stat.dev === y.stat.dev && x.stat.ino === y.stat.ino;
+}
+
+function existingPart(path: string): { path: string; stat: BigIntStats | null; rest: string } {
+  const rest: string[] = [];
+  for (let current = resolve(path); ; current = dirname(current)) {
+    let stat: BigIntStats | null = null;
+    try {
+      stat = statSync(current, { bigint: true });
+    } catch (error) {
+      if (!absent(error)) throw error;
+    }
+    if (stat || dirname(current) === current) return { path: current, stat, rest: rest.join(sep) };
+    rest.unshift(basename(current));
+  }
+}
+
+function absent(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === "ENOENT" || code === "ENOTDIR";
 }
 
 /**
@@ -375,7 +476,11 @@ export async function reversePatchAndIndexProtected(
 async function worktreeList(repo: string): Promise<string[]> {
   const r = await git(repo, ["worktree", "list", "--porcelain"]);
   if (r.code !== 0) return [];
-  return r.stdout
+  return worktreePaths(r.stdout);
+}
+
+function worktreePaths(porcelain: string): string[] {
+  return porcelain
     .split("\n")
     .filter((line) => line.startsWith("worktree "))
     .map((line) => line.slice("worktree ".length).trim())
@@ -413,4 +518,20 @@ export async function worktreePrune(repo: string): Promise<void> {
 /** Delete a local branch (best-effort GC of per-attempt claudexor/* branches). */
 export async function branchDelete(repo: string, branch: string): Promise<void> {
   await git(repo, ["branch", "-D", branch]);
+}
+
+/**
+ * Delete a local branch, or throw when Git refuses (a held ref lock, a
+ * worktree that still uses it). An absent branch is already deleted. Presence
+ * is read first because `branch -D` reports "not found" and a refusal with the
+ * same exit code.
+ */
+export async function branchDeleteIfPresent(repo: string, branch: string): Promise<void> {
+  const present = await git(repo, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
+  if (present.code === 1) return;
+  if (present.code !== 0) {
+    throw new WorkspaceError(`git show-ref ${branch} failed: ${present.stderr.trim()}`);
+  }
+  const r = await git(repo, ["branch", "-D", branch]);
+  if (r.code !== 0) throw new WorkspaceError(`git branch -D ${branch} failed: ${r.stderr.trim()}`);
 }
