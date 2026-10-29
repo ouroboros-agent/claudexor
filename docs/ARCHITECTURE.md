@@ -4814,7 +4814,10 @@ Deterministic-first: the verifier spends no model tokens. Cross-family verificat
 reviewer family's route proof to be OBSERVED, not an argv echo: claude reports
 its model in the stream, and codex (whose `--json` stream omits the model)
 recovers the model it actually ran from its own session rollout transcript
-(`observed_model_source: "transcript"`). An unobserved reviewer stays
+(`observed_model_source: "transcript"`), taken only from the `turn_context` of
+the turn the app-server stream started (`native_turn_id`), so on a resumed
+session an earlier turn's model never stands in and a later goal turn's record
+does not displace it. An unobserved reviewer stays
 `accepted_model_arg` and does not satisfy the cross-family gate. For `ungated` /
 `review_not_run` outcomes without a recorded opt-out, the apply gate states the real path forward (add a gate
 or obtain a verified review) — the risk override applies only to `blocked` runs.
@@ -5748,7 +5751,9 @@ A DONE tool without output is diagnostic, not successful read evidence. After pr
 unpinned `rotate` route hops to the next eligible account and the next try
 carries the work — `native_moved` when the adapter's `continuity` located the
 session and moved it into the target store (claude: `<sid>.jsonl` + `<sid>/`
-sidecars; codex: every rollout part). The capsule's holder is the source, even
+sidecars; codex: every rollout part, copied without following a link; a linked
+part is still located and its move fails with a reason; two spellings of one
+home are the same store and the move copies nothing). The capsule's holder is the source, even
 if another account's packet try failed before starting. A move copies and
 verifies all parts, then the engine writes the target capsule and invokes the
 adapter's retirement callback; a failed move removes its destination copies.

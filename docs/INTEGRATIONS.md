@@ -2118,6 +2118,32 @@ tagged-object variant yields its variant name. Skipped for an aborted run and
 under `evidence_policy: stream_only`. Pin: `fixtures/rollout/recorded-*.jsonl`
 (session-rollout records, not stream captures).
 
+Every rollout reader (observed model, rollout quota, vendor failure, continuity
+locate and move) goes through one boundary in `rollout-file.ts`. The run's
+selected `CODEX_HOME` is canonicalized first, so a home that is a link or sits
+under one stays usable. Below it nothing is read through a link: a part that is
+a link, or lies below a linked `sessions` or date directory, is never read or
+copied, and a part is opened without following a link and must still name the
+inode it was opened as. A move compares the two homes by directory identity, so
+two spellings of one store (the default home through a link and a profile
+registered at its real path) are the same home and nothing is copied; the copy
+also refuses a destination that is its own source before truncating anything.
+Reads go in fixed 1 MiB chunks up to the size captured
+at open and carry at most one 8 MiB line. A longer line is never parsed; when it
+carries a reader's marker it counts as an unreadable record (the scanned model is
+unknown, a vendor failure is absent, the quota keeps its previous reading), the
+same as a torn line. The event decoration keeps one
+cursor per run, so the model and the quota read only bytes appended since the
+previous event, and the model comes only from the `turn_context` of the turn
+the app-server `started` event named (`native_turn_id`): codex writes that
+record seconds after a resumed turn starts, and a goal continuation's later turn
+recorded before the next read does not displace it. A later unreadable `turn_context`
+prevents that read from supplying a model. Once decoration has retained model
+evidence, it keeps that observation rather than selecting it again. The retained exec `--json` mapper
+names no turn, so on it the last recorded `turn_context` is taken as before.
+Bounded memory does not make a cold read fast: the first read of a run still
+scans the whole rollout once, synchronously.
+
 **Cursor** — binary: `CLAUDEXOR_CURSOR_BIN`, else `cursor-agent` on the harness
 PATH, else Cursor's primary `agent` only when its realpath is the installer's
 `…/cursor-agent/versions/<v>/cursor-agent`; that `agent` is spawned by absolute
