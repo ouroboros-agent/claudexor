@@ -138,20 +138,20 @@ describe("OpenRouter key allowance codec", () => {
 
 describe("key identity", () => {
   it("fingerprints are stable, endpoint-bound, key-specific and never contain the key", () => {
-    const key = "sk-or-v1-synthetic-default-0000";
+    const key = "fixture-openrouter-default-0000";
     const value = apiKeyFingerprint("https://openrouter.ai/api/v1/", key);
     expect(value).toMatch(/^[0-9a-f]{16}$/);
     expect(apiKeyFingerprint("https://openrouter.ai/api/v1", key)).toBe(value);
     expect(apiKeyFingerprint("https://openrouter.ai/api/v1", `${key}x`)).not.toBe(value);
     expect(apiKeyFingerprint("http://127.0.0.1:1/api/v1", key)).not.toBe(value);
-    expect(value).not.toContain("synthetic");
+    expect(value).not.toContain(key);
   });
 
   it("resolves the default key and enabled registered keys exactly as requests do", () => {
     const store = new SecretStore();
-    store.set("openrouter", "sk-or-v1-synthetic-default");
-    store.set("openrouter:work", "sk-or-v1-synthetic-work");
-    store.set("openrouter:off", "sk-or-v1-synthetic-off");
+    store.set("openrouter", "fixture-openrouter-default");
+    store.set("openrouter:work", "fixture-openrouter-work");
+    store.set("openrouter:off", "fixture-openrouter-off");
     const instance = {
       id: "openrouter",
       baseUrl: "https://openrouter.ai/api/v1",
@@ -181,13 +181,13 @@ describe("key identity", () => {
         { harness: "openrouter", profile_id: "work" },
       ]);
       expect(credentials[1]!.fingerprint).toBe(
-        apiKeyFingerprint(instance.baseUrl, "sk-or-v1-synthetic-work"),
+        apiKeyFingerprint(instance.baseUrl, "fixture-openrouter-work"),
       );
       // The key variable outranks the stored default, as in run().
       expect(
-        instanceKeyCredentials(instance, [], { OPENROUTER_API_KEY: "sk-or-v1-synthetic-env" })[0]!
+        instanceKeyCredentials(instance, [], { OPENROUTER_API_KEY: "fixture-openrouter-env" })[0]!
           .fingerprint,
-      ).toBe(apiKeyFingerprint(instance.baseUrl, "sk-or-v1-synthetic-env"));
+      ).toBe(apiKeyFingerprint(instance.baseUrl, "fixture-openrouter-env"));
     } finally {
       for (const name of ["openrouter", "openrouter:work", "openrouter:off"]) store.delete(name);
     }

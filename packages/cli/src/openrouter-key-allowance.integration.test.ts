@@ -22,10 +22,10 @@ import { quotaSubjectUniverseFromConfig } from "./quota-subject-universe.js";
 
 // Offline: synthetic keys in the temp secret store, a localhost stand-in for
 // OpenRouter's GET /api/v1/key, the real SQL ledger, registry and HTTP routes.
-const DEFAULT_KEY = "sk-or-v1-synthetic-default-1";
-const REPLACED_KEY = "sk-or-v1-synthetic-default-2";
-const WORK_KEY = "sk-or-v1-synthetic-work";
-const OFF_KEY = "sk-or-v1-synthetic-off";
+const DEFAULT_KEY = "fixture-openrouter-default-1";
+const REPLACED_KEY = "fixture-openrouter-default-2";
+const WORK_KEY = "fixture-openrouter-work";
+const OFF_KEY = "fixture-openrouter-off";
 const roots: string[] = [];
 const stores: EngineStore[] = [];
 const servers: Array<{ stop(): Promise<void> }> = [];
@@ -223,6 +223,9 @@ describe("OpenRouter key allowance through the real registry, SQL ledger and con
     });
     expect(keyRow(refreshed, "off")).toBeUndefined();
     expect(JSON.stringify(refreshed)).not.toContain("sk-or-v1");
+    for (const key of [DEFAULT_KEY, REPLACED_KEY, WORK_KEY, OFF_KEY]) {
+      expect(JSON.stringify(refreshed)).not.toContain(key);
+    }
     // Resource-only: no quota window, absence or routing evidence for the keys.
     expect(registry.read().snapshots).toEqual([]);
     expect(JSON.stringify(registry.read())).not.toContain("openrouter");

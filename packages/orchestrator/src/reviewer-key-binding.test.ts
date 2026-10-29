@@ -135,40 +135,40 @@ async function review(
 }
 
 describe("a reviewer sends the key its panel's catalog read checked (#393 x #147)", () => {
-  const replace = () => store.set("openrouter:work", "sk-review-synthetic-replaced");
+  const replace = () => store.set("openrouter:work", "fixture-review-replaced");
   beforeEach(() => {
-    store.set("openrouter:work", "sk-review-synthetic-checked");
+    store.set("openrouter:work", "fixture-review-checked");
     // The harness discovers only with its own default key present (never sent here).
-    store.set("openrouter", "sk-review-synthetic-default");
+    store.set("openrouter", "fixture-review-default");
   });
 
   it("a PINNED named key replaced after the panel's check: the review POST keeps the checked key", async () => {
     const result = await review({ credentialProfileId: "work" }, work, replace);
-    expect(seen.gets).toEqual(["sk-review-synthetic-checked"]); // one read, no extra GET
-    expect(seen.posts).toEqual(["sk-review-synthetic-checked"]);
+    expect(seen.gets).toEqual(["fixture-review-checked"]); // one read, no extra GET
+    expect(seen.posts).toEqual(["fixture-review-checked"]);
     expect(result.healthyProviders).toEqual(["openai"]); // the review completed on that key
   });
 
   it("a POOL-chosen named key replaced after the panel's check: the same", async () => {
     await review({}, work, replace);
-    expect(seen.gets).toEqual(["sk-review-synthetic-checked"]);
-    expect(seen.posts).toEqual(["sk-review-synthetic-checked"]);
+    expect(seen.gets).toEqual(["fixture-review-checked"]);
+    expect(seen.posts).toEqual(["fixture-review-checked"]);
   });
 
   it("a panel read that could not list the catalog (503) still binds the key it was made with", async () => {
-    catalogStatus.set("sk-review-synthetic-checked", 503);
+    catalogStatus.set("fixture-review-checked", 503);
     await review({ credentialProfileId: "work" }, work, replace);
-    expect(seen.gets).toEqual(["sk-review-synthetic-checked", "sk-review-synthetic-checked"]);
-    expect(seen.posts).toEqual(["sk-review-synthetic-checked"]);
+    expect(seen.gets).toEqual(["fixture-review-checked", "fixture-review-checked"]);
+    expect(seen.posts).toEqual(["fixture-review-checked"]);
   });
 
   it("the same key, never replaced, is sent as before", async () => {
     await review({ credentialProfileId: "work" }, work);
-    expect(seen.posts).toEqual(["sk-review-synthetic-checked"]);
+    expect(seen.posts).toEqual(["fixture-review-checked"]);
   });
 
   it("a key the endpoint rejects still refuses at the panel, before any review request", async () => {
-    catalogStatus.set("sk-review-synthetic-checked", 401);
+    catalogStatus.set("fixture-review-checked", 401);
     await expect(review({ credentialProfileId: "work" }, work, replace)).rejects.toBeInstanceOf(
       ModelCatalogUnavailableError,
     );
@@ -177,13 +177,13 @@ describe("a reviewer sends the key its panel's catalog read checked (#393 x #147
 
   it("an AUTOMATIC panel's pool-chosen key replaced after its check: the review POST keeps the checked key", async () => {
     const result = await review("auto", work, replace);
-    expect(seen.gets).toEqual(["sk-review-synthetic-checked"]);
-    expect(seen.posts).toEqual(["sk-review-synthetic-checked"]);
+    expect(seen.gets).toEqual(["fixture-review-checked"]);
+    expect(seen.posts).toEqual(["fixture-review-checked"]);
     expect(result.healthyProviders).toEqual(["openai"]);
   });
 
   it("the DEFAULT slot is no explicit raw reviewer: refused before any catalog read or request", async () => {
-    process.env[KEY_ENV] = "sk-review-synthetic-default";
+    process.env[KEY_ENV] = "fixture-review-default";
     await expect(review({}, null)).rejects.toThrow(
       "reviewer harness 'openrouter' is not doctor-ok",
     );

@@ -379,7 +379,7 @@ struct AccountResourceBindingTests {
     func perform(_ write: AccountResourceOwnWrite, _ model: AppModel) async -> Bool {
         switch write {
         case .storeDefaultKey:
-            return await model.storeSecret(name: "openrouter", value: "sk-or-v1-binding-synthetic-key", for: .openrouter).stored
+            return await model.storeSecret(name: "openrouter", value: "fixture-binding-synthetic-key", for: .openrouter).stored
         case .enableNamedProfile:
             return await model.setProfileEnabled(harnessId: "openrouter", profileId: "work", enabled: true) == nil
         case .removeNamedProfile:
