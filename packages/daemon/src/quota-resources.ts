@@ -4,6 +4,8 @@ import { sha256 } from "@claudexor/util";
 import {
   activeQuotaSnapshots,
   activeQuotaSnapshotsWithConstraintFreshness,
+  observationStaleAt,
+  staleAt,
 } from "./quota-registry-support.js";
 import {
   ACCOUNT_RESOURCE_FACETS,
@@ -128,8 +130,10 @@ export function resourceQuotaSnapshots(
   values: Iterable<QuotaSnapshot>,
   cutoffs: ReadonlyMap<string, string>,
   now: number,
+  admission = false,
 ): QuotaSnapshot[] {
-  return activeQuotaSnapshots([...values], now).map((snapshot) =>
+  const age = admission ? observationStaleAt : staleAt;
+  return activeQuotaSnapshots([...values], now, age).map((snapshot) =>
     beforeResourceCutoff(snapshot, cutoffs) ? { ...snapshot, freshness: "stale" } : snapshot,
   );
 }

@@ -143,6 +143,28 @@ export const PoolAttemptFailure = z
   .describe("Per-try account attribution of a failed execution try (diagnostic evidence only).");
 export type PoolAttemptFailure = z.infer<typeof PoolAttemptFailure>;
 
+/** Why quota admission refused an account: the owner's saved headroom reserve
+ * (the provider may still serve it) or the provider's own observed limit. */
+export const QuotaRefusalBasis = z.enum(["owner_reserve", "provider_window", "provider_cooldown"]);
+export type QuotaRefusalBasis = z.infer<typeof QuotaRefusalBasis>;
+
+export const QuotaRefusal = z
+  .object({
+    basis: QuotaRefusalBasis.describe(
+      "owner_reserve: usage reached the saved headroom_threshold below 100% while the provider reports quota left; provider_window: the provider reports the window spent; provider_cooldown: a provider rate-limit cooldown is in force.",
+    ),
+    constraintId: z.string().nullable().describe("The refusing quota window, when known."),
+    usedRatio: z.number().min(0).max(1).nullable().describe("Its observed usage, when known."),
+    threshold: z
+      .number()
+      .nullable()
+      .describe("The headroom_threshold the decision applied, when it applied one."),
+  })
+  .describe(
+    "Machine-readable basis of a quota-admission refusal; it is not an authentication or billing verdict.",
+  );
+export type QuotaRefusal = z.infer<typeof QuotaRefusal>;
+
 /** The typed category axis of a run failure, shared by the failure record and
  * the route-health groups that count failures by it. Described at each use. */
 export const RunFailureCategory = z.enum([
@@ -209,6 +231,9 @@ export const RunFailure = z
       .describe(
         "When the refused window reopens (a spent subscription quota window), or null when the failure has no such time. Callers schedule a retry off this field, never off safeMessage.",
       ),
+    quotaRefusal: QuotaRefusal.optional().describe(
+      "Present when quota admission refused the account (code subscription_window_exhausted): separates the owner's saved reserve from provider exhaustion. Absent on other failures and on records written before this field existed.",
+    ),
     vendorFailure: VendorFailureEvidence.nullable()
       .default(null)
       .describe(

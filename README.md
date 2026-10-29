@@ -556,7 +556,9 @@ account it started with while that account is ready, and switches to a pool
 sibling only with a disclosed lane switch. An explicit pin (per-run
 `--profile`, or the composer's per-thread account chip) is STRICT — exactly
 that account or a typed refusal (`subscription_window_exhausted` with the
-reset time when its quota window is spent), never a silent rotation.
+reset time when its quota window is spent, or when it reached a saved
+`headroom_threshold` below 100%; `quotaRefusal.basis` tells the two apart),
+never a silent rotation.
 `claudexor profiles` shows the informational **next-up** verdict — who an
 unpinned run of the configured default model would route to next — computed
 server-side by the same routing owner (`accountPools`; also

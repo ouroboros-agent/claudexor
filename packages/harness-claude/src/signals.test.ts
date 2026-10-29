@@ -163,18 +163,13 @@ describe("claude D-16 signal fixtures", () => {
     expect(out?.find((event) => event.quota)?.quota?.constraints[0]?.used_ratio).toBeNull();
     expect(rejection?.type).toBe("status");
     expect(rejection?.rate_limit?.resets_at).toBe(new Date(1784774400 * 1000).toISOString());
-    expect(rejection?.rate_limit).toMatchObject({
-      constraint_id: "seven_day_opus",
-      applies_to_models: [
-        "opus",
-        "claude-opus-5",
-        "claude-opus-4-8",
-        "claude-opus-4-7",
-        "claude-opus-4-6",
-        "claude-opus-4-5",
-        "best",
-      ],
-    });
+    expect(rejection?.rate_limit).toEqual(
+      expect.objectContaining({
+        constraint_id: "seven_day_opus",
+        applies_to_models: ["opus"],
+        applies_to_model_prefixes: ["claude-opus-"],
+      }),
+    );
     expect(() => HarnessEvent.parse(out?.[0])).not.toThrow();
   });
 

@@ -6,7 +6,7 @@
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import { EventLog } from "@claudexor/event-log";
 import {
@@ -23,8 +23,10 @@ import {
   rotateSpecOnTypedLimit,
   type ProfilePolicy,
 } from "./credential-profile-rotation.js";
-import { resolveAccountForRun, subscriptionWindowExhausted } from "./account-resolution.js";
+import { resolveAccountForRun } from "./account-resolution.js";
+import { subscriptionWindowExhausted } from "./quota-refusal-scope.js";
 import { type DeclaredFailure, failTerminally } from "./runTerminalResults.js";
+import { writeRoutingFailureTerminal } from "./routing-failure.js";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -87,6 +89,14 @@ function terminalFailure(error: unknown): RunFailure {
 }
 
 describe("subscription window exhaustion", () => {
+  // The fixture is fresh evidence at its own decision instant (#457 judges
+  // freshness per window at the decision, not by the stored label alone).
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.parse("2026-08-02T12:01:00.000Z"));
+  });
+  afterEach(() => vi.useRealTimers());
+
   it("refuses with a typed code, category and structural reset time", () => {
     expect(refusal()).toMatchObject({
       code: "subscription_window_exhausted",
@@ -100,6 +110,61 @@ describe("subscription window exhaustion", () => {
     expect(failure.code).toBe("subscription_window_exhausted");
     expect(failure.category).toBe("harness_unavailable");
     expect(failure.resetsAt).toBe(RESETS_AT);
+  });
+
+  it("records the owner-reserve basis of a strict-pin refusal through the routing terminal", async () => {
+    const reserve: QuotaSnapshot = {
+      ...spent,
+      observed_at: new Date().toISOString(),
+      constraints: [
+        {
+          ...spent.constraints[0]!,
+          used_ratio: 0.9,
+          resets_at: new Date(Date.now() + 3600_000).toISOString(),
+        },
+      ],
+    };
+    const error = await resolveAccountForRun({
+      harnessId: "claude",
+      registry: [profile],
+      policy: { limit_action: "fail", rotation_eligible: [], headroom_threshold: 0.9 },
+      snapshots: [reserve],
+      quota: { snapshots: [], absences: [] },
+      unusable: [],
+      probe: undefined,
+      pinnedProfile: profile,
+      boundProfileId: null,
+      threadId: null,
+      model: null,
+      defaultRoute: "local_session",
+      nativeCredentialsDisabled: false,
+      authPreference: "subscription",
+      notePoolApiKeyRoute: () => undefined,
+      emit: () => undefined,
+    }).catch((e: unknown) => e);
+    const repo = realpathSync(mkdtempSync(join(tmpdir(), "cx-quota-reserve-")));
+    dirs.push(repo);
+    const store = new ArtifactStore(repo);
+    const paths = store.createRun("run-reserve");
+    const log = new EventLog(paths.eventsPath, "run-reserve", "task-reserve");
+    writeRoutingFailureTerminal(store, paths, log, {
+      runId: "run-reserve",
+      modeLabel: "agent",
+      message: (error as Error).message,
+      err: error,
+    });
+    const failure = RunFailure.parse(store.readYaml(join(paths.finalDir, "failure.yaml")));
+    expect(failure).toMatchObject({
+      code: "subscription_window_exhausted",
+      category: "harness_unavailable",
+      quotaRefusal: {
+        basis: "owner_reserve",
+        constraintId: "weekly_scoped:Fable",
+        usedRatio: 0.9,
+        threshold: 0.9,
+      },
+    });
+    expect(failure.nextActions.join(" ")).toContain("reserve");
   });
 
   it("still defaults an untyped throw to internal with no reset time", () => {

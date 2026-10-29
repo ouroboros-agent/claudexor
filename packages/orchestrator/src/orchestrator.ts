@@ -5542,6 +5542,7 @@ export class Orchestrator {
         code: convBudgetMapping?.code ?? convDeclared?.code ?? null,
         resetsAt: convDeclared?.resetsAt ?? null,
         requestRefusal: convDeclared?.requestRefusal,
+        quotaRefusal: convDeclared?.quotaRefusal,
         harnessId: lastRun?.harnessId,
         attemptId: lastRun?.attemptId,
         runDir: paths.root,

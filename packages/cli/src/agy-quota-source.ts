@@ -22,6 +22,7 @@ import type { QuotaAbsence, QuotaConstraint, QuotaSnapshot, QuotaSubject } from 
 import { noProjectRepoRoot, redactSecrets } from "@claudexor/util";
 import {
   emitQuotaDiagnostic,
+  unknownQuotaScopeReason,
   type QuotaDiagnosticSink,
   type QuotaRefreshDiagnostic,
 } from "./quota-refresh-diagnostics.js";
@@ -96,12 +97,24 @@ export async function refreshAgyQuota(
           return { absence: agyAbsence(candidate.subjectId, "auth_revoked", parsed.detail) };
         if (parsed.kind !== "constraints")
           return { absence: agyAbsence(candidate.subjectId, "refresh_failed", parsed.detail) };
+        const note = parsed.unknownScopes.map(unknownQuotaScopeReason).join("; ") || undefined;
+        // Windows of unknown scope alone are not a fresh, limit-free reading (#394).
+        if (parsed.constraints.length === 0)
+          return {
+            note,
+            absence: agyAbsence(
+              candidate.subjectId,
+              "refresh_failed",
+              "agy quota carried only groups of unknown model scope (not account-wide limits)",
+            ),
+          };
         // Which window governs a run that names no model depends on the model
         // this profile is actually set to, which the vendor answers for free.
         const beforeModel = prepareFailure();
         if (beforeModel) return { absence: beforeModel };
         const selected = await readAgySelectedModel(bin, env, options.platform);
         return {
+          note,
           snapshot: {
             subject: {
               harness: "agy" as const,
@@ -141,7 +154,8 @@ export async function refreshAgyQuota(
 
 const AGY_QUOTA_CONCURRENCY = 3;
 
-type AgyCandidateResult = { snapshot?: QuotaSnapshot; absence?: QuotaAbsence };
+/** `note` is diagnostic evidence for the probe's terminal receipt only. */
+type AgyCandidateResult = { snapshot?: QuotaSnapshot; absence?: QuotaAbsence; note?: string };
 
 type AgyQuotaReport = (
   operationId: string,
@@ -224,7 +238,7 @@ function reportedProbe(
       operationId,
       candidate.subjectId,
       result.snapshot ? "succeeded" : "failed",
-      result.absence?.reason,
+      [result.absence?.reason, result.note].filter(Boolean).join("; ") || undefined,
     );
     return result;
   };
@@ -394,8 +408,21 @@ function agyAbsence(
   };
 }
 
+/** A measured window of a quota group the adapter does not recognize. */
+interface AgyUnknownScope {
+  id: string;
+  group: string;
+  used_ratio: number | null;
+  resets_at: string | null;
+}
+
 type AgyQuotaParse =
-  | { kind: "constraints"; constraints: QuotaConstraint[]; planLabel: string | null }
+  | {
+      kind: "constraints";
+      constraints: QuotaConstraint[];
+      unknownScopes: AgyUnknownScope[];
+      planLabel: string | null;
+    }
   | { kind: "auth_revoked"; detail: string }
   | { kind: "failed"; detail: string };
 
@@ -459,6 +486,7 @@ function parseAgyQuotaSuccessEnvelope(parsed: Record<string, unknown>): AgyQuota
       : null;
   if (!Array.isArray(groups)) return { kind: "failed", detail: "agy quota envelope had no groups" };
   const constraints: QuotaConstraint[] = [];
+  const unknownScopes: AgyUnknownScope[] = [];
   for (const group of groups) {
     const scope = modelsForGroup(String(group?.name ?? ""));
     for (const bucket of Array.isArray(group?.buckets) ? group.buckets : []) {
@@ -487,12 +515,22 @@ function parseAgyQuotaSuccessEnvelope(parsed: Record<string, unknown>): AgyQuota
       // the daemon drops the ENTIRE agy result — snapshots and absences — when
       // a single constraint fails schema validation downstream.
       const checked = QuotaConstraintSchema.safeParse(candidate);
-      if (checked.success) constraints.push(checked.data);
+      if (!checked.success) continue;
+      // An unrecognized group's models are unknown: its window is evidence,
+      // never an account-wide restriction (#394).
+      if (scope) constraints.push(checked.data);
+      else
+        unknownScopes.push({
+          id: checked.data.id,
+          group: groupName,
+          used_ratio: checked.data.used_ratio,
+          resets_at: checked.data.resets_at,
+        });
     }
   }
-  if (constraints.length === 0)
+  if (constraints.length === 0 && unknownScopes.length === 0)
     return { kind: "failed", detail: "agy quota envelope carried no windows" };
-  return { kind: "constraints", constraints, planLabel: null };
+  return { kind: "constraints", constraints, unknownScopes, planLabel: null };
 }
 
 /** A vendor string that is neither missing nor blank. */
@@ -515,13 +553,13 @@ const WINDOW_SECONDS: Record<string, number> = {
   weekly: 7 * 24 * 60 * 60,
 };
 
-/** Group names are vendor fields. Keep the existing account-wide treatment
- * for an unrecognized quota group; model ids themselves never pick a group. */
+/** Group names are vendor fields; model ids themselves never pick a group.
+ * An unrecognized group has no known model scope (null). */
 function modelsForGroup(
   groupName: string,
-): Pick<QuotaConstraint, "applies_to_models" | "applies_to_model_prefixes"> {
+): Pick<QuotaConstraint, "applies_to_models" | "applies_to_model_prefixes"> | null {
   const n = groupName.toLowerCase();
   if (n.includes("gemini")) return AGY_QUOTA_MODEL_GROUPS.gemini;
   if (n.includes("claude") || n.includes("gpt")) return AGY_QUOTA_MODEL_GROUPS.thirdParty;
-  return { applies_to_models: null };
+  return null;
 }

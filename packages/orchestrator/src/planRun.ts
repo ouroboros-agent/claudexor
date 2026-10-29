@@ -414,10 +414,10 @@ export function writePlanHarnessFailure(
       ctx.attemptTelemetries.flatMap((attempt) => attempt.telemetry.transientFailures),
     );
     writeFailure(store, paths, {
+      // The typed provenance the attempt declared (code, reset, refusals) speaks.
+      ...declared,
       phase: "harness",
       category: blocked ? "policy" : (declared?.category ?? "harness_error"),
-      code: declared?.code,
-      requestRefusal: declared?.requestRefusal,
       vendorFailure: ctx.aggregateFailure
         ? null
         : attemptVendorFailure(ctx.attemptTelemetries, planAttempts.at(-1)?.attemptId),

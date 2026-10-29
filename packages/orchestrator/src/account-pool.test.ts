@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   CredentialProfile,
   ModelSubstitutionObservation,
@@ -50,6 +50,14 @@ function snapshot(
     freshness: options.freshness ?? "fresh",
   } as QuotaSnapshot;
 }
+
+// Quota evidence is judged per window at the decision instant (#457): decide at
+// the fixtures' own observation time, one minute after it was read.
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(Date.parse("2026-08-18T00:01:00Z"));
+});
+afterEach(() => vi.useRealTimers());
 
 const baseArgs = {
   harnessId: "claude",
@@ -448,7 +456,22 @@ describe("account pool selection", () => {
       ],
       readyProfileIds: new Set(["a", "b"]),
     });
-    expect(selection).toEqual({ outcome: "exhausted", resets_at: "2026-08-18T06:00:00Z" });
+    // Both rows stopped below 100% at the saved 90% reserve (#318).
+    expect(selection).toEqual({
+      outcome: "exhausted",
+      resets_at: "2026-08-18T06:00:00Z",
+      reserveOnly: true,
+    });
+    const spent = selectFromAccountPool({
+      ...baseArgs,
+      registry,
+      snapshots: [
+        snapshot("a", 0.95, { resetsAt: "2026-08-18T12:00:00Z" }),
+        snapshot("b", 1, { resetsAt: "2026-08-18T06:00:00Z" }),
+      ],
+      readyProfileIds: new Set(["a", "b"]),
+    });
+    expect(spent).toMatchObject({ outcome: "exhausted", reserveOnly: false });
   });
 
   it("reports an empty pool when nothing is ready", () => {

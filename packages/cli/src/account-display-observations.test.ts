@@ -83,11 +83,16 @@ function fixture() {
       refreshed_at: null,
     };
   const read = vi.fn(() => quota);
-  const refresh = vi.fn(async () => ({ response: quota, quotaEventCursor: "fixture-cursor" }));
+  const readAdmission = () => ({ snapshots: quota.snapshots });
+  const refresh = vi.fn(async () => ({
+    response: quota,
+    admission: { snapshots: quota.snapshots },
+    quotaEventCursor: "fixture-cursor",
+  }));
   // The store graph's evidence, injected like the daemon does (fresh per fixture).
   const accounts = createAccountEvidence();
   const service = createCredentialProfilesService(
-    () => ({ read, refreshWithCursor: refresh }) as unknown as QuotaRegistry,
+    () => ({ read, readAdmission, refreshWithCursor: refresh }) as unknown as QuotaRegistry,
     accounts,
   );
   const catalog = () =>
