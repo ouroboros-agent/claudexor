@@ -1,14 +1,29 @@
 import { existsSync, renameSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import { Thread as ThreadSchema, type Thread } from "@claudexor/schema";
+import type { PurgeRepositoryRecord } from "@claudexor/workspace";
 import type { EngineStore } from "./store.js";
 import type { Obligations, ObligationHandler } from "./obligations.js";
+import { runMutation } from "./mutation.js";
 
 export interface PurgeFilesPayload {
   thread: Thread;
+  /** The repository holding the thread's worktree registration and branch,
+   * recorded by an attempt before Git's first change in it. */
+  repository?: PurgeRepositoryRecord;
+}
+/** The obligation keeps the repository an attempt resolved until it clears,
+ * so every retry, startup replay included, deletes and syncs in that one. */
+export interface PurgeRepositoryCustody {
+  readonly recorded: PurgeRepositoryRecord | null;
+  /** Durable before it resolves; the effect deletes nothing in Git earlier. */
+  record(repository: PurgeRepositoryRecord): Promise<void>;
 }
 /** Uses the CLI/workspace's existing purge owner; it reports touched parents. */
-export type PurgeFilesEffect = (thread: Thread) => Promise<readonly string[]>;
+export type PurgeFilesEffect = (
+  thread: Thread,
+  repository?: PurgeRepositoryCustody,
+) => Promise<readonly string[]>;
 
 /** SQL owns the decision and retry; the existing workspace owner owns deletion. */
 export class SqlPurgeFiles {
@@ -20,14 +35,34 @@ export class SqlPurgeFiles {
 
   handler(perform: PurgeFilesEffect): ObligationHandler {
     return async (obligation, effects) => {
-      const thread = ThreadSchema.parse((obligation.payload as PurgeFilesPayload).thread);
+      const payload = obligation.payload as PurgeFilesPayload;
+      const thread = ThreadSchema.parse(payload.thread);
       if (thread.id !== obligation.key)
         throw new Error("purge obligation does not name its thread");
       // Covers the decision committed before this call, also after restart.
       await this.store.synced(this.store.mark());
-      const dirs = await perform(thread);
+      const dirs = await perform(thread, {
+        recorded: recordedRepository(payload.repository),
+        record: (repository) => this.recordRepository(thread.id, payload, repository),
+      });
       for (const dir of new Set(dirs)) effects.register(dir);
     };
+  }
+
+  private async recordRepository(
+    id: string,
+    payload: PurgeFilesPayload,
+    repository: PurgeRepositoryRecord,
+  ): Promise<void> {
+    runMutation(this.store, (tx) => {
+      const recorded = tx
+        .prepare(
+          "UPDATE effect_obligation SET payload=? WHERE kind='purge_fs' AND key=? AND state='pending'",
+        )
+        .run(Buffer.from(JSON.stringify({ ...payload, repository })), id);
+      if (Number(recorded.changes) === 0) throw new Error(`no pending purge obligation ${id}`);
+    });
+    await this.store.synced(this.store.mark());
   }
 
   /** Runtime replay uses the same handler as startup, without replaying every
@@ -69,6 +104,15 @@ export class SqlPurgeFiles {
     );
     this.obligations.materialize("purge_fs", id);
   }
+}
+
+/** An unreadable record stays a refusal: dropping it would ask the project path. */
+function recordedRepository(value: unknown): PurgeRepositoryRecord | null {
+  if (value === undefined) return null;
+  const { gitDir, identity } = (value ?? {}) as Partial<PurgeRepositoryRecord>;
+  if (typeof gitDir === "string" && (typeof identity === "string" || identity === null))
+    return { gitDir, identity };
+  throw new Error("purge obligation records an unreadable repository");
 }
 
 /** PR-D supplies already validated, engine-owned leftovers. Logical SQL

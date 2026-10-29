@@ -28,7 +28,7 @@ import {
 import { execFileSync } from "node:child_process";
 import { open } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CLAUDEXOR_VERSION } from "./version.js";
 
@@ -371,6 +371,30 @@ export function canonicalProjectRoot(repoRoot: string): string {
 export function projectRuntimeDir(repoRoot: string): string {
   const digest = sha256(canonicalProjectRoot(repoRoot)).slice("sha256:".length);
   return join(userConfigDir(), "projects", digest);
+}
+
+/**
+ * `projectRuntimeDir(repoRoot)/<segments>` for a lifecycle owner that deletes
+ * entries inside it. The config root is canonicalized once (it may itself be a
+ * link, or sit under one such as macOS `/var`); below it no component may be a
+ * link. One is refused rather than followed: removal resolves each of these
+ * components, and a link leading out of the runtime tree would aim it at user
+ * files. The entry the caller then names inside is its own to remove, and `rm`
+ * unlinks a link there without following it. Nothing exists below an absent
+ * component or a file, so the walk stops there.
+ */
+export function ownedProjectRuntimeDir(repoRoot: string, ...segments: string[]): string {
+  const root = canonicalProjectRoot(userConfigDir());
+  const parts = ["projects", basename(projectRuntimeDir(repoRoot)), ...segments];
+  for (let depth = 1; depth <= parts.length; depth++) {
+    const component = join(root, ...parts.slice(0, depth));
+    const stat = lstatSync(component, { throwIfNoEntry: false });
+    if (stat?.isSymbolicLink()) {
+      throw new Error(`daemon-owned runtime path is a link; refusing to follow it: ${component}`);
+    }
+    if (!stat?.isDirectory()) break;
+  }
+  return join(root, ...parts);
 }
 
 export function noProjectRepoRoot(): string {

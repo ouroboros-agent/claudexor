@@ -710,10 +710,22 @@
       "path": "/v2/projects/:id",
       "mutating": true,
       "applicability": "project",
-      "summary": "Remove a registered project: retire the registry entry and archive its journal partition. Refused (409) while any non-purged thread or live/queued run references it; run artifacts are left to normal GC.",
+      "summary": "Remove a registered project: retire the registry entry and archive its journal partition. Refused (409) while any non-purged thread or live/queued run references it; with trashedThreads=purge, threads already in the trash are purged in the same removal instead. Run artifacts are left to normal GC.",
       "auth": "loopback_bearer",
       "request_schema": null,
-      "parameters": [],
+      "parameters": [
+        {
+          "name": "trashedThreads",
+          "in": "query",
+          "required": false,
+          "repeatable": false,
+          "enum": [
+            "purge"
+          ],
+          "schema_ref": null,
+          "description": "Opt in to purging the threads already in the project's trash in the same removal; any other thread or a queued/running command still refuses it. Omission keeps the default refusal while any non-purged thread remains."
+        }
+      ],
       "response_schema": "ControlProjectRemoveReceipt",
       "error_schema": "ControlProblem"
     },

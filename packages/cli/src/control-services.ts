@@ -1,5 +1,5 @@
 /** Bind typed control operations to daemon stores and engine entrypoints. */
-import { mkdirSync, realpathSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import {
   type OperatorDecisionRecord,
   PartitionControlPort,
@@ -22,8 +22,6 @@ import {
   ControlCredentialProfileCreateRequest,
   type LiveMessageInput,
   type RuntimeConcurrencyCaps,
-  RunScope,
-  TERMINAL_LIFECYCLES,
 } from "@claudexor/schema";
 import { rollbackAccountsUnifiedMigration } from "./accounts-unified-migration.js";
 import { credentialProfileMutations } from "./credential-profile-mutations.js";
@@ -61,33 +59,13 @@ import { remoteFilesystemServices } from "./remote-filesystem.js";
 import { projectRunApplicability } from "./run-applicability.js";
 import { threadTurnServices } from "./thread-turn-services.js";
 import { threadPurgeOwner, type ThreadPurgeDurability } from "./thread-purge.js";
+import { projectRemovalService } from "./project-removal.js";
 const NO_PROJECT_ROOT = noProjectRepoRoot();
 type SetupJobManager = ReturnType<typeof createSetupJobManager>;
 type SetupBinding = Pick<
   SetupLifecycleBinding<SetupJobStorePort, SetupJobManager>,
   "current" | "isBoundToCurrentGeneration" | "replaceAfter" | "hasActiveWork"
 >;
-/**
- * The project ROOT a non-terminal job runs against (project-remove active-run
- * fence), or null when it holds no project. Parsed via the typed `RunScope`
- * schema, not a widening `{scope?:{kind?;root?}}` cast (Ф2 finding 7): a project
- * scope always carries a root, so a live project run can't silently drop out of
- * the fence. A live RUN whose scope can't be parsed FAILS CLOSED (we can't prove
- * it doesn't reference the project); a non-run job (no runId) is ignored.
- */
-function activeRunProjectRoot(job: { runId?: string; params?: unknown }): string | null {
-  const scope = (job.params as { scope?: unknown } | null | undefined)?.scope;
-  const parsed = RunScope.safeParse(scope);
-  if (parsed.success) return parsed.data.kind === "project" ? parsed.data.root : null;
-  if (job.runId) {
-    throw Object.assign(
-      new Error(`cannot resolve the scope of active run ${job.runId} for the project-remove fence`),
-      { code: "active_run_scope_unresolved", status: 409 },
-    );
-  }
-  return null;
-}
-
 export function controlServices(
   interactions: InteractionRegistry,
   liveInputs: LiveInputRegistry,
@@ -149,7 +127,7 @@ export function controlServices(
   const { preflightRunRequirements, preflightThreadRunRequirements } =
     createThreadAwareRunRequirementsPreflights(lazyResources, NO_PROJECT_ROOT, threads);
   // Routes and retention share one thread purge and durability owner.
-  const { purgeThread, hasPurgeLeftovers } = threadPurgeOwner(
+  const { purgeThread, hasPurgeLeftovers, finishPurge } = threadPurgeOwner(
     threads,
     NO_PROJECT_ROOT,
     purgeDurability,
@@ -186,25 +164,8 @@ export function controlServices(
       const project = threads.relinkProject(id, root);
       return { ...project, nesting: projects().nestingFor(project.id) };
     },
-    // QA-049 minimal project remove: retire the durable registry entry + archive
-    // the journal partition, fenced against non-purged threads and live/queued
-    // runs. The thread fence lives in ProjectControlPort; the active-run set is
-    // read in process with no await before removal (project-scoped, non-terminal runs),
-    // canonicalized to match the store's realpath'd roots.
-    removeProject: async (id: string) => {
-      const activeRunRoots = new Set<string>();
-      for (const job of daemonJobs()) {
-        if ((TERMINAL_LIFECYCLES as ReadonlySet<string>).has(job.state)) continue;
-        const root = activeRunProjectRoot(job);
-        if (root === null) continue;
-        try {
-          activeRunRoots.add(realpathSync(root));
-        } catch {
-          activeRunRoots.add(root);
-        }
-      }
-      return threads.removeProject(id, activeRunRoots);
-    },
+    // QA-049/#333: project remove and its explicit trashed-thread purge opt-in.
+    removeProject: projectRemovalService(threads, daemonJobs, finishPurge),
     createThread: async (input: unknown) => {
       const request = (input ?? {}) as Parameters<ProjectControlPort["createThread"]>[0];
       assertCredentialProfileCompatibility(

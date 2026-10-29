@@ -1,6 +1,14 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  type BigIntStats,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { assertCaptureComplete, runCaptureRaw, WorkspaceError } from "@claudexor/core";
 import { isClaudexorOwnedRuntimePath } from "@claudexor/util";
 import {
@@ -270,8 +278,127 @@ export async function worktreeAddExisting(
     throw new WorkspaceError(`git worktree add (existing branch) failed: ${r.stderr.trim()}`);
 }
 
+/** Best-effort: Git's exit status is ignored. An owner that must not report a
+ * refused removal as done uses `worktreeRemoveRegistered`. */
 export async function worktreeRemove(repo: string, path: string): Promise<void> {
   await git(repo, ["worktree", "remove", "--force", path]);
+}
+
+/**
+ * Deregister the linked worktree Git records at `path`; Git deletes its
+ * directory too. A path Git does not register is already removed. A refusal
+ * (a locked worktree, an unreadable registration) throws and leaves the
+ * registration and the directory as they were. A directory Git cannot delete
+ * (a permission error) throws after Git deleted the registration: the
+ * directory stays, its `.git` file naming what is gone. The registration is
+ * found by `samePlace` and removed in Git's own spelling, so a stale one whose
+ * directory is gone still goes. Git prints porcelain paths unquoted, one per
+ * line, so a path holding a line break cannot be read back and is refused
+ * rather than reported absent. `beforeRemove` runs once Git is known to
+ * register the path, right before the removal.
+ */
+export async function worktreeRemoveRegistered(
+  repo: string,
+  path: string,
+  beforeRemove: () => Promise<void> = async () => {},
+): Promise<void> {
+  if (path.includes("\n")) {
+    throw new WorkspaceError(
+      `worktree path has a line break that git worktree list cannot report: ${JSON.stringify(path)}`,
+    );
+  }
+  const listed = await git(repo, ["worktree", "list", "--porcelain"]);
+  if (listed.code !== 0) {
+    throw new WorkspaceError(`git worktree list failed: ${listed.stderr.trim()}`);
+  }
+  const registered = worktreePaths(listed.stdout).find((entry) => samePlace(entry, path));
+  if (registered === undefined) return;
+  await beforeRemove();
+  const r = await git(repo, ["worktree", "remove", "--force", registered]);
+  if (r.code !== 0) throw new WorkspaceError(`git worktree remove failed: ${r.stderr.trim()}`);
+}
+
+/**
+ * The common Git directory of the repository that registered the linked
+ * worktree at `path`, from Git's own records: the worktree's `.git` file names
+ * its registration, which must still exist and name this worktree back. Null
+ * when `path` holds no such file. A registration that is gone or names another
+ * worktree is what a moved or deleted repository leaves, and also a removal
+ * that deleted the registration but not the directory
+ * (`worktreeRemoveRegistered`; a later worktree can take the freed name).
+ * `recorded`, called only then, tells them apart: the common Git directory a
+ * caller kept from before its removal is returned when the registration was
+ * in it. Otherwise this throws, since whatever a moved repository still
+ * records cannot be proven gone.
+ */
+export function worktreeRepository(
+  path: string,
+  recorded: () => string | null = () => null,
+): string | null {
+  const gitfile = join(path, ".git");
+  const pointer = /^gitdir: (.+)$/m.exec(plainText(gitfile) ?? "")?.[1]?.trimEnd();
+  if (!pointer) return null;
+  const registration = resolve(path, pointer);
+  const named = plainText(join(registration, "gitdir"))?.trimEnd();
+  if (named && samePlace(resolve(registration, named), gitfile))
+    return resolve(registration, readFileSync(join(registration, "commondir"), "utf8").trimEnd());
+  const gitDir = recorded();
+  if (gitDir !== null && samePlace(dirname(registration), join(gitDir, "worktrees"))) return gitDir;
+  throw new WorkspaceError(
+    `Git no longer registers worktree ${path} at ${registration}: its repository moved or was deleted; if it moved, run "git worktree repair" in it so the next attempt can finish this cleanup`,
+  );
+}
+
+/** The common Git directory of the repository `dir` is in; throws when Git cannot tell. */
+export async function gitCommonDir(dir: string): Promise<string> {
+  const r = await git(dir, ["rev-parse", "--git-common-dir"]);
+  if (r.code !== 0) {
+    throw new WorkspaceError(`git rev-parse --git-common-dir failed: ${r.stderr.trim()}`);
+  }
+  return resolve(dir, r.stdout.trim());
+}
+
+/** A regular file's text, or null when nothing (or no regular file) is there. */
+function plainText(file: string): string | null {
+  try {
+    return lstatSync(file).isFile() ? readFileSync(file, "utf8") : null;
+  } catch (error) {
+    if (absent(error)) return null;
+    throw error;
+  }
+}
+
+/**
+ * Whether two spellings name the same place: the deepest existing part of
+ * each is one file by identity, so the filesystem itself decides about letter
+ * case, links and Unicode normalization, and the names below it are equal.
+ * Without a usable identity the spellings must match exactly.
+ */
+function samePlace(a: string, b: string): boolean {
+  if (resolve(a) === resolve(b)) return true;
+  const [x, y] = [existingPart(a), existingPart(b)];
+  if (x.rest !== y.rest) return false;
+  if (!x.stat || !y.stat || x.stat.ino === 0n || y.stat.ino === 0n) return x.path === y.path;
+  return x.stat.dev === y.stat.dev && x.stat.ino === y.stat.ino;
+}
+
+function existingPart(path: string): { path: string; stat: BigIntStats | null; rest: string } {
+  const rest: string[] = [];
+  for (let current = resolve(path); ; current = dirname(current)) {
+    let stat: BigIntStats | null = null;
+    try {
+      stat = statSync(current, { bigint: true });
+    } catch (error) {
+      if (!absent(error)) throw error;
+    }
+    if (stat || dirname(current) === current) return { path: current, stat, rest: rest.join(sep) };
+    rest.unshift(basename(current));
+  }
+}
+
+function absent(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === "ENOENT" || code === "ENOTDIR";
 }
 
 /**
@@ -375,7 +502,11 @@ export async function reversePatchAndIndexProtected(
 async function worktreeList(repo: string): Promise<string[]> {
   const r = await git(repo, ["worktree", "list", "--porcelain"]);
   if (r.code !== 0) return [];
-  return r.stdout
+  return worktreePaths(r.stdout);
+}
+
+function worktreePaths(porcelain: string): string[] {
+  return porcelain
     .split("\n")
     .filter((line) => line.startsWith("worktree "))
     .map((line) => line.slice("worktree ".length).trim())
@@ -413,4 +544,26 @@ export async function worktreePrune(repo: string): Promise<void> {
 /** Delete a local branch (best-effort GC of per-attempt claudexor/* branches). */
 export async function branchDelete(repo: string, branch: string): Promise<void> {
   await git(repo, ["branch", "-D", branch]);
+}
+
+/**
+ * Delete a local branch, or throw when Git refuses (a held ref lock, a
+ * worktree that still uses it). An absent branch is already deleted. Presence
+ * is read first because `branch -D` reports "not found" and a refusal with the
+ * same exit code. `beforeDelete` runs only for a present branch, right before
+ * the deletion.
+ */
+export async function branchDeleteIfPresent(
+  repo: string,
+  branch: string,
+  beforeDelete: () => Promise<void> = async () => {},
+): Promise<void> {
+  const present = await git(repo, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
+  if (present.code === 1) return;
+  if (present.code !== 0) {
+    throw new WorkspaceError(`git show-ref ${branch} failed: ${present.stderr.trim()}`);
+  }
+  await beforeDelete();
+  const r = await git(repo, ["branch", "-D", branch]);
+  if (r.code !== 0) throw new WorkspaceError(`git branch -D ${branch} failed: ${r.stderr.trim()}`);
 }

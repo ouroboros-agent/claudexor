@@ -91,6 +91,9 @@ export class SqlProjectRouter {
   removeProject(id: string, activeRunRoots: ReadonlySet<string>) {
     return this.projects.remove(id, activeRunRoots);
   }
+  removeProjectWithTrashedThreads(id: string, activeRunRoots: ReadonlySet<string>) {
+    return this.projects.removeWithTrashedThreads(id, activeRunRoots);
+  }
 
   findThreadCreation(input: CreateThreadInput & { ephemeral?: boolean }): Thread | null {
     const root = input.ephemeral === true ? null : (input.repoRoot ?? null);

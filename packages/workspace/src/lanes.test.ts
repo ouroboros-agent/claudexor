@@ -1,4 +1,13 @@
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -135,6 +144,55 @@ describe("lane lifecycle owners", () => {
     expect(() => purgeThreadLanes(repo, "th-1")).not.toThrow();
     expect(purgeProfileLanes(repo, "codex", "work")).toBe(0);
     expect(sweepOrphanLanes(repo, new Set())).toEqual([]);
+  });
+
+  it("all three refuse a lanes dir that links out of the runtime tree", () => {
+    const repo = reapMk(join(tmpdir(), "claudexor-lanes-repo-"));
+    // A user folder holding directories named like the thread and its lane.
+    const user = reapMk(join(tmpdir(), "claudexor-lanes-user-"));
+    mkdirSync(join(user, "th-1", "codex-work"), { recursive: true });
+    writeFileSync(join(user, "th-1", "SENTINEL"), "user data");
+    mkdirSync(projectRuntimeDir(repo), { recursive: true });
+    symlinkSync(user, join(projectRuntimeDir(repo), "lanes"), "dir");
+
+    expect(() => purgeThreadLanes(repo, "th-1")).toThrow(/link; refusing to follow/);
+    expect(() => purgeProfileLanes(repo, "codex", "work")).toThrow(/link; refusing to follow/);
+    expect(() => sweepOrphanLanes(repo, new Set())).toThrow(/link; refusing to follow/);
+    expect(readFileSync(join(user, "th-1", "SENTINEL"), "utf8")).toBe("user data");
+    expect(existsSync(join(user, "th-1", "codex-work"))).toBe(true);
+  });
+
+  it("a thread's linked lane dir is unlinked, never followed, and refused above a profile lane", () => {
+    const repo = reapMk(join(tmpdir(), "claudexor-lanes-repo-"));
+    const user = reapMk(join(tmpdir(), "claudexor-lanes-user-"));
+    mkdirSync(join(user, "codex-work"));
+    writeFileSync(join(user, "SENTINEL"), "user data");
+    const lanes = join(projectRuntimeDir(repo), "lanes");
+    mkdirSync(lanes, { recursive: true });
+    symlinkSync(user, join(lanes, "th-1"), "dir");
+
+    expect(() => purgeProfileLanes(repo, "codex", "work")).toThrow(/link; refusing to follow/);
+    purgeThreadLanes(repo, "th-1");
+    expect(lstatSync(join(lanes, "th-1"), { throwIfNoEntry: false })).toBeUndefined();
+    expect(readFileSync(join(user, "SENTINEL"), "utf8")).toBe("user data");
+    expect(existsSync(join(user, "codex-work"))).toBe(true);
+  });
+
+  it("still sweep under a config root that is itself a link, past a stray file", () => {
+    const real = reapMk(join(tmpdir(), "claudexor-lanes-real-cfg-"));
+    const linked = join(reapMk(join(tmpdir(), "claudexor-lanes-cfg-link-")), "config");
+    symlinkSync(real, linked, "dir");
+    process.env["CLAUDEXOR_CONFIG_DIR"] = linked;
+    const repo = reapMk(join(tmpdir(), "claudexor-lanes-repo-"));
+    const rt = projectRuntimeDir(repo);
+    ensureLaneHomeEnv(rt, "th-1", "codex", "work");
+    ensureLaneHomeEnv(rt, "th-gone", "codex", "work");
+    writeFileSync(join(rt, "lanes", ".DS_Store"), "");
+
+    expect(purgeProfileLanes(repo, "codex", "work")).toBe(2);
+    expect(sweepOrphanLanes(repo, new Set(["th-1"]))).toHaveLength(2);
+    purgeThreadLanes(repo, "th-1");
+    expect(readdirSync(join(rt, "lanes"))).toEqual([]);
   });
 });
 

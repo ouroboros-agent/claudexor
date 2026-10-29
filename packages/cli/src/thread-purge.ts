@@ -7,7 +7,11 @@
  * and every lane home (INV-034 lifecycle owner (a)).
  *
  * A directory error after the journal commit (ENOTEMPTY, EBUSY, a Windows
- * lock) leaves a purged thread that every listing hides while its directories
+ * lock), a Git refusal to drop the worktree or branch (a locked worktree, a
+ * held ref lock), a repository that registered the worktree but can no longer
+ * be reached (moved or deleted) or a runtime directory that is a link (never
+ * followed) makes the effect throw: the cleanup stays pending, never reported
+ * complete, and every listing hides the purged thread while its directories
  * remain. Calling the owner again journals nothing new (the reducer keeps a
  * purged thread as it is) and deletes what is left; `hasPurgeLeftovers` names
  * exactly the directories this owner deletes, so the retention pass retries a
@@ -16,18 +20,27 @@
 import type { ProjectThreadPort } from "@claudexor/daemon";
 import type { Thread } from "@claudexor/schema";
 import { existsSync, statSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { projectRuntimeDir } from "@claudexor/util";
 import {
   purgeThreadLanes,
   purgeThreadWorktree,
   threadLanesExist,
   threadWorktreeDirExists,
-  git,
+  type PurgeRepositoryRecord,
 } from "@claudexor/workspace";
 
+/** What the purge obligation keeps of the thread's repository until it clears. */
+export interface ThreadPurgeRepository {
+  readonly recorded: PurgeRepositoryRecord | null;
+  record(repository: PurgeRepositoryRecord): Promise<void>;
+}
+
 export interface ThreadPurgeDurability {
-  complete(id: string, perform: (thread: Thread) => Promise<readonly string[]>): Promise<void>;
+  complete(
+    id: string,
+    perform: (thread: Thread, repository?: ThreadPurgeRepository) => Promise<readonly string[]>,
+  ): Promise<void>;
 }
 
 export function threadPurgeOwner(
@@ -39,15 +52,20 @@ export function threadPurgeOwner(
     thread.repo && thread.workspace.mode === "isolated" ? thread.repo.root : null;
   const lanesRoot = (thread: Thread): string => thread.repo?.root ?? noProjectRoot;
   const perform = threadPurgeEffect(noProjectRoot);
+  /** Deletes the directories of a committed purge, given its pre-purge record. */
+  const finishPurge = async (thread: Thread): Promise<void> => {
+    if (durability) await durability.complete(thread.id, perform);
+    else await perform(thread);
+  };
   return {
     purgeThread: async (id: string) => {
       const thread = threads.getThread(id);
       if (!thread) throw Object.assign(new Error(`no such thread: ${id}`), { status: 404 });
       const purged = threads.purgeThread(id);
-      if (durability) await durability.complete(id, perform);
-      else await perform(thread);
+      await finishPurge(thread);
       return purged;
     },
+    finishPurge,
     /** Whether a directory this owner deletes for the thread is still on disk. */
     hasPurgeLeftovers: (thread: Thread): boolean => {
       const worktreeRoot = isolatedRoot(thread);
@@ -60,18 +78,21 @@ export function threadPurgeOwner(
 }
 
 /** The same exact directory owner is used for immediate purge and obligation
- * recovery. A delegated workspace is never a deletion target. */
+ * recovery. A delegated workspace is never a deletion target. The Git
+ * directories reported for syncing are those of the repository the cleanup
+ * actually asked, which a moved repository's worktree names, not the
+ * recorded project root's; the obligation's `repository` keeps it for every
+ * retry until the obligation clears. */
 export function threadPurgeEffect(noProjectRoot: string) {
-  return async (thread: Thread): Promise<string[]> => {
+  return async (thread: Thread, repository?: ThreadPurgeRepository): Promise<string[]> => {
     const root = thread.repo?.root ?? noProjectRoot;
     const parents = [join(projectRuntimeDir(root), "lanes")];
     if (thread.repo && thread.workspace.mode === "isolated") {
-      const gitDir = await git(thread.repo.root, ["rev-parse", "--git-common-dir"])
-        .then((result) =>
-          result.code === 0 ? resolve(thread.repo!.root, result.stdout.trim()) : null,
-        )
-        .catch(() => null);
-      await purgeThreadWorktree(thread.repo.root, thread.id);
+      const gitDir = await purgeThreadWorktree(thread.repo.root, thread.id, {
+        worktreeRecorded: thread.workspace.worktree_path !== null,
+        repository: repository?.recorded ?? null,
+        recordRepository: repository ? (record) => repository.record(record) : undefined,
+      });
       parents.push(join(projectRuntimeDir(thread.repo.root), "threads"));
       if (gitDir)
         parents.push(gitDir, join(gitDir, "worktrees"), join(gitDir, "refs", "heads", "claudexor"));

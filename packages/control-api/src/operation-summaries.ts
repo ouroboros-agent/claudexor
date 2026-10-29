@@ -35,7 +35,7 @@ export const OPERATION_SUMMARIES: Record<string, string> = {
   "POST /v2/projects": "Register a project root as a durable handle.",
   "POST /v2/projects/:id/relink": "Relink a registered project to a new root.",
   "DELETE /v2/projects/:id":
-    "Remove a registered project: retire the registry entry and archive its journal partition. Refused (409) while any non-purged thread or live/queued run references it; run artifacts are left to normal GC.",
+    "Remove a registered project: retire the registry entry and archive its journal partition. Refused (409) while any non-purged thread or live/queued run references it; with trashedThreads=purge, threads already in the trash are purged in the same removal instead. Run artifacts are left to normal GC.",
   "GET /v2/projects/:id/events": "Subscribe to a project's event stream (SSE).",
   "GET /v2/projects/:id/outputs": "List a project's durable outputs (artifacts/).",
   "GET /v2/projects/:id/outputs/<path>": "Fetch one durable output file from a project.",
