@@ -160,8 +160,9 @@ function pwshVersion() {
 
 /** The stop loop, from its deadline through the exit wait, cut from the exact
  * script Actions hands to pwsh for the assembled stop step. */
-function stopLoop() {
-  const workflow = readFileSync(join(repoRoot, ".github", "workflows", "release.yml"), "utf8");
+function stopLoop(
+  workflow = readFileSync(join(repoRoot, ".github", "workflows", "release.yml"), "utf8"),
+) {
   const script = stepRunScript(
     stepBody(
       jobSection(workflow, "windows-conpty-candidate-smoke"),
@@ -180,6 +181,33 @@ function uniqueLine(lines, predicate) {
   expect(matches, "stop loop boundary must occur exactly once").toHaveLength(1);
   return matches[0];
 }
+
+describe.each([
+  ["LF", "\n"],
+  ["CRLF", "\r\n"],
+])("workflow sections with %s checkout endings", (_name, eol) => {
+  const step = "      - name: Stop\n        run: |\n          first\n          second\n";
+  const job = `  smoke:\n    steps:\n${step}      - run: unrelated\n`;
+  const source = `jobs:\n${job}  other:\n    steps:\n      - run: elsewhere\n`;
+  const checkout = (text) => text.replace(/\r?\n/g, eol);
+
+  it("bounds the job before the next job", () => {
+    expect(jobSection(checkout(source), "smoke")).toBe(job);
+  });
+
+  it("bounds the named step before an unnamed sibling", () => {
+    expect(stepBody(checkout(job), "Stop")).toBe(step);
+  });
+
+  it("extracts the literal script without its indentation or checkout CR", () => {
+    expect(stepRunScript(checkout(step))).toBe("first\nsecond");
+  });
+
+  it("extracts the actual release stop loop on either checkout", () => {
+    const workflow = readFileSync(join(repoRoot, ".github", "workflows", "release.yml"), "utf8");
+    expect(stopLoop(checkout(workflow))).toBe(stopLoop(checkout(workflow).replace(/\r\n/g, "\n")));
+  });
+});
 
 const harnessPrelude = [
   '$ErrorActionPreference = "Stop"',
