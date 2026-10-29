@@ -1352,6 +1352,55 @@
                   "default": null,
                   "description": "When the refused window reopens (a spent subscription quota window), or null when the failure has no such time. Callers schedule a retry off this field, never off safeMessage."
                 },
+                "quotaRefusal": {
+                  "type": "object",
+                  "properties": {
+                    "basis": {
+                      "type": "string",
+                      "enum": [
+                        "owner_reserve",
+                        "provider_window",
+                        "provider_cooldown"
+                      ],
+                      "description": "owner_reserve: usage reached the saved headroom_threshold below 100% while the provider reports quota left; provider_window: the provider reports the window spent; provider_cooldown: a provider rate-limit cooldown is in force."
+                    },
+                    "constraintId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "The refusing quota window, when known."
+                    },
+                    "usedRatio": {
+                      "anyOf": [
+                        {
+                          "type": "number",
+                          "minimum": 0,
+                          "maximum": 1
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Its observed usage, when known."
+                    },
+                    "threshold": {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "description": "The headroom_threshold the decision applied, when it applied one."
+                    }
+                  },
+                  "required": [
+                    "basis",
+                    "constraintId",
+                    "usedRatio",
+                    "threshold"
+                  ],
+                  "additionalProperties": false,
+                  "description": "Present when quota admission refused the account (code subscription_window_exhausted): separates the owner's saved reserve from provider exhaustion. Absent on other failures and on records written before this field existed."
+                },
                 "vendorFailure": {
                   "anyOf": [
                     {
@@ -2182,6 +2231,14 @@
                   "not_applicable"
                 ],
                 "description": "Whether the predecessor's last input (its turn prompt or an admitted steering message) is known to be in the vendor history: confirmed, uncertain (carried in the notice as a reference to reconcile, never replayed blindly), or not applicable."
+              },
+              "sourceRetirement": {
+                "type": "string",
+                "enum": [
+                  "retired",
+                  "not_confirmed"
+                ],
+                "description": "After a native_moved carrier published the new holder: retired (the adapter removed the source copy) or not_confirmed (removal failed, possibly part-way). Absent = no move retired a source for this try."
               }
             },
             "required": [

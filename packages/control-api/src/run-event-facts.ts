@@ -1,5 +1,11 @@
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import type { RunContinuityReceipt } from "@claudexor/schema";
+import {
+  addExecutionEvent,
+  copyExecutionFold,
+  emptyExecutionFold,
+  type ExecutionFold,
+} from "@claudexor/workspace";
 import { addBudgetEvent, emptyBudgetFold, type BudgetEventFold } from "./budget-valuation.js";
 import { inProjectionScope, projectionRead } from "./projection-context.js";
 import { continuityReceiptOf } from "./run-continuation-projection.js";
@@ -20,10 +26,10 @@ import {
 
 /**
  * What run detail and summary fold from a run's complete events.jsonl: the
- * integrity counts, the timeline window, plan candidates, continuity receipts
- * and budget accumulators. The events themselves are not kept. Artifacts,
- * decisions and live fields are never part of it; projections combine them
- * freshly on every request.
+ * integrity counts, the timeline window, plan candidates, continuity receipts,
+ * budget accumulators and the continuation planner's execution facts. The
+ * events themselves are not kept. Artifacts, decisions and live fields are
+ * never part of it; projections combine them freshly on every request.
  */
 export interface RunEventFacts {
   integrity: RunEventsIntegrity;
@@ -31,6 +37,7 @@ export interface RunEventFacts {
   plans: PlanCandidates;
   continuity: RunContinuityReceipt[];
   budget: BudgetEventFold;
+  execution: ExecutionFold;
 }
 
 const CHUNK_BYTES = 64 * 1024;
@@ -83,6 +90,7 @@ function emptyFacts(integrity: RunEventsIntegrity): RunEventFacts {
     plans: emptyPlanCandidates(),
     continuity: [],
     budget: emptyBudgetFold(),
+    execution: emptyExecutionFold(),
   };
 }
 
@@ -94,6 +102,7 @@ function copyFacts(facts: RunEventFacts): RunEventFacts {
     plans: { last: plans.last, byAttempt: new Map(plans.byAttempt) },
     continuity: [...facts.continuity],
     budget: { ...facts.budget },
+    execution: copyExecutionFold(facts.execution),
   };
 }
 
@@ -103,6 +112,7 @@ function addRunEvent(facts: RunEventFacts, ev: Record<string, unknown>, size: nu
   const receipt = continuityReceiptOf(ev);
   if (receipt) facts.continuity.push(receipt);
   addBudgetEvent(facts.budget, ev);
+  addExecutionEvent(facts.execution, ev);
 }
 
 function foldRunEvents(rec: RunDirCarrier, reuse: boolean): RunEventFacts {
@@ -203,12 +213,13 @@ function bytesAt(fd: number, at: number, length: number): Buffer {
   return out.subarray(0, length ? readSync(fd, out, 0, length, at) : 0);
 }
 
-/** Source bytes of the kept rows, plus the plan and continuity values. */
-function retainedSize({ timeline, plans, continuity }: RunEventFacts): number {
+/** Source bytes of the kept rows, plus the plan, continuity and execution values. */
+function retainedSize({ timeline, plans, continuity, execution }: RunEventFacts): number {
   let bytes = timeline.bytes + 2 * GUARD_BYTES;
   for (const value of [plans.last, ...plans.byAttempt.values(), ...continuity])
     bytes += value ? JSON.stringify(value).length : 0;
-  return bytes;
+  const { starts, receipts, attempts } = execution;
+  return bytes + JSON.stringify([starts, receipts, attempts]).length;
 }
 
 function remember(key: string, entry: Retained): void {

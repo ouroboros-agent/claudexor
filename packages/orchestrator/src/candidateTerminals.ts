@@ -306,6 +306,7 @@ export async function failedCandidatesResult(
     runDir: paths.root,
     resetsAt: unanimous?.resetsAt ?? null,
     requestRefusal: unanimous?.requestRefusal,
+    quotaRefusal: unanimous?.quotaRefusal,
     captureFailure: first.captureRefusal?.failure,
     // The first candidate speaks (like harnessId/attemptId); a budget terminal speaks for itself.
     vendorFailure: budget ? null : attemptVendorFailure([first], first.attemptId),

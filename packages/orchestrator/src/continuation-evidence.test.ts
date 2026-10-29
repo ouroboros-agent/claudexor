@@ -190,36 +190,49 @@ describe("evidence collector (I/O)", () => {
     ]);
   });
 
-  it("a file edit reported twice (codex started, then completed) is one resolved call", () => {
+  it("a repeated untyped edit frame (pre-#410 codex log) is one call whose completion is not confirmed", () => {
     const edit = (session: string) => ({
       type: "file_change",
       session_id: session,
       tool: { name: "apply_patch", kind: "file", use_id: "item-7", target: "src/a.ts" },
     });
+    // The repeat may be a completion or a second start: its count proves neither.
     expect(toolCallIndex([edit("s1"), edit("s1")])).toEqual([
-      { name: "apply_patch", target: "src/a.ts", resolved: true },
+      { name: "apply_patch", target: "src/a.ts", resolved: false, unconfirmed: true },
     ]);
-    // A started edit that never completed stays unresolved; another session's id is its own call.
+    // A single untyped frame proves no completion either way; another session's id is its own call.
     expect(toolCallIndex([edit("s1"), edit("s2")])).toEqual([
-      { name: "apply_patch", target: "src/a.ts", resolved: false },
-      { name: "apply_patch", target: "src/a.ts", resolved: false },
+      { name: "apply_patch", target: "src/a.ts", resolved: false, unconfirmed: true },
+      { name: "apply_patch", target: "src/a.ts", resolved: false, unconfirmed: true },
     ]);
   });
 
-  it("one codex item with several paths is one call per path, each resolved by its own completion", () => {
-    const edit = (path: string) => ({
+  it("one codex item with several paths is one call per path, each resolved by its own typed completion", () => {
+    const edit = (path: string, phase?: "started" | "completed") => ({
       type: "file_change",
       session_id: "s1",
-      tool: { name: "apply_patch", kind: "file", use_id: "patch-1", target: path },
+      tool: { name: "apply_patch", kind: "file", use_id: "patch-1", target: path, phase },
     });
-    expect(toolCallIndex([edit("one.ts"), edit("two.ts")])).toEqual([
+    expect(toolCallIndex([edit("one.ts", "started"), edit("two.ts", "started")])).toEqual([
       { name: "apply_patch", target: "one.ts", resolved: false },
       { name: "apply_patch", target: "two.ts", resolved: false },
     ]);
+    expect(
+      toolCallIndex([
+        edit("one.ts", "started"),
+        edit("two.ts", "started"),
+        edit("one.ts", "completed"),
+        edit("two.ts", "completed"),
+      ]),
+    ).toEqual([
+      { name: "apply_patch", target: "one.ts", resolved: true },
+      { name: "apply_patch", target: "two.ts", resolved: true },
+    ]);
+    // The same untyped frames from an older log only prove that each path was named.
     expect(toolCallIndex([edit("one.ts"), edit("two.ts"), edit("one.ts"), edit("two.ts")])).toEqual(
       [
-        { name: "apply_patch", target: "one.ts", resolved: true },
-        { name: "apply_patch", target: "two.ts", resolved: true },
+        { name: "apply_patch", target: "one.ts", resolved: false, unconfirmed: true },
+        { name: "apply_patch", target: "two.ts", resolved: false, unconfirmed: true },
       ],
     );
   });
@@ -275,9 +288,9 @@ describe("evidence review regressions", () => {
       { session_id: "try-1", type: "file_change", tool: { name: "Edit", use_id: "edit" } },
     ]);
     expect(calls).toEqual([
-      { name: "Write", target: null, resolved: false },
+      { name: "Write", target: null, resolved: false, unconfirmed: true },
       { name: "Read", target: null, resolved: true },
-      { name: "Edit", target: null, resolved: false },
+      { name: "Edit", target: null, resolved: false, unconfirmed: true },
     ]);
   });
 

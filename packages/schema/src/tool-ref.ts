@@ -73,6 +73,18 @@ export const ToolRef = z
       .describe(
         "Outcome of the tool use; required on tool_result events (a missing status is never treated as ok).",
       ),
+    /**
+     * Native lifecycle frame of a `file_change` from adapters whose vendor
+     * reports an edit's start and completion separately (Codex items, AGY
+     * DONE steps). Absent = the adapter did not type it. `completed` is the
+     * lifecycle, never success: the outcome stays in `status`.
+     */
+    phase: z
+      .enum(["started", "completed"])
+      .optional()
+      .describe(
+        "Native lifecycle frame of a file_change (started or completed); absent when the adapter does not type it. Completion is not success: the outcome stays in status.",
+      ),
     /** Redacted, bounded error detail for status=error results. */
     error_summary: z
       .string()

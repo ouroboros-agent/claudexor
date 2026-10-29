@@ -6,7 +6,8 @@ import { ControlProblem, quotaSnapshotAvailability } from "@claudexor/schema";
  * Typed verdict that a credential subject's own observed quota evidence blocks
  * spending right now (A4 cooldown reader). `kind` distinguishes a spent window
  * with a known future reset (`exhausted`) from a live rate-limit cooldown
- * (`cooldown`); `resets_at` is the earliest known release instant.
+ * (`cooldown`); `resets_at` is the earliest known release instant, and the
+ * id and kind describe the window that owns that instant.
  */
 export interface QuotaBlock {
   blocked: true;
@@ -68,17 +69,27 @@ export function profileQuotaBlock(
     if (snapshot.subject.harness !== harnessId) continue;
     if ((snapshot.subject.subject_id ?? null) !== profileId) continue;
     if (wantRoute !== null && snapshot.subject.credential_route !== wantRoute) continue;
-    const availability = quotaSnapshotAvailability(snapshot, {
-      now,
-      model: model ?? null,
-      requestKind,
-    });
+    const opts = { now, model: model ?? null, requestKind };
+    const availability = quotaSnapshotAvailability(snapshot, opts);
     if (availability.state === "available") continue;
+    // One snapshot may block on several windows. Report the window whose own
+    // release is the projection's earliest recheck instant, with that window's
+    // kind, so id, kind and reset never come from different windows.
+    const controlling = snapshot.constraints
+      .filter((constraint) => availability.blocking_constraints.includes(constraint.id))
+      .map((constraint) => ({
+        id: constraint.id,
+        own: quotaSnapshotAvailability({ constraints: [constraint] }, opts),
+      }))
+      .find(({ own }) => own.resets_at === availability.resets_at);
     return {
       blocked: true,
-      constraint_id: availability.blocking_constraints[0] ?? null,
+      constraint_id: controlling?.id ?? availability.blocking_constraints[0] ?? null,
       resets_at: availability.resets_at,
-      kind: availability.state,
+      kind:
+        controlling && controlling.own.state !== "available"
+          ? controlling.own.state
+          : availability.state,
     };
   }
   return null;

@@ -47,6 +47,8 @@ import { settleGrantedAttemptLease } from "./attemptUsageCost.js";
 import { observeNativeSessionEvent } from "./credential-profiles.js";
 import type { BudgetDenial } from "./budgetFailure.js";
 import { declaredFailure, type DeclaredFailure } from "./runTerminalResults.js";
+import { endsPendingLimit, pinnedTypedLimit } from "./quota-refusal-scope.js";
+import { marksAgentProgress } from "./attemptOutputMarkers.js";
 import { runModelGovernedRoute } from "./modelGovernance.js";
 import { CountedAnswerAssembly } from "./secretDiff.js";
 import type { RoutedAdapter, RunInput } from "./orchestrator.js";
@@ -262,6 +264,7 @@ export async function runPlannerAttempt(
   let harnessError: string | null = null;
   let processingDenial: BudgetDenial | null = null;
   let declared: DeclaredFailure | undefined;
+  let lastLimit: { resetsAt: string | null; constraintId: string | null } | null = null;
   const budgetSignalState = { quotaPressureDisclosed: false };
   try {
     log.emit("harness.started", {
@@ -294,6 +297,15 @@ export async function runPlannerAttempt(
         appendLine(attemptEventsPath, JSON.stringify(safeEv));
         if (input.signal?.aborted) break;
         observeAttemptTelemetry(telemetry, safeEv);
+        if (safeEv.rate_limit)
+          lastLimit = {
+            resetsAt: safeEv.rate_limit.resets_at ?? null,
+            constraintId: safeEv.rate_limit.constraint_id ?? null,
+          };
+        // Agent work after the limit means the vendor's retry recovered, and the
+        // vendor's own typed non-quota failure ends the try for its own cause:
+        // either way that limit no longer explains how the try ends.
+        else if (marksAgentProgress(safeEv) || endsPendingLimit(safeEv)) lastLimit = null;
         if (safeEv.plan_progress) {
           log.emit("plan.progress", {
             attempt_id: attemptId,
@@ -383,6 +395,32 @@ export async function runPlannerAttempt(
     harnessError ??
     (finalized.deliverablePresent ? null : "planner produced no plan text") ??
     (input.signal?.aborted ? "planner cancelled" : null);
+  // A typed vendor limit on a strict pin ends the Plan try typed, like Agent and
+  // Ask: a pin never rotates, and code, reset and basis reach failure.yaml. Only
+  // a limit still unrecovered when the stream itself failed counts. Context
+  // exhaustion, an empty plan, a work_report contract failure, a later typed
+  // request refusal or non-quota API failure, or a thrown terminal keeps its
+  // own cause, and cancellation stays cancellation.
+  const pinnedId = input.credentialProfileId;
+  if (
+    harnessFailedBeforeReport &&
+    !telemetry.contextExhausted &&
+    lastLimit &&
+    pinnedId != null &&
+    !webBlocked &&
+    !processingDenial &&
+    !telemetry.requestRefusal &&
+    !input.signal?.aborted &&
+    declared === undefined
+  )
+    declared = declaredFailure(
+      pinnedTypedLimit(
+        spec.credential_profile?.profile_id ?? pinnedId,
+        adapter.id,
+        lastLimit,
+        telemetry.outputMarkers.sawAgentProgress,
+      ),
+    );
   setAttemptOutcome(telemetry, {
     deliverablePresent: finalized.deliverablePresent,
     gatesPassed: null,

@@ -107,7 +107,7 @@ invariant or operator decision before proceeding.
 - **INV-012** Missing, unauthenticated, degraded, or intent-incompatible
   harnesses are visible with reasons but never silently selectable; explicit
   selection of an unavailable harness fails loudly. verify: orchestrator
-  routing tests; canary (unavailable-harness story, planned).
+  routing tests; canary `[INV-012:explicit-unavailable-refused]`.
 - **INV-013** Adapters are translational and orchestration is centralized:
   `harness-*` packages only translate native CLI/API streams into typed
   events and I/O. They never orchestrate, select winners, manage budgets,
@@ -547,11 +547,15 @@ invariant or operator decision before proceeding.
   (`packages/cli/src/thread-delegated-workspace.test.ts`,
   `packages/control-api/src/thread-delegated.test.ts`); canary
   `[INV-073:delegated-thread-two-rounds]`.
-- **INV-074** Absolute host paths such as `/tmp/...` are not project diffs
-  and do not prove project success. Project tmp requests default to
-  project-local `tmp/...` or run artifacts unless the user explicitly
-  selects a verified host-side-effect mode. verify: tmp-semantics telemetry
-  tests.
+- **INV-074** Capture follows the physical execution root, not a path's
+  spelling: project work product is what the envelope worktree, live in-place
+  tree, or selected directory footprint holds, plus declared run artifacts
+  and the text answer. A root may itself live under `/tmp`. A write outside
+  the root, such as an absolute `/tmp/...` host path, does not enter the
+  project patch or directory capture automatically and is not by itself
+  proof of delivered project work; capture neither refuses nor redirects it,
+  and the access profile decides whether the harness may write there.
+  verify: `packages/workspace/src/capture-boundary.test.ts`.
 - **INV-075** Git-backed mutating run shapes need a Git boundary. A non-git
   project folder is initialized automatically (`git init` + a deterministic
   baseline commit) when the first mutating isolated turn or another Git-backed

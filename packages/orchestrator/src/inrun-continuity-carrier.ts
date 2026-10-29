@@ -19,7 +19,12 @@ import {
   type SessionCapsule,
 } from "@claudexor/schema";
 import { decideCarrier, prepareCarrier, type CarrierFacts } from "./carrier-planner.js";
-import { diffStatFromPatch, steeringFromRunLog } from "./continuation-evidence-io.js";
+import { readlessWorkOrder } from "./continuation-evidence.js";
+import {
+  diffStatFromPatch,
+  steeringFromRunLog,
+  workOrderFile,
+} from "./continuation-evidence-io.js";
 import { completeInputPath, type UncertainInput } from "./continuation-input.js";
 import { continuationNotice, packetContinuationPrompt } from "./continuity-notice.js";
 import type { AfterTryVerdict, InRunContinuityDeps, TryFacts } from "./inrun-continuity-types.js";
@@ -45,6 +50,31 @@ export interface ContinuedTry {
   from?: { runId: string; attemptId: string };
   workspace?: RunContinuityReceipt["workspace"];
   summarized: boolean;
+  /** Set only when a native_moved carrier invoked the source's retirement. */
+  sourceRetirement?: RunContinuityReceipt["sourceRetirement"];
+}
+
+/** Retire a moved session's source only after its new holder was published:
+ * removal that fails, possibly part-way, is not a confirmed retirement. */
+export async function retireMovedSource(
+  retire: (() => void | Promise<void>) | undefined,
+): Promise<Pick<ContinuedTry, "sourceRetirement">> {
+  if (!retire) return {};
+  try {
+    await retire();
+    return { sourceRetirement: "retired" };
+  } catch {
+    return { sourceRetirement: "not_confirmed" };
+  }
+}
+
+/** Attempts of this run whose work this attempt carries: itself and the earlier
+ * serial attempts its seed re-briefs (a fallback or checkpoint continuation). */
+export function carriedRunAttempts(deps: InRunContinuityDeps): ReadonlySet<string> {
+  const earlier = (deps.seed?.evidenceSources ?? [])
+    .filter((source) => source.runDir === deps.runDir)
+    .flatMap((source) => source.attemptIds ?? [source.attemptId]);
+  return new Set([...earlier, deps.attemptId]);
 }
 
 /** The typed limit that ended a try (A11 evidence quality). */
@@ -63,6 +93,8 @@ export interface ContinuedTryContext {
   tryIndex: number;
   uncertainInput: string | null;
   retainedOutput: string;
+  /** History quality of the capsule's session (a packet-born session stays partial). */
+  sessionMemory: RunContinuityReceipt["memory"];
 }
 
 export interface ComposedContinuedTry {
@@ -110,12 +142,15 @@ export async function composeContinuedTry(
     adapter: deps.adapter,
     nativeRejected: ctx.nativeRejected,
   };
+  const wholeWorkOrder = readlessWorkOrder(deps.route, deps.workOrder, deps.firstPrompt);
   const prepared = await prepareCarrier(decideCarrier(carrierFacts), {
     facts: carrierFacts,
     evidence: {
       runDir: deps.runDir,
       attemptId: deps.attemptId,
       workOrder: deps.workOrder,
+      workOrderPath: wholeWorkOrder ? null : workOrderFile(deps.runDir),
+      workOrderInPrompt: wholeWorkOrder !== null,
       steering: [],
       predecessors: deps.seed?.evidenceSources,
     },
@@ -152,7 +187,7 @@ export async function composeContinuedTry(
     cause,
     fromProfileId: from,
     toProfileId: to,
-    memory: prepared.carrier === "packet" ? "partial" : "full",
+    memory: prepared.carrier === "packet" ? "partial" : ctx.sessionMemory,
     inputDelivery: ctx.uncertainInput === null ? "confirmed" : "uncertain",
   };
   if (prepared.carrier === "packet") {
@@ -170,6 +205,7 @@ export async function composeContinuedTry(
         evidencePath,
         evidenceMarkdown: prepared.packet.markdown,
         completed,
+        workOrder: wholeWorkOrder,
       }),
     });
     return { verdict: { kind: "continue", spec, delayMs }, continued, capsule: null };
@@ -177,11 +213,7 @@ export async function composeContinuedTry(
   writeSessionCapsule(deps.attemptDir, prepared.capsule);
   // The capsule names the new holder; a source that cannot be retired (a held
   // file handle, a read-only store) leaves a stale copy, never a failed attempt.
-  try {
-    await prepared.retire?.();
-  } catch {
-    // stale source copy; the holder already moved
-  }
+  Object.assign(continued, await retireMovedSource(prepared.retire));
   const spec = HarnessRunSpecSchema.parse({
     ...base,
     model_hint: modelHint,
@@ -202,14 +234,14 @@ export async function composeContinuedTry(
 export function uncertainInputFor(
   runDir: string,
   previousInputs: readonly UncertainInput[],
-  attemptId: string,
+  attempts: ReadonlySet<string> | undefined,
   currentRunDir = runDir,
 ): string | null {
   // Caller inputs arrive newest first. Steering is newer than the caller
   // text of its own run, but older than any subsequent continuation's text.
   const inputs = [...previousInputs];
   const sameRun = inputs.findIndex((input) => input.runDir === runDir);
-  const steering = steeringFromRunLog(runDir, attemptId)
+  const steering = steeringFromRunLog(runDir, attempts)
     .filter((message) => message.delivery === "uncertain")
     .reverse()
     .map(({ text }) => ({ text, runDir }))
@@ -258,6 +290,7 @@ export function continuityReceipt(input: {
     modelMismatch: requested !== null && observed !== null ? requested !== observed : null,
     identityCheck: continued.carrier === "packet" ? "not_applicable" : input.identity,
     inputDelivery: continued.inputDelivery,
+    ...(continued.sourceRetirement ? { sourceRetirement: continued.sourceRetirement } : {}),
   });
 }
 

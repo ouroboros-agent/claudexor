@@ -103,7 +103,9 @@ export function createCredentialProfilesService(
     );
   const buildPollResponse = async () => {
     const [probed, statuses] = await Promise.all([projectProfiles(), readHarnesses()]);
+    // Cards keep display freshness; next_up judges each window like run admission (#457).
     const quota = quotaRegistry().read();
+    const admission = quotaRegistry().readAdmission();
     const unusable = accounts.unusable.live();
     const evidence = { ...quota, honored: accounts.unusable.honored() };
     const out = withAccountEvidence(probed, evidence, unusable);
@@ -112,7 +114,7 @@ export function createCredentialProfilesService(
       // Unified account model: the legacy carrier stays PRESENT and empty for
       // strict old clients; routing facts ride accountPools.
       harnessAccounts: [],
-      accountPools: await accountPoolsProjection(NO_PROJECT_ROOT, accounts, quota.snapshots, {
+      accountPools: await accountPoolsProjection(NO_PROJECT_ROOT, accounts, admission.snapshots, {
         profiles: out,
         statuses,
         quota: evidence,
@@ -137,12 +139,18 @@ export function createCredentialProfilesService(
       return {
         profiles: out,
         harnessAccounts: [],
-        accountPools: await accountPoolsProjection(NO_PROJECT_ROOT, accounts, rawQuota.snapshots, {
-          profiles: out,
-          statuses,
-          quota: evidence,
-          unusable,
-        }),
+        // The cycle's own admission read of the state its response shows.
+        accountPools: await accountPoolsProjection(
+          NO_PROJECT_ROOT,
+          accounts,
+          fencedQuota.admission.snapshots,
+          {
+            profiles: out,
+            statuses,
+            quota: evidence,
+            unusable,
+          },
+        ),
         harnesses: await projectHarnessStatuses(statuses),
         git,
         quota:

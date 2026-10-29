@@ -483,6 +483,60 @@ describe("parseClaudeEvent", () => {
     expect(() => HarnessEvent.parse(out[0])).not.toThrow();
   });
 
+  it("keeps an MCP result's line breaks while other tool results stay on one line", () => {
+    const parse = createClaudeParser();
+    parse(
+      {
+        type: "assistant",
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              id: "toolu_page",
+              name: "mcp__browser__browser_snapshot",
+              input: {},
+            },
+            {
+              type: "tool_use",
+              id: "toolu_nav",
+              name: "mcp__browser__browser_navigate",
+              input: {},
+            },
+            { type: "tool_use", id: "toolu_sh", name: "Bash", input: { command: "cat page.md" } },
+          ],
+        },
+      },
+      "s1",
+    );
+    const text = "### Page\r\n-   Page URL:  http://x/\n\n  - nested\t item\n### Snapshot";
+    const out = parse(
+      {
+        type: "user",
+        message: {
+          content: [
+            { type: "tool_result", tool_use_id: "toolu_page", content: [{ type: "text", text }] },
+            {
+              type: "tool_result",
+              tool_use_id: "toolu_nav",
+              is_error: true,
+              content: "### Error\nError: net::ERR_CONNECTION_REFUSED",
+            },
+            { type: "tool_result", tool_use_id: "toolu_sh", content: text },
+          ],
+        },
+      },
+      "s1",
+    ) as HarnessEvent[];
+    expect(out.map((event) => event.tool?.content_summary)).toEqual([
+      "### Page\n- Page URL: http://x/\n - nested item\n### Snapshot",
+      "### Error\nError: net::ERR_CONNECTION_REFUSED",
+      "### Page - Page URL: http://x/ - nested item ### Snapshot",
+    ]);
+    // The error detail and the event text stay on one line.
+    expect(out[1]?.tool?.error_summary).toBe("### Error Error: net::ERR_CONNECTION_REFUSED");
+    expect(out[1]?.text).toBe("tool_result: error: ### Error Error: net::ERR_CONNECTION_REFUSED");
+  });
+
   it("preserves an MCP belt isError result as exact error evidence", () => {
     const parse = createClaudeParser();
     parse(

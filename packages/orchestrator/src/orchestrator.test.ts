@@ -6569,7 +6569,8 @@ describe("Orchestrator", () => {
         onEvent: (event) => pinnedEvents.push(event.type),
       });
       expect(legacyOutcome(pinned)).toBe("failed");
-      expect(pinned.summary).toMatch(/over its headroom threshold/);
+      // 100% usage is provider-reported spending, never relabelled as the reserve (#318).
+      expect(pinned.summary).toMatch(/over a provider-reported spent window/);
       expect(seen).toEqual([]);
       expect(pinnedEvents).toContain("route.profile.headroom_exceeded");
       expect(pinnedEvents).not.toContain("route.profile.rotated");
@@ -7223,7 +7224,8 @@ describe("Orchestrator", () => {
     // carrying its typed refusal, a host would be left parsing prose for the
     // one thing it needs — when to come back.
     const repo = await initRepo();
-    const resetsAt = "2026-08-02T18:00:00.000Z";
+    // A future reset: an elapsed window is not evidence at the decision (#457).
+    const resetsAt = new Date(Date.now() + 3_600_000).toISOString();
     const configDir = reapMk(join(tmpdir(), "claudexor-agent-window-config-"));
     const previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
     process.env.CLAUDEXOR_CONFIG_DIR = configDir;

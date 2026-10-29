@@ -139,7 +139,7 @@ Selecting an account never narrows the harness pool; choosing a strategy
 never implicitly pins an account, while an explicit reviewer-slot pin does.
 Quota is read per account from the vendor's own
 surfaces, model-scoped windows and typed model-family rejections apply only to
-their declared aliases, advisory warnings do not become cooldowns, absence is
+their declared models and model-family prefixes, advisory warnings do not become cooldowns, absence is
 typed and explained, and unknown never renders as zero. A failed refresh remains
 explainable alongside stale last-known data without presenting it as a fresh observation. Older unclassified refusals may yield to a recognized newer
 vendor observation, including early quota resets, while separately established
@@ -152,9 +152,11 @@ requiring operation discovery: a reset in one
 window need not stale a sibling whose own observation is still current.
 Fully valid legacy responses retain conservative snapshot freshness; missing
 metadata never implies a fresh window, and partial explicit metadata is rejected.
-This display projection preserves the conservative snapshot used by routing,
-the original observation time and usage, and unknown values; it never invents
-refill or triggers provider work. An account reset still makes earlier evidence
+Routing decisions (run admission, model-operation selection and the
+next-account verdict) judge each window the same way at the moment they decide,
+while the ordinary display keeps its conservative whole-snapshot freshness.
+Both preserve the original observation time and usage, and unknown values; they
+never invent refill or trigger provider work. An account reset still makes earlier evidence
 historical for every window.
 
 Account resources extend that same observation owner with independently aged

@@ -8,7 +8,11 @@ import type { AttemptTelemetry } from "./attemptTelemetry.js";
 import { readOnlyNoSuccessTerminal } from "./attemptFinalize.js";
 import { budgetFailureRecord, classifyBudgetFailure, type BudgetDenial } from "./budgetFailure.js";
 import { unanimousDeclaredFailure } from "./candidateEvidence.js";
-import { resumableTerminal, type ContinuityTerminalFacts } from "./continuity-terminal.js";
+import {
+  carryingAttempts,
+  resumableTerminal,
+  type ContinuityTerminalFacts,
+} from "./continuity-terminal.js";
 import {
   attemptVendorFailure,
   dominantHarnessFailureCategory,
@@ -115,6 +119,7 @@ export function readOnlyChainFailureResult(
       runDir: paths.root,
       resetsAt: roDeclared?.resetsAt ?? null,
       requestRefusal: roDeclared?.requestRefusal,
+      quotaRefusal: roDeclared?.quotaRefusal,
       vendorFailure: attemptVendorFailure(attemptTelemetries, last?.attemptId),
       poolAttempts,
       nextActions: harnessFailureNextActions(roCategory),
@@ -147,7 +152,7 @@ export function readOnlyChainFailureResult(
       error: singleError,
       pool_attempts: poolAttempts,
       failure_ref: "final/failure.yaml",
-      ...resumableTerminal(store, paths, attempts, true),
+      ...resumableTerminal(store, paths, carryingAttempts(attempts, paths.root), true),
     });
   } else {
     log.emit("run.failed", {
@@ -159,7 +164,7 @@ export function readOnlyChainFailureResult(
       error: singleError,
       pool_attempts: poolAttempts,
       failure_ref: "final/failure.yaml",
-      ...resumableTerminal(store, paths, attempts, true),
+      ...resumableTerminal(store, paths, carryingAttempts(attempts, paths.root), true),
     });
   }
   return {
@@ -225,6 +230,7 @@ export function deepScanFailureResult(input: ReadonlyTerminalContext): Orchestra
       code: declared?.code,
       resetsAt: declared?.resetsAt,
       requestRefusal: declared?.requestRefusal,
+      quotaRefusal: declared?.quotaRefusal,
       safeMessage: message || "all explorers failed",
       eventRefs: attempts.map((a) => `attempts/${a.attemptId}/events.jsonl`),
       runDir: paths.root,

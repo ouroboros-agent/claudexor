@@ -13,7 +13,13 @@ export const RateLimitSignal = z.object({
     .nullable()
     .optional()
     .describe(
-      "Canonical model ids/aliases this rejection applies to; omitted/null means every model.",
+      "Canonical model ids/aliases this rejection applies to; omitted/null (with no prefixes) means every model.",
+    ),
+  applies_to_model_prefixes: z
+    .array(Id)
+    .optional()
+    .describe(
+      "Producer-declared model-family prefixes this rejection also applies to, as on QuotaConstraint.",
     ),
   resets_at: z
     .string()

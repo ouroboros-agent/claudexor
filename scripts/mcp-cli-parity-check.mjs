@@ -238,8 +238,6 @@ const CLI_ONLY_EXEMPT = {
     "per-run structured-output contract; embedder contract is CLI/HTTP-first, MCP exposure deferred (DT2.1-1)",
   route:
     "models-subcommand credential-route filter (read-only listing), not a run-control knob; MCP has no models tool today",
-  "delta-scope":
-    "sealed-release operator flag (INV-125 second amendment): fail-closed outside sealed-packet review mode, driven only by the release operator's owner-review ceremony; exposing it over the MCP bridge would grow surface for a ceremony MCP callers never run",
   "reviewer-panel-json":
     "structured CLI spelling of reviewerPanel; MCP carries the same entries as JSON objects, including credentialProfileId, rather than exposing a second flag",
   "max-turns":

@@ -80,13 +80,29 @@ export function unanimousDeclaredFailure(
   const declared = runs.map((run) => run.declaredFailure);
   const agrees = declared.every((d) => d?.code === first.code && d?.category === first.category);
   if (!agrees) return null;
+  // One quota basis speaks for the run only when every candidate shares it. Its
+  // window, usage and threshold survive only where every candidate agrees, so
+  // one candidate's window is never paired with another candidate's reset.
+  const { quotaRefusal, ...rest } = first;
+  const refusals = declared.map((d) => d?.quotaRefusal);
+  const common = <K extends "constraintId" | "usedRatio" | "threshold">(key: K) =>
+    refusals.every((r) => r?.[key] === quotaRefusal?.[key]) ? (quotaRefusal?.[key] ?? null) : null;
+  const shared =
+    quotaRefusal && refusals.every((r) => r?.basis === quotaRefusal.basis)
+      ? {
+          basis: quotaRefusal.basis,
+          constraintId: common("constraintId"),
+          usedRatio: common("usedRatio"),
+          threshold: common("threshold"),
+        }
+      : null;
   const resets = declared.map((d) => d?.resetsAt ?? null);
   const known = resets.filter((at): at is string => at !== null);
   const resetsAt =
     known.length > 0 && known.length === resets.length
       ? known.reduce((latest, at) => (Date.parse(at) > Date.parse(latest) ? at : latest))
       : null;
-  return { ...first, resetsAt };
+  return { ...rest, ...(shared ? { quotaRefusal: shared } : {}), resetsAt };
 }
 
 /** A pre-work corpse (harness error, no diff) AND an `interrupted` partial
