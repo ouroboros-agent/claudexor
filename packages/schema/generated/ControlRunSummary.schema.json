@@ -402,6 +402,14 @@
                   "not_applicable"
                 ],
                 "description": "Whether the predecessor's last input (its turn prompt or an admitted steering message) is known to be in the vendor history: confirmed, uncertain (carried in the notice as a reference to reconcile, never replayed blindly), or not applicable."
+              },
+              "sourceRetirement": {
+                "type": "string",
+                "enum": [
+                  "retired",
+                  "not_confirmed"
+                ],
+                "description": "After a native_moved carrier published the new holder: retired (the adapter removed the source copy) or not_confirmed (removal failed, possibly part-way). Absent = no move retired a source for this try."
               }
             },
             "required": [

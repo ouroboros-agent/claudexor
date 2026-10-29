@@ -170,6 +170,8 @@ export function formatRunEventLine(ev: Record<string, unknown>): string | null {
       )}, continuation ${String(p["continuation_count"] ?? "?")})`;
     case "workspace.retained":
       return `[${String(p["attempt_id"] ?? "?")}] stopped work kept for continueFrom`;
+    case "workspace.settlement_failed":
+      return `[${String(p["attempt_id"] ?? "?")}] WARNING: workspace settlement failed (${String(p["stage"] ?? "?")}): ${truncate(String(p["cause"] ?? "unknown"), 200)}; the run outcome stands and the tree may remain at ${String(p["root"] ?? "?")}`;
     case "run.continuation.denied":
       return `[${String(p["from_attempt"] ?? "?")}] continuation refused — budget lease denied (${String(
         p["reason"] ?? "budget",

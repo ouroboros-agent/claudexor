@@ -15,6 +15,7 @@ import { controlRunResult } from "./run-delivery-state.js";
 import { lstatSync, readdirSync } from "node:fs";
 import { basename, extname, join } from "node:path";
 import { lastRunEventSeq } from "@claudexor/event-log";
+import { executionFactsOf } from "@claudexor/workspace";
 import { isVanishedErrno, safeArtifactPath } from "./artifact-paths.js";
 
 import { continuationSummary } from "./run-continuation-projection.js";
@@ -133,6 +134,11 @@ export function winnerWorkStateFor(rec: DaemonRunRecord): WorkState | null {
   return winner?.outcome.work_state ?? null;
 }
 
+/** An ancestor's continuation facts from the bounded event fold run detail keeps between reads. */
+function ancestorFacts(runDir: string) {
+  return executionFactsOf(readRunEventFacts({ runDir }).execution);
+}
+
 /** Run detail passes its folded event facts, which also add continuity receipts. */
 export function summarizeRun(rec: DaemonRunRecord, facts?: RunEventFacts): ControlRunSummary {
   const p = paramsRecord(rec);
@@ -194,7 +200,7 @@ export function summarizeRun(rec: DaemonRunRecord, facts?: RunEventFacts): Contr
       task?.run_lineage.delegated_from_run_id ??
       null,
     delegation: telemetry?.delegation ?? null,
-    ...continuationSummary(rec, facts),
+    ...continuationSummary(rec, facts, facts && ancestorFacts),
     taskId: rec.taskId,
     state: rec.state,
     runDir: rec.runDir,

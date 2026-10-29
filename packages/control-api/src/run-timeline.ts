@@ -268,6 +268,8 @@ const WARNING_EVENT_TYPES = new Set([
   "delegation.belt.degraded",
   "policy.web.upgraded",
   "run.blocked",
+  // The outcome stands; kept work or a stale tree needs the operator's attention.
+  "workspace.settlement_failed",
 ]);
 const ERROR_EVENT_TYPES = new Set(["run.failed", "reviewer.failed", "reviewer.timed_out"]);
 

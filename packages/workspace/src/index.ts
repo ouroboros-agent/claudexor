@@ -15,10 +15,14 @@ export * from "./directory-workspace.js";
 export * from "./files-io.js";
 export * from "./files-apply.js";
 export * from "./continuation-sources.js";
+export * from "./continuation-facts.js";
 export * from "./auxiliary-writable-roots.js";
 
 export {
+  continuationSource,
+  ownsContinuationSource,
   readContinuationEvidence,
   readSessionCapsule,
   runFilesExpired,
+  unrepresentedOutput,
 } from "./continuation-evidence.js";
