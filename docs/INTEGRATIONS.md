@@ -254,7 +254,14 @@ engine-owned telemetry (web evidence, token usage, the auth route receipt,
 structured-output conformance, unrecovered tool errors), primary output,
 decision record, work product, and artifact paths. Terminal daemon state, live
 budget, and event streams come from the daemon/control API, not from
-`inspect`.
+`inspect`. A failed lookup returns the standard failure envelope. Recognized
+outcomes carry a typed `code`, and only `run_not_found` means the running daemon has
+no such run; an error answer that is not a control problem (for example a
+non-daemon 404 page) has no `code` and names only its HTTP status. The lookup
+validates only the run-detail fields it uses, so additive same-major fields
+elsewhere are tolerated; a run state this CLI build does not know is reported as
+`invalid_service_response` (see the
+[lookup outcomes](ARCHITECTURE.md#interactive-runs-waiting_on_user)).
 
 ### Embedder run controls (v2.1)
 

@@ -205,10 +205,10 @@ export async function ensureDaemon(
 /**
  * Connect to an ALREADY-RUNNING daemon + control API WITHOUT ever spawning one.
  * Returns null when no token exists, the socket is unreachable, or the control
- * API is down. Used by read-only-looking run lookups (inspect/apply) so a typo'd
- * run id reports "no such run" instead of silently launching a background daemon
- * (`ensureDaemon`, by contrast, auto-starts and is reserved for paths that act —
- * enqueue/decision). A daemon that REFUSES the typed handshake is NOT "not
+ * API is down. Used by read-only run lookups (inspect, MCP recovery reads) so a
+ * typo'd run id never silently launches a background daemon (`ensureDaemon`, by
+ * contrast, auto-starts and is reserved for paths that act — enqueue/decision/
+ * apply). A daemon that REFUSES the typed handshake is NOT "not
  * running": the typed problem propagates — still without spawning (#93).
  */
 export async function connectDaemonIfRunning(): Promise<{

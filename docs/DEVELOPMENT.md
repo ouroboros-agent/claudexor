@@ -338,10 +338,12 @@ Tests and local smokes must never touch real user state:
   reads; it preserves raw status windows and stops only its own daemon PIDs.
   Base and candidate must share the installed lockfile. See the
   [2026-10-20 comparison](benchmarks/daemon-sync-20261020.md).
-- Read-only run lookups (`inspect`, `apply`) connect to an already-running daemon
-  but never auto-start one (a typo'd run id reports `no such run`); only acting
-  paths (`agent`/`best-of`/`create`, `decision`) auto-start it. `daemon start` blocks
-  until the daemon is actually ready, so a follow-up `status`/run can't race it.
+- Read-only run lookups (`inspect`, the MCP status/inspect/result tools) attach
+  only to an already-running daemon and never auto-start one, so a typo'd run id
+  cannot launch a background daemon; delivery and acting paths (`apply`,
+  `agent`/`best-of`/`create`, `decision`) auto-start it. Lookup outcomes are listed
+  in [ARCHITECTURE](ARCHITECTURE.md#interactive-runs-waiting_on_user). `daemon start`
+  blocks until the daemon is actually ready, so a follow-up `status`/run can't race it.
 - Real-harness dogfood lives in `scripts/real-harness-battery.mjs`. Its default
   scratch mode runs disposable repos under `~/.claudexor/dogfood`, with an
   isolated config root. It asserts engine-owned artifacts, quarantines repeated
