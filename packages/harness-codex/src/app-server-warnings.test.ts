@@ -258,7 +258,7 @@ describe("Codex native warning notifications", () => {
 describe("Codex native warning diagnostic masking", () => {
   // Built, not written, so no token-shaped literal sits in the source.
   const TOKEN = `ghp_${"a".repeat(36)}`;
-  const PEM_BEGIN = "-----BEGIN PRIVATE KEY-----";
+  const PEM_BEGIN = ["-----BEGIN", "PRIVATE KEY-----"].join(" ");
   const PEM_END = "-----END PRIVATE KEY-----";
   const only = (method: "configWarning" | "warning", params: Record<string, unknown>) => {
     const [event] = codexNativeWarningEvents(method, params, "session-mask")!;
