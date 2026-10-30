@@ -6,6 +6,7 @@ import {
   linkSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -788,8 +789,10 @@ describe.runIf(pinnedScanner.ok && process.platform !== "win32")(
     const token = `ghp_${"q7Lm2Xv9Rk4Tz8Nw3Bp6Hs1Jd5Gf0Yc2Ae9U"}`;
     const realGit = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
     /** An outgoing branch whose history added then deleted a credential, under
-     * newer commits, with `origin` holding only the base. */
-    function outgoing() {
+     * newer commits, with `origin` holding only the base. `large` adds a newest
+     * commit whose `git log -p` output (about 1.9 MB) exceeds the usual CI
+     * pipe buffers. The test separately proves Git was killed before exit. */
+    function outgoing(large = false) {
       const root = temp("claudexor-interrupted-");
       const origin = temp("claudexor-interrupted-origin-");
       const g = (...args: string[]) =>
@@ -814,6 +817,12 @@ describe.runIf(pinnedScanner.ok && process.platform !== "win32")(
         g("add", "-A");
         g("commit", "-qm", `newer ${n}`);
       }
+      if (large) {
+        const lines = Array.from({ length: 100_000 }, (_, i) => `filler line ${i}\n`);
+        writeFileSync(join(root, "big.txt"), lines.join(""));
+        g("add", "-A");
+        g("commit", "-qm", "big");
+      }
       return { root, g };
     }
     const gate = (root: string, g: (...a: string[]) => string, env?: NodeJS.ProcessEnv) =>
@@ -828,8 +837,12 @@ describe.runIf(pinnedScanner.ok && process.platform !== "win32")(
       });
     /** A `git` that dies by SIGKILL in the middle of the scanner's `git log -p`
      * stream, writing nothing to stderr (an OOM kill); every other Git call,
-     * the adapter's own `git log` reads included, runs the real Git. */
-    function killMidStream() {
+     * the adapter's own `git log` reads included, runs the real Git. After the
+     * first chunk it stops reading, so the real Git blocks on the full pipe,
+     * kills that still-running Git and records how it ended in `proof`; only
+     * then does it die itself. Without the pause and a stream larger than the
+     * pipe, Git can finish first and its trace rightly reads complete. */
+    function killMidStream(proof: string) {
       const bin = temp("claudexor-kill-git-");
       writeFileSync(
         join(bin, "git"),
@@ -839,20 +852,33 @@ describe.runIf(pinnedScanner.ok && process.platform !== "win32")(
           `const stream = args.includes("log") && args.includes("-p");\n` +
           `const child = spawn(${JSON.stringify(realGit)}, args, { stdio: ["inherit", stream ? "pipe" : "inherit", "inherit"] });\n` +
           `if (!stream) child.on("exit", (code, signal) => (signal ? process.kill(process.pid, signal) : process.exit(code)));\n` +
-          `else child.stdout.once("data", (chunk) => process.stdout.write(chunk.subarray(0, 64), () => { child.kill("SIGKILL"); process.kill(process.pid, "SIGKILL"); }));\n`,
+          `else child.stdout.once("data", (chunk) => {\n` +
+          `  child.stdout.pause();\n` +
+          `  child.once("exit", (code, signal) => {\n` +
+          `    require("node:fs").writeFileSync(${JSON.stringify(proof)}, JSON.stringify({ code, signal }));\n` +
+          `    process.kill(process.pid, "SIGKILL");\n` +
+          `  });\n` +
+          `  process.stdout.write(chunk.subarray(0, 64), () => child.kill("SIGKILL"));\n` +
+          `});\n`,
       );
       chmodSync(join(bin, "git"), 0o755);
       return { PATH: `${bin}:${process.env.PATH ?? ""}` };
     }
 
     it("refuses as failed when the scanner's git log dies mid-stream", async () => {
-      const { root, g } = outgoing();
-      expect((await gate(root, g)).ok).toBe(false); // control: the credential is found
-      const result = await gate(root, g, killMidStream());
+      const { root, g } = outgoing(true);
+      const control = await gate(root, g); // control: the credential is found
+      expect(!control.ok && control.refusal.code).toBe("publication_scan_findings");
+      const proof = join(temp("claudexor-kill-proof-"), "git-exit.json");
+      const result = await gate(root, g, killMidStream(proof));
+      // The interruption is causal: the real Git was killed while still writing.
+      expect(JSON.parse(readFileSync(proof, "utf8"))).toEqual({ code: null, signal: "SIGKILL" });
       expect(result.ok).toBe(false);
       if (!result.ok) {
         expect(result.refusal.code).toBe("publication_scan_failed");
-        expect(result.refusal.detail).toMatch(/complete Git history/);
+        expect(result.refusal.detail).toMatch(
+          /complete Git history \(git log (has no exit record|ended by a signal)\)/,
+        );
       }
     });
 
