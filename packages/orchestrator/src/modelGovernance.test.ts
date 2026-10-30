@@ -227,6 +227,36 @@ describe("profile-less auto is answered as auto, never rewritten", () => {
     },
   );
 
+  it("a run stopped at a pre-dispatch disclosure is never handed to its adapter", async () => {
+    const runSpecs: HarnessRunSpec[] = [];
+    const routed: ModelGovernedRoute = {
+      adapter: autoAdapter("generic", [], runSpecs),
+      knownModels: [],
+      authRouteEstimate: null,
+      quotaAdmission: { profile: null },
+      settings: null,
+    };
+    const stop = new AbortController();
+    const spec = HarnessRunSpec.parse({
+      session_id: "ses-stopped-preamble",
+      intent: "audit",
+      prompt: "review",
+      cwd: "/repo",
+      env: { HOME: "/state" },
+      auth_preference: "auto",
+      model_hint: "bound-model",
+    });
+    spec.extra["abortSignal"] = stop.signal;
+    const seen: unknown[] = [];
+    // A consumer that keeps reading after Stop (to drain teardown evidence).
+    for await (const event of runModelGovernedRoute(routed, spec)) {
+      seen.push(event);
+      stop.abort();
+    }
+    expect(seen).not.toEqual([]);
+    expect(runSpecs).toEqual([]);
+  });
+
   it("an undecidable admission route no longer refuses a profile-less auto run", async () => {
     const modelSpecs: unknown[] = [];
     const runSpecs: HarnessRunSpec[] = [];

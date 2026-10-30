@@ -283,19 +283,27 @@ export async function runPlannerAttempt(
         },
         isSuspended: () => (planInteraction?.pendingCount?.() ?? 0) > 0,
         suspensionVersion: () => planInteraction?.suspensionVersion?.() ?? 0,
+        stopSignal: input.signal,
       });
       for await (const ev of watchedPlan) {
         const safeEv = redactHarnessEvent(ev);
-        if (safeEv.payload?.["buffered"] !== true) safeInvoke(input.onHarnessEvent, safeEv);
-        if (args.laneRun) observeNativeSessionEvent(input, adapter.id, safeEv);
+        // A read after Stop is evidence only: stored, never shown live.
+        const stoppedBefore = input.signal?.aborted === true;
+        const shown = !stoppedBefore && safeEv.payload?.["buffered"] !== true;
+        if (shown) safeInvoke(input.onHarnessEvent, safeEv);
+        if (args.laneRun && !stoppedBefore) observeNativeSessionEvent(input, adapter.id, safeEv);
         observeAuthSwitch(log, adapter.id, attemptId, safeEv);
+        // Re-sampled: the callback above may itself have pressed Stop.
         log.emit(
           "harness.event",
           harnessEventPayload(adapter.id, attemptId, safeEv),
-          safeEv.payload?.["buffered"] !== true,
+          shown && !input.signal?.aborted,
         );
         appendLine(attemptEventsPath, JSON.stringify(safeEv));
-        if (input.signal?.aborted) break;
+        // After Stop the watchdog drains the cancelled source within its
+        // cleanup bound: what it still reports is recorded, never used.
+        // Rechecked after the callback, which can itself press Stop.
+        if (input.signal?.aborted) continue;
         observeAttemptTelemetry(telemetry, safeEv);
         if (safeEv.rate_limit)
           lastLimit = {

@@ -2152,7 +2152,11 @@ payload. The vendor owns that in-turn retry: no retry count, delay, category,
 the existing terminal and dropped-event handling.
 Native warnings map to nonterminal `status` events with
 `payload.code: codex_native_warning`, the vendor's `native_method` and its
-`native_params` verbatim. `configWarning` (`{summary, details?, path?,
+`native_params`, verbatim except for diagnostic masking: Codex may quote
+configuration, so a secret in the text or the params is masked by the adapter
+itself with the shared secret redaction (the params through their JSON text,
+else the masked text), and a warning without a secret is unchanged.
+`configWarning` (`{summary, details?, path?,
 range?}`) reports a recoverable configuration or initialization problem, such
 as the Linux bubblewrap user-namespace check Codex runs at startup; it arrives
 right after `initialize`, before the thread exists, and is delivered after
@@ -2169,8 +2173,31 @@ not read when it stopped is still delivered, in arrival order, ahead of the
 `thread/start` or `turn/start`, one queued behind a `thread/resume` whose
 recovered identity does not match (still refused before any turn), one that
 arrives while the settled thread is read, and one that arrives while the process
-stops. An unread frame without its required text is never delivered. Pin:
+stops. After an explicit Stop the Ask, Agent and Plan attempts keep reading the
+cancelled stream, and then close it, within the inactivity watchdog's one
+existing cleanup deadline, counted from their next read after Stop; what arrives
+then, warnings included, is stored as evidence only: it is not published to live
+observers and never becomes the cancelled attempt's answer, output, telemetry or
+tool-error verdict. A directory-mode attempt still collects the typed file
+paths those late events name, so a file already written before Stop stays in the
+captured result bytes; this reads paths from evidence and starts no work. A late
+`patch_produced` raw patch is not accepted or materialized, and its response
+bytes are not kept; one accepted before Stop is still consumed after the stream,
+so Stop is not a general guarantee that no raw patch is applied. A warning the
+process reports after that deadline is not recorded. A run stopped during its
+preamble status does not start the Codex process. An unread frame without its required text is never delivered. Pin:
 `fixtures/app-server/synthetic-native-warnings-0.162.1.jsonl`.
+
+Codex's Linux sandbox prefers the system `bwrap` from `PATH`; its bundled
+fallback is not covered by a profile for `/usr/bin/bwrap`. On Ubuntu 24.04
+with AppArmor's unprivileged-user-namespace restriction enabled, the vendor's
+[sandbox prerequisites](https://learn.chatgpt.com/docs/sandboxing?surface=app#app-prerequisites)
+describe loading the packaged `bwrap-userns-restrict` profile. This is an explicit
+administrator action affecting every user of `/usr/bin/bwrap` on that host;
+Claudexor does not apply or repair it. [Diagnostic run 41001897998](https://github.com/razzant/claudexor/actions/runs/41001897998)
+exercised a real managed readonly run with a write-negative check against a
+scripted provider. It does not qualify native login, the originally reported
+Codex 0.153.3, package installation or a reboot.
 
 Finality is quiescence-based: an individual `turn/completed` is intermediate
 while the native thread is active, its goal is active, or a background terminal

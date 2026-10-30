@@ -235,7 +235,7 @@ describe("Codex native warning notifications", () => {
     ["warning", { threadId: "t", message: "M" }, "M"],
     ["warning", { threadId: "t", summary: "S" }, null],
   ] as const)(
-    "maps %s %j to text %j, keeping the native params verbatim",
+    "maps %s %j to text %j, keeping a secret-free params object as it came",
     (method, params, text) => {
       const events = codexNativeWarningEvents(method, { ...params }, "session-map");
       if (text === null) {
@@ -255,6 +255,77 @@ describe("Codex native warning notifications", () => {
   );
 });
 
+describe("Codex native warning diagnostic masking", () => {
+  // Built, not written, so no token-shaped literal sits in the source.
+  const TOKEN = `ghp_${"a".repeat(36)}`;
+  const PEM_BEGIN = "-----BEGIN PRIVATE KEY-----";
+  const PEM_END = "-----END PRIVATE KEY-----";
+  const only = (method: "configWarning" | "warning", params: Record<string, unknown>) => {
+    const [event] = codexNativeWarningEvents(method, params, "session-mask")!;
+    return event!;
+  };
+
+  it("masks a secret Codex quotes in a config warning's text and params, keeping the rest", () => {
+    const params = {
+      summary: `Invalid value near token ${TOKEN}`,
+      details: `parse error at ${TOKEN}`,
+      path: "/fixture/codex-home/config.toml",
+      range: { start: { line: 3, column: 1 }, end: { line: 3, column: 12 } },
+    };
+    const event = only("configWarning", params);
+    expect(event.text).toBe("Invalid value near token [redacted]: parse error at [redacted]");
+    expect(event.payload).toEqual({
+      code: "codex_native_warning",
+      native_method: "configWarning",
+      native_params: {
+        ...params,
+        summary: "Invalid value near token [redacted]",
+        details: "parse error at [redacted]",
+      },
+    });
+    expect(event.type).toBe("status");
+    expect(JSON.stringify(event)).not.toContain(TOKEN);
+    expect(HarnessEvent.safeParse(event).success).toBe(true);
+  });
+
+  it("masks a runtime warning's message and keeps its thread id", () => {
+    const event = only("warning", { threadId: "thread-1", message: `leaked ${TOKEN} here` });
+    expect(event.text).toBe("leaked [redacted] here");
+    expect(event.payload).toEqual({
+      code: "codex_native_warning",
+      native_method: "warning",
+      native_params: { threadId: "thread-1", message: "leaked [redacted] here" },
+    });
+  });
+
+  it("leaves a secret-free warning's params as the same object", () => {
+    const params = { threadId: null, message: LOG_WRITE, extra: { n: 1, list: ["a", 2, null] } };
+    const event = only("warning", params);
+    expect(event.text).toBe(LOG_WRITE);
+    expect(event.payload?.["native_params"]).toBe(params);
+  });
+
+  it("keeps the masked text when masking the params' JSON no longer parses", () => {
+    // A key block opens in one string and closes in a later one: masking the JSON text
+    // cuts across the structure, so the masked text itself is kept, secret-free.
+    const params = { message: "m", a: [`${PEM_BEGIN}\nSECRETBODY`], b: `${PEM_END} tail` };
+    const event = only("warning", params);
+    const kept = event.payload?.["native_params"];
+    expect(typeof kept).toBe("string");
+    expect(kept).not.toContain("SECRETBODY");
+    expect(event.text).toBe("m");
+    expect(event.payload).toMatchObject({ native_method: "warning" });
+  });
+
+  it("does not throw on params that cannot be serialized", () => {
+    const params: Record<string, unknown> = { message: "m" };
+    params["self"] = params;
+    const event = only("warning", params);
+    expect(event.text).toBe("m");
+    expect(event.payload?.["native_params"]).toBe("[unserializable diagnostic]");
+  });
+});
+
 describe("Codex native warnings the run had not read when it stopped", () => {
   const startup = configWarning({ summary: BWRAP, details: null });
   const malformed = configWarning({ summary: 42 });
@@ -267,7 +338,7 @@ describe("Codex native warnings the run had not read when it stopped", () => {
       refuse: "thread/start",
     };
     const events = await collect(script);
-    // The malformed frame is not delivered; the vendor's text and params stay verbatim.
+    // The malformed frame is not delivered; the secret-free text and params stay as they came.
     expect(events.map((event) => event.type)).toEqual(["status", "error", "completed"]);
     expect(events[0]).toMatchObject({
       text: BWRAP,

@@ -63,6 +63,7 @@ import {
   HarnessUnavailableError,
   ModelCatalogUnavailableError,
   RawContextRefusalError,
+  abortSignalFromSpec,
   effortResolutionEvent,
   modelCatalogFailureRefuses,
   modelCatalogFailureText,
@@ -481,6 +482,9 @@ export async function* runModelGovernedRoute(
       resolveEffortEvidence(spec.effort_hint, [], [], "adapter", null),
     );
   }
+  // The disclosures above are yields; a run stopped at one of them is not
+  // dispatched when its consumer keeps reading to drain teardown evidence.
+  if (abortSignalFromSpec(spec)?.aborted) return;
   const sent = truth?.observation ? withDispatchModelCatalog(spec, truth.observation) : spec;
   const events = stampObservedModelCatalogMatch(
     routed.adapter.run(sent),

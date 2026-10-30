@@ -1,5 +1,13 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -142,12 +150,97 @@ function replay(frames: Frame[], closing: Frame[] = []): typeof spawnProcess {
   };
 }
 
+const LATE_ANSWER = "Late answer after Stop.";
+
+/**
+ * A vendor for an explicit Stop: each reply answers the adapter's own request
+ * by method, the turn stays active until `turn/interrupt`, which reports a late
+ * failed command, a late answer and the interrupted turn, and `closing` frames
+ * follow stdin close.
+ */
+function stopping(closing: Frame[]): typeof spawnProcess {
+  const reply = (id: number) => fixture.find((frame) => frame["id"] === id)!["result"];
+  const turnStarted = fixture.find((frame) => frame["method"] === "turn/started")!;
+  return async function* (_bin, _args, options = {}) {
+    const queue: Frame[] = [];
+    let wake: (() => void) | undefined;
+    let ended = false;
+    let active = true;
+    const push = (...frames: Frame[]): void => {
+      queue.push(...frames);
+      wake?.();
+      wake = undefined;
+    };
+    options.onSpawn?.({
+      write(line) {
+        const { id, method } = JSON.parse(line) as { id?: unknown; method?: unknown };
+        const result = (value: Frame): Frame => ({ id, result: value });
+        if (method === "initialize") push(result(reply(1)));
+        else if (method === "thread/start") push(result(reply(2)));
+        else if (method === "turn/start") push(result(reply(3)), turnStarted);
+        else if (method === "thread/goal/get") push(result({ goal: null }));
+        else if (method === "thread/read")
+          push(result({ thread: { status: { type: active ? "active" : "idle" } } }));
+        else if (method === "thread/backgroundTerminals/list")
+          push(result({ data: [], nextCursor: null }));
+        else if (method === "turn/interrupt") {
+          active = false;
+          const turn = { threadId: "thread-warnings", turnId: "turn-warnings" };
+          const command = {
+            type: "commandExecution",
+            id: "cmd-late",
+            command: "/bin/bash -lc 'cat research/input.txt'",
+            cwd: "/fixture/project",
+            processId: null,
+            source: "unifiedExecStartup",
+            commandActions: [],
+            status: "failed",
+            aggregatedOutput: "late failure\n",
+            exitCode: 1,
+            durationMs: 1,
+          };
+          const item = { type: "agentMessage", id: "message-late", text: LATE_ANSWER };
+          push(
+            result({}),
+            { method: "item/completed", params: { ...turn, item: command } },
+            { method: "item/completed", params: { ...turn, item } },
+            {
+              method: "turn/completed",
+              params: { threadId: turn.threadId, turn: { id: turn.turnId, status: "interrupted" } },
+            },
+          );
+        }
+      },
+      end() {
+        if (!ended) push(...closing);
+        ended = true;
+      },
+      closed: Promise.resolve(),
+    });
+    while (!ended || queue.length) {
+      const frame = queue.shift();
+      if (frame) yield { type: "stdout", line: JSON.stringify(frame) };
+      else await new Promise<void>((resolve) => (wake = resolve));
+    }
+    yield { type: "exit", code: 0, signal: null, durationMs: 0 };
+  };
+}
+
 const roots: string[] = [];
 afterAll(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-async function run(frames: Frame[], closing: Frame[] = []) {
+/** `stop` presses Stop on `started` and serves the run from {@link stopping}. */
+async function run(
+  frames: Frame[],
+  closing: Frame[] = [],
+  opts: { mode?: "ask" | "agent" | "plan"; stop?: boolean } = {},
+) {
+  const stop = new AbortController();
+  // Live deliveries made after Stop: run events published to observers and
+  // harness events handed to the caller's callback.
+  const lateLive: Frame[] = [];
   const root = mkdtempSync(join(tmpdir(), "codex-native-warnings-"));
   roots.push(root);
   execFileSync("git", ["init", "-b", "main"], { cwd: root, stdio: "pipe" });
@@ -183,7 +276,7 @@ async function run(frames: Frame[], closing: Frame[] = []) {
         args: [],
         spec,
         env: {},
-        spawn: replay(frames, closing),
+        spawn: opts.stop ? stopping(closing) : replay(frames, closing),
         pollIntervalMs: 0,
       }))
         yield {
@@ -201,6 +294,7 @@ async function run(frames: Frame[], closing: Frame[] = []) {
         capabilities: {
           implement: true,
           explain: true,
+          plan: true,
           read_files: true,
           json_schema_output: true,
           work_report_transport: "constrained",
@@ -214,7 +308,7 @@ async function run(frames: Frame[], closing: Frame[] = []) {
       ConformanceReport.parse({
         harness_id: "codex",
         status: "ok",
-        enabled_intents: ["implement", "explain"],
+        enabled_intents: ["implement", "explain", "plan"],
         auth_sources: [
           { source: "native_session", availability: "available", verification: "passed" },
         ],
@@ -248,7 +342,19 @@ async function run(frames: Frame[], closing: Frame[] = []) {
     quotaSnapshots: () => snapshots,
   }).run({
     repoRoot: root,
-    mode: "ask",
+    ...(opts.stop
+      ? {
+          signal: stop.signal,
+          onEvent: (event: { type: string; payload: Frame }) => {
+            if (stop.signal.aborted && event.type === "harness.event") lateLive.push(event.payload);
+          },
+          onHarnessEvent: (event: { type: string }) => {
+            if (stop.signal.aborted) lateLive.push(event);
+            if (event.type === "started") stop.abort();
+          },
+        }
+      : {}),
+    mode: opts.mode ?? "ask",
     prompt: "Explain the fixture.",
     harnesses: ["codex"],
     models: { codex: "fixture-model" },
@@ -256,7 +362,8 @@ async function run(frames: Frame[], closing: Frame[] = []) {
     review: false,
     web: "off",
   });
-  const telemetry = RunTelemetry.parse(
+  // A cancelled plan run writes no telemetry receipt.
+  const telemetry = RunTelemetry.nullable().parse(
     new ArtifactStore(root).readYaml(join(result.runDir, "final/telemetry.yaml")),
   );
   const answerPath = join(result.runDir, "final", "answer.md");
@@ -266,10 +373,11 @@ async function run(frames: Frame[], closing: Frame[] = []) {
     .map((row) => row["payload"] as Frame);
   return {
     result,
-    attempt: telemetry.attempts[0]!,
+    attempt: telemetry?.attempts[0]!,
     answer: existsSync(answerPath) ? readFileSync(answerPath, "utf8").trim() : null,
     read,
     stored,
+    lateLive,
     warnings: stored.filter((row) => row["payload"]?.["code"] === "codex_native_warning"),
   };
 }
@@ -280,7 +388,7 @@ function outcome(out: Awaited<ReturnType<typeof run>>) {
     lifecycle: out.result.lifecycle,
     facts: out.result.facts,
     answer: out.answer,
-    attempt: {
+    attempt: out.attempt && {
       outcome: out.attempt.outcome,
       tool_errors_total: out.attempt.tool_errors_total,
       unrecovered_tool_errors: out.attempt.unrecovered_tool_errors,
@@ -303,7 +411,7 @@ describe("Codex native warnings through the durable event log (#337)", () => {
     expect(out.attempt.outcome).toMatchObject({ status: "success", harness_errored: false });
     expect(out.read.integrity).toMatchObject({ malformedLines: 0, nonObjectLines: 0 });
 
-    // Each native frame is one stored status row: vendor text and params verbatim.
+    // Each native frame is one stored status row; none quotes a secret, so text and params are as sent.
     const native = fixture.filter(isWarning);
     expect(
       out.warnings.map((row) => [
@@ -340,7 +448,48 @@ describe("Codex native warnings through the durable event log (#337)", () => {
     expect(outcome(withWarnings)).toEqual(outcome(without));
   });
 
-  it("keeps a failed native command's tool-error telemetry and redacts warning text through the shared owner", async () => {
+  it("masks a secret Codex quotes in its warnings at the producer, in every journaled copy, without changing the outcome", async () => {
+    const token = `ghp_${"a".repeat(36)}`;
+    const quoted = fixture.map((frame): Frame => {
+      const params = frame["params"];
+      if (frame["method"] === "configWarning")
+        return {
+          ...frame,
+          params: { ...params, details: `rejected value ${token}`, path: "/fixture/config.toml" },
+        };
+      if (frame["method"] === "warning")
+        return { ...frame, params: { ...params, message: `${params["message"]} ${token}` } };
+      return frame;
+    });
+    const [masked, plain] = [await run(quoted), await run(fixture)];
+    expect(masked.result.lifecycle, masked.result.summary).toBe("succeeded");
+    expect(outcome(masked)).toEqual(outcome(plain));
+
+    const native = quoted.filter(isWarning);
+    expect(masked.warnings.map((row) => [row["type"], row["payload"]["native_method"]])).toEqual(
+      native.map((frame) => ["status", frame["method"]]),
+    );
+    // Text and params carry the placeholder; the method, path and thread id are as sent.
+    expect(masked.warnings[0]!["text"]).toBe(
+      `${native[0]!["params"]["summary"]}: rejected value [redacted]`,
+    );
+    expect(masked.warnings[0]!["payload"]["native_params"]).toEqual({
+      ...native[0]!["params"],
+      details: "rejected value [redacted]",
+    });
+    expect(masked.warnings[1]!["payload"]["native_params"]).toEqual({
+      ...native[1]!["params"],
+      message: `${plain.warnings[1]!["text"]} [redacted]`,
+    });
+    // No journaled copy anywhere in the run directory holds the token.
+    const files = readdirSync(masked.result.runDir, { recursive: true, withFileTypes: true })
+      .filter((entry) => entry.isFile())
+      .map((entry) => join(entry.parentPath, entry.name));
+    expect(files.length).toBeGreaterThan(0);
+    expect(files.filter((file) => readFileSync(file, "utf8").includes(token))).toEqual([]);
+  });
+
+  it("keeps a failed native command's tool-error telemetry and redacts warning text and params", async () => {
     const token = `sk-ant-${"a".repeat(40)}`;
     const failed = commandFailure(token);
     const [withWarnings, without] = [await run(failed), await run(withoutWarnings(failed))];
@@ -353,6 +502,8 @@ describe("Codex native warnings through the durable event log (#337)", () => {
 
     const logWrite = withWarnings.warnings[2]!;
     expect(logWrite["text"]).toContain("[redacted]");
+    expect(logWrite["payload"]["native_params"]["message"]).toContain("[redacted]");
+    expect(logWrite["payload"]["native_params"]["threadId"]).toBeNull();
     expect(JSON.stringify(withWarnings.read.events)).not.toContain(token);
     const rows = timelineEvents({ runDir: withWarnings.result.runDir }, withWarnings.read.events);
     expect(rows.find((row) => row.title === logWrite["text"])?.severity).toBe("info");
@@ -418,4 +569,34 @@ describe("Codex native warnings through the durable event log (#337)", () => {
       "info",
     ]);
   });
+});
+
+describe("Codex native warnings received during an explicit Stop (#337)", () => {
+  const closing: Frame[] = [
+    { method: "configWarning", params: { summary: "Stopped config warning.", details: "detail" } },
+    { method: "warning", params: { threadId: null, message: "Stopped runtime warning." } },
+  ];
+
+  it.each(["ask", "agent", "plan"] as const)(
+    "%s keeps the warnings its stopped process emits, with the same cancelled outcome and no late answer",
+    async (mode) => {
+      const [withWarnings, without] = [
+        await run([], closing, { mode, stop: true }),
+        await run([], [], { mode, stop: true }),
+      ];
+      expect(withWarnings.result.lifecycle, withWarnings.result.summary).toBe("cancelled");
+      expect(withWarnings.warnings.map((row) => row["payload"]["native_params"])).toEqual(
+        closing.map((frame) => frame["params"]),
+      );
+      expect(without.warnings).toEqual([]);
+      expect(outcome(withWarnings)).toEqual(outcome(without));
+      // Received after Stop: durable evidence only, never the run's answer or
+      // the stopped attempt's tool-error verdict.
+      expect(withWarnings.stored.some((row) => row["text"] === LATE_ANSWER)).toBe(true);
+      expect(withWarnings.answer ?? "").not.toContain(LATE_ANSWER);
+      expect(withWarnings.lateLive.filter((row) => row["text"] === LATE_ANSWER)).toEqual([]);
+      expect(withWarnings.stored.some((row) => row["type"] === "tool_result")).toBe(true);
+      expect(withWarnings.attempt.tool_errors_total).toBe(0);
+    },
+  );
 });
