@@ -2574,9 +2574,12 @@ export class Orchestrator {
             // terminal/restart when the timeout is disabled.
             isSuspended: () => (interaction?.pendingCount?.() ?? 0) > 0,
             suspensionVersion: () => interaction?.suspensionVersion?.() ?? 0,
+            stopSignal: signal, // after Stop: drained events are recorded, never used
           });
           for await (const ev of watched) {
-            rawPatch = captureRawPatchEnvelope(sizeRawContext !== null, rawPatch, ev);
+            // After Stop: stored evidence only, but file paths are still collected for the capture.
+            const stopped = signal?.aborted === true;
+            if (!stopped) rawPatch = captureRawPatchEnvelope(sizeRawContext !== null, rawPatch, ev);
             if (ev.type === "patch_produced") continue;
             const safeEv = redactHarnessEvent(ev);
             if (directory) observeDirectoryPaths(observedPaths, safeEv, envelope.worktree_path);
@@ -2588,9 +2591,9 @@ export class Orchestrator {
               adapter.id,
               attemptId,
             );
-            const display = !capped && safeEv.payload?.["buffered"] !== true;
+            const display = !stopped && !capped && safeEv.payload?.["buffered"] !== true;
             log?.emit("harness.event", harnessEventPayload(adapter.id, attemptId, safeEv), display);
-            if (signal?.aborted) break;
+            if (signal?.aborted) continue; // a live observer may itself have pressed Stop
             if (display) safeInvoke(onHarnessEvent, safeEv);
             observeAuthSwitch(log, adapter.id, attemptId, safeEv);
             observeAttemptTelemetry(telemetry, safeEv);
@@ -6775,18 +6778,18 @@ export class Orchestrator {
               },
               isSuspended: () => (reportInteraction?.pendingCount?.() ?? 0) > 0,
               suspensionVersion: () => reportInteraction?.suspensionVersion?.() ?? 0,
+              stopSignal: input.signal, // after Stop: drained events are recorded, never used
             });
             for await (const ev of watchedReport) {
               const safeEv = redactHarnessEvent(ev);
-              if (safeEv.payload?.["buffered"] !== true) safeInvoke(input.onHarnessEvent, safeEv);
+              // A read after Stop is stored evidence only; a callback may itself press Stop.
+              const shown = !input.signal?.aborted && safeEv.payload?.["buffered"] !== true;
+              if (shown) safeInvoke(input.onHarnessEvent, safeEv);
               observeAuthSwitch(log, adapter.id, attemptId, safeEv);
-              log.emit(
-                "harness.event",
-                harnessEventPayload(adapter.id, attemptId, safeEv),
-                safeEv.payload?.["buffered"] !== true,
-              );
+              const live = shown && !input.signal?.aborted; // the callback may have pressed Stop
+              log.emit("harness.event", harnessEventPayload(adapter.id, attemptId, safeEv), live);
               appendLine(attemptEventsPath, JSON.stringify(safeEv));
-              if (input.signal?.aborted) break;
+              if (input.signal?.aborted) continue;
               observeAttemptTelemetry(telemetry, safeEv);
               const mismatch = continuity.observe(safeEv, runSpec, telemetry.outputMarkers);
               if (mismatch) {
@@ -6827,9 +6830,7 @@ export class Orchestrator {
               // A TYPED final message wins verbatim over joined narration.
               answer.observeCounted(ev, safeEv);
               if (safeEv.type === "error")
-                harnessError = safeEv.error
-                  ? redactSecrets(safeEv.error)
-                  : "harness emitted an error";
+                harnessError = redactSecrets(safeEv.error || "harness emitted an error");
             }
           } catch (err) {
             harnessError = safeErrorMessage(err);

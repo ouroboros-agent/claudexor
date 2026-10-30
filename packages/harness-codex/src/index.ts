@@ -747,6 +747,9 @@ async function* runCodex(
     // DROP/CLAMP disclosure describes (preflight only saw the DEFAULT account).
     const effort = await codexRunEffortResolution(spec, runtime, env, abortSignalFromSpec(spec));
     yield effort.event;
+    // A consumer that keeps reading after Stop must not resume this preamble
+    // into a native process the run was stopped before starting.
+    if (abortSignalFromSpec(spec)?.aborted) return;
     throwIfEffortRejected(effort.resolution);
     spec = applyCodexRunProcessing(
       spec,

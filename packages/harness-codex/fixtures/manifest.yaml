@@ -98,6 +98,19 @@ fixtures:
   # runCodexAppServer.
   app-server/synthetic-browser-mcp-0.162.1.jsonl:
     source: synthetic
+  # NATIVE WARNINGS stream, synthetic (claudexor#337): one readonly text-only
+  # run. Frame layouts follow a real codex-cli 0.162.1 macOS loopback capture
+  # (ids, paths, host and timestamps neutralized, emittedAtMs omitted). Warning
+  # params follow `ConfigWarningNotification`/`WarningNotification` generated
+  # by 0.162.1 `app-server generate-json-schema`, byte-identical to 0.153.3.
+  # Texts at rust-v0.162.1: the configWarning is bubblewrap's user-namespace
+  # check (sandboxing/src/bwrap.rs, app-server/src/lib.rs), sent after
+  # `initialize` and before the remote-control status; the null-thread
+  # warning is log_write_warning.rs; the thread warning keeps the recorded
+  # model-metadata format with a neutral slug. No Linux host was recorded. Ids
+  # 1..6 are the adapter's own, so it replays 1:1 through runCodexAppServer.
+  app-server/synthetic-native-warnings-0.162.1.jsonl:
+    source: synthetic
   app-server/recorded-run-0.156.1.jsonl:
     source: recorded
     cli_version: "0.156.1"

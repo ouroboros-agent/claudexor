@@ -375,6 +375,7 @@ export async function* runCodexAppServer(
     const identityMismatch = codexResumeIdentityMismatch(input.spec, threadId);
     if (identityMismatch) {
       await stopProcess();
+      yield* subagents.takeWarnings(notifications, nativeThreadId, input.spec.session_id);
       yield* identityMismatch;
       return;
     }
@@ -480,11 +481,7 @@ export async function* runCodexAppServer(
           break;
         const systemError = nativeSystemError || current.threadStatus === "systemError";
         if (!current.threadSettled || current.goalActive || current.ownedBackground.length) {
-          if (systemError && current.ownedBackground.length) {
-            await new Promise<void>((resolve) => setTimeout(resolve, input.pollIntervalMs ?? 250));
-            continue;
-          }
-          if (!systemError && current.ownedBackground.length && !current.goalActive) {
+          if (current.ownedBackground.length && (systemError || !current.goalActive)) {
             await new Promise<void>((resolve) => setTimeout(resolve, input.pollIntervalMs ?? 250));
             continue;
           }
@@ -530,6 +527,7 @@ export async function* runCodexAppServer(
         // only revalidate a candidate answer here.
         if (completedAnswer && codexTeardownFailed(notifications, nativeThreadId, failed))
           throw new Error("Codex completion was invalidated during process teardown");
+        yield* subagents.takeWarnings(notifications, nativeThreadId, input.spec.session_id);
         if (!handback) for (const event of terminal.events) yield event;
         yield codexCompletedEvent(
           input.spec.session_id,
@@ -546,6 +544,7 @@ export async function* runCodexAppServer(
   } catch (error) {
     if (cancellation.requested) await cancel();
     await stopProcess();
+    yield* subagents.takeWarnings(notifications, nativeThreadId, input.spec.session_id);
     if (processFailure && cancellation.requested) cancellation.failure ??= processFailure;
     if (
       cancellation.requested &&

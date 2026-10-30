@@ -1009,8 +1009,10 @@ closure is never read. The bounded reader then suppresses only that closure
 any other stream error and a callback failure stay failures. Pipe closure
 proves no descendant death; whole-run scope settlement and its separate
 receipt still follow.
-Native in-turn retry notices use the existing nonterminal `api_retry` status;
-their wire mapping is documented in INTEGRATIONS' Harness Stream Reference.
+Native in-turn retry notices use the existing nonterminal `api_retry` status,
+and Codex's native configuration and runtime warnings a plain nonterminal
+`status`; their wire mapping is documented in INTEGRATIONS' Harness Stream
+Reference.
 Adapters without a verified prompt transport retain their vendor-specific path.
 
 Git-backed candidate envelopes also preserve bounded raster previews before
@@ -6306,7 +6308,19 @@ frames, and unknown future event kinds stay observable but do not extend the
 lease. Waiting on a typed user interaction suspends the watchdog under the
 separate finite-or-disabled interaction policy. Long active runs therefore stay
 alive while they make real progress; a tool call that streams nothing for the
-whole window remains indistinguishable from a hang and is killed.
+whole window remains indistinguishable from a hang and is killed. An explicit
+Stop reuses the timeout's bounded drain: from the attempt's next read after
+Stop, Ask, Agent and Plan read what the cancelled stream still reports and then
+close the source, both within one cleanup deadline, not one each. What they read
+then is stored as evidence only and is not published to live observers, even
+when the observer callback for the same message is what pressed Stop. Directory
+attempts still collect the typed file paths those late events name, so files
+written before Stop remain in the captured result; a late raw `patch_produced`
+envelope is not accepted or materialized and its bytes are not retained, while
+one accepted before Stop is still consumed after the stream. A model route or
+Codex preamble stopped before its native process starts does not start it. A
+read already pending when Stop arrives is not woken by Stop itself; it ends when
+the source answers or the inactivity timer fires.
 
 Set `runtime.harness_inactivity_timeout_ms: null` in the config to disable
 only inactivity timing; ordinary cancellation, stream cleanup, resource limits
