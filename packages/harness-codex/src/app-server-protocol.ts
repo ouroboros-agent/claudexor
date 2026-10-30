@@ -11,6 +11,7 @@ import type {
   HarnessRequestRefusal,
 } from "@claudexor/schema";
 import { nowIso } from "@claudexor/util";
+import { codexNativeWarningEvents, isCodexNativeWarningMethod } from "./app-server-warnings.js";
 import { codexEffortFor } from "./effort-probe.js";
 import { parseCodexEvent, type CodexParseState } from "./parse.js";
 import { codexRateLimitEvents } from "./quota.js";
@@ -492,6 +493,8 @@ export function codexAppServerEvents(
   const params = asObject(notification["params"]);
   if (!params) return null;
   if (method === "account/rateLimits/updated") return codexRateLimitEvents(params, sessionId);
+  if (isCodexNativeWarningMethod(method))
+    return codexNativeWarningEvents(method, params, sessionId);
   if (method === "error" && params["willRetry"] === true) {
     const message = asObject(params["error"])?.["message"];
     return [

@@ -2150,6 +2150,27 @@ An `error` notification with `willRetry: true` maps to nonterminal `status`
 payload. The vendor owns that in-turn retry: no retry count, delay, category,
 `transient` or `rate_limit` signal is inferred. Other `error` notifications keep
 the existing terminal and dropped-event handling.
+Native warnings map to nonterminal `status` events with
+`payload.code: codex_native_warning`, the vendor's `native_method` and its
+`native_params` verbatim. `configWarning` (`{summary, details?, path?,
+range?}`) reports a recoverable configuration or initialization problem, such
+as the Linux bubblewrap user-namespace check Codex runs at startup; it arrives
+right after `initialize`, before the thread exists, and is delivered after
+`started`. Its text is `summary: details` when details are present (the
+composition Codex's TUI shows), else the summary. `warning` (`{threadId?,
+message}`) keeps its message; without a thread id it belongs to the run, and a
+sub-agent's carries the usual sub-agent tags. Each frame is one event, never
+merged with a repeat, and none is an error, a verdict or a host diagnosis:
+lifecycle, outcome, access and tool-error telemetry are unchanged, and the
+Control timeline shows them as `info` rows. A frame without its required text
+stays a dropped unrecognized event once the run reads it. A warning the run had
+not read when it stopped is still delivered, in arrival order, ahead of the
+`completed` event (and of a failure's `error`): one queued behind a refused
+`thread/start` or `turn/start`, one queued behind a `thread/resume` whose
+recovered identity does not match (still refused before any turn), one that
+arrives while the settled thread is read, and one that arrives while the process
+stops. An unread frame without its required text is never delivered. Pin:
+`fixtures/app-server/synthetic-native-warnings-0.162.1.jsonl`.
 
 Finality is quiescence-based: an individual `turn/completed` is intermediate
 while the native thread is active, its goal is active, or a background terminal

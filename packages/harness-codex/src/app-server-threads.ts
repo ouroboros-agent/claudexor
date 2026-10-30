@@ -2,6 +2,7 @@ import type { HarnessEvent } from "@claudexor/schema";
 import { WINDOWS_TREE_DEATH_PROOF_UNAVAILABLE, type ProcEvent } from "@claudexor/core";
 import { nowIso } from "@claudexor/util";
 import { asObject, codexAppServerEvents, type JsonObject } from "./app-server-protocol.js";
+import { codexNativeWarningEvents, isCodexNativeWarningMethod } from "./app-server-warnings.js";
 import { parseCodexEvent, type CodexParseState } from "./parse.js";
 
 /** The shared completed-event shape for normal, cancelled and failed teardown. */
@@ -142,6 +143,40 @@ export class CodexSubagentThreads {
       if (event.type !== "message") return { ...rest, payload };
       return { ...rest, type: "status", payload: { ...payload, code: "subagent_message" } };
     });
+  }
+
+  /**
+   * The native warnings the run loop never read, taken out of `queue` in
+   * arrival order: queued behind a start that failed, or arrived while the
+   * settled run was read or its process stopped. They are evidence only, so the
+   * terminal events follow them; every other frame stays queued, where
+   * `codexTeardownFailed` still reads it, and taking is once-only. Attribution
+   * is the loop's: once the root is bound another thread's frame carries the
+   * sub-agent tags, and before that a frame belongs to the run. A frame without
+   * its required text stays queued, unread.
+   */
+  takeWarnings(
+    queue: JsonObject[],
+    rootThreadId: string | null,
+    sessionId: string,
+  ): HarnessEvent[] {
+    const events: HarnessEvent[] = [];
+    for (let index = 0; index < queue.length;) {
+      const notification = queue[index]!;
+      const method = notification["method"];
+      const params = asObject(notification["params"]);
+      const mapped =
+        params && isCodexNativeWarningMethod(method)
+          ? rootThreadId !== null && !ownsNotification(params, rootThreadId)
+            ? this.events(notification, sessionId)
+            : codexNativeWarningEvents(method, params, sessionId)
+          : null;
+      if (mapped) {
+        queue.splice(index, 1);
+        events.push(...mapped);
+      } else index += 1;
+    }
+    return events;
   }
 }
 

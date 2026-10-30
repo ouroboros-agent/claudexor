@@ -477,3 +477,73 @@ describe("codex Browser MCP fixture (claudexor#215)", () => {
     expect(events.at(-1)?.payload).not.toHaveProperty("harness_reported_error");
   });
 });
+
+describe("codex native warnings fixture (configWarning / warning)", () => {
+  it("replays the synthetic 0.162.1 stream: native warnings are status evidence, not dropped frames", async () => {
+    const name = "app-server/synthetic-native-warnings-0.162.1.jsonl";
+    const lines = readFileSync(join(FIXTURES, name), "utf8").split("\n").filter(Boolean);
+    const frames = lines.map((line) => JSON.parse(line) as Record<string, any>);
+    const { spawn, writes } = appServerReplay(lines);
+    const events: HarnessEvent[] = [];
+    for await (const event of runCodexAppServer({
+      bin: "codex",
+      args: [],
+      spec: HarnessRunSpec.parse({
+        session_id: "ses-warnings",
+        intent: "explain",
+        prompt: "Answer without using tools.",
+        cwd: process.cwd(),
+        access: "readonly",
+        model_hint: "fixture-model",
+      }),
+      env: {},
+      spawn,
+      pollIntervalMs: 0,
+    }))
+      events.push(event);
+
+    expect(writes.map((request) => request.method)).toEqual([
+      "initialize",
+      "initialized",
+      "thread/start",
+      "turn/start",
+      "thread/read",
+      "thread/goal/get",
+      "thread/backgroundTerminals/list",
+    ]);
+    // The startup configWarning was queued before the thread existed and the
+    // thread warning before the turn: both follow `started`, in arrival order.
+    expect(events[0]?.type).toBe("started");
+    const native = frames.filter(
+      (frame) => frame["method"] === "configWarning" || frame["method"] === "warning",
+    );
+    const warnings = events.filter((event) => event.payload?.["code"] === "codex_native_warning");
+    expect(
+      warnings.map((event) => [event.payload?.["native_method"], event.payload?.["native_params"]]),
+    ).toEqual(native.map((frame) => [frame["method"], frame["params"]]));
+    expect(warnings.map((event) => [event.type, event.text])).toEqual([
+      ["status", native[0]!["params"]["summary"]],
+      ["status", native[1]!["params"]["message"]],
+      ["status", native[2]!["params"]["message"]],
+    ]);
+    const finalText = frames.find((frame) => frame["method"] === "item/completed")!["params"][
+      "item"
+    ]["text"];
+    expect(events.filter((event) => event.final).map((event) => event.text)).toEqual([finalText]);
+    const stats = validateTypedStream(events);
+    expect(stats.started).toBe(1);
+    expect(stats.toolCalls).toBe(0);
+    expect(stats.toolResults).toBe(0);
+    // Remote-control status, thread/started and the empty agentMessage start
+    // stay the only unrecognized frames; the three warnings are not among them.
+    expect(events.at(-1)).toMatchObject({
+      type: "completed",
+      payload: {
+        native_session_id: "thread-warnings",
+        native_turn_id: "turn-warnings",
+        dropped_unrecognized_events: 3,
+      },
+    });
+    expect(events.at(-1)?.payload).not.toHaveProperty("harness_reported_error");
+  });
+});

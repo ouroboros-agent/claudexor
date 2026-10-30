@@ -1009,8 +1009,10 @@ closure is never read. The bounded reader then suppresses only that closure
 any other stream error and a callback failure stay failures. Pipe closure
 proves no descendant death; whole-run scope settlement and its separate
 receipt still follow.
-Native in-turn retry notices use the existing nonterminal `api_retry` status;
-their wire mapping is documented in INTEGRATIONS' Harness Stream Reference.
+Native in-turn retry notices use the existing nonterminal `api_retry` status,
+and Codex's native configuration and runtime warnings a plain nonterminal
+`status`; their wire mapping is documented in INTEGRATIONS' Harness Stream
+Reference.
 Adapters without a verified prompt transport retain their vendor-specific path.
 
 Git-backed candidate envelopes also preserve bounded raster previews before
