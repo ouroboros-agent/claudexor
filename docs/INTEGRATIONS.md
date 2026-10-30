@@ -2177,9 +2177,12 @@ stops. After an explicit Stop the Ask, Agent and Plan attempts keep reading the
 cancelled stream, and then close it, within the inactivity watchdog's one
 existing cleanup deadline, counted from their next read after Stop; what arrives
 then, warnings included, is stored as evidence only: it is not published to live
-observers and never becomes the cancelled attempt's answer, output, telemetry or
-tool-error verdict. A directory-mode attempt still collects the typed file
-paths those late events name, so a file already written before Stop stays in the
+observers and never becomes the cancelled attempt's final answer, telemetry or
+tool-error verdict. Recorded assistant text can still appear in the diagnostic
+`final/retained-output.md` used by continuation; it does not make the run successful
+or label individual blocks as received after Stop. A directory-mode attempt still
+collects the typed file paths those late events name, so a file already written
+before Stop stays in the
 captured result bytes; this reads paths from evidence and starts no work. A late
 `patch_produced` raw patch is not accepted or materialized, and its response
 bytes are not kept; one accepted before Stop is still consumed after the stream,
